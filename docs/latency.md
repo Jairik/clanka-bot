@@ -25,9 +25,10 @@ point; the wake chime does not either.
 | `tts_first_audio_ms` | speech | first reply text handed to TTS → first PCM sample written to the sink |
 
 `checkpoints.first_chunk_ms` is the first reply text unit handed to TTS,
-measured from the turn start. On the Agent path the Filler is still playing when
-the first generated sentence is ready, so that wait is included: the Filler is
-excluded from the end point, but not from the elapsed time.
+measured from the turn start. When a Filler is playing (the Agent path cue, or
+the slow-reply cue after 1.5 s), the first reply text waits for it, so that wait
+is included: the Filler is excluded from the end point, but not from the elapsed
+time.
 
 `response_ms` is Response latency. It is present only for a voice request whose
 reply audio actually started.

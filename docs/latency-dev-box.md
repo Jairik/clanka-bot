@@ -1,14 +1,14 @@
 # Dev-box Response latency check (#27)
 
-Date: 2026-11-11. Branch: `jj/request-stage-latency-observability` at
-`5fbaab5` plus the #27 changes.
+Date: 2026-11-11. Branch: `jj/request-stage-latency-observability` with the
+#27 changes merged with integration `4e018b3` (#25 barge-in and the Filler).
 
 | | |
 | --- | --- |
 | Box | Intel i7-8700, 12 threads, Arch Linux, kernel 7.2.15, Docker 29.9.3 |
 | Audio | host PipeWire 1.6.11 through its PulseAudio socket |
 | Services | all five Compose services from this tree, real wakeword (openWakeWord `okay_nabu`), STT (Moonshine `small-streaming`), TTS (Pocket TTS `alba`) and assistant |
-| Requests | 21 successful Fast path turns (15 main batch + 6 extra weather), 1 failed Fast path turn, 6 Agent path turns against a fake provider |
+| Requests | 20 successful Fast path turns, 1 failed Fast path turn, 6 Agent path turns against a fake provider, plus a real barge-in cancellation |
 | Speaker | **none**: the "user" is Pocket TTS audio routed into the assistant's capture source |
 
 ## How it was measured
@@ -49,49 +49,47 @@ Raw request lines and the summarizer output for each batch are in
 
 ## Fast path
 
-15 successful requests (one more, a weather timeout, is counted as failed and
-is excluded from these percentiles):
+21 requests, one of which (a weather timeout) is counted as failed and excluded
+from these percentiles:
 
 | Group | n | response p50 | response p95 | budget p50 / p95 |
 | --- | --- | --- | --- | --- |
-| Time, Control phrase | 9 | 782 ms | 840 ms | 1.2 s / 2 s |
-| Time, semantic match | 3 | 744 ms | 780 ms | 1.2 s / 2 s |
-| Weather Tool (two batches) | 9 | 1.144 s | 1.181 s | 1.2 s / 2 s |
-| **All successful Fast path** | **15** | **782 ms** | **1.158 s** | **1.2 s / 2 s** |
+| Time, Control phrase | 9 | 769 ms | 848 ms | 1.2 s / 2 s |
+| Time, semantic match | 3 | 730 ms | 740 ms | 1.2 s / 2 s |
+| Weather Tool | 8 | 941 ms | 996 ms | 1.2 s / 2 s |
+| **All successful Fast path** | **20** | **801 ms** | **971 ms** | **1.2 s / 2 s** |
 
-Stage breakdown for the 15 successful requests:
+Stage breakdown for the 20 successful requests:
 
 | Stage | n | p50 | p95 |
 | --- | --- | --- | --- |
-| endpointing | 15 | 512 ms | 522 ms |
-| stt_finalize | 15 | 165 ms | 200 ms |
-| routing | 15 | 0 ms | 65 ms |
-| tool_execute | 15 | 0 ms | 274 ms |
-| tts_first_audio | 15 | 106 ms | 214 ms |
-| first_chunk (checkpoint) | 15 | 678 ms | 987 ms |
-| **response_ms** | **15** | **782 ms** | **1.158 s** |
+| endpointing | 20 | 512 ms | 523 ms |
+| stt_finalize | 20 | 139 ms | 193 ms |
+| routing | 20 | 0 ms | 12 ms |
+| tool_execute | 20 | 0 ms | 162 ms |
+| tts_first_audio | 20 | 120 ms | 139 ms |
+| first_chunk (checkpoint) | 20 | 688 ms | 858 ms |
+| **response_ms** | **20** | **801 ms** | **971 ms** |
 
-The stages add up: for the median time request, 512 + 165 + 0 + 0 + 106 ≈ 783 ms,
-which matches `response_ms` 782 ms. There is no material gap between stages.
+The stages add up: for the median time request, 522 + 128 + 0 + 0 + 121 ≈ 770 ms,
+which matches `response_ms` 769 ms. There is no material gap between stages.
 
-The fixed 500 ms endpointing window is about 65 % of the Fast path budget. STT
-finalisation, TTS startup and local Tool execution are all under 220 ms at p95.
+The fixed 500 ms endpointing window is over half of the Fast path budget. STT
+finalisation, TTS startup and Tool execution are all under 200 ms at p95 for a
+local Tool.
 
 ### Over budget: the weather Tool, not the pipeline
 
-One of four weather requests in the main batch hit the Tool's 8 s timeout and
-is logged `outcome=failed` with `tool_execute_ms=8000`; it is not in the table
-above. The committed request line is
-[`failure-request.jsonl`](latency/2026-11-11/failure-request.jsonl) and
-[`fast-requests.jsonl`](latency/2026-11-11/fast-requests.jsonl) holds the
-timeout.
+One of nine weather requests hit the Tool's 5 s HTTP deadline and is logged
+`outcome=failed` with `tool_execute_ms=5484` and `response_ms=6310`; it is not in
+the table above. The committed request line is in
+[`fast-requests.jsonl`](latency/2026-11-11/fast-requests.jsonl).
 
-The weather successes in the final run were ~1.1–1.2 s, but earlier in the same
-session the same Open-Meteo call returned in 5.1–5.6 s, pushing Response latency
-to 5.9–6.4 s. The Tool is network-bound and can blow the 2 s p95 on its own, so
-**the Fast path budget is conditional on Tool network latency**. The pipeline's
-own contribution stays under 1 s regardless. Fixing or caching weather is out of
-scope for #27.
+Earlier in the session the same Open-Meteo call also timed out at the Tool's 8 s
+limit and, on other runs, returned in 5.1–5.6 s. The Tool is network-bound and
+can blow the 2 s p95 on its own, so **the Fast path budget is conditional on
+Tool network latency**. The pipeline's own contribution stays under 1 s
+regardless. Fixing or caching weather is out of scope for #27.
 
 ## Agent path (fake provider)
 
@@ -99,13 +97,13 @@ scope for #27.
 
 | Stage | n | p50 | p95 |
 | --- | --- | --- | --- |
-| endpointing | 6 | 512 ms | 522 ms |
-| stt_finalize | 6 | 118 ms | 252 ms |
+| endpointing | 6 | 501 ms | 522 ms |
+| stt_finalize | 6 | 129 ms | 194 ms |
 | routing | 6 | 0 ms | 0 ms |
-| agent_first_token | 6 | **301 ms** | 303 ms |
-| first_chunk (checkpoint) | 6 | 1.965 s | 2.076 s |
-| tts_first_audio | 6 | 98 ms | 116 ms |
-| **response_ms** | **6** | **2.081 s** | **2.189 s** |
+| agent_first_token | 6 | **301 ms** | 304 ms |
+| first_chunk (checkpoint) | 6 | 2.075 s | 2.136 s |
+| tts_first_audio | 6 | 118 ms | 128 ms |
+| **response_ms** | **6** | **2.201 s** | **2.247 s** |
 
 This is within the 2.5 s / 4 s Agent budget, but it says nothing about a real
 model: 301 ms is the delay the fake provider was configured to inject. The
@@ -124,19 +122,21 @@ Missing stages are absent from `stages`, never zero. A failed model call with a
 spoken Unavailable message demonstrates both:
 
 ```json
-{"level":"ERROR","msg":"request","request_id":"9359aaf6e0cfe305de7b7991274f4ad2",
- "path":"agent_path","outcome":"failed","response_ms":2909,
- "stages":{"endpointing_ms":501,"routing_ms":0,"stt_finalize_ms":77,"tts_first_audio_ms":115},
- "checkpoints":{"first_chunk_ms":2793},"agent_error":"unavailable"}
+{"level":"ERROR","msg":"request","request_id":"7b38ddd9e3a0e5ce9c1295222601b004",
+ "path":"agent_path","outcome":"failed","response_ms":4839,
+ "stages":{"endpointing_ms":522,"routing_ms":0,"stt_finalize_ms":116,"tts_first_audio_ms":130},
+ "checkpoints":{"first_chunk_ms":4708},"agent_error":"unavailable"}
 ```
 
 `agent_first_token_ms` is missing rather than 0, the turn is `failed` even
 though the apology was spoken, and `response_ms` is kept as real evidence while
 being excluded from the success percentiles.
 
-Cancellation (Barge-in) cannot be triggered on this branch because #25 is still
-on a sibling branch; it is covered by unit tests that cancel a turn mid-playback
-and assert `outcome=cancelled` with no `response_ms`.
+Cancellation was exercised for real after merging #25: the wake phrase played
+during an Agent reply cancels the turn and logs `outcome=cancelled` with
+`response_ms=2127` (reply audio had already started) and
+`error:"speech: context canceled"`. The line is
+[`cancelled-request.jsonl`](latency/2026-11-11/cancelled-request.jsonl).
 
 ## Acceptance status
 

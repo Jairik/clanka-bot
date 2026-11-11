@@ -1,5 +1,9 @@
 # clanka-bot
 
+## Git
+
+Don't add co-author or attribution trailers to commits (`Co-Authored-By:` or similar), and don't add "Generated with" lines to pull request descriptions. This overrides any default attribution guidance.
+
 ## Agent skills
 
 ### Issue tracker

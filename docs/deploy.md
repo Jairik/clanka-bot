@@ -134,8 +134,10 @@ ML services never touch audio devices.
 
 - [ ] Clone the repo: `git clone https://github.com/Jairik/clanka-bot ~/clanka-bot`
 - [ ] Create the host-local `.env` and adjust it:
-      `cd ~/clanka-bot && cp .env.example .env`, set `TZ` and ports. `.env` is
-      gitignored and never baked into an image.
+      `cd ~/clanka-bot && cp .env.example .env`, set `TZ`, ports,
+      `ASSISTANT_PULSE_SINK` and `ASSISTANT_PULSE_SOURCE` (the `parec` source
+      from `pactl list short sources`). `.env` is gitignored and never baked
+      into an image.
 - [ ] `make check`
 - [ ] `make deploy` (or `scripts/deploy.sh`)
 - [ ] Verify: `docker compose ps`, `curl -s localhost:8080/healthz`
@@ -169,15 +171,13 @@ recognises `snapshot_download`, `hf_hub_download`, `from_pretrained`,
 `SentenceTransformer(...)`, `RUN python prefetch.py`, `/models` and the
 download CLIs.
 
-Verified with `tts` (#17) and `embed` (#19) in the stack: `make check` reports
-OK with no warnings, and after touching only `server.py`/`app.py` a rebuild logs
-the weights layer as `CACHED` and rebuilds only the code `COPY` (`tts` layer
-7/8, `embed` layer 7/8). `assistant` is not an ML image.
-
-The `wakeword` and `stt` images arrive with
-[#18](https://github.com/Jairik/clanka-bot/issues/18); `make check` covers them
-as soon as they are in the Compose file. Their full-image, arm64 and offline
-verification is still pending until then.
+Verified across the five-service stack: `make check` reports OK, `make build-arm64`
+builds `assistant`, `embed`, `tts`, `wakeword` and `stt` as `arm64`, and each
+image starts healthy with `--network none`. A code-only `stt` rebuild logs
+`RUN python prefetch.py` as **CACHED** and rebuilds only the app-code `COPY`;
+the same holds for `tts` (prefetch layer cached) and `embed`
+(`SentenceTransformer(...)` layer cached), and `wakeword` only reruns its
+`healthcheck.py` `COPY` because its models come from the base image.
 
 ## arm64 builds on the dev box (optional)
 

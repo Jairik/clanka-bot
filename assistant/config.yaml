@@ -22,10 +22,16 @@ embed:
   # Per-request budget; over it, semantic matching is skipped.
   timeout: 150ms
 
-# Semantic Fast path placeholders until the eval set (#26) tunes them.
+# Semantic Fast path tuning from the #26 routing evaluation. The corpus is
+# internal/pipeline/testdata/routing_eval.yaml (160 positives, 20 per Tool, 48
+# negatives and 8 compounds) run against sentence-transformers/all-MiniLM-L6-v2.
+# At these values every Tool had precision 1.00 against the confirmed 0.95
+# per-Tool floor, overall recall was 0.59, and no negative or compound reached
+# the Fast path. Recall is deliberately low: ambiguous phrasing goes to the
+# Agent path instead of risking a wrong Tool call. See docs/routing-eval.md.
 semantic:
-  threshold: 0.70
-  margin: 0.08
+  threshold: 0.71
+  margin: 0.23
   # Compound requests with one of these joiners go to the Agent path.
   joiners: ["and", "then", "also"]
 

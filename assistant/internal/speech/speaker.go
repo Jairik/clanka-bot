@@ -111,7 +111,12 @@ func (s *Speaker) Say(ctx context.Context, text string) (Result, error) {
 		attrs = append([]any{"request_id", id}, attrs...)
 	}
 	if playErr != nil {
-		s.logger.Error("speech", append(attrs, "error", playErr.Error())...)
+		// A Barge-in cancels the request context; that is expected, not a fault.
+		if ctx.Err() != nil {
+			s.logger.Info("speech interrupted", attrs...)
+		} else {
+			s.logger.Error("speech", append(attrs, "error", playErr.Error())...)
+		}
 		return result, fmt.Errorf("speech: %w", playErr)
 	}
 	s.logger.Info("speech", attrs...)

@@ -58,10 +58,16 @@ type Player interface {
 	Play(ctx context.Context, pcm []byte, format audio.Format) error
 }
 
-// Responder answers a transcript. It is called with the session context, so
+// Responder answers one utterance. It is called with the session context, so
 // cancelling that context must abandon the reply (Barge-in, #25).
 type Responder interface {
-	Respond(ctx context.Context, transcript string) error
+	Respond(ctx context.Context, req Request) error
+}
+
+// PendingDropper discards a waiting Confirmation. pipeline.Pipeline satisfies
+// it; the loop calls it on Barge-in so a stale yes cannot run later.
+type PendingDropper interface {
+	DropPending() (tool.PendingConfirmation, bool)
 }
 
 // Config is the voice loop's fixed settings.
@@ -83,7 +89,10 @@ type Deps struct {
 	STT       STTService
 	Player    Player
 	Responder Responder
-	Logger    *slog.Logger
+	// Dropper is optional: when set, a Barge-in also drops a waiting
+	// Confirmation so a stale yes cannot run later.
+	Dropper PendingDropper
+	Logger  *slog.Logger
 }
 
 // Loop is the microphone state machine. Run is called once; it is safe for the
@@ -143,12 +152,36 @@ func (l *Loop) Run(ctx context.Context) error {
 	}
 }
 
-// listen waits for the wake word. Detection is muted from the moment the wake
-// fires until the reply finishes: the wake stream is closed for the session.
+// listen waits for the wake word, then runs turns. A turn interrupted by the
+// wake word starts the next one immediately: the wake word that barges in is
+// also the request that follows.
 func (l *Loop) listen(ctx context.Context) error {
+	bargeIn := false
+	for {
+		if !bargeIn {
+			detected, err := l.waitForWake(ctx)
+			if err != nil {
+				return err
+			}
+			if !detected {
+				return nil // the stream ended without firing; reopen it
+			}
+		}
+		var err error
+		bargeIn, err = l.session(ctx)
+		if err != nil {
+			return err
+		}
+	}
+}
+
+// waitForWake feeds mic frames to the wake word service until it fires. The
+// stream is closed on return: the session opens its own stream for playback, so
+// a detection from the question itself cannot interrupt the reply.
+func (l *Loop) waitForWake(ctx context.Context) (bool, error) {
 	wake, err := l.deps.Wake.Open(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer wake.Close()
 
@@ -156,30 +189,28 @@ func (l *Loop) listen(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return false, ctx.Err()
 		case frame := <-l.frames:
 			if err := wake.Write(frame); err != nil {
-				return err
+				return false, err
 			}
 		case detection, ok := <-detections:
 			if !ok {
 				if err := wake.Err(); err != nil {
-					return err
+					return false, err
 				}
-				return nil // stream ended without a detection; reopen
+				return false, nil
 			}
 			l.deps.Logger.Info("voice: wake", "model", detection.Name)
-			if err := wake.Close(); err != nil {
-				l.deps.Logger.Warn("voice: close wake", "error", err.Error())
-			}
-			return l.session(ctx)
+			return true, nil
 		}
 	}
 }
 
 // session records one request: chime, listen with endpointing, transcribe, then
-// speak. #25 (Barge-in) keeps the wake stream open and cancels sessCtx instead.
-func (l *Loop) session(ctx context.Context) error {
+// speak. It reports whether the wake word interrupted the reply (Barge-in) so
+// the caller starts a fresh turn without waiting for another wake word.
+func (l *Loop) session(ctx context.Context) (bool, error) {
 	sessCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -200,22 +231,22 @@ func (l *Loop) session(ctx context.Context) error {
 
 	stt, err := l.deps.STT.Open(sessCtx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	defer stt.Close()
 
 	endpointer, err := NewEndpointer(l.cfg.Endpoint)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	for ended := false; !ended; {
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return false, ctx.Err()
 		case frame := <-l.frames:
 			if err := stt.Write(frame); err != nil {
-				return err
+				return false, err
 			}
 			select {
 			case <-chimeDone:
@@ -226,14 +257,13 @@ func (l *Loop) session(ctx context.Context) error {
 		}
 	}
 	// One timeline spans endpointing, STT, routing, the Agent path and
-	// playback (#27). It is created at the end-of-speech decision so its
-	// start is the user's last voiced frame, not the end of the silence
-	// window.
-	endedAt := time.Now()
+	// playback (#27). It starts at the user's last voiced frame, not the end
+	// of the silence window; the same instant is the Filler clock (#25).
+	ended := time.Now()
 	timeline := latency.New(tool.NewRequestID(), latency.SourceVoice)
 	timeline.SetLastVoice(endpointer.LastSpeech())
 	if last := endpointer.LastSpeech(); !last.IsZero() {
-		timeline.Set(latency.StageEndpointing, endedAt.Sub(last))
+		timeline.Set(latency.StageEndpointing, ended.Sub(last))
 	}
 	requestCtx := latency.WithContext(sessCtx, timeline)
 
@@ -251,14 +281,14 @@ func (l *Loop) session(ctx context.Context) error {
 	transcript, err := stt.Finish()
 	if err != nil {
 		timeline.Complete(l.deps.Logger, latency.OutcomeFailed, err)
-		return err
+		return false, err
 	}
 	timeline.Set(latency.StageSTTFinalize, time.Since(started))
 	transcript = strings.TrimSpace(transcript)
 	if transcript == "" {
 		l.deps.Logger.Info("voice: no speech", "request_id", timeline.ID())
 		timeline.Complete(l.deps.Logger, latency.OutcomeNoAudio, nil)
-		return nil
+		return false, nil
 	}
 	l.deps.Logger.Info("voice: transcript",
 		"request_id", timeline.ID(),
@@ -266,22 +296,77 @@ func (l *Loop) session(ctx context.Context) error {
 		"stt_ms", time.Since(started).Milliseconds(),
 	)
 
+	// Wake detection stays live while the reply plays, so the user can cut in.
+	// The stream starts here rather than at the wake word, so the question that
+	// just ended cannot fire it.
+	watch, detections := l.watch(ctx)
+	if watch != nil {
+		defer watch.Close()
+	}
+
 	done := make(chan error, 1)
-	go func() { done <- l.deps.Responder.Respond(requestCtx, transcript) }()
+	go func() {
+		done <- l.deps.Responder.Respond(requestCtx, Request{Transcript: transcript, Ended: ended})
+	}()
 	for {
 		select {
 		case <-ctx.Done():
 			cancel()
 			<-done
-			return ctx.Err()
+			return false, ctx.Err()
 		case err := <-done:
 			if err != nil && sessCtx.Err() == nil {
-				return err
+				return false, err
 			}
-			return nil
-		case <-l.frames:
-			// Muted: drain the capture so the next session starts on fresh audio.
+			return false, nil
+		case frame := <-l.frames:
+			if watch == nil {
+				continue // no way to interrupt; drain the capture
+			}
+			if err := watch.Write(frame); err != nil {
+				l.deps.Logger.Warn("voice: barge-in watch", "error", err.Error())
+				watch, detections = nil, nil
+			}
+		case detection, ok := <-detections:
+			if !ok {
+				// The watch stream ended without firing; keep the reply going.
+				watch, detections = nil, nil
+				continue
+			}
+			detected := time.Now()
+			l.deps.Logger.Info("voice: barge-in", "model", detection.Name)
+			cancel() // abandons the agent stream, TTS and playback
+			if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+				l.deps.Logger.Warn("voice: barge-in reply", "error", err.Error())
+			}
+			l.deps.Logger.Info("voice: barge-in stopped", "stop_ms", time.Since(detected).Milliseconds())
+			l.dropPending()
+			return true, nil
 		}
+	}
+}
+
+// watch opens the playback-time wake stream. A failure is logged, not fatal:
+// the reply still plays, just without the ability to interrupt it.
+func (l *Loop) watch(ctx context.Context) (WakeStream, <-chan Detection) {
+	if l.deps.Wake == nil {
+		return nil, nil
+	}
+	wake, err := l.deps.Wake.Open(ctx)
+	if err != nil {
+		l.deps.Logger.Warn("voice: barge-in watch unavailable", "error", err.Error())
+		return nil, nil
+	}
+	return wake, wake.Detections()
+}
+
+// dropPending discards a waiting Confirmation after a Barge-in.
+func (l *Loop) dropPending() {
+	if l.deps.Dropper == nil {
+		return
+	}
+	if dropped, ok := l.deps.Dropper.DropPending(); ok {
+		l.deps.Logger.Info("voice: barge-in dropped confirmation", "tool", dropped.Tool)
 	}
 }
 

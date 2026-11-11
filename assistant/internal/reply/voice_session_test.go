@@ -25,7 +25,7 @@ func TestVoiceResponderStreamsThroughTheSharedSession(t *testing.T) {
 
 	session := reply.New(routed, speaker, logSink{log}, testFiller())
 	responder := voice.NewPipelineResponder(session, tool.DevicePi)
-	if err := responder.Respond(context.Background(), "will it rain"); err != nil {
+	if err := responder.Respond(context.Background(), voice.Request{Transcript: "will it rain"}); err != nil {
 		t.Fatalf("Respond: %v", err)
 	}
 

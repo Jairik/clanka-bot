@@ -29,6 +29,19 @@ semantic:
   # Compound requests with one of these joiners go to the Agent path.
   joiners: ["and", "then", "also"]
 
+# Public-IP geolocation. Only city, region and timezone are kept; the fields
+# parameter stops the service sending coordinates at all.
+location:
+  provider_url: "https://ipwho.is/?fields=city,region,timezone"
+  # Look up once at startup, then this often. Failures keep the last value.
+  refresh_interval: 24h
+  timeout: 5s
+  # Used when a lookup has never succeeded. Leave empty for no location.
+  fallback:
+    city: ""
+    region: ""
+    timezone: ""
+
 # Exact-match Control phrases, entered just after STT.
 control_phrases:
   "what time is it": time.now
@@ -36,6 +49,10 @@ control_phrases:
   "what is the time": time.now
   "tell me the time": time.now
   "time": time.now
+  "what's the weather like": weather.current
+  "what is the weather like": weather.current
+  "what's the weather": weather.current
+  "how's the weather": weather.current
 
 # The Agent path: one OpenAI-compatible provider, no failover.
 agent:

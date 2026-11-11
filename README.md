@@ -32,6 +32,19 @@ curl -s -X POST localhost:8081/debug/transcript \
   -d '{"text":"what time is it right now"}'
 ```
 
+Weather answers on the Fast path too. The assistant resolves the city from the
+Pi's public IP at startup and every 24h (only city, region and timezone are
+kept; coordinates are never stored) and asks Open-Meteo for current conditions:
+
+```sh
+curl -s -X POST localhost:8081/debug/transcript \
+  -H 'Content-Type: application/json' \
+  -d "{\"text\":\"what's the weather like\"}"
+```
+
+If the IP lookup fails, the last known place is used, then the optional
+`location.fallback` values in config, then no place at all.
+
 Anything the Fast path does not handle goes to the Agent path, which needs an
 OpenRouter key in `.env` (`OPENROUTER_API_KEY`); without one it answers with
 the configured Unavailable message and the Fast path keeps working. Every

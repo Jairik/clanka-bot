@@ -70,6 +70,9 @@ func (s *scriptSource) Close() error { return nil }
 // fakeWake fires once per opened stream after the configured number of frames.
 type fakeWake struct {
 	afterWords int
+	// maxFires caps firings across streams so a test can let the loop settle
+	// after the interruptions it means to observe.
+	maxFires int
 
 	mu          sync.Mutex
 	streams     int
@@ -112,6 +115,10 @@ func (s *fakeWakeStream) Write(pcm []byte) error {
 
 	if frames == s.owner.afterWords {
 		s.owner.mu.Lock()
+		if s.owner.maxFires > 0 && s.owner.fires >= s.owner.maxFires {
+			s.owner.mu.Unlock()
+			return nil
+		}
 		s.owner.fires++
 		s.owner.mu.Unlock()
 		select {
@@ -171,6 +178,12 @@ func (f *fakeSTT) finishCount() int {
 	return f.finish
 }
 
+func (f *fakeSTT) openCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.opens
+}
+
 type fakeSTTStream struct{ owner *fakeSTT }
 
 func (s *fakeSTTStream) Write(pcm []byte) error {
@@ -207,7 +220,8 @@ func (p *fakePlayer) Play(ctx context.Context, pcm []byte, format audio.Format) 
 }
 
 // fakeResponder records transcripts and what the wake service looked like when
-// the reply started: the wake stream must already be closed (muted).
+// the reply started: the question's stream is closed and one playback-time
+// stream is open, listening for a Barge-in.
 type fakeResponder struct {
 	owner  *ownerRef
 	block  time.Duration
@@ -220,7 +234,7 @@ type ownerRef struct {
 	openAtReply atomic.Int32
 }
 
-func (r *fakeResponder) Respond(ctx context.Context, transcript string) error {
+func (r *fakeResponder) Respond(ctx context.Context, req voice.Request) error {
 	if r.owner != nil {
 		_, open, _ := r.owner.wake.snapshot()
 		r.owner.openAtReply.Store(int32(open))
@@ -236,7 +250,7 @@ func (r *fakeResponder) Respond(ctx context.Context, transcript string) error {
 		}
 	}
 	select {
-	case r.calls <- transcript:
+	case r.calls <- req.Transcript:
 	default:
 	}
 	return nil
@@ -279,9 +293,9 @@ func endpointConfig(silence time.Duration) voice.EndpointConfig {
 	return voice.EndpointConfig{Rate: 16000, Silence: silence, ThresholdDBFS: -38, MaxUtterance: 10 * time.Second}
 }
 
-func TestLoopChimesOnceMutesWakeAndAnswers(t *testing.T) {
+func TestLoopChimesOnceAndWatchesForBargeInWhileReplying(t *testing.T) {
 	source := &scriptSource{frames: append(repeat(loudFrame(), 8), repeat(silentFrame(), 40)...)}
-	wake := &fakeWake{afterWords: 5}
+	wake := &fakeWake{afterWords: 5, maxFires: 1}
 	stt := &fakeSTT{text: "what time is it"}
 	player := &fakePlayer{}
 	owner := &ownerRef{wake: wake}
@@ -307,8 +321,8 @@ func TestLoopChimesOnceMutesWakeAndAnswers(t *testing.T) {
 	if plays := player.plays.Load(); plays != 1 {
 		t.Fatalf("chime plays = %d, want 1", plays)
 	}
-	if open := owner.openAtReply.Load(); open != 0 {
-		t.Fatalf("wake streams open at reply = %d, want 0 (muted)", open)
+	if open := owner.openAtReply.Load(); open != 1 {
+		t.Fatalf("wake streams open at reply = %d, want 1 (listening for a barge-in)", open)
 	}
 	if stt.finishCount() != 1 {
 		t.Fatalf("STT Finish calls = %d, want 1", stt.finishCount())

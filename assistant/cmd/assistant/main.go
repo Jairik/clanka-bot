@@ -173,7 +173,7 @@ func run() error {
 	}
 
 	if cfg.VoiceEnabled() {
-		loop, err := newVoiceLoop(cfg, session, sink, logger)
+		loop, err := newVoiceLoop(cfg, session, p, sink, logger)
 		if err != nil {
 			return err
 		}
@@ -224,8 +224,9 @@ func run() error {
 }
 
 // newVoiceLoop wires the microphone path: Pulse capture, Wyoming wake word and
-// STT, the wake chime, and the shared reply Session.
-func newVoiceLoop(cfg config.Config, session voice.Asker, sink audio.Sink, logger *slog.Logger) (*voice.Loop, error) {
+// STT, the wake chime, and the shared reply Session. The pipeline is the
+// Barge-in seam that drops a waiting Confirmation.
+func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingDropper, sink audio.Sink, logger *slog.Logger) (*voice.Loop, error) {
 	captureFormat := audio.Format{Rate: cfg.Capture.Rate, Width: cfg.Capture.Width, Channels: cfg.Capture.Channels}
 	frameBytes := cfg.Capture.Rate * cfg.Capture.Width * cfg.Capture.Channels * cfg.Capture.FrameMS / 1000
 	if frameBytes <= 0 {
@@ -270,6 +271,7 @@ func newVoiceLoop(cfg config.Config, session voice.Asker, sink audio.Sink, logge
 		STT:       voice.NewWyomingSTT(sttClient, wyoming.TranscribeOptions{Name: cfg.STT.Model, Language: cfg.STT.Language}, wireFormat),
 		Player:    audio.NewPCMPlayer(sink),
 		Responder: voice.NewPipelineResponder(session, tool.DevicePi),
+		Dropper:   pending,
 		Logger:    logger,
 	})
 }

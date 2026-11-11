@@ -117,6 +117,12 @@ phrases `stop`, `pause`, `cancel` and `louder` are matched exactly, so they
 answer without waiting on the embed service (`cancel` cancels the timer and
 `louder` steps the volume up).
 
+Routing precision is measured against a labelled corpus with the real MiniLM
+model; the floor is 0.95 for every Tool, and ambiguous phrasing goes to the
+Agent path. See [docs/routing-eval.md](docs/routing-eval.md) to run the
+evaluation, tune threshold and margin, or promote a request-log misroute into
+the fixture.
+
 ### Audio
 
 Per [ADR-0001](docs/adr/0001-middleware-owns-all-audio-io.md), only the

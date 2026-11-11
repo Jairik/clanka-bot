@@ -1,0 +1,242 @@
+# Labelled routing corpus for the Fast path.
+#
+# This file is an oracle, not training data: labels come from what a user
+# means, never from what the current model happens to predict. Do not remove a
+# hard negative or a natural paraphrase just to make the numbers look better.
+#
+# positives: one list per Fast path Tool. Each utterance must reach that Tool
+# (through an exact Control phrase or semantic matching) and survive
+# extraction, otherwise it counts as a miss.
+#
+# negatives: utterances that must not reach the Fast path. They include plain
+# Agent requests, questions that sound like a Tool but are not one, and
+# compound requests that ask for more than one thing.
+positives:
+  time.now:
+    - what time is it
+    - what's the time
+    - what is the time
+    - tell me the time
+    - time
+    - what time is it right now
+    - do you know what time it is
+    - what's the current time
+    - could you tell me the time
+    - got the time
+    - what time do you have
+    - what's the time on the clock
+    - current time please
+    - can you check the time
+    - I need the time
+    - give me the time
+    - what's the hour
+    - what time is it now
+    - tell me what time it is
+    - do you have the time
+  date.today:
+    - what's the date
+    - what is today's date
+    - what day is it
+    - what's today's date
+    - what date is it today
+    - what day of the week is it
+    - tell me today's date
+    - do you know what the date is
+    - what's the date today
+    - what is the current date
+    - can you tell me the date
+    - today's date please
+    - what's the day today
+    - which day is it
+    - what date are we on
+    - give me today's date
+    - what day of the month is it
+    - what weekday is it
+    - what's the current day
+    - tell me what day it is
+  weather.current:
+    - what's the weather like
+    - what is the weather like
+    - what's the weather
+    - how's the weather
+    - what's the weather outside
+    - is it raining outside
+    - do I need an umbrella today
+    - how's the weather in Berlin
+    - what's the temperature outside
+    - is it cold outside
+    - what's it like outside
+    - how hot is it today
+    - what's the forecast for today
+    - is it sunny out
+    - what's the weather in Paris
+    - should I wear a jacket today
+    - how windy is it
+    - what's the temperature in London
+    - is it going to rain today
+    - what are the conditions outside
+  audio.volume_set:
+    - turn the volume to 40
+    - set the volume to 30 percent
+    - turn the volume to zero
+    - turn it up
+    - louder
+    - turn the volume down
+    - make it quieter
+    - volume up
+    - volume down
+    - set volume to 50
+    - can you turn the volume up
+    - please turn the volume down
+    - turn it up a little
+    - turn it down a bit
+    - set the volume to twenty
+    - I want the volume at 25
+    - make it a bit louder
+    - make it quieter please
+    - set the sound volume to 60
+    - put the volume at 75
+  audio.stop:
+    - stop
+    - pause
+    - stop talking
+    - be quiet
+    - pause the music
+    - stop the music
+    - please stop
+    - quiet please
+    - shut up
+    - stop playing
+    - turn it off
+    - silence
+    - stop the audio
+    - can you stop
+    - pause playback
+    - stop the playback
+    - that's enough
+    - hush
+    - stop the sound
+    - pause it
+  timer.set:
+    - set a timer for five minutes
+    - set a timer for 10 minutes
+    - start a timer for an hour
+    - set a timer for an hour and a half
+    - timer for 30 seconds
+    - set a timer for two minutes
+    - start a five minute timer
+    - remind me in ten minutes
+    - set a timer for 20 minutes
+    - timer for one hour
+    - start a timer for 90 seconds
+    - set a timer for 3 minutes
+    - can you set a timer for fifteen minutes
+    - set a countdown for five minutes
+    - wake me in 10 minutes
+    - make a timer for forty five minutes
+    - timer for 2 hours
+    - set an alarm for 5 minutes
+    - start the timer for 30 minutes
+    - countdown for 10 seconds
+  timer.cancel:
+    - cancel the timer
+    - cancel my timer
+    - stop the timer
+    - cancel it
+    - cancel
+    - cancel the countdown
+    - stop the countdown
+    - kill the timer
+    - get rid of the timer
+    - cancel that timer
+    - please cancel the timer
+    - stop my timer
+    - cancel the alarm
+    - cancel the current timer
+    - turn off the timer
+    - end the timer
+    - clear the timer
+    - cancel this timer
+    - stop that timer
+    - I want to cancel the timer
+  timer.list:
+    - how long is left on my timer
+    - how much time is left
+    - what timers do I have
+    - list my timers
+    - how much time is left on the timer
+    - how long until the timer goes off
+    - when does my timer finish
+    - what's the time remaining
+    - do I have any timers
+    - how many timers are running
+    - check the timer
+    - what's left on the timer
+    - how long does the timer have left
+    - show me my timers
+    - is my timer still running
+    - how long is the timer
+    - time left on the timer
+    - what timers are active
+    - how much longer on the timer
+    - tell me the timer status
+negatives:
+  - what's the capital of France
+  - who wrote hamlet
+  - how do I make pancakes
+  - explain quantum entanglement
+  - tell me a joke
+  - what's 17 times 24
+  - convert 10 kilometers to miles
+  - who won the world cup in 2018
+  - summarize the news
+  - will it rain next Tuesday
+  - what's the stock price of Apple
+  - write an email to my boss
+  - play some jazz music
+  - set an alarm for 7am tomorrow
+  - remind me to call mom at noon
+  - turn on the lights
+  - order a pizza
+  - what's on my calendar
+  - how old is the president
+  - define serendipity
+  - translate hello into Spanish
+  - what's the best phone to buy
+  - how do I fix a leaky faucet
+  - tell me about the history of Rome
+  - what time zone is Tokyo in
+  - how tall is Mount Everest
+  - what's my ip address
+  - book a table for two
+  - send a message to Alex
+  - is it going to snow tomorrow
+  - why is the sky blue
+  - can you sing a song
+  - how many calories in an apple
+  - what's the square root of 144
+  - help me write a cover letter
+  - who is the CEO of Tesla
+  - what's the population of Canada
+  - what day is Christmas this year
+  - how long is a marathon
+  - what's the difference between affect and effect
+  - recommend a good book
+  - what's the weather like on Mars
+  - tell me a story
+  - what's the time difference between here and Tokyo
+  - how many minutes in a day
+  - what's the date of the next full moon
+  - stop the car
+  - cancel my subscription
+# Compound requests ask for more than one thing. They are kept separate so
+# the evaluation can report compound handling on its own.
+compounds:
+  - what time is it and set a timer for five minutes
+  - set a timer for five minutes and tell me the weather
+  - turn the volume down and stop the music
+  - what's the date and what time is it
+  - cancel the timer and set a new one for ten minutes
+  - tell me the time then play some music
+  - set a timer for 5 minutes and remind me to check the oven
+  - stop talking and tell me the time

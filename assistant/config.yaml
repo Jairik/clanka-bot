@@ -38,6 +38,51 @@ tts:
   # Covers connect plus the gap between audio chunks.
   timeout: 30s
 
+# Microphone capture. Only this process opens the Pulse source (ADR-0001).
+capture:
+  # Named Pulse source from `pactl list short sources`. Empty uses the default.
+  source: ""
+  # parec resamples the source to this format before the services see it.
+  binary: "parec"
+  rate: 16000
+  width: 2
+  channels: 1
+  # PCM frame handed to the wake word and STT services (32 ms at 16 kHz).
+  frame_ms: 32
+
+wakeword:
+  # Wyoming openWakeWord service. An empty address disables voice input and
+  # leaves the typed debug entry working.
+  addr: "wakeword:10400"
+  # openWakeWord model name, e.g. okay_nabu, hey_jarvis, hey_rhasspy.
+  # Empty accepts any model the service has loaded.
+  model: "okay_nabu"
+  timeout: 10s
+  chime:
+    # Two-tone chime on wake detection. Not played when a request is accepted.
+    enabled: true
+
+stt:
+  # Our Wyoming wrapper around Moonshine Voice.
+  addr: "stt:10300"
+  # small-streaming is the default; tiny-streaming is the low-CPU fallback.
+  # Both are baked into the image at build time.
+  model: "small-streaming"
+  language: "en"
+  # Covers connect, finalisation and the response.
+  timeout: 20s
+  endpoint:
+    # Fixed end-of-speech window from the latency budget (#12), not adaptive.
+    silence: 500ms
+    # RMS level below which a frame counts as silence. The dev box's webcam
+    # mic sits around -45 dBFS with nobody talking.
+    threshold_dbfs: -38
+    # Above-threshold audio needed before it counts as the question, so a chime
+    # tail or click cannot open an utterance and then end it on silence.
+    min_speech: 200ms
+    # Safety cap so a false wake cannot listen forever.
+    max_utterance: 15s
+
 playback:
   # pacat from pulseaudio-utils. Only this container mounts the Pulse socket.
   binary: "pacat"

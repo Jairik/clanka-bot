@@ -3,8 +3,6 @@ package api
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -87,7 +85,7 @@ func (s *server) debugTranscript(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	requestID := newRequestID()
+	requestID := tool.NewRequestID()
 	w.Header().Set("X-Request-ID", requestID)
 
 	var body transcriptRequest
@@ -151,13 +149,4 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
-}
-
-// newRequestID returns 16 random bytes as hex.
-func newRequestID() string {
-	var b [16]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "request-id-unavailable"
-	}
-	return hex.EncodeToString(b[:])
 }

@@ -251,7 +251,11 @@ fails.
 
 ## Evidence
 
-All in [`docs/prototype-run/`](prototype-run/):
+All in [`docs/prototype-run/`](prototype-run/). Every file there was produced by
+this run and is **synthetic evidence**: Pocket TTS loopback audio (not a human
+speaker) and a scripted fake provider (not a model). The raw files carry no
+in-file banner, so treat this section and the "Not real" list above as their
+provenance.
 
 - `scenario-results.md` / `scenario-results.json` — per-scenario verdicts and timings
 - `requests.jsonl` — every request line from this run (correlated by `request_id`)

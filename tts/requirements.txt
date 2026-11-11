@@ -1,0 +1,5 @@
+# Wyoming protocol implementation (events, client, info dataclasses).
+wyoming>=1.11,<2
+# Kyutai Pocket TTS 100M, CPU inference. Torch is installed first from the CPU
+# index in the Dockerfile so the CUDA wheels are never pulled in.
+pocket-tts==4.0.1

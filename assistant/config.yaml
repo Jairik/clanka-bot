@@ -29,6 +29,22 @@ semantic:
   # Compound requests with one of these joiners go to the Agent path.
   joiners: ["and", "then", "also"]
 
+tts:
+  # Wyoming TTS service. Compose sets this to the tts container; an empty
+  # address disables spoken replies and leaves the debug entry text-only.
+  addr: "tts:10200"
+  # Pocket TTS voice name, a local wav, or an hf:// voice URL.
+  voice: "alba"
+  # Covers connect plus the gap between audio chunks.
+  timeout: 30s
+
+playback:
+  # pacat from pulseaudio-utils. Only this container mounts the Pulse socket.
+  binary: "pacat"
+  # Named Pulse sink, e.g. the Echo Dot once Bluetooth A2DP is set up.
+  # Empty uses the host's default sink.
+  sink: ""
+
 # Exact-match Control phrases, entered just after STT.
 control_phrases:
   "what time is it": time.now

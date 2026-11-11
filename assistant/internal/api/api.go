@@ -2,6 +2,7 @@
 package api
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -17,13 +18,30 @@ import (
 
 const maxTranscriptBytes = 8 << 10
 
+// Sayer speaks reply text. speech.Speaker satisfies it through SayText.
+type Sayer interface {
+	SayText(ctx context.Context, text string) error
+}
+
+// Option configures the HTTP surface.
+type Option func(*server)
+
+// WithSpeech plays the reply through sayer. Without it the debug entry is
+// text-only, which is how tests and speechless dev runs behave.
+func WithSpeech(sayer Sayer) Option {
+	return func(s *server) { s.sayer = sayer }
+}
+
 // NewHandler builds the HTTP surface: GET /healthz, plus POST
 // /debug/transcript when the debug entry is enabled.
-func NewHandler(p *pipeline.Pipeline, logger *slog.Logger, debugEnabled bool) http.Handler {
+func NewHandler(p *pipeline.Pipeline, logger *slog.Logger, debugEnabled bool, opts ...Option) http.Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	s := &server{pipeline: p, logger: logger, debugEnabled: debugEnabled}
+	for _, opt := range opts {
+		opt(s)
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.healthz)
 	mux.HandleFunc("/debug/transcript", s.debugTranscript)
@@ -34,6 +52,7 @@ type server struct {
 	pipeline     *pipeline.Pipeline
 	logger       *slog.Logger
 	debugEnabled bool
+	sayer        Sayer
 }
 
 func (s *server) healthz(w http.ResponseWriter, r *http.Request) {
@@ -54,6 +73,7 @@ type transcriptResponse struct {
 	Tool      string `json:"tool"`
 	Path      string `json:"path"`
 	RequestID string `json:"request_id"`
+	Spoken    bool   `json:"spoken"`
 }
 
 func (s *server) debugTranscript(w http.ResponseWriter, r *http.Request) {
@@ -93,11 +113,27 @@ func (s *server) debugTranscript(w http.ResponseWriter, r *http.Request) {
 		Device: tool.DevicePi,
 	}, text)
 
+	// Speaking is part of the reply, so the request waits for playback to
+	// finish. A TTS failure still returns the text reply.
+	spoken := false
+	if s.sayer != nil {
+		if err := s.sayer.SayText(r.Context(), reply.Text); err != nil {
+			s.logger.Error("speech",
+				"request_id", requestID,
+				"path", "debug_entry",
+				"error", err.Error(),
+			)
+		} else {
+			spoken = true
+		}
+	}
+
 	writeJSON(w, http.StatusOK, transcriptResponse{
 		Reply:     reply.Text,
 		Tool:      reply.Tool,
 		Path:      string(reply.Path),
 		RequestID: reply.RequestID,
+		Spoken:    spoken,
 	})
 }
 

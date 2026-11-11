@@ -195,3 +195,51 @@ func TestLoadMissingFileFails(t *testing.T) {
 		t.Fatal("Load succeeded, want error")
 	}
 }
+
+func TestLoadReadsSpeechSettings(t *testing.T) {
+	path := writeConfig(t, `
+tts:
+  addr: "tts:10200"
+  voice: "alba"
+  timeout: 12s
+playback:
+  binary: "pacat"
+  sink: "echo_dot"
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.TTS.Addr != "tts:10200" || cfg.TTS.Voice != "alba" {
+		t.Errorf("tts = %+v", cfg.TTS)
+	}
+	if cfg.TTS.Timeout.Duration() != 12*time.Second {
+		t.Errorf("tts timeout = %s", cfg.TTS.Timeout.Duration())
+	}
+	if cfg.Playback.Sink != "echo_dot" || cfg.Playback.Binary != "pacat" {
+		t.Errorf("playback = %+v", cfg.Playback)
+	}
+}
+
+func TestLoadAppliesSpeechEnvironmentOverrides(t *testing.T) {
+	t.Setenv("ASSISTANT_TTS_ADDR", "127.0.0.1:10200")
+	t.Setenv("ASSISTANT_TTS_VOICE", "marius")
+	t.Setenv("ASSISTANT_PULSE_SINK", "alsa_output.test")
+
+	cfg, err := config.Load(writeConfig(t, "{}\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.TTS.Addr != "127.0.0.1:10200" || cfg.TTS.Voice != "marius" {
+		t.Errorf("tts = %+v", cfg.TTS)
+	}
+	if cfg.Playback.Sink != "alsa_output.test" {
+		t.Errorf("playback sink = %q", cfg.Playback.Sink)
+	}
+}
+
+func TestLoadRejectsNonPositiveSpeechTimeout(t *testing.T) {
+	if _, err := config.Load(writeConfig(t, "tts:\n  addr: \"tts:10200\"\n  timeout: 0s\n")); err == nil {
+		t.Fatal("Load succeeded, want error")
+	}
+}

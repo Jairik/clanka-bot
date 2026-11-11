@@ -24,6 +24,15 @@ type Config struct {
 	Tools struct {
 		DefaultTimeout Duration `yaml:"default_timeout"`
 	} `yaml:"tools"`
+	TTS struct {
+		Addr    string   `yaml:"addr"` // empty disables spoken replies
+		Voice   string   `yaml:"voice"`
+		Timeout Duration `yaml:"timeout"`
+	} `yaml:"tts"`
+	Playback struct {
+		Binary string `yaml:"binary"`
+		Sink   string `yaml:"sink"` // empty uses the Pulse default sink
+	} `yaml:"playback"`
 	ControlPhrases map[string]string `yaml:"control_phrases"`
 	Embed          struct {
 		URL     string   `yaml:"url"`
@@ -97,6 +106,9 @@ func Default() Config {
 	cfg.Semantic.Threshold = 0.70
 	cfg.Semantic.Margin = 0.08
 	cfg.Semantic.Joiners = []string{"and", "then", "also"}
+	cfg.TTS.Voice = "alba"
+	cfg.TTS.Timeout = Duration(30 * time.Second)
+	cfg.Playback.Binary = "pacat"
 	cfg.Agent = DefaultAgent()
 	return cfg
 }
@@ -179,6 +191,15 @@ func applyEnv(cfg *Config) error {
 		}
 		cfg.Semantic.Margin = margin
 	}
+	if v := os.Getenv("ASSISTANT_TTS_ADDR"); v != "" {
+		cfg.TTS.Addr = v
+	}
+	if v := os.Getenv("ASSISTANT_TTS_VOICE"); v != "" {
+		cfg.TTS.Voice = v
+	}
+	if v := os.Getenv("ASSISTANT_PULSE_SINK"); v != "" {
+		cfg.Playback.Sink = v
+	}
 	return nil
 }
 
@@ -206,6 +227,14 @@ func (c Config) validate() error {
 	}
 	if c.Semantic.Margin < 0 || c.Semantic.Margin >= 1 {
 		return fmt.Errorf("config: semantic.margin must be in [0, 1)")
+	}
+	if c.TTS.Addr != "" {
+		if c.TTS.Timeout.Duration() <= 0 {
+			return fmt.Errorf("config: tts.timeout must be positive")
+		}
+		if c.TTS.Voice == "" {
+			return fmt.Errorf("config: tts.voice is required when tts.addr is set")
+		}
 	}
 	if _, err := c.Agent.ActiveProvider(); err != nil {
 		return err

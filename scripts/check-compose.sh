@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Check the deployment conventions the stack relies on:
-#   - every service has image clanka/<service>:${GIT_SHA:-dev}
+#   - every service builds locally so it has a clanka/<service>:${GIT_SHA:-dev}
+#     image (upstream images are wrapped in a small Dockerfile)
 #   - every service restarts unless stopped
 #   - every service has a health check, and no health check calls the internet
 #   - a locally built ML service downloads model weights before its first
@@ -151,6 +152,14 @@ check_service() {
 	if ! grep -qF -- "image: $want" <<<"$block"; then
 		fail "$svc: image must be $want"
 	fi
+
+	# Every service builds locally so its SHA tag exists for rollback. An
+	# upstream image (for example openWakeWord) is wrapped in a small Dockerfile.
+	context="$(build_context "$block")"
+	if [[ -z "$context" ]]; then
+		fail "$svc: build context is required so clanka/$svc:<sha> exists for rollback"
+	fi
+
 	if ! grep -qE '^    restart:[[:space:]]*unless-stopped[[:space:]]*$' <<<"$block"; then
 		fail "$svc: restart must be unless-stopped"
 	fi
@@ -163,22 +172,20 @@ check_service() {
 	fi
 	check_health_urls "$svc" "$block"
 
+	if [[ -z "$context" ]]; then
+		return
+	fi
+	[[ "$context" == /* ]] || context="$ROOT/$context"
+	dfile="$(dockerfile_name "$block")"
+	[[ -n "$dfile" ]] || dfile="Dockerfile"
+	dockerfile="$context/$dfile"
+	if [[ ! -f "$dockerfile" ]]; then
+		fail "$svc: build context $context has no $dfile"
+		return
+	fi
+
 	case " $ML_SERVICES " in
-	*" $svc "*)
-		context="$(build_context "$block")"
-		if [[ -z "$context" ]]; then
-			return
-		fi
-		[[ "$context" == /* ]] || context="$ROOT/$context"
-		dfile="$(dockerfile_name "$block")"
-		[[ -n "$dfile" ]] || dfile="Dockerfile"
-		dockerfile="$context/$dfile"
-		if [[ ! -f "$dockerfile" ]]; then
-			fail "$svc: build context $context has no $dfile"
-			return
-		fi
-		check_weights_layer "$svc" "$dockerfile"
-		;;
+	*" $svc "*) check_weights_layer "$svc" "$dockerfile" ;;
 	esac
 }
 

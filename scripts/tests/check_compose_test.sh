@@ -41,9 +41,12 @@ new_fixture() {
 }
 
 write_valid_assistant_compose() {
+	mkdir -p "$FIXTURE/assistant"
+	printf 'FROM scratch\n' >"$FIXTURE/assistant/Dockerfile"
 	cat >"$FIXTURE/docker-compose.yml" <<'YAML'
 services:
   assistant:
+    build: ./assistant
     image: clanka/assistant:${GIT_SHA:-dev}
     restart: unless-stopped
     healthcheck:
@@ -170,7 +173,7 @@ DOCKER
 	assert_out_contains "warning asks for manual verification" "WARN"
 }
 
-test_accepts_ml_image_without_local_dockerfile() {
+test_requires_build_context() {
 	new_fixture
 	write_valid_assistant_compose
 	cat >>"$FIXTURE/docker-compose.yml" <<'YAML'
@@ -181,7 +184,25 @@ test_accepts_ml_image_without_local_dockerfile() {
       test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 10400), 1)"]
 YAML
 	run_check
-	assert_status 0 "an ML service without a local Dockerfile passes"
+	assert_status 1 "an image without a local build fails"
+	assert_out_contains "build context failure is named" "build context"
+}
+
+test_requires_dockerfile_in_build_context() {
+	new_fixture
+	write_valid_assistant_compose
+	mkdir -p "$FIXTURE/stt"
+	cat >>"$FIXTURE/docker-compose.yml" <<'YAML'
+  stt:
+    build: ./stt
+    image: clanka/stt:${GIT_SHA:-dev}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 10300), 1)"]
+YAML
+	run_check
+	assert_status 1 "a build context without a Dockerfile fails"
+	assert_out_contains "missing Dockerfile is named" "has no Dockerfile"
 }
 
 run_test() {
@@ -197,7 +218,8 @@ run_test test_rejects_internet_healthcheck
 run_test test_accepts_weights_before_code_copy
 run_test test_rejects_code_copy_before_weights
 run_test test_warns_when_no_weights_layer_is_detected
-run_test test_accepts_ml_image_without_local_dockerfile
+run_test test_requires_build_context
+run_test test_requires_dockerfile_in_build_context
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

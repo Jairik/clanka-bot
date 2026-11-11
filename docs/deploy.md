@@ -148,6 +148,12 @@ internet at deploy time except base images that Docker has not cached yet.
 
 ## Model weights layer (pending ML verification)
 
+Every service is built locally from its build context, even when it wraps an
+upstream image (the official openWakeWord image is the base of
+`clanka/wakeword`, not used as a separately tagged upstream image). That is what
+gives every service the SHA tag that rollback needs. `make check` also enforces
+the image tag, build context, restart policy and local-only health check.
+
 ML images (`wakeword`, `stt`, `tts`, `embed`) must download or copy model
 weights in an early layer **before any `COPY` of application code**, so editing
 Go/Python code reuses the weights layer instead of re-downloading a model.
@@ -160,9 +166,7 @@ code `COPY`; it warns when it cannot detect a weights layer at all. At the time
 #28 landed only `assistant` exists, so there are no ML Dockerfiles to check yet.
 **Pending integration check:** after #17/#19/#18 land, run `make check` against
 their Dockerfiles and verify the layer order with a real build (change a code
-line, rebuild, confirm the weights layer is cached). A service that runs an
-upstream image directly must still be tagged `clanka/<service>:<SHA>` (wrap it
-in a small Dockerfile if needed) so rollback stays deterministic.
+line, rebuild, confirm the weights layer is cached).
 
 ## arm64 builds on the dev box (optional)
 

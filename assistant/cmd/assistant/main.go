@@ -22,6 +22,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	"github.com/Jairik/clanka-bot/assistant/internal/speech"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
+	"github.com/Jairik/clanka-bot/assistant/internal/voice"
 	"github.com/Jairik/clanka-bot/assistant/internal/wyoming"
 	"github.com/Jairik/clanka-bot/assistant/tools"
 )
@@ -48,6 +49,10 @@ func run() error {
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
+
+	// One signal context covers the HTTP listeners and the voice loop.
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
 
 	registry := tool.NewRegistry(cfg.Tools.DefaultTimeout.Duration())
 	if err := tools.RegisterAll(registry, nil); err != nil {
@@ -102,17 +107,28 @@ func run() error {
 		return err
 	}
 
+	// One Pulse sink serves replies and the wake chime. Only this container
+	// opens an audio device (ADR-0001).
+	sink := audio.NewPulseSink(cfg.Playback.Binary, cfg.Playback.Sink)
+
 	// Speech is optional: without a TTS address the debug entry stays text-only.
 	var sayer api.Sayer
 	if cfg.TTS.Addr != "" {
 		client := wyoming.NewClient(cfg.TTS.Addr, wyoming.WithTimeout(cfg.TTS.Timeout.Duration()))
 		checkTTSService(logger, client, cfg.TTS.Addr)
-		sayer = speech.New(
-			client,
-			audio.NewPulseSink(cfg.Playback.Binary, cfg.Playback.Sink),
-			wyoming.Voice{Name: cfg.TTS.Voice},
-			logger,
-		)
+		sayer = speech.New(client, sink, wyoming.Voice{Name: cfg.TTS.Voice}, logger)
+	}
+
+	if cfg.VoiceEnabled() {
+		loop, err := newVoiceLoop(cfg, p, sayer, sink, logger)
+		if err != nil {
+			return err
+		}
+		go func() {
+			if err := loop.Run(ctx); err != nil {
+				logger.Error("voice loop stopped", "error", err.Error())
+			}
+		}()
 	}
 
 	// The health listener never serves the debug route; the debug listener does.
@@ -136,14 +152,67 @@ func run() error {
 		"speech", cfg.TTS.Addr != "",
 		"tts_addr", cfg.TTS.Addr,
 		"pulse_sink", cfg.Playback.Sink,
+		"pulse_source", cfg.Capture.Source,
+		"voice", cfg.VoiceEnabled(),
+		"wakeword_addr", cfg.Wakeword.Addr,
+		"stt_addr", cfg.STT.Addr,
 		"tools", len(registry.Names()),
 		"embed_model", cfg.Embed.Model,
 		"semantic_tools", semantic.ToolCount(),
 	)
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 	return serve(ctx, logger, servers)
+}
+
+// newVoiceLoop wires the microphone path: Pulse capture, Wyoming wake word and
+// STT, the wake chime, and the reply responder.
+func newVoiceLoop(cfg config.Config, p *pipeline.Pipeline, sayer api.Sayer, sink audio.Sink, logger *slog.Logger) (*voice.Loop, error) {
+	captureFormat := audio.Format{Rate: cfg.Capture.Rate, Width: cfg.Capture.Width, Channels: cfg.Capture.Channels}
+	frameBytes := cfg.Capture.Rate * cfg.Capture.Width * cfg.Capture.Channels * cfg.Capture.FrameMS / 1000
+	if frameBytes <= 0 {
+		return nil, fmt.Errorf("voice: capture frame_ms %d is too small", cfg.Capture.FrameMS)
+	}
+	wireFormat := wyoming.Format{Rate: captureFormat.Rate, Width: captureFormat.Width, Channels: captureFormat.Channels}
+
+	var names []string
+	if cfg.Wakeword.Model != "" {
+		names = []string{cfg.Wakeword.Model}
+	}
+	wakeClient := wyoming.NewClient(cfg.Wakeword.Addr, wyoming.WithTimeout(cfg.Wakeword.Timeout.Duration()))
+	sttClient := wyoming.NewClient(cfg.STT.Addr, wyoming.WithTimeout(cfg.STT.Timeout.Duration()))
+
+	config := voice.Config{
+		FrameBytes: frameBytes,
+		Endpoint: voice.EndpointConfig{
+			Rate:          captureFormat.Rate,
+			Silence:       cfg.STT.Endpoint.Silence.Duration(),
+			ThresholdDBFS: cfg.STT.Endpoint.ThresholdDBFS,
+			MinSpeech:     cfg.STT.Endpoint.MinSpeech.Duration(),
+			MaxUtterance:  cfg.STT.Endpoint.MaxUtterance.Duration(),
+		},
+		ChimeFormat: audio.Format{Rate: captureFormat.Rate, Width: 2, Channels: 1},
+	}
+	if cfg.Wakeword.Chime.Enabled {
+		config.Chime = audio.Chime(captureFormat.Rate)
+	}
+
+	logger.Info("voice input enabled",
+		"pulse_source", cfg.Capture.Source,
+		"wakeword_addr", cfg.Wakeword.Addr,
+		"wakeword_model", cfg.Wakeword.Model,
+		"stt_addr", cfg.STT.Addr,
+		"stt_model", cfg.STT.Model,
+		"endpoint_silence", cfg.STT.Endpoint.Silence.Duration().String(),
+	)
+
+	return voice.New(config, voice.Deps{
+		Source:    audio.NewPulseSource(cfg.Capture.Binary, cfg.Capture.Source, captureFormat),
+		Wake:      voice.NewWyomingWake(wakeClient, names, wireFormat),
+		STT:       voice.NewWyomingSTT(sttClient, wyoming.TranscribeOptions{Name: cfg.STT.Model, Language: cfg.STT.Language}, wireFormat),
+		Player:    audio.NewPCMPlayer(sink),
+		Responder: voice.NewPipelineResponder(p, sayer, tool.DevicePi),
+		Logger:    logger,
+	})
 }
 
 // checkTTSService logs whether the TTS service answers describe. A failure is

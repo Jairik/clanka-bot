@@ -29,6 +29,35 @@ type Config struct {
 		Voice   string   `yaml:"voice"`
 		Timeout Duration `yaml:"timeout"`
 	} `yaml:"tts"`
+	Capture struct {
+		// Source names a Pulse source; empty uses the host default.
+		Source   string `yaml:"source"`
+		Binary   string `yaml:"binary"`
+		Rate     int    `yaml:"rate"`
+		Width    int    `yaml:"width"`
+		Channels int    `yaml:"channels"`
+		FrameMS  int    `yaml:"frame_ms"`
+	} `yaml:"capture"`
+	Wakeword struct {
+		Addr    string   `yaml:"addr"` // empty disables voice input
+		Model   string   `yaml:"model"`
+		Timeout Duration `yaml:"timeout"`
+		Chime   struct {
+			Enabled bool `yaml:"enabled"`
+		} `yaml:"chime"`
+	} `yaml:"wakeword"`
+	STT struct {
+		Addr     string   `yaml:"addr"`
+		Model    string   `yaml:"model"` // small-streaming or tiny-streaming
+		Language string   `yaml:"language"`
+		Timeout  Duration `yaml:"timeout"`
+		Endpoint struct {
+			Silence       Duration `yaml:"silence"`
+			ThresholdDBFS float64  `yaml:"threshold_dbfs"`
+			MinSpeech     Duration `yaml:"min_speech"`
+			MaxUtterance  Duration `yaml:"max_utterance"`
+		} `yaml:"endpoint"`
+	} `yaml:"stt"`
 	Playback struct {
 		Binary string `yaml:"binary"`
 		Sink   string `yaml:"sink"` // empty uses the Pulse default sink
@@ -109,6 +138,21 @@ func Default() Config {
 	cfg.TTS.Voice = "alba"
 	cfg.TTS.Timeout = Duration(30 * time.Second)
 	cfg.Playback.Binary = "pacat"
+	cfg.Capture.Binary = "parec"
+	cfg.Capture.Rate = 16000
+	cfg.Capture.Width = 2
+	cfg.Capture.Channels = 1
+	cfg.Capture.FrameMS = 32
+	cfg.Wakeword.Model = "okay_nabu"
+	cfg.Wakeword.Timeout = Duration(10 * time.Second)
+	cfg.Wakeword.Chime.Enabled = true
+	cfg.STT.Model = "small-streaming"
+	cfg.STT.Language = "en"
+	cfg.STT.Timeout = Duration(20 * time.Second)
+	cfg.STT.Endpoint.Silence = Duration(500 * time.Millisecond)
+	cfg.STT.Endpoint.ThresholdDBFS = -38
+	cfg.STT.Endpoint.MinSpeech = Duration(200 * time.Millisecond)
+	cfg.STT.Endpoint.MaxUtterance = Duration(15 * time.Second)
 	cfg.Agent = DefaultAgent()
 	return cfg
 }
@@ -200,6 +244,24 @@ func applyEnv(cfg *Config) error {
 	if v := os.Getenv("ASSISTANT_PULSE_SINK"); v != "" {
 		cfg.Playback.Sink = v
 	}
+	if v := os.Getenv("ASSISTANT_PULSE_SOURCE"); v != "" {
+		cfg.Capture.Source = v
+	}
+	if v := os.Getenv("ASSISTANT_WAKEWORD_ADDR"); v != "" {
+		cfg.Wakeword.Addr = v
+	}
+	if v := os.Getenv("ASSISTANT_WAKEWORD_MODEL"); v != "" {
+		cfg.Wakeword.Model = v
+	}
+	if v := os.Getenv("ASSISTANT_STT_ADDR"); v != "" {
+		cfg.STT.Addr = v
+	}
+	if v := os.Getenv("ASSISTANT_STT_MODEL"); v != "" {
+		cfg.STT.Model = v
+	}
+	if v := os.Getenv("ASSISTANT_STT_LANGUAGE"); v != "" {
+		cfg.STT.Language = v
+	}
 	return nil
 }
 
@@ -236,6 +298,9 @@ func (c Config) validate() error {
 			return fmt.Errorf("config: tts.voice is required when tts.addr is set")
 		}
 	}
+	if err := c.validateVoice(); err != nil {
+		return err
+	}
 	if _, err := c.Agent.ActiveProvider(); err != nil {
 		return err
 	}
@@ -261,6 +326,47 @@ func (c Config) validate() error {
 	}
 	if c.Agent.MaxSteps <= 0 {
 		return fmt.Errorf("config: agent.max_steps must be positive")
+	}
+	return nil
+}
+
+// VoiceEnabled reports whether microphone capture is configured. An empty
+// wakeword address leaves the assistant typed/debug only.
+func (c Config) VoiceEnabled() bool { return c.Wakeword.Addr != "" }
+
+func (c Config) validateVoice() error {
+	if !c.VoiceEnabled() {
+		return nil
+	}
+	if c.STT.Addr == "" {
+		return fmt.Errorf("config: stt.addr is required when wakeword.addr is set")
+	}
+	if c.Capture.Rate <= 0 || c.Capture.Width != 2 || c.Capture.Channels != 1 || c.Capture.FrameMS <= 0 {
+		return fmt.Errorf("config: capture must be 16-bit mono PCM with a positive rate and frame_ms")
+	}
+	if c.Wakeword.Timeout.Duration() <= 0 {
+		return fmt.Errorf("config: wakeword.timeout must be positive")
+	}
+	if c.STT.Model != "small-streaming" && c.STT.Model != "tiny-streaming" {
+		return fmt.Errorf("config: stt.model must be small-streaming or tiny-streaming, got %q", c.STT.Model)
+	}
+	if c.STT.Language == "" {
+		return fmt.Errorf("config: stt.language is required")
+	}
+	if c.STT.Timeout.Duration() <= 0 {
+		return fmt.Errorf("config: stt.timeout must be positive")
+	}
+	if c.STT.Endpoint.Silence.Duration() <= 0 {
+		return fmt.Errorf("config: stt.endpoint.silence must be positive")
+	}
+	if c.STT.Endpoint.ThresholdDBFS >= 0 {
+		return fmt.Errorf("config: stt.endpoint.threshold_dbfs must be below full scale")
+	}
+	if c.STT.Endpoint.MinSpeech.Duration() < 0 {
+		return fmt.Errorf("config: stt.endpoint.min_speech must not be negative")
+	}
+	if c.STT.Endpoint.MaxUtterance.Duration() < c.STT.Endpoint.Silence.Duration() {
+		return fmt.Errorf("config: stt.endpoint.max_utterance must be at least the silence window")
 	}
 	return nil
 }

@@ -1,0 +1,5 @@
+# Moonshine Voice speech-to-text (small-streaming default, tiny-streaming
+# fallback) behind our own Wyoming server. The wheel bundles the ONNX runtime.
+moonshine-voice==0.1.6
+# Wyoming protocol implementation (events, client, info dataclasses).
+wyoming>=1.11,<2

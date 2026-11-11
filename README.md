@@ -4,10 +4,11 @@ My lovely always-on voice assistant for stuff written in go. Kind of like a lobo
 
 ## Run the prototype
 
-The prototype is the `assistant` Go service in Docker, with a `tts` service that
-speaks its replies. `assistant` exposes a health endpoint and a localhost-only
-debug entry that accepts a typed transcript (entering the pipeline just after
-STT) and answers through the Tool registry.
+The prototype is the `assistant` Go service in Docker, with a `wakeword`
+(openWakeWord), an `stt` (Moonshine Voice) and a `tts` (Pocket TTS) service.
+`assistant` owns the microphone and speaker, and also exposes a health endpoint
+and a localhost-only debug entry that accepts a typed transcript (entering the
+pipeline just after STT).
 
 ```sh
 cp .env.example .env
@@ -49,6 +50,35 @@ Both published ports are bound to the host loopback only. The debug listener
 binds all interfaces inside the container (see `docker-compose.yml`), so the
 host port mapping is what keeps it local.
 
+### Voice
+
+Say the wake word (default `okay_nabu`), ask a question, and hear the answer:
+
+1. `assistant` captures the named Pulse source (`ASSISTANT_PULSE_SOURCE`, empty
+   uses the host default) with `parec` and streams 16 kHz mono PCM to
+   `wakeword`.
+2. A detection plays a short generated chime and opens a transcription with
+   `stt` (Moonshine Voice `small-streaming`, or `tiny-streaming` via
+   `STT_MODEL`). The chime does not play again when the request is accepted.
+3. End of speech is a fixed **500 ms** silence window (`stt.endpoint.silence`
+   in `assistant/config.yaml`), not adaptive. A `max_utterance` cap stops a
+   false wake from listening forever.
+4. The transcript goes through the normal pipeline; the reply is spoken.
+   Wake word detection is muted for the whole request and reply, so the
+   webcam mic cannot trigger on the Assistant's own voice.
+
+`wakeword` and `stt` do computation only and never mount Pulse (ADR-0001).
+Their Compose health checks are Wyoming `describe` calls, so startup waits for
+the models to be warm. Moonshine weights are downloaded anonymously from
+`download.moonshine.ai` at build time and baked in; the container starts
+offline. Rebuild `stt` after changing `STT_MODELS` or `STT_MODEL`. Set
+`ASSISTANT_PULSE_SOURCE` from `pactl list short sources` (the dev box uses the
+USB webcam's mono source).
+
+The mic endpoint threshold (`stt.endpoint.threshold_dbfs`, default -38) was set
+from the dev box's measured noise floor of about -45 dBFS. Lower it if the
+Assistant cuts you off, raise it if it never ends a request.
+
 ### Audio
 
 Per [ADR-0001](docs/adr/0001-middleware-owns-all-audio-io.md), only the
@@ -65,5 +95,5 @@ Non-secret settings live in [`assistant/config.yaml`](assistant/config.yaml);
 
 ```sh
 cd assistant && go test ./...
-python -m pytest tts/tests   # needs `pip install wyoming pytest numpy`
+python -m pytest tts/tests stt/tests   # needs `pip install wyoming pytest numpy`
 ```

@@ -75,8 +75,34 @@ func run() error {
 	cancelLookup()
 	go locSvc.Watch(ctx)
 	registry := tool.NewRegistry(cfg.Tools.DefaultTimeout.Duration())
+
+	// One sink serves reply playback, the wake chime, timer alerts and the
+	// audio Tools, so audio.stop can cancel whatever the assistant is playing.
+	sink := audio.NewPulseSink(cfg.Playback.Binary, cfg.Playback.Sink)
+
+	// Speech is optional: without a TTS address the debug entry stays text-only.
+	// The Filler is synthesized once here, from the config read at startup, so a
+	// phrase change is picked up by a restart rather than live.
+	var speechSpeaker *speech.Speaker
+	var filler *speech.Filler
+	if cfg.TTS.Addr != "" {
+		client := wyoming.NewClient(cfg.TTS.Addr, wyoming.WithTimeout(cfg.TTS.Timeout.Duration()))
+		checkTTSService(logger, client, cfg.TTS.Addr)
+		voice := wyoming.Voice{Name: cfg.TTS.Voice}
+		speechSpeaker = speech.New(client, sink, voice, logger)
+		filler = loadAgentFiller(logger, client, voice, cfg.Agent.Filler, cfg.TTS.Timeout.Duration())
+	}
+
+	// Timers reuse the reply Speaker for their alert.
+	var timerAlert func(context.Context, string) error
+	if speechSpeaker != nil {
+		timerAlert = speechSpeaker.SayText
+	}
 	if err := tools.RegisterAll(registry, tools.Options{
-		Weather: weather.Deps{Location: locSvc.Current},
+		Weather:    weather.Deps{Location: locSvc.Current},
+		Audio:      sink,
+		TimerAlert: timerAlert,
+		Logger:     logger,
 	}); err != nil {
 		return fmt.Errorf("register tools: %w", err)
 	}
@@ -130,31 +156,17 @@ func run() error {
 		return err
 	}
 
-	// One Pulse sink serves replies and the wake chime. Only this container
-	// opens an audio device (ADR-0001).
-	sink := audio.NewPulseSink(cfg.Playback.Binary, cfg.Playback.Sink)
-
 	// One Session orchestrates every spoken turn: the voice loop and the typed
 	// debug entry both call Ask, so filler, streaming and playback never split.
-	speaker := cfg.TTS.Addr != ""
-	var session *reply.Session
-	if speaker {
-		client := wyoming.NewClient(cfg.TTS.Addr, wyoming.WithTimeout(cfg.TTS.Timeout.Duration()))
-		checkTTSService(logger, client, cfg.TTS.Addr)
-		voice := wyoming.Voice{Name: cfg.TTS.Voice}
-		// The Filler is synthesized once here, from the config read at startup,
-		// so a phrase change is picked up by a restart rather than live.
-		filler := loadAgentFiller(logger, client, voice, cfg.Agent.Filler, cfg.TTS.Timeout.Duration())
-		session = reply.New(p, speech.New(client, sink, voice, logger), sink, filler)
-	} else {
-		// No TTS: the Session still routes, just without audio, so the voice
-		// loop's transcript handling stays identical to the spoken path.
-		session = reply.New(p, nil, sink, nil)
+	var speaker reply.Speaker
+	if speechSpeaker != nil {
+		speaker = speechSpeaker
 	}
+	session := reply.New(p, speaker, sink, filler)
 
 	// The debug entry is only spoken when a TTS service is configured.
 	var responder api.Responder
-	if speaker {
+	if speechSpeaker != nil {
 		responder = session
 	}
 

@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"io"
 	"os/exec"
+	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 )
 
@@ -20,19 +22,38 @@ type Format struct {
 	Channels int
 }
 
-// PulseSink opens one pacat stream per reply. It is safe for concurrent use.
+// PulseSink opens one pacat stream per reply and drives pactl for volume. It
+// is safe for concurrent use.
 type PulseSink struct {
 	binary string
+	pactl  string
 	device string
+
+	mu     sync.Mutex
+	active map[*processWriter]struct{}
 }
 
 // NewPulseSink builds a sink. An empty binary uses pacat from PATH; an empty
-// device uses the host's default sink.
+// device uses the host's default sink. pactl is looked up beside pacat.
 func NewPulseSink(binary, device string) *PulseSink {
 	if binary == "" {
 		binary = "pacat"
 	}
-	return &PulseSink{binary: binary, device: device}
+	return &PulseSink{
+		binary: binary,
+		pactl:  pactlFor(binary),
+		device: device,
+		active: make(map[*processWriter]struct{}),
+	}
+}
+
+// pactlFor finds the matching pulseaudio-utils control binary.
+func pactlFor(pacat string) string {
+	dir := filepath.Dir(pacat)
+	if dir == "." || dir == "" {
+		return "pactl"
+	}
+	return filepath.Join(dir, "pactl")
 }
 
 // Open starts pacat and returns a writer for raw PCM. Closing the writer waits
@@ -59,17 +80,71 @@ func (s *PulseSink) Open(ctx context.Context, format Format) (io.WriteCloser, er
 		args = append(args, "--device="+s.device)
 	}
 
-	cmd := exec.CommandContext(ctx, s.binary, args...)
+	// A child context lets Stop cancel only the streams this process opened.
+	streamCtx, cancel := context.WithCancel(ctx)
+	cmd := exec.CommandContext(streamCtx, s.binary, args...)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
+		cancel()
 		return nil, fmt.Errorf("audio: pacat stdin: %w", err)
 	}
 	stderr := &lockedBuffer{}
 	cmd.Stderr = stderr
 	if err := cmd.Start(); err != nil {
+		cancel()
 		return nil, fmt.Errorf("audio: start pacat: %w", err)
 	}
-	return &processWriter{ctx: ctx, cmd: cmd, stdin: stdin, stderr: stderr}, nil
+	w := &processWriter{ctx: streamCtx, cmd: cmd, stdin: stdin, stderr: stderr, cancel: cancel}
+	s.mu.Lock()
+	s.active[w] = struct{}{}
+	s.mu.Unlock()
+	w.release = func() {
+		s.mu.Lock()
+		delete(s.active, w)
+		s.mu.Unlock()
+	}
+	return w, nil
+}
+
+// SetVolume sets the sink volume to an absolute percent.
+func (s *PulseSink) SetVolume(ctx context.Context, percent int) error {
+	if percent < 0 || percent > 100 {
+		return fmt.Errorf("audio: volume %d out of range 0-100", percent)
+	}
+	return s.pactlVolume(ctx, strconv.Itoa(percent)+"%")
+}
+
+// AdjustVolume changes the sink volume by a relative percent.
+func (s *PulseSink) AdjustVolume(ctx context.Context, delta int) error {
+	return s.pactlVolume(ctx, fmt.Sprintf("%+d%%", delta))
+}
+
+// Stop cancels the playback streams this process opened, leaving unrelated
+// host processes alone.
+func (s *PulseSink) Stop(_ context.Context) error {
+	s.mu.Lock()
+	writers := make([]*processWriter, 0, len(s.active))
+	for w := range s.active {
+		writers = append(writers, w)
+	}
+	s.mu.Unlock()
+	for _, w := range writers {
+		w.cancel()
+	}
+	return nil
+}
+
+func (s *PulseSink) pactlVolume(ctx context.Context, amount string) error {
+	target := s.device
+	if target == "" {
+		target = "@DEFAULT_SINK@"
+	}
+	cmd := exec.CommandContext(ctx, s.pactl, "set-sink-volume", target, amount)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("audio: pactl set-sink-volume: %w: %s", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }
 
 // sampleFormat maps a PCM sample width in bytes to a pacat format name.
@@ -92,11 +167,17 @@ type processWriter struct {
 	cmd       *exec.Cmd
 	stdin     io.WriteCloser
 	stderr    *lockedBuffer
+	cancel    context.CancelFunc
+	release   func()
 	closeOnce sync.Once
 	closeErr  error
 }
 
 func (w *processWriter) Write(p []byte) (int, error) {
+	// A stopped or cancelled stream fails before buffering any more PCM.
+	if err := w.ctx.Err(); err != nil {
+		return 0, err
+	}
 	n, err := w.stdin.Write(p)
 	if err != nil {
 		if ctxErr := w.ctx.Err(); ctxErr != nil {
@@ -110,7 +191,12 @@ func (w *processWriter) Write(p []byte) (int, error) {
 func (w *processWriter) Close() error {
 	w.closeOnce.Do(func() {
 		_ = w.stdin.Close()
-		if err := w.cmd.Wait(); err != nil {
+		err := w.cmd.Wait()
+		if w.release != nil {
+			w.release()
+		}
+		w.cancel()
+		if err != nil {
 			if ctxErr := w.ctx.Err(); ctxErr != nil {
 				w.closeErr = ctxErr
 				return

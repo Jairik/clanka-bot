@@ -99,6 +99,24 @@ The mic endpoint threshold (`stt.endpoint.threshold_dbfs`, default -38) was set
 from the dev box's measured noise floor of about -45 dBFS. Lower it if the
 Assistant cuts you off, raise it if it never ends a request.
 
+The date, timer and audio Tools run on the Fast path too:
+
+```sh
+curl -s -X POST localhost:8081/debug/transcript \
+  -H 'Content-Type: application/json' -d '{"text":"what day is it"}'
+curl -s -X POST localhost:8081/debug/transcript \
+  -H 'Content-Type: application/json' -d '{"text":"set a timer for five minutes"}'
+curl -s -X POST localhost:8081/debug/transcript \
+  -H 'Content-Type: application/json' -d '{"text":"how long is left on my timer"}'
+curl -s -X POST localhost:8081/debug/transcript \
+  -H 'Content-Type: application/json' -d '{"text":"turn the volume to 40"}'
+```
+
+Timers speak an alert through the same TTS voice when they fire. The Control
+phrases `stop`, `pause`, `cancel` and `louder` are matched exactly, so they
+answer without waiting on the embed service (`cancel` cancels the timer and
+`louder` steps the volume up).
+
 ### Audio
 
 Per [ADR-0001](docs/adr/0001-middleware-owns-all-audio-io.md), only the

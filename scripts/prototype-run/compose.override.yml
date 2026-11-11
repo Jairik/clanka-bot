@@ -1,0 +1,45 @@
+# Isolated Compose overlay for the #29 dev-box prototype run.
+#
+# Run it with `scripts/prototype-run/prototype_run.py`, which sets the image
+# tag, ports and Pulse names through the environment. Nothing here changes the
+# base stack used by `make up` or by the Pi deploy.
+#
+# `fakeopenai` is a scripted OpenAI-compatible test double, never a model. The
+# generated config points the Agent path at it and at nothing else.
+services:
+  assistant:
+    environment:
+      # Generated from assistant/config.yaml with the base_url swapped.
+      ASSISTANT_CONFIG: /e2e/config.yaml
+      # The double ignores it; it is not a real secret and cannot reach OpenRouter.
+      OPENROUTER_API_KEY: fake-provider-not-a-secret
+    volumes:
+      - ./scripts/prototype-run/.run/config.yaml:/e2e/config.yaml:ro
+
+  # The harness needs the TTS and STT loops on the host to drive the scripted
+  # turns and to record replies. Loopback only.
+  tts:
+    ports:
+      - "127.0.0.1:19200:10200"
+
+  stt:
+    ports:
+      - "127.0.0.1:19300:10300"
+
+  # Scripted test double. Its request log is bind-mounted so the harness can
+  # verify prefix stripping, history and Tool results from the outside.
+  fakeopenai:
+    image: python:3.12-slim
+    command: ["python", "/fake/fake_provider.py"]
+    environment:
+      FAKE_LOG: /out/fake-requests.jsonl
+    volumes:
+      - ./scripts/prototype-run/fake_provider.py:/fake/fake_provider.py:ro
+      - ./scripts/prototype-run/.run:/out
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz')"]
+      interval: 2s
+      timeout: 2s
+      retries: 15

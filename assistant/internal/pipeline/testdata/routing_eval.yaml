@@ -138,6 +138,13 @@ positives:
     - set an alarm for 5 minutes
     - start the timer for 30 minutes
     - countdown for 10 seconds
+    # Observed in the #29 dev-box prototype run. STT capitalizes the first word
+    # and adds a full stop; these exact forms fell through to the Agent path
+    # (timer.set 0.786/0.736, margin 0.122/0.063 against 0.23). The unpunctuated
+    # text matches, so the punctuated form is the honest oracle here. They stay
+    # in the corpus; recall is not gated.
+    - Set a timer for ten minutes.
+    - Set a timer for ten seconds.
   timer.cancel:
     - cancel the timer
     - cancel my timer

@@ -1,0 +1,32 @@
+latency report: 21 request lines (source=voice)
+
+agent_path           10 attempts  cancelled=1, failed=1, ok=8
+  response           8 samples    p50 2.167s  p95 2.235s  budget p50 2.5s / p95 4s  within budget
+  endpointing        8 samples    p50 505ms  p95 523ms    
+  routing            8 samples    p50 0s  p95 106ms       
+  stt_finalize       8 samples    p50 137ms  p95 267ms    
+  tool_execute       3 samples    p50 0s  p95 0s          (missing on 5)
+  tts_first_audio    8 samples    p50 125ms  p95 140ms    
+  first_chunk        8 samples    p50 2.065s  p95 2.107s  included in response
+  agent_first_token  8 samples    p50 201ms  p95 204ms    within 1.2s
+
+control_phrase     5 attempts  failed=1, ok=4
+  response         4 samples   p50 656ms  p95 715ms  budget p50 1.2s / p95 2s  within budget
+  endpointing      4 samples   p50 512ms  p95 522ms  
+  routing          4 samples   p50 0s  p95 0s        
+  stt_finalize     4 samples   p50 16ms  p95 53ms    
+  tool_execute     4 samples   p50 0s  p95 13ms      
+  tts_first_audio  4 samples   p50 111ms  p95 127ms  
+  first_chunk      4 samples   p50 529ms  p95 589ms  included in response
+
+fast_path          6 attempts  ok=6
+  response         6 samples   p50 836ms  p95 901ms  budget p50 1.2s / p95 2s  within budget
+  endpointing      6 samples   p50 501ms  p95 522ms  
+  routing          6 samples   p50 21ms  p95 44ms    
+  stt_finalize     6 samples   p50 164ms  p95 259ms  
+  tool_execute     6 samples   p50 0s  p95 142ms     
+  tts_first_audio  6 samples   p50 118ms  p95 138ms  
+  first_chunk      6 samples   p50 712ms  p95 781ms  included in response
+
+Response latency is last voiced frame to first actual reply sample; chimes and fillers are excluded.
+Only ok requests with reply audio are sampled; failed, cancelled and audio-less requests are counted separately.

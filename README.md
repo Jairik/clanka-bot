@@ -65,7 +65,9 @@ at a clause boundary or after about twelve words, then each sentence is sent to
 TTS while the rest of the answer is still streaming. The configured
 `agent.filler` ("One moment." by default) is synthesized once at startup and
 cached, so it plays the moment a request is routed to the Agent path; an empty
-Filler is a startup error.
+Filler is a startup error. The same cached phrase covers a slow Fast path Tool:
+if nothing has been said 1.5 seconds after you stop talking, it plays once. A
+request never plays it twice, and it never talks over an answer.
 Both published ports are bound to the host loopback only. The debug listener
 binds all interfaces inside the container (see `docker-compose.yml`), so the
 host port mapping is what keeps it local.
@@ -84,8 +86,15 @@ Say the wake word (default `okay_nabu`), ask a question, and hear the answer:
    in `assistant/config.yaml`), not adaptive. A `max_utterance` cap stops a
    false wake from listening forever.
 4. The transcript goes through the normal pipeline; the reply is spoken.
-   Wake word detection is muted for the whole request and reply, so the
-   webcam mic cannot trigger on the Assistant's own voice.
+   Wake word detection stays live while the Assistant speaks: say the wake
+   word again to stop the answer, drop a waiting confirmation question, and
+   start a new request with the chime (Barge-in). The logged `stop_ms` is the
+   measure of how quickly playback ended.
+
+The webcam mic has no hardware echo cancellation, so the Assistant can in
+principle hear itself. The dev-box run, with its own reply looped back at full
+level, produced no false barge-in; if that changes in a louder room,
+`WAKEWORD_THRESHOLD` is the knob.
 
 `wakeword` and `stt` do computation only and never mount Pulse (ADR-0001).
 Their Compose health checks are Wyoming `describe` calls, so startup waits for

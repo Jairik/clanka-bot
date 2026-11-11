@@ -6,12 +6,15 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/audio"
+	"github.com/Jairik/clanka-bot/assistant/internal/latency"
 	"github.com/Jairik/clanka-bot/assistant/internal/speech"
 	"github.com/Jairik/clanka-bot/assistant/internal/wyoming"
 )
@@ -152,6 +155,41 @@ func TestSayReturnsErrorWhenSpeechServiceFails(t *testing.T) {
 	}
 	if len(sink.chunks) != 0 {
 		t.Fatalf("sink received %d chunks, want none", len(sink.chunks))
+	}
+}
+
+func TestSayMarksResponseLatencyAndFirstAudioStage(t *testing.T) {
+	chunk := bytes.Repeat([]byte{1, 2}, 480)
+	addr := serveOnce(t, func(conn net.Conn) {
+		readLine(t, conn)
+		writeEvent(t, conn, "audio-start", map[string]any{"rate": 24000, "width": 2, "channels": 1})
+		writeAudio(t, conn, chunk)
+		writeEvent(t, conn, "audio-stop", nil)
+	})
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	sink := newRecorder()
+	speaker := speech.New(wyoming.NewClient(addr), sink, wyoming.Voice{Name: "alba"}, logger)
+
+	// Response latency starts at the user's last voiced frame.
+	timeline := latency.New("req-latency", latency.SourceVoice)
+	timeline.SetLastVoice(time.Now().Add(-500 * time.Millisecond))
+	ctx := latency.WithContext(context.Background(), timeline)
+
+	if _, err := speaker.Say(ctx, "Hello there."); err != nil {
+		t.Fatalf("Say: %v", err)
+	}
+
+	if _, ok := timeline.Duration(latency.StageTTSFirstAudio); !ok {
+		t.Fatal("tts_first_audio stage not recorded")
+	}
+	response, ok := timeline.Response()
+	if !ok || response < 500*time.Millisecond {
+		t.Fatalf("response latency = %v (ok=%v), want at least the 500ms since last voice", response, ok)
+	}
+	if !strings.Contains(logs.String(), `"request_id":"req-latency"`) {
+		t.Fatalf("speech log not correlated with the request: %s", logs.String())
 	}
 }
 

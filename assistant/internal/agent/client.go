@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/latency"
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 )
@@ -90,6 +91,7 @@ func (p *provider) stream(ctx context.Context, messages []openai.ChatCompletionM
 	timer := time.AfterFunc(p.firstToken, func() { cancel(errFirstTokenTimeout) })
 	defer func() { timer.Stop() }()
 
+	started := time.Now()
 	stream := p.client.Chat.Completions.NewStreaming(runCtx, params)
 	defer stream.Close()
 
@@ -97,6 +99,7 @@ func (p *provider) stream(ctx context.Context, messages []openai.ChatCompletionM
 	var order []int64
 	partial := make(map[int64]*partialCall)
 	first := true
+	firstToken := true
 
 	for stream.Next() {
 		if first {
@@ -109,6 +112,12 @@ func (p *provider) stream(ctx context.Context, messages []openai.ChatCompletionM
 			continue
 		}
 		delta := chunk.Choices[0].Delta
+		if firstToken && (delta.Content != "" || len(delta.ToolCalls) > 0) {
+			firstToken = false
+			// Agent first token is the first token with content or a Tool
+			// call, not a role-only prologue. First-wins across Agent steps.
+			latency.SetStage(ctx, latency.StageAgentFirstToken, time.Since(started))
+		}
 		if delta.Content != "" {
 			out.Content += delta.Content
 			if onDelta != nil {

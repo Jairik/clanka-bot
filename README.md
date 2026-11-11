@@ -129,6 +129,21 @@ the default sink. On the Pi this is the Echo Dot once Bluetooth A2DP is set up.
 Non-secret settings live in [`assistant/config.yaml`](assistant/config.yaml);
 `.env` holds deployment inputs only. An empty `tts.addr` disables spoken replies.
 
+### Latency
+
+Every request writes one JSON `request` line with per-stage timings
+(endpointing, STT finalise, routing, Tool execution, Agent first token, first
+chunk, TTS first audio) and Response latency from the user's last voiced frame
+to the first actual reply sample. Summarize the running stack with:
+
+```sh
+make latency-report
+```
+
+Stage definitions, the budget from #12 and how to read missing or failed stages
+are in [`docs/latency.md`](docs/latency.md). The latest dev-box numbers are in
+[`docs/latency-dev-box.md`](docs/latency-dev-box.md).
+
 ## Tests
 
 ```sh

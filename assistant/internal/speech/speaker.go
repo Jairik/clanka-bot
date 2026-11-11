@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/audio"
+	"github.com/Jairik/clanka-bot/assistant/internal/latency"
 	"github.com/Jairik/clanka-bot/assistant/internal/wyoming"
 )
 
@@ -79,6 +80,11 @@ func (s *Speaker) Say(ctx context.Context, text string) (Result, error) {
 		}
 		if result.Chunks == 0 {
 			result.FirstAudio = time.Since(started)
+			// The first PCM sample of an actual reply is Response latency's
+			// end point. A Filler is cached PCM played elsewhere and never
+			// reaches here.
+			latency.SetStage(ctx, latency.StageTTSFirstAudio, result.FirstAudio)
+			latency.MarkReplyAudio(ctx)
 		}
 		if _, err := writer.Write(chunk); err != nil {
 			playErr = err
@@ -100,6 +106,9 @@ func (s *Speaker) Say(ctx context.Context, text string) (Result, error) {
 		"audio_ms", result.AudioTime.Milliseconds(),
 		"first_audio_ms", result.FirstAudio.Milliseconds(),
 		"duration_ms", time.Since(started).Milliseconds(),
+	}
+	if id := latency.RequestID(ctx); id != "" {
+		attrs = append([]any{"request_id", id}, attrs...)
 	}
 	if playErr != nil {
 		s.logger.Error("speech", append(attrs, "error", playErr.Error())...)

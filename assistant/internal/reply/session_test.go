@@ -1,15 +1,20 @@
 package reply_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/agent"
 	"github.com/Jairik/clanka-bot/assistant/internal/audio"
+	"github.com/Jairik/clanka-bot/assistant/internal/latency"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	"github.com/Jairik/clanka-bot/assistant/internal/reply"
 	"github.com/Jairik/clanka-bot/assistant/internal/speech"
@@ -277,5 +282,156 @@ func TestConfirmationQuestionIsSpokenAfterModelPreamble(t *testing.T) {
 	}
 	if got, want := speaker.phrases(), []string{"Sure, I can do that.", "Send the email to doctor?"}; !equal(got, want) {
 		t.Fatalf("spoken = %q, want %q", got, want)
+	}
+}
+
+// timingSpeaker stands in for speech.Speaker: the production Speaker records
+// the first actual reply sample and the TTS stage on the request timeline.
+type timingSpeaker struct{}
+
+func (timingSpeaker) SayText(ctx context.Context, _ string) error {
+	latency.SetStage(ctx, latency.StageTTSFirstAudio, time.Millisecond)
+	latency.MarkReplyAudio(ctx)
+	return nil
+}
+
+// blockingSpeaker holds playback until the request is cancelled.
+type blockingSpeaker struct{ started chan struct{} }
+
+func (s blockingSpeaker) SayText(ctx context.Context, _ string) error {
+	close(s.started)
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func oneRequestLine(t *testing.T, logs *bytes.Buffer) map[string]any {
+	t.Helper()
+	lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
+	var found map[string]any
+	for _, line := range lines {
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(line), &parsed); err != nil {
+			t.Fatalf("log line is not JSON: %v\n%s", err, line)
+		}
+		if parsed["msg"] == "request" {
+			if found != nil {
+				t.Fatalf("more than one request line:\n%s", logs.String())
+			}
+			found = parsed
+		}
+	}
+	if found == nil {
+		t.Fatalf("no request line logged:\n%s", logs.String())
+	}
+	return found
+}
+
+func TestAskLogsOneRequestLineWithStagesAndResponseLatency(t *testing.T) {
+	timeline := latency.New("req-27", latency.SourceVoice)
+	timeline.SetLastVoice(time.Now().Add(-300 * time.Millisecond))
+	ctx := latency.WithContext(context.Background(), timeline)
+
+	routed := &fakePipeline{}
+	routed.handle = func(pipeline.Events) pipeline.Reply {
+		latency.SetStage(ctx, latency.StageRouting, 20*time.Millisecond)
+		latency.AddStage(ctx, latency.StageToolExecute, 5*time.Millisecond)
+		latency.SetRoute(ctx, "fast_path", "time.now", "what time is it")
+		return pipeline.Reply{Text: "It's 3:04 PM.", Path: tool.PathFast, Tool: "time.now", RequestID: "req-27"}
+	}
+
+	var logs bytes.Buffer
+	session := reply.New(routed, timingSpeaker{}, nil, nil,
+		reply.WithLogger(slog.New(slog.NewJSONHandler(&logs, nil))))
+
+	if _, err := session.Ask(ctx, request(), "what time is it"); err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+
+	line := oneRequestLine(t, &logs)
+	if line["request_id"] != "req-27" || line["outcome"] != "ok" || line["path"] != "fast_path" {
+		t.Fatalf("unexpected request line: %v", line)
+	}
+	response, ok := line["response_ms"].(float64)
+	if !ok || response < 300 {
+		t.Fatalf("response_ms = %v, want at least 300 (since last voiced frame)", line["response_ms"])
+	}
+	stages := line["stages"].(map[string]any)
+	if stages["routing_ms"] != float64(20) || stages["tool_execute_ms"] != float64(5) {
+		t.Fatalf("stages = %v", stages)
+	}
+	if _, exists := stages["endpointing_ms"]; exists {
+		t.Fatalf("a fabricated stage leaked into the line: %v", stages)
+	}
+	checkpoints := line["checkpoints"].(map[string]any)
+	if _, ok := checkpoints["first_chunk_ms"]; !ok {
+		t.Fatalf("first_chunk checkpoint missing: %v", line)
+	}
+}
+
+func TestAskLogsCancelledWithoutResponseLatency(t *testing.T) {
+	timeline := latency.New("req-cancel", latency.SourceVoice)
+	timeline.SetLastVoice(time.Now().Add(-2 * time.Second))
+	ctx, cancel := context.WithCancel(latency.WithContext(context.Background(), timeline))
+
+	speaker := blockingSpeaker{started: make(chan struct{})}
+	routed := &fakePipeline{}
+	routed.handle = func(pipeline.Events) pipeline.Reply {
+		return pipeline.Reply{Text: "A long answer.", Path: tool.PathAgent, RequestID: "req-cancel"}
+	}
+
+	var logs bytes.Buffer
+	session := reply.New(routed, speaker, nil, nil,
+		reply.WithLogger(slog.New(slog.NewJSONHandler(&logs, nil))))
+
+	go func() {
+		<-speaker.started
+		cancel()
+	}()
+	_, err := session.Ask(ctx, request(), "tell me a story")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Ask error = %v, want context.Canceled", err)
+	}
+
+	line := oneRequestLine(t, &logs)
+	if line["outcome"] != "cancelled" {
+		t.Fatalf("outcome = %v, want cancelled", line["outcome"])
+	}
+	if _, exists := line["response_ms"]; exists {
+		t.Fatalf("cancelled turn reported response latency: %v", line)
+	}
+}
+
+// TestAskLogsAFailedAgentTurnAsFailedEvenWhenItSpoke keeps an Unavailable
+// message out of the successful-response samples.
+func TestAskLogsAFailedAgentTurnAsFailedEvenWhenItSpoke(t *testing.T) {
+	timeline := latency.New("req-failed", latency.SourceVoice)
+	timeline.SetLastVoice(time.Now().Add(-300 * time.Millisecond))
+	ctx := latency.WithContext(context.Background(), timeline)
+
+	routed := &fakePipeline{}
+	routed.handle = func(pipeline.Events) pipeline.Reply {
+		latency.MarkFailed(ctx)
+		latency.SetAttr(ctx, "agent_error", "unavailable")
+		return pipeline.Reply{Text: "Sorry, I can't answer that right now.", Path: tool.PathAgent, RequestID: "req-failed"}
+	}
+
+	var logs bytes.Buffer
+	session := reply.New(routed, timingSpeaker{}, nil, nil,
+		reply.WithLogger(slog.New(slog.NewJSONHandler(&logs, nil))))
+	if _, err := session.Ask(ctx, request(), "ask the agent anything"); err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+
+	line := oneRequestLine(t, &logs)
+	if line["outcome"] != "failed" {
+		t.Fatalf("outcome = %v, want failed", line["outcome"])
+	}
+	if line["agent_error"] != "unavailable" {
+		t.Fatalf("agent_error = %v", line["agent_error"])
+	}
+	// The timing is real evidence and is still logged; the summarizer is what
+	// keeps failed turns out of the success percentiles.
+	if _, ok := line["response_ms"]; !ok {
+		t.Fatal("failed turn lost its measured response latency")
 	}
 }

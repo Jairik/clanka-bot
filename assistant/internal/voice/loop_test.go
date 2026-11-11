@@ -1,17 +1,21 @@
 package voice_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/audio"
+	"github.com/Jairik/clanka-bot/assistant/internal/latency"
 	"github.com/Jairik/clanka-bot/assistant/internal/voice"
 )
 
@@ -540,4 +544,93 @@ func TestLoopRetriesAFailedCaptureSource(t *testing.T) {
 	default:
 	}
 	cancel()
+}
+
+// lockedBuffer collects JSON logs from the loop goroutine.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// TestLoopStagesCorrelateUnderOneRequestID is the #27 seam: endpointing, STT
+// finalise and the reply hand-off share one request ID, and the timeline
+// starts at the last voiced frame.
+func TestLoopStagesCorrelateUnderOneRequestID(t *testing.T) {
+	source := &scriptSource{frames: append(repeat(loudFrame(), 8), repeat(silentFrame(), 40)...)}
+	wake := &fakeWake{afterWords: 5}
+	stt := &fakeSTT{text: "what time is it"}
+	var recorded atomic.Value // *latency.Timeline
+	responder := &fakeResponder{
+		calls: make(chan string, 1),
+		onCall: func(ctx context.Context) {
+			recorded.Store(latency.FromContext(ctx))
+		},
+	}
+	logs := &lockedBuffer{}
+	loop := newLoop(t, voice.Config{
+		FrameBytes: frameBytes,
+		Endpoint:   endpointConfig(500 * time.Millisecond),
+	}, voice.Deps{
+		Source: source, Wake: wake, STT: stt, Responder: responder,
+		Logger: slog.New(slog.NewJSONHandler(logs, nil)),
+	})
+	runLoop(t, loop)
+
+	select {
+	case <-responder.calls:
+	case <-time.After(5 * time.Second):
+		t.Fatal("no reply")
+	}
+
+	value := recorded.Load()
+	if value == nil {
+		t.Fatal("responder context carried no request timeline")
+	}
+	timeline := value.(*latency.Timeline)
+	if timeline.ID() == "" {
+		t.Fatal("timeline has no request ID")
+	}
+	// The fake source delivers frames faster than real time, so this only
+	// checks the stage is measured; the exact last-voiced-frame rule is a
+	// unit test on the endpointer's clock.
+	if _, ok := timeline.Duration(latency.StageEndpointing); !ok {
+		t.Fatal("endpointing stage missing")
+	}
+	if _, ok := timeline.Duration(latency.StageSTTFinalize); !ok {
+		t.Fatal("stt_finalize stage missing")
+	}
+
+	// The endpoint and transcript lines carry the same request ID.
+	var seenEndpoint, seenTranscript bool
+	for _, line := range strings.Split(logs.String(), "\n") {
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(line), &parsed); err != nil {
+			continue
+		}
+		if parsed["request_id"] != timeline.ID() {
+			continue
+		}
+		switch parsed["msg"] {
+		case "voice: endpoint":
+			seenEndpoint = true
+		case "voice: transcript":
+			seenTranscript = true
+		}
+	}
+	if !seenEndpoint || !seenTranscript {
+		t.Fatalf("voice lines not correlated with %q (endpoint=%v transcript=%v):\n%s",
+			timeline.ID(), seenEndpoint, seenTranscript, logs.String())
+	}
 }

@@ -1,0 +1,15 @@
+latency report: 6 request lines (source=voice)
+
+control_phrase     6 attempts  ok=6
+  response         6 samples   p50 1.126s  p95 1.181s  budget p50 1.2s / p95 2s  within budget
+  endpointing      6 samples   p50 511ms  p95 523ms    
+  routing          6 samples   p50 0s  p95 0s          
+  stt_finalize     6 samples   p50 154ms  p95 183ms    
+  tool_execute     6 samples   p50 239ms  p95 385ms    
+  tts_first_audio  6 samples   p50 207ms  p95 225ms    
+  first_chunk      6 samples   p50 910ms  p95 1.042s   included in response
+
+agent first token: no Agent path samples (the Agent path was not exercised)
+
+Response latency is last voiced frame to first actual reply sample; chimes and fillers are excluded.
+Only ok requests with reply audio are sampled; failed, cancelled and audio-less requests are counted separately.

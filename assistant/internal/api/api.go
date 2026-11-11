@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/latency"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 )
@@ -112,6 +113,10 @@ func (s *server) debugTranscript(w http.ResponseWriter, r *http.Request) {
 		Path:   tool.PathFallthrough,
 		Device: tool.DevicePi,
 	}
+	// The debug entry has no endpointing or STT, so its timeline never
+	// reports Response latency; routing and playback stages still correlate.
+	timeline := latency.New(requestID, latency.SourceDebug)
+	requestCtx := latency.WithContext(r.Context(), timeline)
 
 	// Speaking is part of the reply, so the request waits for playback to
 	// finish. A TTS failure still returns the text reply.
@@ -119,7 +124,7 @@ func (s *server) debugTranscript(w http.ResponseWriter, r *http.Request) {
 	spoken := false
 	if s.responder != nil {
 		var err error
-		reply, err = s.responder.Ask(r.Context(), req, text)
+		reply, err = s.responder.Ask(requestCtx, req, text)
 		if err != nil {
 			s.logger.Error("speech",
 				"request_id", requestID,
@@ -130,7 +135,9 @@ func (s *server) debugTranscript(w http.ResponseWriter, r *http.Request) {
 			spoken = true
 		}
 	} else {
-		reply = s.pipeline.Handle(r.Context(), req, text)
+		reply = s.pipeline.Handle(requestCtx, req, text)
+		// Nothing was spoken, so the request line is completed here.
+		latency.Complete(requestCtx, s.logger, latency.OutcomeNoAudio, nil)
 	}
 
 	writeJSON(w, http.StatusOK, transcriptResponse{

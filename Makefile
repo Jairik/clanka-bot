@@ -4,7 +4,7 @@ SHELL := /bin/bash
 GIT_SHA ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
 export GIT_SHA
 
-.PHONY: build up down logs deploy rollback build-arm64 test check
+.PHONY: build up down logs deploy rollback build-arm64 test check latency-report
 
 build: ## Build every service image for this host.
 	docker compose build
@@ -35,3 +35,6 @@ test: ## Run the assistant and deployment test suites.
 
 check: ## Check compose and Dockerfile deployment conventions.
 	bash scripts/check-compose.sh
+
+latency-report: ## Summarize per-stage Response latency from the running stack.
+	bash scripts/latency-report.sh

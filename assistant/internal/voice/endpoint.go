@@ -34,6 +34,8 @@ type Endpointer struct {
 	heard     bool
 	silent    time.Duration
 	total     time.Duration
+	now       func() time.Time
+	lastVoice time.Time
 }
 
 // NewEndpointer validates the config and returns a fresh endpointer.
@@ -50,6 +52,7 @@ func NewEndpointer(cfg EndpointConfig) (*Endpointer, error) {
 	return &Endpointer{
 		cfg:       cfg,
 		threshold: math.Pow(10, cfg.ThresholdDBFS/20),
+		now:       time.Now,
 	}, nil
 }
 
@@ -64,6 +67,8 @@ func (e *Endpointer) Add(pcm []byte) bool {
 
 	if rmsLevel(pcm) >= e.threshold {
 		e.speech += duration
+		// Last voiced frame is where Response latency starts (#12/#27).
+		e.lastVoice = e.now()
 		if !e.heard && e.speech >= e.cfg.MinSpeech {
 			e.heard = true
 		}
@@ -79,6 +84,10 @@ func (e *Endpointer) Add(pcm []byte) bool {
 	}
 	return e.heard && e.silent >= e.cfg.Silence
 }
+
+// LastSpeech is the arrival time of the most recent frame at or above the
+// threshold: the user's last voiced sound. It is zero before any speech.
+func (e *Endpointer) LastSpeech() time.Time { return e.lastVoice }
 
 // SpeechHeard reports whether any frame has crossed the threshold.
 func (e *Endpointer) SpeechHeard() bool { return e.heard }

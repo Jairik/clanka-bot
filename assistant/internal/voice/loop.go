@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/audio"
+	"github.com/Jairik/clanka-bot/assistant/internal/latency"
+	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 )
 
 // Detection is one wake word firing.
@@ -223,26 +225,49 @@ func (l *Loop) session(ctx context.Context) error {
 			}
 		}
 	}
-	l.deps.Logger.Info(
-		"voice: endpoint",
+	// One timeline spans endpointing, STT, routing, the Agent path and
+	// playback (#27). It is created at the end-of-speech decision so its
+	// start is the user's last voiced frame, not the end of the silence
+	// window.
+	endedAt := time.Now()
+	timeline := latency.New(tool.NewRequestID(), latency.SourceVoice)
+	timeline.SetLastVoice(endpointer.LastSpeech())
+	if last := endpointer.LastSpeech(); !last.IsZero() {
+		timeline.Set(latency.StageEndpointing, endedAt.Sub(last))
+	}
+	requestCtx := latency.WithContext(sessCtx, timeline)
+
+	endpointAttrs := []any{
+		"request_id", timeline.ID(),
 		"speech", endpointer.SpeechHeard(),
 		"silence_ms", endpointer.Silence().Milliseconds(),
-	)
+	}
+	if d, ok := timeline.Duration(latency.StageEndpointing); ok {
+		endpointAttrs = append(endpointAttrs, "endpointing_ms", d.Milliseconds())
+	}
+	l.deps.Logger.Info("voice: endpoint", endpointAttrs...)
 
 	started := time.Now()
 	transcript, err := stt.Finish()
 	if err != nil {
+		timeline.Complete(l.deps.Logger, latency.OutcomeFailed, err)
 		return err
 	}
+	timeline.Set(latency.StageSTTFinalize, time.Since(started))
 	transcript = strings.TrimSpace(transcript)
 	if transcript == "" {
-		l.deps.Logger.Info("voice: no speech")
+		l.deps.Logger.Info("voice: no speech", "request_id", timeline.ID())
+		timeline.Complete(l.deps.Logger, latency.OutcomeNoAudio, nil)
 		return nil
 	}
-	l.deps.Logger.Info("voice: transcript", "text", transcript, "stt_ms", time.Since(started).Milliseconds())
+	l.deps.Logger.Info("voice: transcript",
+		"request_id", timeline.ID(),
+		"text", transcript,
+		"stt_ms", time.Since(started).Milliseconds(),
+	)
 
 	done := make(chan error, 1)
-	go func() { done <- l.deps.Responder.Respond(sessCtx, transcript) }()
+	go func() { done <- l.deps.Responder.Respond(requestCtx, transcript) }()
 	for {
 		select {
 		case <-ctx.Done():

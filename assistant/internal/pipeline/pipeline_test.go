@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/latency"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/tools/clock"
@@ -174,5 +175,52 @@ func TestNewRejectsControlPhraseWithoutSpeak(t *testing.T) {
 	}
 	if _, err := pipeline.New(reg, map[string]string{"hi": "test.silent"}, slog.Default()); err == nil {
 		t.Fatal("New accepted Tool without Speak, want error")
+	}
+}
+
+// TestRequestTimelineOwnsTheSingleRequestLine checks the #27 contract: when a
+// spoken session attaches a timeline, the pipeline records its stages instead
+// of writing a second request line, and the one line carries the route.
+func TestRequestTimelineOwnsTheSingleRequestLine(t *testing.T) {
+	logger, logs := testLogger()
+	reg := tool.NewRegistry(time.Second)
+	fixed := time.Date(2026, 11, 11, 15, 4, 0, 0, time.UTC)
+	if err := clock.Register(reg, func() time.Time { return fixed }); err != nil {
+		t.Fatalf("register clock: %v", err)
+	}
+	p := newPipeline(t, reg, map[string]string{"what time is it": clock.Name}, logger)
+
+	timeline := latency.New("req-timeline", latency.SourceVoice)
+	timeline.SetLastVoice(time.Now().Add(-400 * time.Millisecond))
+	ctx := latency.WithContext(context.Background(), timeline)
+
+	reply := p.Handle(ctx, tool.Request{ID: "req-timeline", Device: tool.DevicePi}, "what time is it")
+	if reply.Tool != clock.Name {
+		t.Fatalf("tool = %q, want %q", reply.Tool, clock.Name)
+	}
+	if strings.Contains(logs.String(), `"msg":"request"`) {
+		t.Fatalf("pipeline wrote a request line of its own:\n%s", logs.String())
+	}
+	if _, ok := timeline.Duration(latency.StageRouting); !ok {
+		t.Fatal("routing stage missing from the timeline")
+	}
+	if _, ok := timeline.Duration(latency.StageToolExecute); !ok {
+		t.Fatal("tool execute stage missing from the timeline")
+	}
+
+	var rendered bytes.Buffer
+	timeline.Complete(slog.New(slog.NewJSONHandler(&rendered, nil)), latency.OutcomeNoAudio, nil)
+	var line map[string]any
+	if err := json.Unmarshal(rendered.Bytes(), &line); err != nil {
+		t.Fatalf("request line is not JSON: %v\n%s", err, rendered.String())
+	}
+	if line["path"] != string(tool.PathControlPhrase) || line["tool"] != clock.Name {
+		t.Fatalf("route not recorded on the request line: %v", line)
+	}
+	if line["transcript"] != "what time is it" {
+		t.Fatalf("transcript = %v", line["transcript"])
+	}
+	if _, exists := line["response_ms"]; exists {
+		t.Fatalf("a text-only turn invented response latency: %v", line)
 	}
 }

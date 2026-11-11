@@ -45,7 +45,7 @@ func newSpeechServer(t *testing.T, speaker reply.Speaker) (http.Handler, *bytes.
 	if err != nil {
 		t.Fatalf("pipeline.New: %v", err)
 	}
-	session := reply.New(p, speaker, nil, nil)
+	session := reply.New(p, speaker, nil, nil, reply.WithLogger(logger))
 	return api.NewHandler(p, logger, true, api.WithResponder(session)), &logs
 }
 
@@ -115,5 +115,58 @@ func TestDebugTranscriptWithoutSpeechReportsNotSpoken(t *testing.T) {
 	}
 	if body.Spoken {
 		t.Fatal("spoken = true, want false without a speaker")
+	}
+}
+
+// TestDebugEntryLogsOneCorrelatedRequestLine is the #27 seam for the typed
+// entry: it shares the request ID with the response and the request line, and
+// reports no spoken response latency because there is no endpointing.
+func TestDebugEntryLogsOneCorrelatedRequestLine(t *testing.T) {
+	speaker := &fakeSpeaker{}
+	handler, logs := newSpeechServer(t, speaker)
+
+	rec := postTranscript(t, handler, `{"text":"what time is it"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	requestID := rec.Header().Get("X-Request-ID")
+	if requestID == "" {
+		t.Fatal("no X-Request-ID header")
+	}
+
+	var line map[string]any
+	for _, raw := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+			continue
+		}
+		if parsed["msg"] == "request" {
+			line = parsed
+		}
+	}
+	if line == nil {
+		t.Fatalf("no request line:\n%s", logs.String())
+	}
+	if line["request_id"] != requestID {
+		t.Fatalf("request_id = %v, want %s", line["request_id"], requestID)
+	}
+	if line["source"] != "debug" {
+		t.Fatalf("source = %v, want debug", line["source"])
+	}
+	if line["outcome"] != "no_audio" {
+		t.Fatalf("outcome = %v, want no_audio (fake speaker plays no audio)", line["outcome"])
+	}
+	if _, exists := line["response_ms"]; exists {
+		t.Fatalf("typed entry invented response latency: %v", line)
+	}
+	stages, ok := line["stages"].(map[string]any)
+	if !ok {
+		t.Fatalf("stages missing: %v", line)
+	}
+	if _, ok := stages["routing_ms"]; !ok {
+		t.Fatalf("routing stage missing: %v", stages)
+	}
+	if _, ok := stages["endpointing_ms"]; ok {
+		t.Fatalf("typed entry fabricated endpointing: %v", stages)
 	}
 }

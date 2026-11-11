@@ -21,6 +21,8 @@ services:
       PULSE_SERVER: "unix:/run/pulse/native"
       PULSE_COOKIE: "/pulse-cookie/cookie"
       HOME: /tmp
+      # Secrets stay in .env; config.yaml names this variable.
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       TZ: ${TZ:-UTC}
     volumes:
       # Host PipeWire through its PulseAudio-compatible socket and cookie.

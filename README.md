@@ -30,10 +30,14 @@ curl -s -X POST localhost:8081/debug/transcript \
 
 The reply is spoken on the configured Pulse sink as it is synthesised, then the
 response returns the spoken-form text, the routing path, a request id, and
-whether audio played (`"spoken": true`). Both published ports are bound to the
-host loopback only. The debug listener binds all interfaces inside the
-container (see `docker-compose.yml`), so the host port mapping is what keeps it
-local.
+whether audio played (`"spoken": true`). Anything the Fast path does not handle
+goes to the Agent path, which needs an OpenRouter key in `.env`
+(`OPENROUTER_API_KEY`); without one it answers with the configured Unavailable
+message and the Fast path keeps working. Every provider request forces
+OpenRouter's `provider.zdr` and `provider.data_collection: "deny"` in code.
+Both published ports are bound to the host loopback only. The debug listener
+binds all interfaces inside the container (see `docker-compose.yml`), so the
+host port mapping is what keeps it local.
 
 ### Audio
 

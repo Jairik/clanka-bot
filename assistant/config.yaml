@@ -38,3 +38,30 @@ control_phrases:
   "what is the time": time.now
   "tell me the time": time.now
   "time": time.now
+
+# The Agent path: one OpenAI-compatible provider, no failover.
+agent:
+  provider: openrouter
+  providers:
+    openrouter:
+      base_url: https://openrouter.ai/api/v1
+      # The key lives only in the environment, never in this file.
+      api_key_env: OPENROUTER_API_KEY
+      model: deepseek/deepseek-v4.1-flash
+      alternate_model: deepseek/deepseek-v4-pro
+      routing:
+        # OpenRouter prefers low-latency hosts. ZDR and data-collection denial
+        # are forced in code (ADR-0002), not configurable here.
+        sort: latency
+  unavailable_message: "Sorry, I can't answer that right now."
+  # Typed prefixes that skip the Fast path entirely.
+  request_prefixes:
+    - ask the agent
+    - agent
+    - hey agent
+  history:
+    turns: 10
+    quiet: 5m
+  first_token_timeout: 8s
+  request_timeout: 60s
+  max_steps: 6

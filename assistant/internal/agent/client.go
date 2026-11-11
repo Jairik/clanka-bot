@@ -1,0 +1,185 @@
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"sort"
+	"strings"
+	"time"
+
+	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
+)
+
+var (
+	// errFirstTokenTimeout means the model produced nothing within the budget.
+	errFirstTokenTimeout = errors.New("agent: first token timeout")
+	// errRequestTimeout means the stream stalled after it started.
+	errRequestTimeout = errors.New("agent: request timeout")
+)
+
+// providerError is a failed provider call, with the HTTP status when there was
+// one. The status is logged, never spoken.
+type providerError struct {
+	Status int
+	Err    error
+}
+
+func (e *providerError) Error() string {
+	if e.Status != 0 {
+		return fmt.Sprintf("agent: provider status %d: %v", e.Status, e.Err)
+	}
+	return fmt.Sprintf("agent: provider: %v", e.Err)
+}
+
+func (e *providerError) Unwrap() error { return e.Err }
+
+// provider is the single OpenAI-compatible client. Only one is active at a
+// time; there is no failover.
+type provider struct {
+	client         openai.Client
+	model          string
+	routing        map[string]any
+	firstToken     time.Duration
+	requestTimeout time.Duration
+}
+
+func newProvider(settings Settings) *provider {
+	opts := []option.RequestOption{
+		option.WithBaseURL(settings.BaseURL),
+		// An empty key is left for the provider to reject, so the Fast path
+		// still works and the failure looks like any other provider error.
+		option.WithAPIKey(os.Getenv(settings.APIKeyEnv)),
+		option.WithMaxRetries(0),
+	}
+	for name, value := range settings.Headers {
+		opts = append(opts, option.WithHeader(name, value))
+	}
+	return &provider{
+		client:         openai.NewClient(opts...),
+		model:          settings.Model,
+		routing:        settings.Routing,
+		firstToken:     settings.FirstTokenTimeout,
+		requestTimeout: settings.RequestTimeout,
+	}
+}
+
+// completion is the accumulated result of one model call.
+type completion struct {
+	Content string
+	Calls   []CallRef
+}
+
+// stream sends one chat-completion request and streams the reply. onDelta, when
+// set, receives content deltas as they arrive (the hook #21's sentence
+// streaming uses).
+func (p *provider) stream(ctx context.Context, messages []openai.ChatCompletionMessageParamUnion, tools []openai.ChatCompletionToolUnionParam, onDelta func(string)) (completion, error) {
+	params := openai.ChatCompletionNewParams{Model: p.model, Messages: messages}
+	if len(tools) > 0 {
+		params.Tools = tools
+	}
+	// ADR-0002: ZDR and data-collection denial are written here, after any
+	// configured routing, so no config value can loosen them.
+	params.SetExtraFields(map[string]any{"provider": providerFields(p.routing)})
+
+	runCtx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	timer := time.AfterFunc(p.firstToken, func() { cancel(errFirstTokenTimeout) })
+	defer func() { timer.Stop() }()
+
+	stream := p.client.Chat.Completions.NewStreaming(runCtx, params)
+	defer stream.Close()
+
+	var out completion
+	var order []int64
+	partial := make(map[int64]*partialCall)
+	first := true
+
+	for stream.Next() {
+		if first {
+			first = false
+			timer.Stop()
+			timer = time.AfterFunc(p.requestTimeout, func() { cancel(errRequestTimeout) })
+		}
+		chunk := stream.Current()
+		if len(chunk.Choices) == 0 {
+			continue
+		}
+		delta := chunk.Choices[0].Delta
+		if delta.Content != "" {
+			out.Content += delta.Content
+			if onDelta != nil {
+				onDelta(delta.Content)
+			}
+		}
+		for _, call := range delta.ToolCalls {
+			part, ok := partial[call.Index]
+			if !ok {
+				part = &partialCall{}
+				partial[call.Index] = part
+				order = append(order, call.Index)
+			}
+			if call.ID != "" {
+				part.id = call.ID
+			}
+			if call.Function.Name != "" {
+				part.name = call.Function.Name
+			}
+			part.args.WriteString(call.Function.Arguments)
+		}
+	}
+
+	if cause := context.Cause(runCtx); errors.Is(cause, errFirstTokenTimeout) || errors.Is(cause, errRequestTimeout) {
+		return completion{}, cause
+	}
+	if cause := context.Cause(runCtx); cause != nil && ctx.Err() != nil {
+		return completion{}, cause
+	}
+	if err := stream.Err(); err != nil {
+		return completion{}, wrapProviderError(err)
+	}
+
+	sort.Slice(order, func(i, j int) bool { return order[i] < order[j] })
+	for _, index := range order {
+		part := partial[index]
+		if part.name == "" {
+			continue
+		}
+		args := json.RawMessage(part.args.String())
+		if !json.Valid(args) {
+			args = json.RawMessage(`{}`)
+		}
+		out.Calls = append(out.Calls, CallRef{ID: part.id, Name: part.name, Args: args})
+	}
+	return out, nil
+}
+
+type partialCall struct {
+	id   string
+	name string
+	args strings.Builder
+}
+
+func wrapProviderError(err error) error {
+	var apiErr *openai.Error
+	if errors.As(err, &apiErr) {
+		return &providerError{Status: apiErr.StatusCode, Err: err}
+	}
+	return &providerError{Err: err}
+}
+
+// providerFields merges the configured routing and then forces the privacy
+// fields, so config can add options (such as sort) but can never turn ZDR or
+// data-collection denial off.
+func providerFields(routing map[string]any) map[string]any {
+	fields := make(map[string]any, len(routing)+2)
+	for key, value := range routing {
+		fields[key] = value
+	}
+	fields["zdr"] = true
+	fields["data_collection"] = "deny"
+	return fields
+}

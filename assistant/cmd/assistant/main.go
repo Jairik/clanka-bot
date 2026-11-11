@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/agent"
 	"github.com/Jairik/clanka-bot/assistant/internal/api"
 	"github.com/Jairik/clanka-bot/assistant/internal/config"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
@@ -48,7 +49,33 @@ func run() error {
 	if err := tools.RegisterAll(registry, nil); err != nil {
 		return fmt.Errorf("register tools: %w", err)
 	}
-	p, err := pipeline.New(registry, cfg.ControlPhrases, logger)
+
+	provider, err := cfg.Agent.ActiveProvider()
+	if err != nil {
+		return err
+	}
+	agentPath, err := agent.New(agent.Settings{
+		BaseURL:            provider.BaseURL,
+		APIKeyEnv:          provider.APIKeyEnv,
+		Model:              provider.Model,
+		Headers:            provider.Headers,
+		Routing:            provider.Routing,
+		SystemPrompt:       cfg.Agent.SystemPrompt,
+		UnavailableMessage: cfg.Agent.UnavailableMessage,
+		FirstTokenTimeout:  cfg.Agent.FirstTokenTimeout.Duration(),
+		RequestTimeout:     cfg.Agent.RequestTimeout.Duration(),
+		MaxSteps:           cfg.Agent.MaxSteps,
+		HistoryTurns:       cfg.Agent.History.Turns,
+		HistoryQuiet:       cfg.Agent.History.Quiet.Duration(),
+	}, registry, logger)
+	if err != nil {
+		return err
+	}
+
+	p, err := pipeline.New(registry, cfg.ControlPhrases, logger,
+		pipeline.WithAgent(agentPath, cfg.Agent.RequestPrefixes),
+		pipeline.WithHistory(agentPath.History()),
+	)
 	if err != nil {
 		return err
 	}

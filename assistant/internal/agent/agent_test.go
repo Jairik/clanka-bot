@@ -1,0 +1,570 @@
+package agent_test
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/Jairik/clanka-bot/assistant/internal/agent"
+	"github.com/Jairik/clanka-bot/assistant/internal/tool"
+	"github.com/Jairik/clanka-bot/assistant/tools/clock"
+)
+
+const testKeyEnv = "AGENT_TEST_API_KEY"
+
+// fakeProvider is a scripted OpenAI-compatible endpoint. It records every
+// request body and header, then replies with the next scripted SSE payload.
+type fakeProvider struct {
+	t *testing.T
+
+	mu       sync.Mutex
+	requests []fakeRequest
+	replies  []string
+	status   int
+	delay    time.Duration
+}
+
+type fakeRequest struct {
+	Body   map[string]any
+	Header http.Header
+}
+
+func newFakeProvider(t *testing.T, replies ...string) *fakeProvider {
+	t.Helper()
+	return &fakeProvider{t: t, replies: replies}
+}
+
+func (f *fakeProvider) start() *httptest.Server {
+	f.t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(f.serve))
+	f.t.Cleanup(server.Close)
+	return server
+}
+
+func (f *fakeProvider) serve(w http.ResponseWriter, r *http.Request) {
+	var body map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		f.t.Errorf("fake provider: decode request: %v", err)
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+
+	f.mu.Lock()
+	f.requests = append(f.requests, fakeRequest{Body: body, Header: r.Header.Clone()})
+	status := f.status
+	delay := f.delay
+	reply := ""
+	if len(f.replies) > 0 {
+		reply = f.replies[0]
+		f.replies = f.replies[1:]
+	}
+	f.mu.Unlock()
+
+	if status != 0 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		fmt.Fprintf(w, `{"error":{"message":"scripted failure","type":"test"}}`)
+		return
+	}
+	if delay > 0 {
+		select {
+		case <-time.After(delay):
+		case <-r.Context().Done():
+			return
+		}
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprint(w, reply)
+}
+
+func (f *fakeProvider) request(t *testing.T, index int) fakeRequest {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if index >= len(f.requests) {
+		t.Fatalf("fake provider: request %d missing (got %d)", index, len(f.requests))
+	}
+	return f.requests[index]
+}
+
+func (f *fakeProvider) requestCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.requests)
+}
+
+type fakeCall struct {
+	ID   string
+	Name string
+	Args string
+}
+
+// textReply renders a streamed assistant text answer split into the given parts.
+func textReply(parts ...string) string {
+	var b strings.Builder
+	for _, part := range parts {
+		chunk := map[string]any{
+			"id": "chatcmpl-test", "object": "chat.completion.chunk", "created": 1, "model": "test",
+			"choices": []any{map[string]any{
+				"index":         0,
+				"delta":         map[string]any{"role": "assistant", "content": part},
+				"finish_reason": nil,
+			}},
+		}
+		writeChunk(&b, chunk)
+	}
+	writeFinish(&b, "stop")
+	return b.String()
+}
+
+// toolCallReply renders a streamed tool-call turn.
+func toolCallReply(content string, calls ...fakeCall) string {
+	var b strings.Builder
+	deltas := make([]any, 0, len(calls))
+	for i, call := range calls {
+		deltas = append(deltas, map[string]any{
+			"index": i,
+			"id":    call.ID,
+			"type":  "function",
+			"function": map[string]any{
+				"name":      call.Name,
+				"arguments": call.Args,
+			},
+		})
+	}
+	chunk := map[string]any{
+		"id": "chatcmpl-test", "object": "chat.completion.chunk", "created": 1, "model": "test",
+		"choices": []any{map[string]any{
+			"index":         0,
+			"delta":         map[string]any{"role": "assistant", "content": content, "tool_calls": deltas},
+			"finish_reason": nil,
+		}},
+	}
+	writeChunk(&b, chunk)
+	writeFinish(&b, "tool_calls")
+	return b.String()
+}
+
+func writeChunk(b *strings.Builder, chunk map[string]any) {
+	raw, err := json.Marshal(chunk)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Fprintf(b, "data: %s\n\n", raw)
+}
+
+func writeFinish(b *strings.Builder, reason string) {
+	chunk := map[string]any{
+		"id": "chatcmpl-test", "object": "chat.completion.chunk", "created": 1, "model": "test",
+		"choices": []any{map[string]any{
+			"index":         0,
+			"delta":         map[string]any{},
+			"finish_reason": reason,
+		}},
+	}
+	writeChunk(b, chunk)
+	b.WriteString("data: [DONE]\n\n")
+}
+
+func testSettings(serverURL string) agent.Settings {
+	return agent.Settings{
+		BaseURL:            serverURL,
+		APIKeyEnv:          testKeyEnv,
+		Model:              "deepseek/deepseek-v4.1-flash",
+		Routing:            map[string]any{"sort": "latency"},
+		UnavailableMessage: "Sorry, I can't answer that right now.",
+		FirstTokenTimeout:  2 * time.Second,
+		RequestTimeout:     5 * time.Second,
+	}
+}
+
+func newTestAgent(t *testing.T, settings agent.Settings, registry *tool.Registry, logger *slog.Logger) *agent.Agent {
+	t.Helper()
+	t.Setenv(testKeyEnv, "test-key")
+	if registry == nil {
+		registry = newRegistry(t)
+	}
+	a, err := agent.New(settings, registry, logger)
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	return a
+}
+
+func newRegistry(t *testing.T) *tool.Registry {
+	t.Helper()
+	registry := tool.NewRegistry(time.Second)
+	if err := clock.Register(registry, func() time.Time {
+		return time.Date(2026, 11, 11, 15, 4, 0, 0, time.UTC)
+	}); err != nil {
+		t.Fatalf("register clock: %v", err)
+	}
+	return registry
+}
+
+func addTool[In, Out any](t *testing.T, registry *tool.Registry, def tool.Tool[In, Out]) {
+	t.Helper()
+	if err := tool.Add(registry, def); err != nil {
+		t.Fatalf("register %s: %v", def.Name, err)
+	}
+}
+
+func TestRequestCarriesPrivacyAndProviderFields(t *testing.T) {
+	fake := newFakeProvider(t, textReply("Hello."))
+	server := fake.start()
+	settings := testSettings(server.URL)
+	settings.Headers = map[string]string{"X-Provider-Session": "session-1"}
+	// A hostile config must not be able to relax the privacy fields.
+	settings.Routing = map[string]any{
+		"sort":            "latency",
+		"zdr":             false,
+		"data_collection": "allow",
+	}
+
+	a := newTestAgent(t, settings, nil, nil)
+	result := a.Run(context.Background(), tool.Request{ID: "req-1"}, "hello there", nil)
+	if result.Text != "Hello." {
+		t.Fatalf("reply = %q, want %q", result.Text, "Hello.")
+	}
+
+	request := fake.request(t, 0)
+	if got := request.Header.Get("Authorization"); got != "Bearer test-key" {
+		t.Errorf("Authorization = %q, want bearer key from the env var", got)
+	}
+	if got := request.Header.Get("X-Provider-Session"); got != "session-1" {
+		t.Errorf("extra header = %q, want session-1", got)
+	}
+	if got := request.Body["model"]; got != "deepseek/deepseek-v4.1-flash" {
+		t.Errorf("model = %v, want deepseek/deepseek-v4.1-flash", got)
+	}
+	provider, ok := request.Body["provider"].(map[string]any)
+	if !ok {
+		t.Fatalf("provider field missing from payload: %v", request.Body)
+	}
+	if provider["zdr"] != true {
+		t.Errorf("provider.zdr = %v, want true even when config says false", provider["zdr"])
+	}
+	if provider["data_collection"] != "deny" {
+		t.Errorf("provider.data_collection = %v, want deny even when config says allow", provider["data_collection"])
+	}
+	if provider["sort"] != "latency" {
+		t.Errorf("provider.sort = %v, want latency", provider["sort"])
+	}
+}
+
+func TestAgentCallsToolAndUsesResult(t *testing.T) {
+	fake := newFakeProvider(t,
+		toolCallReply("", fakeCall{ID: "call-1", Name: "time__now", Args: "{}"}),
+		textReply("It's 3:04 PM."),
+	)
+	a := newTestAgent(t, testSettings(fake.start().URL), nil, nil)
+
+	result := a.Run(context.Background(), tool.Request{ID: "req-2"}, "what time is it", nil)
+	if result.Text != "It's 3:04 PM." {
+		t.Fatalf("reply = %q, want the model's final answer", result.Text)
+	}
+	if len(result.Calls) != 1 || result.Calls[0].Name != "time.now" {
+		t.Fatalf("recorded calls = %+v, want one time.now call", result.Calls)
+	}
+	if fake.requestCount() != 2 {
+		t.Fatalf("provider calls = %d, want 2", fake.requestCount())
+	}
+
+	first := fake.request(t, 0)
+	tools, _ := first.Body["tools"].([]any)
+	if len(tools) == 0 {
+		t.Fatal("first request offered no tools")
+	}
+	found := false
+	for _, raw := range tools {
+		entry := raw.(map[string]any)
+		fn := entry["function"].(map[string]any)
+		if fn["name"] == "time__now" {
+			found = true
+			if params, ok := fn["parameters"].(map[string]any); !ok || params["type"] != "object" {
+				t.Errorf("time__now parameters = %v, want an object schema", fn["parameters"])
+			}
+		}
+	}
+	if !found {
+		t.Fatal("time__now was not offered to the model")
+	}
+
+	second := fake.request(t, 1)
+	if !strings.Contains(bodyString(t, second.Body), `"role":"tool"`) {
+		t.Fatalf("second request has no tool result: %s", bodyString(t, second.Body))
+	}
+	if !strings.Contains(bodyString(t, second.Body), "2026-11-11T15:04:00Z") {
+		t.Fatalf("second request is missing the time.now result: %s", bodyString(t, second.Body))
+	}
+}
+
+func TestLocalOnlyToolIsNeverOfferedOrCalled(t *testing.T) {
+	called := 0
+	registry := newRegistry(t)
+	addTool(t, registry, tool.Tool[struct{}, struct {
+		Subject string `json:"subject"`
+	}]{
+		Name:        "mail.inbox",
+		Description: "Read the inbox.",
+		Permission:  tool.PermissionRead,
+		LocalOnly:   tool.LocalOnlyYes,
+		Handler: func(context.Context, struct{}) (struct {
+			Subject string `json:"subject"`
+		}, error) {
+			called++
+			return struct {
+				Subject string `json:"subject"`
+			}{Subject: "secret doctor appointment"}, nil
+		},
+	})
+
+	fake := newFakeProvider(t,
+		toolCallReply("", fakeCall{ID: "call-1", Name: "mail__inbox", Args: "{}"}),
+		textReply("I can't read that."),
+	)
+	a := newTestAgent(t, testSettings(fake.start().URL), registry, nil)
+
+	// A Local-only turn stays in history on the Pi.
+	a.History().Add(agent.Turn{
+		Utterance: "read my inbox",
+		Reply:     "You have one email.",
+		Calls: []agent.ToolCall{{
+			Name:      "mail.inbox",
+			Result:    json.RawMessage(`{"subject":"secret doctor appointment"}`),
+			LocalOnly: true,
+		}},
+	})
+
+	if got := a.Run(context.Background(), tool.Request{ID: "req-3"}, "and tomorrow?", nil); got.Text == "" {
+		t.Fatal("empty reply")
+	}
+	if called != 0 {
+		t.Fatalf("Local-only handler ran %d times, want 0", called)
+	}
+
+	for i := 0; i < fake.requestCount(); i++ {
+		body := fake.request(t, i)
+		if offersTool(t, body.Body, "mail__inbox") {
+			t.Errorf("request %d offered a Local-only tool", i)
+		}
+		raw := bodyString(t, body.Body)
+		if strings.Contains(raw, "secret doctor appointment") || strings.Contains(raw, "read my inbox") {
+			t.Errorf("request %d carried Local-only history: %s", i, raw)
+		}
+	}
+}
+
+func TestConfirmToolNeverExecutes(t *testing.T) {
+	calls := 0
+	registry := newRegistry(t)
+	addTool(t, registry, tool.Tool[struct{}, struct{}]{
+		Name:        "mail.send",
+		Description: "Send an email.",
+		Permission:  tool.PermissionConfirm,
+		LocalOnly:   tool.LocalOnlyNo,
+		Handler: func(context.Context, struct{}) (struct{}, error) {
+			calls++
+			return struct{}{}, nil
+		},
+	})
+
+	fake := newFakeProvider(t, toolCallReply("", fakeCall{ID: "call-1", Name: "mail__send", Args: "{}"}))
+	a := newTestAgent(t, testSettings(fake.start().URL), registry, nil)
+
+	result := a.Run(context.Background(), tool.Request{ID: "req-4"}, "email my doctor", nil)
+	if calls != 0 {
+		t.Fatalf("confirm handler ran %d times, want 0 before #24", calls)
+	}
+	if result.Pending == nil || result.Pending.Tool != "mail.send" {
+		t.Fatalf("pending confirmation = %+v, want mail.send", result.Pending)
+	}
+	if result.Text != agent.ConfirmPrompt {
+		t.Errorf("reply = %q, want %q", result.Text, agent.ConfirmPrompt)
+	}
+	if fake.requestCount() != 1 {
+		t.Errorf("provider calls = %d, want the turn to stop after the confirm request", fake.requestCount())
+	}
+}
+
+func TestReadCallsRunConcurrentlyAndActCallsInOrder(t *testing.T) {
+	var started sync.WaitGroup
+	started.Add(2)
+	release := make(chan struct{})
+
+	registry := newRegistry(t)
+	addTool(t, registry, tool.Tool[struct{}, struct {
+		Value string `json:"value"`
+	}]{
+		Name: "test.alpha", Description: "First read.", Permission: tool.PermissionRead, LocalOnly: tool.LocalOnlyNo,
+		Handler: func(ctx context.Context, _ struct{}) (struct {
+			Value string `json:"value"`
+		}, error) {
+			started.Done()
+			select {
+			case <-release:
+			case <-time.After(2 * time.Second):
+				return struct {
+					Value string `json:"value"`
+				}{}, context.DeadlineExceeded
+			}
+			return struct {
+				Value string `json:"value"`
+			}{Value: "alpha"}, nil
+		},
+	})
+	addTool(t, registry, tool.Tool[struct{}, struct {
+		Value string `json:"value"`
+	}]{
+		Name: "test.beta", Description: "Second read.", Permission: tool.PermissionRead, LocalOnly: tool.LocalOnlyNo,
+		Handler: func(ctx context.Context, _ struct{}) (struct {
+			Value string `json:"value"`
+		}, error) {
+			started.Done()
+			select {
+			case <-release:
+			case <-time.After(2 * time.Second):
+				return struct {
+					Value string `json:"value"`
+				}{}, context.DeadlineExceeded
+			}
+			return struct {
+				Value string `json:"value"`
+			}{Value: "beta"}, nil
+		},
+	})
+
+	var orderMu sync.Mutex
+	var order []string
+	for _, name := range []string{"test.first", "test.second"} {
+		name := name
+		addTool(t, registry, tool.Tool[struct{}, struct{}]{
+			Name: name, Description: "Act.", Permission: tool.PermissionAct, LocalOnly: tool.LocalOnlyNo,
+			Handler: func(context.Context, struct{}) (struct{}, error) {
+				orderMu.Lock()
+				order = append(order, name)
+				orderMu.Unlock()
+				return struct{}{}, nil
+			},
+		})
+	}
+
+	fake := newFakeProvider(t,
+		toolCallReply("",
+			fakeCall{ID: "1", Name: "test__alpha", Args: "{}"},
+			fakeCall{ID: "2", Name: "test__beta", Args: "{}"},
+			fakeCall{ID: "3", Name: "test__first", Args: "{}"},
+			fakeCall{ID: "4", Name: "test__second", Args: "{}"},
+		),
+		textReply("Done."),
+	)
+
+	// Reads can only pass once both have started, so a sequential loop fails.
+	go func() {
+		started.Wait()
+		close(release)
+	}()
+
+	a := newTestAgent(t, testSettings(fake.start().URL), registry, nil)
+	result := a.Run(context.Background(), tool.Request{ID: "req-5"}, "do the things", nil)
+	if result.Text != "Done." {
+		t.Fatalf("reply = %q, want Done.", result.Text)
+	}
+	if len(order) != 2 || order[0] != "test.first" || order[1] != "test.second" {
+		t.Fatalf("act order = %v, want model order [test.first test.second]", order)
+	}
+}
+
+func TestProviderFailuresPlayTheUnavailableMessage(t *testing.T) {
+	for _, status := range []int{401, 403, 404, 429, 500} {
+		status := status
+		t.Run(fmt.Sprintf("status_%d", status), func(t *testing.T) {
+			var logs strings.Builder
+			logger := slog.New(slog.NewJSONHandler(&logs, nil))
+			fake := newFakeProvider(t, textReply("unused"))
+			fake.status = status
+			a := newTestAgent(t, testSettings(fake.start().URL), nil, logger)
+
+			result := a.Run(context.Background(), tool.Request{ID: "req-6"}, "hello", nil)
+			if result.Text != "Sorry, I can't answer that right now." {
+				t.Errorf("reply = %q, want the configured Unavailable message", result.Text)
+			}
+			if !result.Unavailable {
+				t.Error("result.Unavailable = false")
+			}
+			if !strings.Contains(logs.String(), fmt.Sprintf(`"status":%d`, status)) {
+				t.Errorf("log does not record status %d: %s", status, logs.String())
+			}
+		})
+	}
+}
+
+func TestFirstTokenTimeoutIsEnforced(t *testing.T) {
+	fake := newFakeProvider(t, textReply("too late"))
+	fake.delay = 3 * time.Second
+	settings := testSettings(fake.start().URL)
+	settings.FirstTokenTimeout = 100 * time.Millisecond
+	a := newTestAgent(t, settings, nil, nil)
+
+	started := time.Now()
+	result := a.Run(context.Background(), tool.Request{ID: "req-7"}, "hello", nil)
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("Run took %v, want the first-token timeout to fire quickly", elapsed)
+	}
+	if !result.TimedOut {
+		t.Error("result.TimedOut = false")
+	}
+	if result.Text != agent.FirstTokenTimeoutMessage {
+		t.Errorf("reply = %q, want %q", result.Text, agent.FirstTokenTimeoutMessage)
+	}
+}
+
+func TestStreamingHookReceivesDeltas(t *testing.T) {
+	fake := newFakeProvider(t, textReply("Hel", "lo."))
+	a := newTestAgent(t, testSettings(fake.start().URL), nil, nil)
+
+	var deltas []string
+	result := a.Run(context.Background(), tool.Request{ID: "req-8"}, "hi", func(delta string) {
+		deltas = append(deltas, delta)
+	})
+	if result.Text != "Hello." {
+		t.Fatalf("reply = %q, want Hello.", result.Text)
+	}
+	if strings.Join(deltas, "") != "Hello." {
+		t.Fatalf("deltas = %v, want the full reply", deltas)
+	}
+}
+
+func bodyString(t *testing.T, body map[string]any) string {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	return string(raw)
+}
+
+// offersTool reports whether the outgoing request lists the given wire name.
+func offersTool(t *testing.T, body map[string]any, wireName string) bool {
+	t.Helper()
+	tools, _ := body["tools"].([]any)
+	for _, raw := range tools {
+		entry, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		fn, ok := entry["function"].(map[string]any)
+		if ok && fn["name"] == wireName {
+			return true
+		}
+	}
+	return false
+}

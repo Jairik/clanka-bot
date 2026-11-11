@@ -118,18 +118,14 @@ func (l *Loop) Run(ctx context.Context) error {
 
 	// Buffered so the capture goroutine is not blocked while a model finalises.
 	l.frames = make(chan []byte, 8)
-	captureErr := make(chan error, 1)
-	go func() { captureErr <- l.capture(ctx, l.frames) }()
+	// The supervisor restarts a failed source (for example Pulse not ready yet)
+	// so a bad start does not disable voice until the container restarts.
+	go l.capture(ctx, l.frames)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
-		case err := <-captureErr:
-			if err == nil || ctx.Err() != nil {
-				return nil
-			}
-			return err
 		default:
 		}
 
@@ -264,10 +260,25 @@ func (l *Loop) session(ctx context.Context) error {
 	}
 }
 
-// capture reads fixed-size frames from the source and publishes them. Frames
-// are dropped rather than blocking when a model is finalising: recent audio is
-// what matters, and a stalled capture would back up the Pulse stream.
-func (l *Loop) capture(ctx context.Context, frames chan<- []byte) error {
+// capture supervises the microphone: it retries a failed source with a short
+// backoff and only stops when the loop's context is cancelled.
+func (l *Loop) capture(ctx context.Context, frames chan<- []byte) {
+	for {
+		err := l.captureOnce(ctx, frames)
+		if ctx.Err() != nil {
+			return
+		}
+		l.deps.Logger.Error("voice: capture", "error", err.Error())
+		if !sleep(ctx, time.Second) {
+			return
+		}
+	}
+}
+
+// captureOnce reads fixed-size frames from the source and publishes them.
+// Frames are dropped rather than blocking when a model is finalising: recent
+// audio is what matters, and a stalled capture would back up the Pulse stream.
+func (l *Loop) captureOnce(ctx context.Context, frames chan<- []byte) error {
 	reader, err := l.deps.Source.Open(ctx)
 	if err != nil {
 		return err

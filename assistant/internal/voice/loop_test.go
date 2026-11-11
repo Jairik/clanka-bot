@@ -495,3 +495,49 @@ func isSilent(pcm []byte) bool {
 	}
 	return true
 }
+
+// flakySource fails its first Open, like Pulse not being ready at container start.
+type flakySource struct {
+	inner *scriptSource
+	mu    sync.Mutex
+	opens int
+}
+
+func (f *flakySource) Open(ctx context.Context) (io.ReadCloser, error) {
+	f.mu.Lock()
+	f.opens++
+	n := f.opens
+	f.mu.Unlock()
+	if n == 1 {
+		return nil, errors.New("pulse not ready")
+	}
+	return f.inner.Open(ctx)
+}
+
+func TestLoopRetriesAFailedCaptureSource(t *testing.T) {
+	inner := &scriptSource{frames: repeat(loudFrame(), 40)}
+	source := &flakySource{inner: inner}
+	wake := &fakeWake{afterWords: 5}
+	loop := newLoop(t, voice.Config{
+		FrameBytes: frameBytes,
+		Endpoint:   endpointConfig(500 * time.Millisecond),
+	}, voice.Deps{Source: source, Wake: wake, STT: &fakeSTT{}, Responder: &fakeResponder{}})
+	cancel, stopped := runLoop(t, loop)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if streams, _, _ := wake.snapshot(); streams > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if streams, _, _ := wake.snapshot(); streams == 0 {
+		t.Fatal("the wake stream never opened after the capture retry")
+	}
+	select {
+	case <-stopped:
+		t.Fatal("the loop exited on a recoverable capture failure")
+	default:
+	}
+	cancel()
+}

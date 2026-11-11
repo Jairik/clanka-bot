@@ -1,0 +1,148 @@
+// Package audio plays PCM on a named PulseAudio (or PipeWire) sink by piping
+// raw samples into pacat. Only the assistant container mounts the Pulse socket.
+// Mic capture (wake word and STT) will add a Source beside this Sink.
+package audio
+
+import (
+	"bytes"
+	"context"
+	"fmt"
+	"io"
+	"os/exec"
+	"strconv"
+	"sync"
+)
+
+// Format is the PCM layout expected by the sink.
+type Format struct {
+	Rate     int
+	Width    int
+	Channels int
+}
+
+// PulseSink opens one pacat stream per reply. It is safe for concurrent use.
+type PulseSink struct {
+	binary string
+	device string
+}
+
+// NewPulseSink builds a sink. An empty binary uses pacat from PATH; an empty
+// device uses the host's default sink.
+func NewPulseSink(binary, device string) *PulseSink {
+	if binary == "" {
+		binary = "pacat"
+	}
+	return &PulseSink{binary: binary, device: device}
+}
+
+// Open starts pacat and returns a writer for raw PCM. Closing the writer waits
+// until the audio has drained. Audio controls (volume, mute) belong here later.
+func (s *PulseSink) Open(ctx context.Context, format Format) (io.WriteCloser, error) {
+	sampleFormat, err := sampleFormat(format.Width)
+	if err != nil {
+		return nil, err
+	}
+	if format.Rate <= 0 || format.Channels <= 0 {
+		return nil, fmt.Errorf("audio: invalid format %+v", format)
+	}
+
+	args := []string{
+		"--client-name=clanka-assistant",
+		"--stream-name=assistant-reply",
+		"--format=" + sampleFormat,
+		"--rate=" + strconv.Itoa(format.Rate),
+		"--channels=" + strconv.Itoa(format.Channels),
+		"--latency-msec=100",
+		"--raw",
+	}
+	if s.device != "" {
+		args = append(args, "--device="+s.device)
+	}
+
+	cmd := exec.CommandContext(ctx, s.binary, args...)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		return nil, fmt.Errorf("audio: pacat stdin: %w", err)
+	}
+	stderr := &lockedBuffer{}
+	cmd.Stderr = stderr
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("audio: start pacat: %w", err)
+	}
+	return &processWriter{ctx: ctx, cmd: cmd, stdin: stdin, stderr: stderr}, nil
+}
+
+// sampleFormat maps a PCM sample width in bytes to a pacat format name.
+func sampleFormat(width int) (string, error) {
+	switch width {
+	case 1:
+		return "u8", nil
+	case 2:
+		return "s16le", nil
+	case 4:
+		return "s32le", nil
+	default:
+		return "", fmt.Errorf("audio: unsupported sample width %d bytes", width)
+	}
+}
+
+// processWriter feeds pacat's stdin and reports its exit status on Close.
+type processWriter struct {
+	ctx       context.Context
+	cmd       *exec.Cmd
+	stdin     io.WriteCloser
+	stderr    *lockedBuffer
+	closeOnce sync.Once
+	closeErr  error
+}
+
+func (w *processWriter) Write(p []byte) (int, error) {
+	n, err := w.stdin.Write(p)
+	if err != nil {
+		if ctxErr := w.ctx.Err(); ctxErr != nil {
+			return n, ctxErr
+		}
+		return n, fmt.Errorf("audio: pacat write: %w%s", err, w.stderrTail())
+	}
+	return n, nil
+}
+
+func (w *processWriter) Close() error {
+	w.closeOnce.Do(func() {
+		_ = w.stdin.Close()
+		if err := w.cmd.Wait(); err != nil {
+			if ctxErr := w.ctx.Err(); ctxErr != nil {
+				w.closeErr = ctxErr
+				return
+			}
+			w.closeErr = fmt.Errorf("audio: pacat: %w%s", err, w.stderrTail())
+		}
+	})
+	return w.closeErr
+}
+
+func (w *processWriter) stderrTail() string {
+	text := bytes.TrimSpace(w.stderr.Bytes())
+	if len(text) == 0 {
+		return ""
+	}
+	return ": " + string(text)
+}
+
+// lockedBuffer collects child stderr while Write and Wait may both read it.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) Bytes() []byte {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]byte(nil), b.buf.Bytes()...)
+}

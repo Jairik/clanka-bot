@@ -23,6 +23,15 @@ type Config struct {
 	Tools struct {
 		DefaultTimeout Duration `yaml:"default_timeout"`
 	} `yaml:"tools"`
+	TTS struct {
+		Addr    string   `yaml:"addr"` // empty disables spoken replies
+		Voice   string   `yaml:"voice"`
+		Timeout Duration `yaml:"timeout"`
+	} `yaml:"tts"`
+	Playback struct {
+		Binary string `yaml:"binary"`
+		Sink   string `yaml:"sink"` // empty uses the Pulse default sink
+	} `yaml:"playback"`
 	ControlPhrases map[string]string `yaml:"control_phrases"`
 }
 
@@ -49,6 +58,9 @@ func Default() Config {
 	cfg.Debug.Enabled = true
 	cfg.Debug.Addr = "127.0.0.1:8081"
 	cfg.Tools.DefaultTimeout = Duration(2 * time.Second)
+	cfg.TTS.Voice = "alba"
+	cfg.TTS.Timeout = Duration(30 * time.Second)
+	cfg.Playback.Binary = "pacat"
 	return cfg
 }
 
@@ -85,6 +97,15 @@ func applyEnv(cfg *Config) error {
 		}
 		cfg.Debug.Enabled = enabled
 	}
+	if v := os.Getenv("ASSISTANT_TTS_ADDR"); v != "" {
+		cfg.TTS.Addr = v
+	}
+	if v := os.Getenv("ASSISTANT_TTS_VOICE"); v != "" {
+		cfg.TTS.Voice = v
+	}
+	if v := os.Getenv("ASSISTANT_PULSE_SINK"); v != "" {
+		cfg.Playback.Sink = v
+	}
 	return nil
 }
 
@@ -97,6 +118,14 @@ func (c Config) validate() error {
 	}
 	if c.Tools.DefaultTimeout.Duration() <= 0 {
 		return fmt.Errorf("config: tools.default_timeout must be positive")
+	}
+	if c.TTS.Addr != "" {
+		if c.TTS.Timeout.Duration() <= 0 {
+			return fmt.Errorf("config: tts.timeout must be positive")
+		}
+		if c.TTS.Voice == "" {
+			return fmt.Errorf("config: tts.voice is required when tts.addr is set")
+		}
 	}
 	return nil
 }

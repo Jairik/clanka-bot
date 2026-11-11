@@ -4,6 +4,8 @@ services:
       context: ./assistant
     image: clanka/assistant:${GIT_SHA:-dev}
     restart: unless-stopped
+    # Run as the host user so the read-only Pulse socket and cookie are usable.
+    user: "${ASSISTANT_UID:-1000}:${ASSISTANT_GID:-1000}"
     ports:
       # Both ports are published on the host loopback only.
       - "127.0.0.1:${ASSISTANT_HTTP_PORT:-8080}:8080"
@@ -13,10 +15,54 @@ services:
       # host-side publication above keeps it localhost-only.
       ASSISTANT_HTTP_ADDR: ":8080"
       ASSISTANT_DEBUG_ADDR: ":8081"
+      ASSISTANT_TTS_ADDR: "tts:10200"
+      ASSISTANT_PULSE_SINK: ${ASSISTANT_PULSE_SINK:-}
+      # ADR-0001: the assistant container is the only one with audio access.
+      PULSE_SERVER: "unix:/run/pulse/native"
+      PULSE_COOKIE: "/pulse-cookie/cookie"
+      HOME: /tmp
       TZ: ${TZ:-UTC}
+    volumes:
+      # Host PipeWire through its PulseAudio-compatible socket and cookie.
+      - ${XDG_RUNTIME_DIR:-/run/user/1000}/pulse:/run/pulse:ro
+      - ${HOME}/.config/pulse:/pulse-cookie:ro
+    depends_on:
+      tts:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
       interval: 10s
       timeout: 3s
       retries: 5
       start_period: 5s
+
+  tts:
+    build:
+      context: ./tts
+    image: clanka/tts:${GIT_SHA:-dev}
+    restart: unless-stopped
+    environment:
+      TTS_HOST: "0.0.0.0"
+      TTS_PORT: "10200"
+      TTS_ADDR: "tcp://127.0.0.1:10200"
+      TTS_LANGUAGE: ${TTS_LANGUAGE:-english}
+      TTS_VOICE: ${TTS_VOICE:-alba}
+      # Licence-gated weights: accept the model terms on Hugging Face and put a
+      # read token here so the first start can download them.
+      HF_TOKEN: ${HF_TOKEN:-}
+      TZ: ${TZ:-UTC}
+    volumes:
+      - tts_cache:/data
+    # No Pulse mount: model services do computation only (ADR-0001).
+    expose:
+      - "10200"
+    healthcheck:
+      # Wyoming describe: healthy once the model and default voice are warm.
+      test: ["CMD", "python", "/app/healthcheck.py"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 180s
+
+volumes:
+  tts_cache:

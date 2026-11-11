@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -44,6 +45,10 @@ type Tool[In, Out any] struct {
 	Speak    func(Out) string             // optional Fast path renderer
 	Examples []string                     // optional Fast path sample phrasings
 	Extract  func(text string) (In, bool) // optional Fast path argument filler
+
+	// Summary, when set, renders the one-line question a confirm Tool asks
+	// before it runs. It falls back to the Description.
+	Summary func(In) string
 }
 
 // Info is the type-erased view of a registered Tool.
@@ -66,14 +71,22 @@ type entry struct {
 	run     func(ctx context.Context, args json.RawMessage) (any, error)
 	speak   func(result any) (string, bool)
 	extract func(text string) (json.RawMessage, bool)
+	summary func(args json.RawMessage) string
 }
 
-// Registry holds Tools registered at compile time and executes them.
+// Registry holds Tools registered at compile time and executes them, plus the
+// single pending Confirmation.
 type Registry struct {
 	defaultTimeout time.Duration
 
 	mu    sync.RWMutex
 	tools map[string]*entry
+
+	// pending is the one confirm call waiting for a spoken yes. Confirmation
+	// enforcement lives here so no caller, including the model, can run a
+	// confirm Tool around it.
+	pendingMu sync.Mutex
+	pending   *PendingConfirmation
 }
 
 // NewRegistry creates an empty registry. defaultTimeout applies to Tools that
@@ -180,6 +193,17 @@ func Add[In, Out any](r *Registry, t Tool[In, Out]) error {
 			}
 			return args, true
 		},
+		summary: func(args json.RawMessage) string {
+			if t.Summary != nil {
+				var in In
+				if len(args) == 0 || json.Unmarshal(args, &in) == nil {
+					if text := strings.TrimSpace(t.Summary(in)); text != "" {
+						return text
+					}
+				}
+			}
+			return defaultSummary(t.Name, t.Description)
+		},
 	}
 
 	r.mu.Lock()
@@ -192,15 +216,34 @@ func Add[In, Out any](r *Registry, t Tool[In, Out]) error {
 }
 
 // Execute runs a Tool by canonical name with JSON arguments. Registry
-// timeouts and user-facing/internal error rules are applied here.
+// timeouts and user-facing/internal error rules are applied here. A confirm
+// Tool never runs: Execute returns a ConfirmationRequiredError and leaves no
+// pending call, so a bypass attempt cannot be confirmed later.
 func (r *Registry) Execute(ctx context.Context, name string, args json.RawMessage) (any, error) {
-	r.mu.RLock()
-	e, ok := r.tools[name]
-	r.mu.RUnlock()
+	e, ok := r.lookup(name)
 	if !ok {
 		return nil, fmt.Errorf("tool: unknown tool %q", name)
 	}
+	if e.info.Permission == PermissionConfirm {
+		return nil, &ConfirmationRequiredError{Pending: PendingConfirmation{
+			Tool:    e.info.Name,
+			Args:    append(json.RawMessage(nil), args...),
+			Summary: e.summary(args),
+		}}
+	}
+	return r.run(ctx, e, args)
+}
 
+// lookup returns a registered entry.
+func (r *Registry) lookup(name string) (*entry, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	e, ok := r.tools[name]
+	return e, ok
+}
+
+// run applies the Tool timeout and runs its handler.
+func (r *Registry) run(ctx context.Context, e *entry, args json.RawMessage) (any, error) {
 	if e.info.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, e.info.Timeout)
@@ -211,7 +254,7 @@ func (r *Registry) Execute(ctx context.Context, name string, args json.RawMessag
 		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, fmt.Errorf("tool %q: %w", name, err)
+		return nil, fmt.Errorf("tool %q: %w", e.info.Name, err)
 	}
 	return result, nil
 }

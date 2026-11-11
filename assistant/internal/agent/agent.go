@@ -44,12 +44,9 @@ type Settings struct {
 	HistoryQuiet       time.Duration
 }
 
-// PendingConfirm is a confirm Tool call the model asked for. It is never
-// executed here; #24 adds the spoken Confirmation that runs it.
-type PendingConfirm struct {
-	Tool string
-	Args json.RawMessage
-}
+// PendingConfirm is a confirm Tool call the model asked for, armed in the
+// registry and never executed by the loop.
+type PendingConfirm = tool.PendingConfirmation
 
 // Result is one Agent path answer.
 type Result struct {
@@ -150,11 +147,16 @@ func (a *Agent) Run(ctx context.Context, req tool.Request, utterance string, onD
 			return Result{Text: text, Calls: recorded}
 		}
 
-		// A confirm Tool never runs here. Returning now keeps at most one
-		// pending call per turn and leaves the spoken yes to #24.
-		if pending, ok := a.confirmCall(reply.Calls); ok {
+		// A confirm Tool never runs here. The registry arms the single pending
+		// call and returns the question to ask, so enforcement cannot be
+		// bypassed by the model. Returning now keeps at most one pending call.
+		if pending, ok := a.propose(reply.Calls); ok {
 			a.logger.Info("agent confirmation pending", "request_id", req.ID, "tool", pending.Tool)
-			return Result{Text: ConfirmPrompt, Calls: recorded, Pending: pending}
+			text := pending.Summary
+			if text == "" {
+				text = ConfirmPrompt
+			}
+			return Result{Text: text, Calls: recorded, Pending: &pending}
 		}
 
 		messages = append(messages, a.prompt.AssistantToolCalls(reply.Content, reply.Calls))
@@ -171,16 +173,22 @@ func (a *Agent) Run(ctx context.Context, req tool.Request, utterance string, onD
 	return Result{Text: MaxStepsMessage, Calls: recorded}
 }
 
-// confirmCall finds a confirm Tool call in one model step. It does not run it.
-func (a *Agent) confirmCall(calls []CallRef) (*PendingConfirm, bool) {
+// propose finds a confirm Tool call in one model step and asks the registry to
+// arm it. It never runs the call.
+func (a *Agent) propose(calls []CallRef) (tool.PendingConfirmation, bool) {
 	for _, call := range calls {
 		info, ok := a.resolve(call)
 		if !ok || info.Permission != tool.PermissionConfirm {
 			continue
 		}
-		return &PendingConfirm{Tool: info.Name, Args: call.Args}, true
+		pending, err := a.registry.Propose(info.Name, call.Args)
+		if err != nil {
+			a.logger.Error("agent confirmation propose", "tool", info.Name, "error", err.Error())
+			return tool.PendingConfirmation{}, false
+		}
+		return pending, true
 	}
-	return nil, false
+	return tool.PendingConfirmation{}, false
 }
 
 // resolve maps a wire name to a registered, non-Local-only Tool.

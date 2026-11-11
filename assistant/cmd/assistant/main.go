@@ -104,6 +104,8 @@ func run() error {
 	opts := []pipeline.Option{
 		pipeline.WithAgent(agentPath, cfg.Agent.RequestPrefixes),
 		pipeline.WithHistory(agentPath.History()),
+		// Spoken Confirmation for confirm Tools, enforced by the registry.
+		pipeline.WithConfirmationResolver(pipeline.NewConfirmation(registry, logger)),
 	}
 	// Compute Tool example vectors once; a dead embed service only disables
 	// semantic matching, leaving Control phrases and the Agent path working.

@@ -10,63 +10,49 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/voice"
 )
 
-type fakeHandler struct {
+// fakeAsker records the request the responder builds for the shared Session.
+type fakeAsker struct {
 	transcript string
 	request    tool.Request
 	reply      pipeline.Reply
+	err        error
 }
 
-func (h *fakeHandler) Handle(ctx context.Context, req tool.Request, transcript string) pipeline.Reply {
-	h.request = req
-	h.transcript = transcript
-	return h.reply
+func (a *fakeAsker) Ask(ctx context.Context, req tool.Request, transcript string) (pipeline.Reply, error) {
+	a.request = req
+	a.transcript = transcript
+	return a.reply, a.err
 }
 
-type fakeSpeaker struct {
-	text string
-	err  error
-}
-
-func (s *fakeSpeaker) SayText(ctx context.Context, text string) error {
-	s.text = text
-	return s.err
-}
-
-func TestPipelineResponderRoutesAndSpeaksTheReply(t *testing.T) {
-	handler := &fakeHandler{reply: pipeline.Reply{Text: "It is noon."}}
-	speaker := &fakeSpeaker{}
-	responder := voice.NewPipelineResponder(handler, speaker, tool.DevicePi)
+func TestPipelineResponderRoutesThroughTheSession(t *testing.T) {
+	session := &fakeAsker{reply: pipeline.Reply{Text: "It is noon."}}
+	responder := voice.NewPipelineResponder(session, tool.DevicePi)
 
 	if err := responder.Respond(context.Background(), "what time is it"); err != nil {
 		t.Fatalf("Respond: %v", err)
 	}
-	if handler.transcript != "what time is it" {
-		t.Errorf("handler transcript = %q", handler.transcript)
+	if session.transcript != "what time is it" {
+		t.Errorf("session transcript = %q", session.transcript)
 	}
-	if handler.request.ID == "" {
+	if session.request.ID == "" {
 		t.Error("request ID is empty")
 	}
-	if handler.request.Device != tool.DevicePi {
-		t.Errorf("device = %q, want pi", handler.request.Device)
-	}
-	if speaker.text != "It is noon." {
-		t.Errorf("spoken = %q", speaker.text)
+	if session.request.Device != tool.DevicePi {
+		t.Errorf("device = %q, want pi", session.request.Device)
 	}
 }
 
-func TestPipelineResponderWithoutASpeakerIsSilent(t *testing.T) {
-	handler := &fakeHandler{reply: pipeline.Reply{Text: "ok"}}
-	responder := voice.NewPipelineResponder(handler, nil, tool.DevicePi)
+func TestPipelineResponderWithoutASessionIsSilent(t *testing.T) {
+	responder := voice.NewPipelineResponder(nil, tool.DevicePi)
 	if err := responder.Respond(context.Background(), "hi"); err != nil {
 		t.Fatalf("Respond: %v", err)
 	}
 }
 
-func TestPipelineResponderReportsSpeechFailure(t *testing.T) {
-	handler := &fakeHandler{reply: pipeline.Reply{Text: "ok"}}
-	speaker := &fakeSpeaker{err: errors.New("sink gone")}
-	responder := voice.NewPipelineResponder(handler, speaker, tool.DevicePi)
+func TestPipelineResponderReportsPlaybackFailure(t *testing.T) {
+	session := &fakeAsker{reply: pipeline.Reply{Text: "ok"}, err: errors.New("sink gone")}
+	responder := voice.NewPipelineResponder(session, tool.DevicePi)
 	if err := responder.Respond(context.Background(), "hi"); err == nil {
-		t.Fatal("Respond succeeded, want speech error")
+		t.Fatal("Respond succeeded, want playback error")
 	}
 }

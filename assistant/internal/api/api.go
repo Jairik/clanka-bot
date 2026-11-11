@@ -16,18 +16,20 @@ import (
 
 const maxTranscriptBytes = 8 << 10
 
-// Sayer speaks reply text. speech.Speaker satisfies it through SayText.
-type Sayer interface {
-	SayText(ctx context.Context, text string) error
+// Responder answers a transcript and speaks the reply. reply.Session satisfies
+// it; the debug entry never speaks on its own.
+type Responder interface {
+	Ask(ctx context.Context, req tool.Request, transcript string) (pipeline.Reply, error)
 }
 
 // Option configures the HTTP surface.
 type Option func(*server)
 
-// WithSpeech plays the reply through sayer. Without it the debug entry is
-// text-only, which is how tests and speechless dev runs behave.
-func WithSpeech(sayer Sayer) Option {
-	return func(s *server) { s.sayer = sayer }
+// WithResponder routes the debug entry through the spoken reply session.
+// Without it the debug entry is text-only, which is how tests and speechless
+// dev runs behave.
+func WithResponder(responder Responder) Option {
+	return func(s *server) { s.responder = responder }
 }
 
 // NewHandler builds the HTTP surface: GET /healthz, plus POST
@@ -50,7 +52,7 @@ type server struct {
 	pipeline     *pipeline.Pipeline
 	logger       *slog.Logger
 	debugEnabled bool
-	sayer        Sayer
+	responder    Responder
 }
 
 func (s *server) healthz(w http.ResponseWriter, r *http.Request) {
@@ -105,17 +107,20 @@ func (s *server) debugTranscript(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	reply := s.pipeline.Handle(r.Context(), tool.Request{
+	req := tool.Request{
 		ID:     requestID,
 		Path:   tool.PathFallthrough,
 		Device: tool.DevicePi,
-	}, text)
+	}
 
 	// Speaking is part of the reply, so the request waits for playback to
 	// finish. A TTS failure still returns the text reply.
+	var reply pipeline.Reply
 	spoken := false
-	if s.sayer != nil {
-		if err := s.sayer.SayText(r.Context(), reply.Text); err != nil {
+	if s.responder != nil {
+		var err error
+		reply, err = s.responder.Ask(r.Context(), req, text)
+		if err != nil {
 			s.logger.Error("speech",
 				"request_id", requestID,
 				"path", "debug_entry",
@@ -124,6 +129,8 @@ func (s *server) debugTranscript(w http.ResponseWriter, r *http.Request) {
 		} else {
 			spoken = true
 		}
+	} else {
+		reply = s.pipeline.Handle(r.Context(), req, text)
 	}
 
 	writeJSON(w, http.StatusOK, transcriptResponse{

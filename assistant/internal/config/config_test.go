@@ -243,3 +243,19 @@ func TestLoadRejectsNonPositiveSpeechTimeout(t *testing.T) {
 		t.Fatal("Load succeeded, want error")
 	}
 }
+
+func TestLoadRequiresTheAgentFiller(t *testing.T) {
+	if _, err := config.Load(writeConfig(t, "agent:\n  filler: \"  \"\n")); err == nil {
+		t.Fatal("Load succeeded with an empty Agent path Filler, want error")
+	}
+}
+
+func TestLoadDefaultsTheAgentFiller(t *testing.T) {
+	cfg, err := config.Load(writeConfig(t, "{}\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Agent.Filler == "" {
+		t.Fatal("Agent.Filler is empty, want a default phrase")
+	}
+}

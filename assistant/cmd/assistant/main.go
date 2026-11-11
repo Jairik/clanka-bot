@@ -21,6 +21,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/embed"
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
+	"github.com/Jairik/clanka-bot/assistant/internal/reply"
 	"github.com/Jairik/clanka-bot/assistant/internal/speech"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/internal/voice"
@@ -133,16 +134,32 @@ func run() error {
 	// opens an audio device (ADR-0001).
 	sink := audio.NewPulseSink(cfg.Playback.Binary, cfg.Playback.Sink)
 
-	// Speech is optional: without a TTS address the debug entry stays text-only.
-	var sayer api.Sayer
-	if cfg.TTS.Addr != "" {
+	// One Session orchestrates every spoken turn: the voice loop and the typed
+	// debug entry both call Ask, so filler, streaming and playback never split.
+	speaker := cfg.TTS.Addr != ""
+	var session *reply.Session
+	if speaker {
 		client := wyoming.NewClient(cfg.TTS.Addr, wyoming.WithTimeout(cfg.TTS.Timeout.Duration()))
 		checkTTSService(logger, client, cfg.TTS.Addr)
-		sayer = speech.New(client, sink, wyoming.Voice{Name: cfg.TTS.Voice}, logger)
+		voice := wyoming.Voice{Name: cfg.TTS.Voice}
+		// The Filler is synthesized once here, from the config read at startup,
+		// so a phrase change is picked up by a restart rather than live.
+		filler := loadAgentFiller(logger, client, voice, cfg.Agent.Filler, cfg.TTS.Timeout.Duration())
+		session = reply.New(p, speech.New(client, sink, voice, logger), sink, filler)
+	} else {
+		// No TTS: the Session still routes, just without audio, so the voice
+		// loop's transcript handling stays identical to the spoken path.
+		session = reply.New(p, nil, sink, nil)
+	}
+
+	// The debug entry is only spoken when a TTS service is configured.
+	var responder api.Responder
+	if speaker {
+		responder = session
 	}
 
 	if cfg.VoiceEnabled() {
-		loop, err := newVoiceLoop(cfg, p, sayer, sink, logger)
+		loop, err := newVoiceLoop(cfg, session, sink, logger)
 		if err != nil {
 			return err
 		}
@@ -160,9 +177,13 @@ func run() error {
 		ReadHeaderTimeout: 5 * time.Second,
 	}}
 	if cfg.Debug.Enabled {
+		var opts []api.Option
+		if responder != nil {
+			opts = append(opts, api.WithResponder(responder))
+		}
 		servers = append(servers, &http.Server{
 			Addr:              cfg.Debug.Addr,
-			Handler:           api.NewHandler(p, logger, true, api.WithSpeech(sayer)),
+			Handler:           api.NewHandler(p, logger, true, opts...),
 			ReadHeaderTimeout: 5 * time.Second,
 		})
 	}
@@ -178,6 +199,7 @@ func run() error {
 		"voice", cfg.VoiceEnabled(),
 		"wakeword_addr", cfg.Wakeword.Addr,
 		"stt_addr", cfg.STT.Addr,
+		"agent_filler", cfg.Agent.Filler,
 		"tools", len(registry.Names()),
 		"embed_model", cfg.Embed.Model,
 		"semantic_tools", semantic.ToolCount(),
@@ -188,8 +210,8 @@ func run() error {
 }
 
 // newVoiceLoop wires the microphone path: Pulse capture, Wyoming wake word and
-// STT, the wake chime, and the reply responder.
-func newVoiceLoop(cfg config.Config, p *pipeline.Pipeline, sayer api.Sayer, sink audio.Sink, logger *slog.Logger) (*voice.Loop, error) {
+// STT, the wake chime, and the shared reply Session.
+func newVoiceLoop(cfg config.Config, session voice.Asker, sink audio.Sink, logger *slog.Logger) (*voice.Loop, error) {
 	captureFormat := audio.Format{Rate: cfg.Capture.Rate, Width: cfg.Capture.Width, Channels: cfg.Capture.Channels}
 	frameBytes := cfg.Capture.Rate * cfg.Capture.Width * cfg.Capture.Channels * cfg.Capture.FrameMS / 1000
 	if frameBytes <= 0 {
@@ -233,9 +255,23 @@ func newVoiceLoop(cfg config.Config, p *pipeline.Pipeline, sayer api.Sayer, sink
 		Wake:      voice.NewWyomingWake(wakeClient, names, wireFormat),
 		STT:       voice.NewWyomingSTT(sttClient, wyoming.TranscribeOptions{Name: cfg.STT.Model, Language: cfg.STT.Language}, wireFormat),
 		Player:    audio.NewPCMPlayer(sink),
-		Responder: voice.NewPipelineResponder(p, sayer, tool.DevicePi),
+		Responder: voice.NewPipelineResponder(session, tool.DevicePi),
 		Logger:    logger,
 	})
+}
+
+// loadAgentFiller caches the Agent path cue before the HTTP server starts. A
+// TTS failure is not fatal: replies still work, just without the immediate cue.
+func loadAgentFiller(logger *slog.Logger, client *wyoming.Client, voice wyoming.Voice, text string, timeout time.Duration) *speech.Filler {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	filler, err := speech.SynthesizeFiller(ctx, client, voice, text)
+	if err != nil {
+		logger.Warn("agent filler unavailable", "error", err.Error())
+		return nil
+	}
+	logger.Info("agent filler cached", "text", filler.Text, "audio_bytes", len(filler.PCM))
+	return filler
 }
 
 // checkTTSService logs whether the TTS service answers describe. A failure is

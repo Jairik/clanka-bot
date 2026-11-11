@@ -7,40 +7,35 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 )
 
-// Handler routes one transcript to a reply. pipeline.Pipeline satisfies it.
-type Handler interface {
-	Handle(ctx context.Context, req tool.Request, transcript string) pipeline.Reply
+// Asker answers one transcript out loud. reply.Session satisfies it and is the
+// single response seam shared by the voice loop and the debug entry.
+type Asker interface {
+	Ask(ctx context.Context, req tool.Request, transcript string) (pipeline.Reply, error)
 }
 
-// Speaker speaks reply text. speech.Speaker satisfies it through SayText.
-type Speaker interface {
-	SayText(ctx context.Context, text string) error
-}
-
-// PipelineResponder is the production Responder: run the transcript through
-// the normal pipeline, then speak (or merely return) the reply. Cancelling ctx
-// abandons both routing and playback, which is the Barge-in seam for #25.
+// PipelineResponder is the production Responder: it hands the transcript to
+// the shared reply Session, which owns filler, streaming and playback.
+// Cancelling ctx abandons routing and playback, the Barge-in seam for #25.
 type PipelineResponder struct {
-	handler Handler
-	speaker Speaker
+	session Asker
 	device  tool.Device
 }
 
-// NewPipelineResponder builds a responder. A nil speaker returns the reply
-// without playing it, which is how the voice loop runs when TTS is disabled.
-func NewPipelineResponder(handler Handler, speaker Speaker, device tool.Device) *PipelineResponder {
-	return &PipelineResponder{handler: handler, speaker: speaker, device: device}
+// NewPipelineResponder builds a responder around the shared Session. A nil
+// Session yields a silent responder that still accepts transcripts.
+func NewPipelineResponder(session Asker, device tool.Device) *PipelineResponder {
+	return &PipelineResponder{session: session, device: device}
 }
 
-// Respond handles one utterance and speaks the answer.
+// Respond handles one utterance and speaks the answer through the Session.
 func (r *PipelineResponder) Respond(ctx context.Context, transcript string) error {
-	reply := r.handler.Handle(ctx, tool.Request{
+	if r.session == nil {
+		return nil
+	}
+	_, err := r.session.Ask(ctx, tool.Request{
 		ID:     tool.NewRequestID(),
 		Path:   tool.PathFallthrough,
 		Device: r.device,
 	}, transcript)
-	if r.speaker == nil {
-		return nil
-	}
-	return r.speaker.SayText(ctx, reply.Text)
+	return err
 }

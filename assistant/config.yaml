@@ -15,6 +15,24 @@ tools:
   # Applied to Tools that do not declare their own timeout.
   default_timeout: 2s
 
+# Embed service (MiniLM). Model name is here so bge-small can be tried later.
+embed:
+  url: "http://embed:8085"
+  model: "sentence-transformers/all-MiniLM-L6-v2"
+  # Per-request budget; over it, semantic matching is skipped.
+  timeout: 150ms
+
+# Semantic Fast path placeholders until the eval set (#26) tunes them.
+semantic:
+  threshold: 0.70
+  margin: 0.08
+  # Compound requests with one of these joiners go to the Agent path.
+  joiners: ["and", "then", "also"]
+
+# Agent request prefixes, stripped after normalisation.
+agent:
+  prefixes: ["ask the agent", "agent", "hey agent"]
+
 # Exact-match Control phrases, entered just after STT.
 control_phrases:
   "what time is it": time.now

@@ -16,6 +16,7 @@ import (
 
 	"github.com/Jairik/clanka-bot/assistant/internal/api"
 	"github.com/Jairik/clanka-bot/assistant/internal/config"
+	"github.com/Jairik/clanka-bot/assistant/internal/embed"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/tools"
@@ -48,7 +49,25 @@ func run() error {
 	if err := tools.RegisterAll(registry, nil); err != nil {
 		return fmt.Errorf("register tools: %w", err)
 	}
-	p, err := pipeline.New(registry, cfg.ControlPhrases, logger)
+	opts := []pipeline.Option{pipeline.WithAgentPrefixes(cfg.Agent.Prefixes)}
+	// Compute Tool example vectors once; a dead embed service only disables
+	// semantic matching, leaving Control phrases working.
+	semantic := pipeline.NewSemanticRouter(registry, embed.NewClient(cfg.Embed.URL, cfg.Embed.Model), pipeline.SemanticConfig{
+		Threshold: cfg.Semantic.Threshold,
+		Margin:    cfg.Semantic.Margin,
+		Joiners:   cfg.Semantic.Joiners,
+		Timeout:   cfg.Embed.Timeout.Duration(),
+	})
+	buildCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	err = semantic.Build(buildCtx)
+	cancel()
+	if err != nil {
+		logger.Warn("semantic routing disabled", "embed_url", cfg.Embed.URL, "error", err.Error())
+	} else {
+		opts = append(opts, pipeline.WithSemanticRouter(semantic))
+	}
+
+	p, err := pipeline.New(registry, cfg.ControlPhrases, logger, opts...)
 	if err != nil {
 		return err
 	}
@@ -72,6 +91,8 @@ func run() error {
 		"debug_enabled", cfg.Debug.Enabled,
 		"debug_addr", cfg.Debug.Addr,
 		"tools", len(registry.Names()),
+		"embed_model", cfg.Embed.Model,
+		"semantic_tools", semantic.ToolCount(),
 	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

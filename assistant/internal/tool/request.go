@@ -6,6 +6,7 @@ import "context"
 type Path string
 
 const (
+	PathConfirmation  Path = "confirmation"
 	PathControlPhrase Path = "control_phrase"
 	PathFast          Path = "fast_path"
 	PathAgent         Path = "agent_path"

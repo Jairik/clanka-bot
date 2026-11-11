@@ -77,6 +77,14 @@ Non-secret settings live in [`assistant/config.yaml`](assistant/config.yaml);
 ## Tests
 
 ```sh
-cd assistant && go test ./...
+make test
 python -m pytest tts/tests   # needs `pip install wyoming pytest numpy`
 ```
+
+## Deploying
+
+`make deploy` is the deployment path: it pulls the current branch, builds
+SHA-tagged images, starts the stack and waits for health checks. Roll back with
+`make rollback SHA=<commit>`, which reuses that commit's images without a
+rebuild. The Pi provisioning checklist, image-tagging rules and the model-weights
+layer convention are in [`docs/deploy.md`](docs/deploy.md).

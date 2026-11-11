@@ -1,3 +1,10 @@
+# Stack topology: one Compose file runs on the dev box (amd64) and the Pi
+# (arm64). Deployment conventions (checked by scripts/check-compose.sh):
+#   - every service tags its image clanka/<service>:${GIT_SHA:-dev}
+#   - restart: unless-stopped, so the stack returns after a reboot
+#   - a healthcheck that never calls the internet, so the stack does not flap
+#     when the network drops
+#   - ML services bake model weights before copying application code
 services:
   assistant:
     build:

@@ -1,0 +1,7 @@
+device=alsa_input.usb-046d_0825_EC865510-02.mono-fallback
+seconds=4.00
+rms_dbfs=-29.7
+frame_dbfs p10=-37.4 p50=-31.4 p90=-26.9 peak=-21.6
+frames_over_threshold=120/125 threshold_dbfs=-38.0
+note=passive measurement only; no human speech was produced
+WARNING: idle noise is at or above the endpointer threshold; a human wake on this mic setting would open an utterance on noise and run to max_utterance

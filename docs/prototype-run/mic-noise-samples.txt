@@ -1,0 +1,19 @@
+# Passive webcam-mic snapshots, 2026-11-11
+
+Device: `alsa_input.usb-046d_0825_EC865510-02.mono-fallback` (Webcam C270 Mono).
+Source volume: mono 100% (base 32% / -30 dB). No human speech was produced; these
+are idle-noise samples only, taken with `parec --rate=16000 --channels=1
+--format=s16le --raw` and cut into the endpointer's 32 ms (512-sample) frames.
+
+| # | when | seconds | rms dBFS | frame p10 / p50 / p90 / peak dBFS | frames over -38 dBFS |
+| ---: | --- | ---: | ---: | --- | ---: |
+| 1 | first probe | 4.00 | -37.9 | -39.1 / -37.9 / -36.9 / -35.8 | 66 / 125 |
+| 2 | harness smoke run | 2.00 | -35.8 | -38.5 / -37.0 / -34.1 / -30.5 | 49 / 62 |
+| 3 | final run | 2.00 | -33.6 | -38.0 / -35.4 / -29.6 / -28.2 | 54 / 62 |
+| 4 | final 4 s sample | 4.00 | -29.7 | -37.4 / -31.4 / -26.9 / -21.6 | 120 / 125 |
+
+The configured threshold is `stt.endpoint.threshold_dbfs: -38`. Every sample's
+mean RMS is above it (the quietest, -37.9 dBFS, by 0.1 dB), and even the
+quietest sample has 66 of 125 frames over the threshold. The ambient floor rose
+during the session (the Docker image builds ran on the same box). The committed
+`mic-noise.txt` is sample 4.

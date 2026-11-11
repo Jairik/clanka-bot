@@ -44,7 +44,25 @@ type Config struct {
 		Margin    float64  `yaml:"margin"`
 		Joiners   []string `yaml:"joiners"`
 	} `yaml:"semantic"`
-	Agent Agent `yaml:"agent"`
+	Location Location `yaml:"location"`
+	Agent    Agent    `yaml:"agent"`
+}
+
+// Location is the public-IP geolocation settings and the optional fallback
+// used when a lookup fails and nothing better is known.
+type Location struct {
+	ProviderURL     string           `yaml:"provider_url"`
+	RefreshInterval Duration         `yaml:"refresh_interval"`
+	Timeout         Duration         `yaml:"timeout"`
+	Fallback        LocationFallback `yaml:"fallback"`
+}
+
+// LocationFallback is the config-supplied place, the last step before no
+// location at all.
+type LocationFallback struct {
+	City     string `yaml:"city"`
+	Region   string `yaml:"region"`
+	Timezone string `yaml:"timezone"`
 }
 
 // Agent is the Agent path's non-secret settings. Secrets live in the env var
@@ -109,6 +127,9 @@ func Default() Config {
 	cfg.TTS.Voice = "alba"
 	cfg.TTS.Timeout = Duration(30 * time.Second)
 	cfg.Playback.Binary = "pacat"
+	cfg.Location.ProviderURL = "https://ipwho.is/?fields=success,city,region,timezone"
+	cfg.Location.RefreshInterval = Duration(24 * time.Hour)
+	cfg.Location.Timeout = Duration(5 * time.Second)
 	cfg.Agent = DefaultAgent()
 	return cfg
 }
@@ -235,6 +256,12 @@ func (c Config) validate() error {
 		if c.TTS.Voice == "" {
 			return fmt.Errorf("config: tts.voice is required when tts.addr is set")
 		}
+	}
+	if c.Location.RefreshInterval.Duration() <= 0 {
+		return fmt.Errorf("config: location.refresh_interval must be positive")
+	}
+	if c.Location.Timeout.Duration() <= 0 {
+		return fmt.Errorf("config: location.timeout must be positive")
 	}
 	if _, err := c.Agent.ActiveProvider(); err != nil {
 		return err

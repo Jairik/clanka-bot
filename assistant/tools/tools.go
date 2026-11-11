@@ -10,26 +10,32 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/tools/audiocontrol"
 	"github.com/Jairik/clanka-bot/assistant/tools/clock"
 	"github.com/Jairik/clanka-bot/assistant/tools/timer"
+	"github.com/Jairik/clanka-bot/assistant/tools/weather"
 )
 
-// Settings injects the side effects the prototype Tools drive.
-type Settings struct {
+// Options carries the injected dependencies used when registering Tools.
+type Options struct {
 	Now        func() time.Time // nil uses the real clock
+	Weather    weather.Deps
 	Audio      audiocontrol.Controls
 	TimerAlert func(ctx context.Context, text string) error
 	Logger     *slog.Logger
 }
 
-// RegisterAll adds every Tool.
-func RegisterAll(r *tool.Registry, s Settings) error {
-	if err := clock.Register(r, s.Now); err != nil {
+// RegisterAll adds every Tool. Zero Options use the real clock and the default
+// upstream URLs; tests override them.
+func RegisterAll(r *tool.Registry, opts Options) error {
+	if err := clock.Register(r, opts.Now); err != nil {
 		return err
 	}
-	if err := clock.RegisterDate(r, s.Now); err != nil {
+	if err := clock.RegisterDate(r, opts.Now); err != nil {
 		return err
 	}
-	if err := audiocontrol.Register(r, s.Audio); err != nil {
+	if err := weather.Register(r, opts.Weather); err != nil {
 		return err
 	}
-	return timer.Register(r, timer.NewManager(s.Now, s.TimerAlert, s.Logger))
+	if err := audiocontrol.Register(r, opts.Audio); err != nil {
+		return err
+	}
+	return timer.Register(r, timer.NewManager(opts.Now, opts.TimerAlert, opts.Logger))
 }

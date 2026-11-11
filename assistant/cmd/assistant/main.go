@@ -19,11 +19,13 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/audio"
 	"github.com/Jairik/clanka-bot/assistant/internal/config"
 	"github.com/Jairik/clanka-bot/assistant/internal/embed"
+	"github.com/Jairik/clanka-bot/assistant/internal/location"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	"github.com/Jairik/clanka-bot/assistant/internal/speech"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/internal/wyoming"
 	"github.com/Jairik/clanka-bot/assistant/tools"
+	"github.com/Jairik/clanka-bot/assistant/tools/weather"
 )
 
 func main() {
@@ -49,6 +51,26 @@ func run() error {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
 
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	// Resolve the place once before serving so the first request has it; Watch
+	// keeps it fresh every 24h. The prompt reads the service per request.
+	locSvc := location.NewService(
+		location.NewIPWhoIs(&http.Client{Timeout: cfg.Location.Timeout.Duration()}, cfg.Location.ProviderURL),
+		location.Location{
+			City:     cfg.Location.Fallback.City,
+			Region:   cfg.Location.Fallback.Region,
+			Timezone: cfg.Location.Fallback.Timezone,
+		},
+		cfg.Location.RefreshInterval.Duration(),
+		logger,
+	)
+	lookupCtx, cancelLookup := context.WithTimeout(ctx, cfg.Location.Timeout.Duration())
+	locSvc.Refresh(lookupCtx)
+	cancelLookup()
+	go locSvc.Watch(ctx)
+
 	registry := tool.NewRegistry(cfg.Tools.DefaultTimeout.Duration())
 
 	// One sink serves both reply playback and the audio Tools, so audio.stop
@@ -73,7 +95,8 @@ func run() error {
 	if sayer != nil {
 		timerAlert = sayer.SayText
 	}
-	if err := tools.RegisterAll(registry, tools.Settings{
+	if err := tools.RegisterAll(registry, tools.Options{
+		Weather:    weather.Deps{Location: locSvc.Current},
 		Audio:      sink,
 		TimerAlert: timerAlert,
 		Logger:     logger,
@@ -92,6 +115,7 @@ func run() error {
 		Headers:            provider.Headers,
 		Routing:            provider.Routing,
 		SystemPrompt:       cfg.Agent.SystemPrompt,
+		SystemPromptFunc:   func() string { return locSvc.SystemPrompt(cfg.Agent.SystemPrompt) },
 		UnavailableMessage: cfg.Agent.UnavailableMessage,
 		FirstTokenTimeout:  cfg.Agent.FirstTokenTimeout.Duration(),
 		RequestTimeout:     cfg.Agent.RequestTimeout.Duration(),
@@ -153,10 +177,9 @@ func run() error {
 		"tools", len(registry.Names()),
 		"embed_model", cfg.Embed.Model,
 		"semantic_tools", semantic.ToolCount(),
+		"location_city", currentCity(locSvc),
 	)
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 	return serve(ctx, logger, servers)
 }
 
@@ -177,6 +200,16 @@ func checkTTSService(logger *slog.Logger, client *wyoming.Client, addr string) {
 		streaming = streaming || program.SupportsSynthesizeStreaming
 	}
 	logger.Info("tts ready", "addr", addr, "programs", len(info.TTS), "voices", voices, "streaming", streaming)
+}
+
+// currentCity returns the resolved city for the startup log, or "" when no
+// place is known. Coordinates are never available.
+func currentCity(service *location.Service) string {
+	loc, ok := service.Current()
+	if !ok {
+		return ""
+	}
+	return loc.City
 }
 
 // serve runs every HTTP server until a signal or a listener failure, then

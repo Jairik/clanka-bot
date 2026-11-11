@@ -1,0 +1,5 @@
+# Pinned for reproducible prototype images. Torch CPU is installed separately.
+sentence-transformers==6.3.0
+fastapi==0.162.4
+uvicorn==0.54.0
+numpy==2.5.4

@@ -24,6 +24,20 @@ type AgentRunner interface {
 	History() *agent.History
 }
 
+// ConfirmationResult is the pending-Confirmation stage's decision.
+type ConfirmationResult struct {
+	Handled bool  // the utterance answered the Confirmation
+	Reply   Reply // spoken when Handled
+	Prefix  string
+}
+
+// ConfirmationResolver settles a pending Confirmation before any other check.
+// A non-matching utterance returns Handled=false and an optional Prefix such
+// as "Cancelled." so the new request is still routed (issue #10).
+type ConfirmationResolver interface {
+	Resolve(ctx context.Context, req tool.Request, transcript string) ConfirmationResult
+}
+
 // Reply is the text answer plus routing details for the log and response.
 type Reply struct {
 	Text      string
@@ -50,6 +64,16 @@ func WithHistory(history *agent.History) Option {
 	return func(p *Pipeline) { p.history = history }
 }
 
+// WithSemanticRouter enables semantic Fast path matching.
+func WithSemanticRouter(router *SemanticRouter) Option {
+	return func(p *Pipeline) { p.semantic = router }
+}
+
+// WithConfirmationResolver wires the pending-Confirmation stage.
+func WithConfirmationResolver(resolver ConfirmationResolver) Option {
+	return func(p *Pipeline) { p.confirmation = resolver }
+}
+
 // Pipeline routes one transcript at a time. It is safe for concurrent use.
 type Pipeline struct {
 	registry *tool.Registry
@@ -58,6 +82,9 @@ type Pipeline struct {
 	agent    AgentRunner
 	prefixes []string
 	history  *agent.History
+	semantic *SemanticRouter
+
+	confirmation ConfirmationResolver
 }
 
 // New builds a pipeline and rejects a Control phrase table that points at
@@ -97,6 +124,16 @@ func New(reg *tool.Registry, phrases map[string]string, logger *slog.Logger, opt
 	return p, nil
 }
 
+// routeLog carries the fields the single request log line reports.
+type routeLog struct {
+	top        []ToolScore
+	margin     float64
+	extraction string
+	reason     string
+	embedErr   error
+	failure    string
+}
+
 // Handle resolves one transcript. Internal errors are logged in full and only
 // a generic message reaches the caller.
 func (p *Pipeline) Handle(ctx context.Context, req tool.Request, transcript string) Reply {
@@ -107,17 +144,43 @@ func (p *Pipeline) Handle(ctx context.Context, req tool.Request, transcript stri
 // deltas. The hook is ignored on the Fast path.
 func (p *Pipeline) HandleStream(ctx context.Context, req tool.Request, transcript string, onDelta func(string)) Reply {
 	started := time.Now()
-	reply := Reply{Path: tool.PathFallthrough, RequestID: req.ID, Text: PlaceholderReply}
-	var failure string
+	record := routeLog{top: []ToolScore{}, extraction: "none", reason: reasonSemanticDisabled}
 
 	// Order matches #10. A pending Confirmation comes first once #24 lands.
-	if p.agent == nil {
-		if name, matched := p.phrases[NormalizePhrase(transcript)]; matched {
-			reply.Path = tool.PathControlPhrase
-			reply.Tool = name
-			reply.Text, failure = p.callTool(ctx, req, transcript, name)
+	prefix := ""
+	if p.confirmation != nil {
+		res := p.confirmation.Resolve(ctx, req, transcript)
+		if res.Handled {
+			reply := res.Reply
+			reply.RequestID = req.ID
+			if reply.Path == "" {
+				reply.Path = tool.PathConfirmation
+			}
+			record.reason = ""
+			p.finish(started, req, transcript, reply, record)
+			return reply
 		}
-	} else if rest, ok := agent.MatchRequestPrefix(transcript, p.prefixes); ok {
+		// Not a clear yes: say "cancelled", then route the new request.
+		prefix = strings.TrimSpace(res.Prefix)
+	}
+
+	reply := p.route(ctx, req, transcript, onDelta, &record)
+	if prefix != "" {
+		reply.Text = strings.TrimSpace(prefix + " " + reply.Text)
+	}
+	p.finish(started, req, transcript, reply, record)
+	return reply
+}
+
+// route applies the post-Confirmation steps in the fixed order: Agent request
+// prefix, Control phrase, semantic Fast path, then the Agent path.
+func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript string, onDelta func(string), record *routeLog) Reply {
+	reply := Reply{Path: tool.PathFallthrough, RequestID: req.ID, Text: PlaceholderReply}
+	normalized := NormalizePhrase(transcript)
+
+	// 2. Agent request prefix goes straight to the Agent path.
+	if rest, ok := agent.MatchRequestPrefix(transcript, p.prefixes); ok {
+		record.reason = ""
 		reply.Path = tool.PathAgent
 		if rest == "" {
 			reply.Text = agent.EmptyRequestReply
@@ -125,32 +188,49 @@ func (p *Pipeline) HandleStream(ctx context.Context, req tool.Request, transcrip
 		} else {
 			p.callAgent(ctx, req, rest, onDelta, &reply)
 		}
-	} else if name, matched := p.phrases[NormalizePhrase(transcript)]; matched {
-		reply.Path = tool.PathControlPhrase
-		reply.Tool = name
-		reply.Text, failure = p.callTool(ctx, req, transcript, name)
-	} else {
-		reply.Path = tool.PathAgent
-		p.callAgent(ctx, req, transcript, onDelta, &reply)
+		return reply
 	}
 
-	attrs := []any{
-		"request_id", req.ID,
-		"path", string(reply.Path),
-		"tool", reply.Tool,
-		"transcript", transcript,
-		"duration_ms", time.Since(started).Milliseconds(),
+	// 3. Control phrase is an exact match and must not wait on embeddings.
+	if name, ok := p.phrases[normalized]; ok {
+		record.reason = ""
+		reply.Path = tool.PathControlPhrase
+		reply.Tool = name
+		reply.Text, record.failure = p.callTool(ctx, req, transcript, name, tool.PathControlPhrase, nil)
+		return reply
 	}
-	if failure != "" {
-		p.logger.Error("request", append(attrs, "error", failure)...)
-	} else {
-		p.logger.Info("request", attrs...)
+
+	// 4. Semantic match, then extraction, then the Fast path.
+	if p.semantic != nil {
+		match := p.semantic.Match(ctx, transcript)
+		record.top = match.Top
+		record.margin = match.Margin
+		record.extraction = match.Extraction
+		record.reason = match.Reason
+		record.embedErr = match.Err
+		if match.Tool != "" {
+			record.reason = ""
+			reply.Path = tool.PathFast
+			reply.Tool = match.Tool
+			reply.Text, record.failure = p.callTool(ctx, req, transcript, match.Tool, tool.PathFast, match.Args)
+			return reply
+		}
+	}
+
+	// 5. Agent path, or the placeholder until it lands.
+	if p.agent != nil {
+		p.callAgent(ctx, req, transcript, onDelta, &reply)
+		return reply
+	}
+	if record.reason == "" {
+		record.reason = reasonSemanticNoMatch
 	}
 	return reply
 }
 
 func (p *Pipeline) callAgent(ctx context.Context, req tool.Request, transcript string, onDelta func(string), reply *Reply) {
 	result := p.agent.Run(ctx, req, transcript, onDelta)
+	reply.Path = tool.PathAgent
 	reply.Text = result.Text
 	reply.Pending = result.Pending
 	names := make([]string, 0, len(result.Calls))
@@ -160,9 +240,9 @@ func (p *Pipeline) callAgent(ctx context.Context, req tool.Request, transcript s
 	reply.Tool = strings.Join(names, ",")
 }
 
-func (p *Pipeline) callTool(ctx context.Context, req tool.Request, transcript, name string) (string, string) {
-	req.Path = tool.PathControlPhrase
-	result, err := p.registry.Execute(tool.WithRequest(ctx, req), name, nil)
+func (p *Pipeline) callTool(ctx context.Context, req tool.Request, transcript, name string, path tool.Path, args json.RawMessage) (string, string) {
+	req.Path = path
+	result, err := p.registry.Execute(tool.WithRequest(ctx, req), name, args)
 	if err != nil {
 		return tool.FailureMessage(err), err.Error()
 	}
@@ -195,6 +275,29 @@ func (p *Pipeline) recordTurn(transcript, spoken string, calls []agent.ToolCall)
 		return
 	}
 	p.history.Add(agent.Turn{Utterance: transcript, Reply: spoken, Calls: calls})
+}
+
+// finish writes the single structured log line for a request.
+func (p *Pipeline) finish(started time.Time, req tool.Request, transcript string, reply Reply, record routeLog) {
+	attrs := []any{
+		"request_id", req.ID,
+		"path", string(reply.Path),
+		"tool", reply.Tool,
+		"transcript", transcript,
+		"duration_ms", time.Since(started).Milliseconds(),
+		"top_tools", record.top,
+		"margin", record.margin,
+		"extract", record.extraction,
+		"fallthrough_reason", record.reason,
+	}
+	if record.embedErr != nil {
+		attrs = append(attrs, "embed_error", record.embedErr.Error())
+	}
+	if record.failure != "" {
+		p.logger.Error("request", append(attrs, "error", record.failure)...)
+		return
+	}
+	p.logger.Info("request", attrs...)
 }
 
 // NormalizePhrase trims, lowercases, collapses whitespace and drops trailing

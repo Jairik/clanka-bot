@@ -1,9 +1,30 @@
 services:
+  # MiniLM vectors for the semantic Fast path. Internal-only port.
+  embed:
+    build:
+      context: ./embed
+      args:
+        EMBED_MODEL: ${EMBED_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
+    image: clanka/embed:${GIT_SHA:-dev}
+    restart: unless-stopped
+    environment:
+      EMBED_MODEL: ${EMBED_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
+      EMBED_PORT: "8085"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8085/healthz')"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 60s
+
   assistant:
     build:
       context: ./assistant
     image: clanka/assistant:${GIT_SHA:-dev}
     restart: unless-stopped
+    depends_on:
+      embed:
+        condition: service_healthy
     ports:
       # Both ports are published on the host loopback only.
       - "127.0.0.1:${ASSISTANT_HTTP_PORT:-8080}:8080"
@@ -13,7 +34,8 @@ services:
       # host-side publication above keeps it localhost-only.
       ASSISTANT_HTTP_ADDR: ":8080"
       ASSISTANT_DEBUG_ADDR: ":8081"
-      # Secrets stay in .env; config.yaml names this variable.
+      ASSISTANT_EMBED_URL: "http://embed:8085"
+      # Secrets stay in .env; config.yaml names these variables.
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       TZ: ${TZ:-UTC}
     healthcheck:

@@ -25,7 +25,17 @@ type Config struct {
 		DefaultTimeout Duration `yaml:"default_timeout"`
 	} `yaml:"tools"`
 	ControlPhrases map[string]string `yaml:"control_phrases"`
-	Agent          Agent             `yaml:"agent"`
+	Embed          struct {
+		URL     string   `yaml:"url"`
+		Model   string   `yaml:"model"`
+		Timeout Duration `yaml:"timeout"`
+	} `yaml:"embed"`
+	Semantic struct {
+		Threshold float64  `yaml:"threshold"`
+		Margin    float64  `yaml:"margin"`
+		Joiners   []string `yaml:"joiners"`
+	} `yaml:"semantic"`
+	Agent Agent `yaml:"agent"`
 }
 
 // Agent is the Agent path's non-secret settings. Secrets live in the env var
@@ -81,6 +91,12 @@ func Default() Config {
 	cfg.Debug.Enabled = true
 	cfg.Debug.Addr = "127.0.0.1:8081"
 	cfg.Tools.DefaultTimeout = Duration(2 * time.Second)
+	cfg.Embed.URL = "http://embed:8085"
+	cfg.Embed.Model = "sentence-transformers/all-MiniLM-L6-v2"
+	cfg.Embed.Timeout = Duration(150 * time.Millisecond)
+	cfg.Semantic.Threshold = 0.70
+	cfg.Semantic.Margin = 0.08
+	cfg.Semantic.Joiners = []string{"and", "then", "also"}
 	cfg.Agent = DefaultAgent()
 	return cfg
 }
@@ -143,6 +159,26 @@ func applyEnv(cfg *Config) error {
 		}
 		cfg.Debug.Enabled = enabled
 	}
+	if v := os.Getenv("ASSISTANT_EMBED_URL"); v != "" {
+		cfg.Embed.URL = v
+	}
+	if v := os.Getenv("ASSISTANT_EMBED_MODEL"); v != "" {
+		cfg.Embed.Model = v
+	}
+	if v := os.Getenv("ASSISTANT_SEMANTIC_THRESHOLD"); v != "" {
+		threshold, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			return fmt.Errorf("config: ASSISTANT_SEMANTIC_THRESHOLD=%q: %w", v, err)
+		}
+		cfg.Semantic.Threshold = threshold
+	}
+	if v := os.Getenv("ASSISTANT_SEMANTIC_MARGIN"); v != "" {
+		margin, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			return fmt.Errorf("config: ASSISTANT_SEMANTIC_MARGIN=%q: %w", v, err)
+		}
+		cfg.Semantic.Margin = margin
+	}
 	return nil
 }
 
@@ -155,6 +191,21 @@ func (c Config) validate() error {
 	}
 	if c.Tools.DefaultTimeout.Duration() <= 0 {
 		return fmt.Errorf("config: tools.default_timeout must be positive")
+	}
+	if c.Embed.URL == "" {
+		return fmt.Errorf("config: embed.url is required")
+	}
+	if c.Embed.Model == "" {
+		return fmt.Errorf("config: embed.model is required")
+	}
+	if c.Embed.Timeout.Duration() <= 0 {
+		return fmt.Errorf("config: embed.timeout must be positive")
+	}
+	if c.Semantic.Threshold <= 0 || c.Semantic.Threshold > 1 {
+		return fmt.Errorf("config: semantic.threshold must be in (0, 1]")
+	}
+	if c.Semantic.Margin < 0 || c.Semantic.Margin >= 1 {
+		return fmt.Errorf("config: semantic.margin must be in [0, 1)")
 	}
 	if _, err := c.Agent.ActiveProvider(); err != nil {
 		return err

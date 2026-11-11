@@ -1,0 +1,24 @@
+# Non-secret assistant settings. Secrets belong in .env, never here.
+
+http:
+  # Health endpoint. Docker publishes this on the host loopback only.
+  addr: ":8080"
+
+debug:
+  # Localhost-only typed-transcript entry used to exercise the pipeline.
+  enabled: true
+  # Loopback by default. Compose overrides this to ":8081" because the
+  # published port is already bound to 127.0.0.1 on the host.
+  addr: "127.0.0.1:8081"
+
+tools:
+  # Applied to Tools that do not declare their own timeout.
+  default_timeout: 2s
+
+# Exact-match Control phrases, entered just after STT.
+control_phrases:
+  "what time is it": time.now
+  "what's the time": time.now
+  "what is the time": time.now
+  "tell me the time": time.now
+  "time": time.now

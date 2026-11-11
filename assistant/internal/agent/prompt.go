@@ -18,24 +18,35 @@ const DefaultSystemPrompt = "You are a concise voice assistant. Answer briefly a
 // turns history and Tool results into messages, so privacy filtering lives in
 // one place (ADR-0002).
 type PromptBuilder struct {
-	system string
+	system func() string
 }
 
 // NewPromptBuilder builds a prompt builder. An empty system prompt falls back
 // to DefaultSystemPrompt.
 func NewPromptBuilder(system string) *PromptBuilder {
-	if strings.TrimSpace(system) == "" {
-		system = DefaultSystemPrompt
-	}
-	return &PromptBuilder{system: system}
+	return NewPromptBuilderFunc(func() string { return system })
 }
 
-// Messages builds the labelled parts of a request: the static system prompt,
-// the shared history, and the current utterance. A turn that touched a
-// Local-only Tool is dropped whole, utterance included.
+// NewPromptBuilderFunc builds a prompt builder whose system prompt is read per
+// request, so a refreshed location reaches later requests. An empty result
+// falls back to DefaultSystemPrompt.
+func NewPromptBuilderFunc(system func() string) *PromptBuilder {
+	return &PromptBuilder{system: func() string {
+		if system != nil {
+			if text := strings.TrimSpace(system()); text != "" {
+				return text
+			}
+		}
+		return DefaultSystemPrompt
+	}}
+}
+
+// Messages builds the labelled parts of a request: the system prompt, the
+// shared history, and the current utterance. A turn that touched a Local-only
+// Tool is dropped whole, utterance included.
 func (b *PromptBuilder) Messages(utterance string, history []Turn) []openai.ChatCompletionMessageParamUnion {
 	messages := make([]openai.ChatCompletionMessageParamUnion, 0, 1+2*len(history)+1)
-	messages = append(messages, openai.SystemMessage(b.system))
+	messages = append(messages, openai.SystemMessage(b.system()))
 	for _, turn := range history {
 		if turn.localOnly() {
 			continue

@@ -27,12 +27,15 @@ const (
 
 // Settings is the Agent path's runtime configuration (non-secret).
 type Settings struct {
-	BaseURL            string
-	APIKeyEnv          string
-	Model              string
-	Headers            map[string]string
-	Routing            map[string]any
-	SystemPrompt       string
+	BaseURL      string
+	APIKeyEnv    string
+	Model        string
+	Headers      map[string]string
+	Routing      map[string]any
+	SystemPrompt string
+	// SystemPromptFunc, when set, overrides SystemPrompt and is read per
+	// request so refreshed location data is used.
+	SystemPromptFunc   func() string
 	UnavailableMessage string
 	FirstTokenTimeout  time.Duration
 	RequestTimeout     time.Duration
@@ -98,10 +101,14 @@ func New(settings Settings, registry *tool.Registry, logger *slog.Logger) (*Agen
 	if logger == nil {
 		logger = slog.Default()
 	}
+	prompt := NewPromptBuilder(settings.SystemPrompt)
+	if settings.SystemPromptFunc != nil {
+		prompt = NewPromptBuilderFunc(settings.SystemPromptFunc)
+	}
 	return &Agent{
 		provider:    newProvider(settings),
 		registry:    registry,
-		prompt:      NewPromptBuilder(settings.SystemPrompt),
+		prompt:      prompt,
 		history:     NewHistory(settings.HistoryTurns, settings.HistoryQuiet, nil),
 		logger:      logger,
 		maxSteps:    settings.MaxSteps,

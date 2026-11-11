@@ -24,6 +24,16 @@ type AgentRunner interface {
 	History() *agent.History
 }
 
+// Events are optional callbacks for one streaming request. They are called
+// from the routing goroutine, so they must not block.
+type Events struct {
+	// AgentPath runs once when routing picks the Agent path, before the model
+	// call. The Agent path Filler plays here, while the first tokens are pending.
+	AgentPath func()
+	// Delta receives content deltas as the model generates them.
+	Delta func(string)
+}
+
 // ConfirmationResult is the pending-Confirmation stage's decision.
 type ConfirmationResult struct {
 	Handled bool  // the utterance answered the Confirmation
@@ -137,12 +147,17 @@ type routeLog struct {
 // Handle resolves one transcript. Internal errors are logged in full and only
 // a generic message reaches the caller.
 func (p *Pipeline) Handle(ctx context.Context, req tool.Request, transcript string) Reply {
-	return p.HandleStream(ctx, req, transcript, nil)
+	return p.HandleEvents(ctx, req, transcript, Events{})
 }
 
-// HandleStream is Handle with a streaming hook for the Agent path's content
-// deltas. The hook is ignored on the Fast path.
+// HandleStream is Handle with a delta hook, kept for the plain streaming case.
 func (p *Pipeline) HandleStream(ctx context.Context, req tool.Request, transcript string, onDelta func(string)) Reply {
+	return p.HandleEvents(ctx, req, transcript, Events{Delta: onDelta})
+}
+
+// HandleEvents is Handle with routing and generation callbacks for one
+// request. The callbacks are ignored on the Fast path.
+func (p *Pipeline) HandleEvents(ctx context.Context, req tool.Request, transcript string, events Events) Reply {
 	started := time.Now()
 	record := routeLog{top: []ToolScore{}, extraction: "none", reason: reasonSemanticDisabled}
 
@@ -164,7 +179,7 @@ func (p *Pipeline) HandleStream(ctx context.Context, req tool.Request, transcrip
 		prefix = strings.TrimSpace(res.Prefix)
 	}
 
-	reply := p.route(ctx, req, transcript, onDelta, &record)
+	reply := p.route(ctx, req, transcript, events, &record)
 	if prefix != "" {
 		reply.Text = strings.TrimSpace(prefix + " " + reply.Text)
 	}
@@ -174,7 +189,7 @@ func (p *Pipeline) HandleStream(ctx context.Context, req tool.Request, transcrip
 
 // route applies the post-Confirmation steps in the fixed order: Agent request
 // prefix, Control phrase, semantic Fast path, then the Agent path.
-func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript string, onDelta func(string), record *routeLog) Reply {
+func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript string, events Events, record *routeLog) Reply {
 	reply := Reply{Path: tool.PathFallthrough, RequestID: req.ID, Text: PlaceholderReply}
 	normalized := NormalizePhrase(transcript)
 
@@ -182,11 +197,12 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 	if rest, ok := agent.MatchRequestPrefix(transcript, p.prefixes); ok {
 		record.reason = ""
 		reply.Path = tool.PathAgent
+		// An empty request makes no model call, so no Agent path cue plays.
 		if rest == "" {
 			reply.Text = agent.EmptyRequestReply
 			p.recordTurn(transcript, reply.Text, nil)
 		} else {
-			p.callAgent(ctx, req, rest, onDelta, &reply)
+			p.callAgent(ctx, req, rest, events, &reply)
 		}
 		return reply
 	}
@@ -219,7 +235,7 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 
 	// 5. Agent path, or the placeholder until it lands.
 	if p.agent != nil {
-		p.callAgent(ctx, req, transcript, onDelta, &reply)
+		p.callAgent(ctx, req, transcript, events, &reply)
 		return reply
 	}
 	if record.reason == "" {
@@ -228,8 +244,12 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 	return reply
 }
 
-func (p *Pipeline) callAgent(ctx context.Context, req tool.Request, transcript string, onDelta func(string), reply *Reply) {
-	result := p.agent.Run(ctx, req, transcript, onDelta)
+func (p *Pipeline) callAgent(ctx context.Context, req tool.Request, transcript string, events Events, reply *Reply) {
+	// The path is known before the model call, so the filler can start now.
+	if events.AgentPath != nil {
+		events.AgentPath()
+	}
+	result := p.agent.Run(ctx, req, transcript, events.Delta)
 	reply.Path = tool.PathAgent
 	reply.Text = result.Text
 	reply.Pending = result.Pending

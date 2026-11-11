@@ -13,23 +13,25 @@ import (
 
 	"github.com/Jairik/clanka-bot/assistant/internal/api"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
+	"github.com/Jairik/clanka-bot/assistant/internal/reply"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/tools/clock"
 )
 
-type fakeSayer struct {
+// fakeSpeaker stands in for speech.Speaker at the reply session seam.
+type fakeSpeaker struct {
 	spoke  []string
 	err    error
 	ctxErr error
 }
 
-func (f *fakeSayer) SayText(ctx context.Context, text string) error {
+func (f *fakeSpeaker) SayText(ctx context.Context, text string) error {
 	f.spoke = append(f.spoke, text)
 	f.ctxErr = ctx.Err()
 	return f.err
 }
 
-func newSpeechServer(t *testing.T, sayer api.Sayer) (http.Handler, *bytes.Buffer) {
+func newSpeechServer(t *testing.T, speaker reply.Speaker) (http.Handler, *bytes.Buffer) {
 	t.Helper()
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&logs, nil))
@@ -43,12 +45,13 @@ func newSpeechServer(t *testing.T, sayer api.Sayer) (http.Handler, *bytes.Buffer
 	if err != nil {
 		t.Fatalf("pipeline.New: %v", err)
 	}
-	return api.NewHandler(p, logger, true, api.WithSpeech(sayer)), &logs
+	session := reply.New(p, speaker, nil, nil)
+	return api.NewHandler(p, logger, true, api.WithResponder(session)), &logs
 }
 
 func TestDebugTranscriptSpeaksTheReply(t *testing.T) {
-	sayer := &fakeSayer{}
-	handler, _ := newSpeechServer(t, sayer)
+	speaker := &fakeSpeaker{}
+	handler, _ := newSpeechServer(t, speaker)
 
 	rec := postTranscript(t, handler, `{"text":"what time is it"}`)
 	if rec.Code != http.StatusOK {
@@ -64,17 +67,17 @@ func TestDebugTranscriptSpeaksTheReply(t *testing.T) {
 	if !body.Spoken {
 		t.Fatal("spoken = false, want true")
 	}
-	if len(sayer.spoke) != 1 || sayer.spoke[0] != body.Reply {
-		t.Fatalf("spoke = %v, want the reply %q", sayer.spoke, body.Reply)
+	if len(speaker.spoke) != 1 || speaker.spoke[0] != body.Reply {
+		t.Fatalf("spoke = %v, want the reply %q spoken once", speaker.spoke, body.Reply)
 	}
-	if sayer.ctxErr != nil {
-		t.Fatalf("speech context was cancelled: %v", sayer.ctxErr)
+	if speaker.ctxErr != nil {
+		t.Fatalf("speech context was cancelled: %v", speaker.ctxErr)
 	}
 }
 
 func TestDebugTranscriptKeepsReplyWhenSpeechFails(t *testing.T) {
-	sayer := &fakeSayer{err: errors.New("tts is down")}
-	handler, logs := newSpeechServer(t, sayer)
+	speaker := &fakeSpeaker{err: errors.New("tts is down")}
+	handler, logs := newSpeechServer(t, speaker)
 
 	rec := postTranscript(t, handler, `{"text":"what time is it"}`)
 	if rec.Code != http.StatusOK {

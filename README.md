@@ -45,6 +45,13 @@ OpenRouter key in `.env` (`OPENROUTER_API_KEY`); without one it answers with
 the configured Unavailable message and the Fast path keeps working. Every
 provider request forces OpenRouter's `provider.zdr` and
 `provider.data_collection: "deny"` in code.
+
+Agent path replies are spoken as they are generated: the first chunk is flushed
+at a clause boundary or after about twelve words, then each sentence is sent to
+TTS while the rest of the answer is still streaming. The configured
+`agent.filler` ("One moment." by default) is synthesized once at startup and
+cached, so it plays the moment a request is routed to the Agent path; an empty
+Filler is a startup error.
 Both published ports are bound to the host loopback only. The debug listener
 binds all interfaces inside the container (see `docker-compose.yml`), so the
 host port mapping is what keeps it local.

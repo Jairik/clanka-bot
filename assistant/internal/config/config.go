@@ -53,6 +53,7 @@ type Agent struct {
 	Provider           string              `yaml:"provider"`
 	Providers          map[string]Provider `yaml:"providers"`
 	SystemPrompt       string              `yaml:"system_prompt"`
+	Filler             string              `yaml:"filler"`
 	UnavailableMessage string              `yaml:"unavailable_message"`
 	RequestPrefixes    []string            `yaml:"request_prefixes"`
 	History            AgentHistory        `yaml:"history"`
@@ -126,6 +127,7 @@ func DefaultAgent() Agent {
 				Routing:        map[string]any{"sort": "latency"},
 			},
 		},
+		Filler:             "One moment.",
 		UnavailableMessage: "Sorry, I can't answer that right now.",
 		RequestPrefixes:    []string{"ask the agent", "agent", "hey agent"},
 		History: AgentHistory{
@@ -241,6 +243,9 @@ func (c Config) validate() error {
 	}
 	if c.Agent.UnavailableMessage == "" {
 		return fmt.Errorf("config: agent.unavailable_message is required")
+	}
+	if strings.TrimSpace(c.Agent.Filler) == "" {
+		return fmt.Errorf("config: agent.filler is required")
 	}
 	for _, prefix := range c.Agent.RequestPrefixes {
 		if strings.TrimSpace(prefix) == "" {

@@ -157,6 +157,28 @@ func TestIPWhoIsProviderKeepsOnlyCityRegionAndTimezone(t *testing.T) {
 	}
 }
 
+// TestIPWhoIsProviderAcceptsAFieldsResponseWithoutSuccess covers the real
+// response shape: a `fields=` request omits every field that was not asked
+// for, including success, and that must still count as a lookup.
+func TestIPWhoIsProviderAcceptsAFieldsResponseWithoutSuccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"region":"Maryland","city":"Hagerstown",
+			"timezone":{"id":"America/New_York","abbr":"EST"}}`)
+	}))
+	defer server.Close()
+
+	provider := location.NewIPWhoIs(server.Client(), server.URL)
+	got, err := provider.Lookup(context.Background())
+	if err != nil {
+		t.Fatalf("Lookup: %v", err)
+	}
+	want := location.Location{City: "Hagerstown", Region: "Maryland", Timezone: "America/New_York"}
+	if got != want {
+		t.Fatalf("Lookup = %+v, want %+v", got, want)
+	}
+}
+
 func TestIPWhoIsProviderReportsFailure(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		fmt.Fprint(w, `{"success": false, "message": "Rate limit exceeded"}`)

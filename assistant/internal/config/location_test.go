@@ -12,7 +12,7 @@ func TestLocationDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Location.ProviderURL != "https://ipwho.is/?fields=city,region,timezone" {
+	if cfg.Location.ProviderURL != "https://ipwho.is/?fields=success,city,region,timezone" {
 		t.Errorf("ProviderURL = %q", cfg.Location.ProviderURL)
 	}
 	if cfg.Location.RefreshInterval.Duration() != 24*time.Hour {

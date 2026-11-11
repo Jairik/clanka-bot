@@ -17,8 +17,9 @@ import (
 )
 
 // DefaultProviderURL is the free IP geolocation service. The fields parameter
-// asks it not to send coordinates at all.
-const DefaultProviderURL = "https://ipwho.is/?fields=city,region,timezone"
+// asks it not to send coordinates at all; success is requested too because the
+// service omits fields that are not asked for.
+const DefaultProviderURL = "https://ipwho.is/?fields=success,city,region,timezone"
 
 const maxResponseBytes = 64 << 10
 
@@ -178,7 +179,9 @@ func NewIPWhoIs(client *http.Client, url string) Provider {
 }
 
 type ipWhoIsResponse struct {
-	Success  bool   `json:"success"`
+	// Success is a pointer because ipwho.is omits fields that are not asked
+	// for, so an absent success must not be read as failure.
+	Success  *bool  `json:"success"`
 	Message  string `json:"message"`
 	City     string `json:"city"`
 	Region   string `json:"region"`
@@ -206,7 +209,7 @@ func (p *ipWhoIs) Lookup(ctx context.Context) (Location, error) {
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&body); err != nil {
 		return Location{}, fmt.Errorf("location: decode response: %w", err)
 	}
-	if !body.Success {
+	if body.Success != nil && !*body.Success {
 		if body.Message == "" {
 			body.Message = "lookup unsuccessful"
 		}

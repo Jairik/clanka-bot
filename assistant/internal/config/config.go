@@ -127,7 +127,7 @@ func Default() Config {
 	cfg.TTS.Voice = "alba"
 	cfg.TTS.Timeout = Duration(30 * time.Second)
 	cfg.Playback.Binary = "pacat"
-	cfg.Location.ProviderURL = "https://ipwho.is/?fields=city,region,timezone"
+	cfg.Location.ProviderURL = "https://ipwho.is/?fields=success,city,region,timezone"
 	cfg.Location.RefreshInterval = Duration(24 * time.Hour)
 	cfg.Location.Timeout = Duration(5 * time.Second)
 	cfg.Agent = DefaultAgent()

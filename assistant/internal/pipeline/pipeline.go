@@ -30,6 +30,9 @@ type Events struct {
 	// AgentPath runs once when routing picks the Agent path, before the model
 	// call. The Agent path Filler plays here, while the first tokens are pending.
 	AgentPath func()
+	// Prefix runs before routing when a dropped Confirmation prepends
+	// "Cancelled." so the spoken session can say it before any streamed text.
+	Prefix func(string)
 	// Delta receives content deltas as the model generates them.
 	Delta func(string)
 }
@@ -39,6 +42,7 @@ type ConfirmationResult struct {
 	Handled bool  // the utterance answered the Confirmation
 	Reply   Reply // spoken when Handled
 	Prefix  string
+	Call    *agent.ToolCall // the executed call, for the shared history
 }
 
 // ConfirmationResolver settles a pending Confirmation before any other check.
@@ -48,9 +52,18 @@ type ConfirmationResolver interface {
 	Resolve(ctx context.Context, req tool.Request, transcript string) ConfirmationResult
 }
 
+// PendingDropper is the optional Barge-in seam (#25): it drops a waiting
+// Confirmation so a stale yes cannot run later.
+type PendingDropper interface {
+	DropPending() (tool.PendingConfirmation, bool)
+}
+
 // Reply is the text answer plus routing details for the log and response.
+// Prefix is the "Cancelled." lead-in when a dropped Confirmation was followed
+// by another request; Text already includes it for text-only callers.
 type Reply struct {
 	Text      string
+	Prefix    string
 	Tool      string
 	Path      tool.Path
 	RequestID string
@@ -82,6 +95,16 @@ func WithSemanticRouter(router *SemanticRouter) Option {
 // WithConfirmationResolver wires the pending-Confirmation stage.
 func WithConfirmationResolver(resolver ConfirmationResolver) Option {
 	return func(p *Pipeline) { p.confirmation = resolver }
+}
+
+// DropPending discards a waiting Confirmation. Barge-in (#25) calls it when
+// the wake word interrupts a reply so a stale yes cannot run later.
+func (p *Pipeline) DropPending() (tool.PendingConfirmation, bool) {
+	dropper, ok := p.confirmation.(PendingDropper)
+	if !ok {
+		return tool.PendingConfirmation{}, false
+	}
+	return dropper.DropPending()
 }
 
 // Pipeline routes one transcript at a time. It is safe for concurrent use.
@@ -122,6 +145,9 @@ func New(reg *tool.Registry, phrases map[string]string, logger *slog.Logger, opt
 		if !info.HasSpeak {
 			return nil, fmt.Errorf("pipeline: control phrase %q points at %q, which has no Speak renderer", phrase, name)
 		}
+		if info.Permission == tool.PermissionConfirm {
+			return nil, fmt.Errorf("pipeline: control phrase %q points at confirm tool %q", phrase, name)
+		}
 		normalized[key] = name
 	}
 	p := &Pipeline{registry: reg, phrases: normalized, logger: logger}
@@ -161,7 +187,7 @@ func (p *Pipeline) HandleEvents(ctx context.Context, req tool.Request, transcrip
 	started := time.Now()
 	record := routeLog{top: []ToolScore{}, extraction: "none", reason: reasonSemanticDisabled}
 
-	// Order matches #10. A pending Confirmation comes first once #24 lands.
+	// Order matches #10. A pending Confirmation comes first.
 	prefix := ""
 	if p.confirmation != nil {
 		res := p.confirmation.Resolve(ctx, req, transcript)
@@ -171,6 +197,9 @@ func (p *Pipeline) HandleEvents(ctx context.Context, req tool.Request, transcrip
 			if reply.Path == "" {
 				reply.Path = tool.PathConfirmation
 			}
+			if res.Call != nil {
+				p.recordTurn(transcript, reply.Text, []agent.ToolCall{*res.Call})
+			}
 			record.reason = ""
 			p.finish(started, req, transcript, reply, record)
 			return reply
@@ -179,8 +208,22 @@ func (p *Pipeline) HandleEvents(ctx context.Context, req tool.Request, transcrip
 		prefix = strings.TrimSpace(res.Prefix)
 	}
 
+	// Say the cancellation lead-in before any routed reply is streamed.
+	if prefix != "" && events.Prefix != nil {
+		events.Prefix(prefix)
+	}
+
+	// Silence has nothing to route after it cancels the waiting call.
+	if prefix != "" && strings.TrimSpace(transcript) == "" {
+		reply := Reply{Text: prefix, Prefix: prefix, Path: tool.PathConfirmation, RequestID: req.ID}
+		record.reason = ""
+		p.finish(started, req, transcript, reply, record)
+		return reply
+	}
+
 	reply := p.route(ctx, req, transcript, events, &record)
 	if prefix != "" {
+		reply.Prefix = prefix
 		reply.Text = strings.TrimSpace(prefix + " " + reply.Text)
 	}
 	p.finish(started, req, transcript, reply, record)

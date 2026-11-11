@@ -221,3 +221,39 @@ func equal(got, want []string) bool {
 	}
 	return true
 }
+
+func TestCancelledPrefixIsSpokenBeforeAStreamedAnswer(t *testing.T) {
+	speaker := newFakeSpeaker()
+	routed := &fakePipeline{}
+	routed.handle = func(events pipeline.Events) pipeline.Reply {
+		events.Prefix("Cancelled.")
+		events.AgentPath()
+		events.Delta("It is sunny.")
+		return pipeline.Reply{Text: "Cancelled. It is sunny.", Prefix: "Cancelled."}
+	}
+
+	session := reply.New(routed, speaker, logSink{&eventLog{}}, testFiller())
+	if _, err := session.Ask(context.Background(), request(), "no"); err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	if got, want := speaker.phrases(), []string{"Cancelled.", "It is sunny."}; !equal(got, want) {
+		t.Fatalf("spoken = %q, want %q", got, want)
+	}
+}
+
+func TestCancelledSilenceIsSpokenExactlyOnce(t *testing.T) {
+	speaker := newFakeSpeaker()
+	routed := &fakePipeline{}
+	routed.handle = func(events pipeline.Events) pipeline.Reply {
+		events.Prefix("Cancelled.")
+		return pipeline.Reply{Text: "Cancelled.", Prefix: "Cancelled.", Path: tool.PathConfirmation}
+	}
+
+	session := reply.New(routed, speaker, nil, nil)
+	if _, err := session.Ask(context.Background(), request(), "  "); err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	if got, want := speaker.phrases(), []string{"Cancelled."}; !equal(got, want) {
+		t.Fatalf("spoken = %q, want %q", got, want)
+	}
+}

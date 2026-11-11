@@ -3,6 +3,7 @@ package agent_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -371,6 +372,7 @@ func TestConfirmToolNeverExecutes(t *testing.T) {
 		Description: "Send an email.",
 		Permission:  tool.PermissionConfirm,
 		LocalOnly:   tool.LocalOnlyNo,
+		Summary:     func(struct{}) string { return "Send the email to the doctor?" },
 		Handler: func(context.Context, struct{}) (struct{}, error) {
 			calls++
 			return struct{}{}, nil
@@ -382,16 +384,29 @@ func TestConfirmToolNeverExecutes(t *testing.T) {
 
 	result := a.Run(context.Background(), tool.Request{ID: "req-4"}, "email my doctor", nil)
 	if calls != 0 {
-		t.Fatalf("confirm handler ran %d times, want 0 before #24", calls)
+		t.Fatalf("confirm handler ran %d times, want 0 before the spoken yes", calls)
 	}
 	if result.Pending == nil || result.Pending.Tool != "mail.send" {
 		t.Fatalf("pending confirmation = %+v, want mail.send", result.Pending)
 	}
-	if result.Text != agent.ConfirmPrompt {
-		t.Errorf("reply = %q, want %q", result.Text, agent.ConfirmPrompt)
+	if result.Text != "Send the email to the doctor?" {
+		t.Errorf("reply = %q, want the registry summary question", result.Text)
 	}
 	if fake.requestCount() != 1 {
 		t.Errorf("provider calls = %d, want the turn to stop after the confirm request", fake.requestCount())
+	}
+
+	// The model's call is armed in the registry, and a direct Execute cannot
+	// bypass the Confirmation.
+	stored, ok := registry.Pending()
+	if !ok || stored.Tool != "mail.send" {
+		t.Fatalf("registry pending = %+v, %v, want mail.send", stored, ok)
+	}
+	if _, err := registry.Execute(context.Background(), "mail.send", nil); !errors.Is(err, tool.ErrConfirmationRequired) {
+		t.Fatalf("direct Execute error = %v, want ErrConfirmationRequired", err)
+	}
+	if calls != 0 {
+		t.Fatalf("bypass attempt ran the confirm handler %d times", calls)
 	}
 }
 

@@ -55,6 +55,7 @@ func (s *Session) Ask(ctx context.Context, req tool.Request, transcript string) 
 	player := newPlayer(ctx, s.speaker, s.sink)
 	chunker := speech.NewChunker()
 	var fillerClaimed atomic.Bool
+	var prefix string
 	streamed := 0
 
 	events := pipeline.Events{
@@ -65,6 +66,11 @@ func (s *Session) Ask(ctx context.Context, req tool.Request, transcript string) 
 				return
 			}
 			player.play(item{filler: s.filler})
+		},
+		// A dropped Confirmation's "Cancelled." is spoken before any answer.
+		Prefix: func(text string) {
+			prefix = text
+			player.play(item{text: text})
 		},
 		Delta: func(delta string) {
 			for _, chunk := range chunker.Write(delta) {
@@ -80,8 +86,15 @@ func (s *Session) Ask(ctx context.Context, req tool.Request, transcript string) 
 		streamed++
 	}
 	// The Fast path and Agent failures answer without deltas; speak their text.
-	if streamed == 0 && strings.TrimSpace(reply.Text) != "" {
-		player.play(item{text: reply.Text})
+	// A prefix already spoken by the Prefix event is not repeated.
+	if streamed == 0 {
+		text := reply.Text
+		if prefix != "" {
+			text = strings.TrimSpace(strings.TrimPrefix(text, prefix))
+		}
+		if text != "" {
+			player.play(item{text: text})
+		}
 	}
 	return reply, player.finish()
 }

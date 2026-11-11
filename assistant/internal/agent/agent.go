@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/latency"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 )
 
@@ -213,6 +214,9 @@ type outcome struct {
 // execute runs one batch of Tool calls: reads concurrently, then acts one at a
 // time in the order the model gave them. Confirm calls never reach here.
 func (a *Agent) execute(ctx context.Context, req tool.Request, calls []CallRef) []outcome {
+	batchStarted := time.Now()
+	defer func() { latency.AddStage(ctx, latency.StageToolExecute, time.Since(batchStarted)) }()
+
 	out := make([]outcome, len(calls))
 	infos := make([]tool.Info, len(calls))
 	valid := make([]bool, len(calls))

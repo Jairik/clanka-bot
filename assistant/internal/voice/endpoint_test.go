@@ -166,3 +166,42 @@ func TestEndpointConfigIsValidated(t *testing.T) {
 		t.Fatal("accepted a cap shorter than the silence window")
 	}
 }
+
+// TestLastSpeechIsTheLastVoicedFrame pins Response latency's start point: the
+// most recent frame at or above the threshold, not the end of the silence
+// window that fires the endpointer.
+func TestLastSpeechIsTheLastVoicedFrame(t *testing.T) {
+	endpointer, err := NewEndpointer(EndpointConfig{
+		Rate:          testRate,
+		Silence:       160 * time.Millisecond,
+		ThresholdDBFS: -38,
+		MinSpeech:     32 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewEndpointer: %v", err)
+	}
+	clock := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+	endpointer.now = func() time.Time { return clock }
+
+	clock = clock.Add(32 * time.Millisecond)
+	endpointer.Add(frame(8000))
+	clock = clock.Add(32 * time.Millisecond)
+	endpointer.Add(frame(8000))
+	voicedAt := clock
+
+	fired := false
+	for i := 0; i < 5 && !fired; i++ {
+		clock = clock.Add(32 * time.Millisecond)
+		fired = endpointer.Add(frame(0))
+	}
+
+	if !fired {
+		t.Fatal("endpointer did not fire after the silence window")
+	}
+	if !endpointer.LastSpeech().Equal(voicedAt) {
+		t.Fatalf("last speech = %s, want %s", endpointer.LastSpeech(), voicedAt)
+	}
+	if silence := clock.Sub(endpointer.LastSpeech()); silence < 160*time.Millisecond {
+		t.Fatalf("silence since last speech = %s, want at least the window", silence)
+	}
+}

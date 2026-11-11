@@ -1,12 +1,16 @@
 package pipeline_test
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/agent"
+	"github.com/Jairik/clanka-bot/assistant/internal/latency"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/tools/clock"
@@ -195,5 +199,41 @@ func TestLocalOnlyFastPathTurnIsMarkedInHistory(t *testing.T) {
 	}
 	if !turns[0].Calls[0].LocalOnly {
 		t.Fatal("history did not mark the Local-only call")
+	}
+}
+
+// TestAgentFailureIsVisibleOnTheRequestLine keeps a spoken Unavailable message
+// from looking like a successful Agent reply in the log (#27).
+func TestAgentFailureIsVisibleOnTheRequestLine(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		result agent.Result
+		want   string
+	}{
+		{name: "unavailable", result: agent.Result{Text: "Sorry.", Unavailable: true}, want: "unavailable"},
+		{name: "timeout", result: agent.Result{Text: "Sorry.", TimedOut: true}, want: "timeout"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runner := newFakeRunner()
+			runner.result = test.result
+			p := newAgentPipeline(t, runner, tool.NewRegistry(time.Second), nil)
+
+			timeline := latency.New("req-agent", latency.SourceVoice)
+			ctx := latency.WithContext(context.Background(), timeline)
+			p.Handle(ctx, tool.Request{ID: "req-agent", Device: tool.DevicePi}, "ask the agent anything")
+
+			var rendered bytes.Buffer
+			timeline.Complete(slog.New(slog.NewJSONHandler(&rendered, nil)), latency.OutcomeOK, nil)
+			var line map[string]any
+			if err := json.Unmarshal(rendered.Bytes(), &line); err != nil {
+				t.Fatalf("request line is not JSON: %v", err)
+			}
+			if line["agent_error"] != test.want {
+				t.Fatalf("agent_error = %v, want %q in %v", line["agent_error"], test.want, line)
+			}
+			if !timeline.Failed() {
+				t.Fatal("a spoken Unavailable message left the request marked successful")
+			}
+		})
 	}
 }

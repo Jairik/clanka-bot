@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/audio"
+	"github.com/Jairik/clanka-bot/assistant/internal/latency"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 )
 
@@ -255,24 +256,45 @@ func (l *Loop) session(ctx context.Context) (bool, error) {
 			}
 		}
 	}
+	// One timeline spans endpointing, STT, routing, the Agent path and
+	// playback (#27). It starts at the user's last voiced frame, not the end
+	// of the silence window; the same instant is the Filler clock (#25).
 	ended := time.Now()
-	l.deps.Logger.Info(
-		"voice: endpoint",
+	timeline := latency.New(tool.NewRequestID(), latency.SourceVoice)
+	timeline.SetLastVoice(endpointer.LastSpeech())
+	if last := endpointer.LastSpeech(); !last.IsZero() {
+		timeline.Set(latency.StageEndpointing, ended.Sub(last))
+	}
+	requestCtx := latency.WithContext(sessCtx, timeline)
+
+	endpointAttrs := []any{
+		"request_id", timeline.ID(),
 		"speech", endpointer.SpeechHeard(),
 		"silence_ms", endpointer.Silence().Milliseconds(),
-	)
+	}
+	if d, ok := timeline.Duration(latency.StageEndpointing); ok {
+		endpointAttrs = append(endpointAttrs, "endpointing_ms", d.Milliseconds())
+	}
+	l.deps.Logger.Info("voice: endpoint", endpointAttrs...)
 
 	started := time.Now()
 	transcript, err := stt.Finish()
 	if err != nil {
+		timeline.Complete(l.deps.Logger, latency.OutcomeFailed, err)
 		return false, err
 	}
+	timeline.Set(latency.StageSTTFinalize, time.Since(started))
 	transcript = strings.TrimSpace(transcript)
 	if transcript == "" {
-		l.deps.Logger.Info("voice: no speech")
+		l.deps.Logger.Info("voice: no speech", "request_id", timeline.ID())
+		timeline.Complete(l.deps.Logger, latency.OutcomeNoAudio, nil)
 		return false, nil
 	}
-	l.deps.Logger.Info("voice: transcript", "text", transcript, "stt_ms", time.Since(started).Milliseconds())
+	l.deps.Logger.Info("voice: transcript",
+		"request_id", timeline.ID(),
+		"text", transcript,
+		"stt_ms", time.Since(started).Milliseconds(),
+	)
 
 	// Wake detection stays live while the reply plays, so the user can cut in.
 	// The stream starts here rather than at the wake word, so the question that
@@ -283,7 +305,9 @@ func (l *Loop) session(ctx context.Context) (bool, error) {
 	}
 
 	done := make(chan error, 1)
-	go func() { done <- l.deps.Responder.Respond(sessCtx, Request{Transcript: transcript, Ended: ended}) }()
+	go func() {
+		done <- l.deps.Responder.Respond(requestCtx, Request{Transcript: transcript, Ended: ended})
+	}()
 	for {
 		select {
 		case <-ctx.Done():

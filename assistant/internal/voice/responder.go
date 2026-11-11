@@ -4,6 +4,7 @@ import (
 	"context"
 	"time"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/latency"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 )
@@ -41,8 +42,14 @@ func (r *PipelineResponder) Respond(ctx context.Context, req Request) error {
 	if r.session == nil {
 		return nil
 	}
+	// Reuse the request ID the voice loop already logged so voice, session,
+	// Agent and playback lines correlate (#27).
+	id := latency.RequestID(ctx)
+	if id == "" {
+		id = tool.NewRequestID()
+	}
 	_, err := r.session.AskFrom(ctx, tool.Request{
-		ID:     tool.NewRequestID(),
+		ID:     id,
 		Path:   tool.PathFallthrough,
 		Device: r.device,
 	}, req.Transcript, req.Ended)

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/agent"
+	"github.com/Jairik/clanka-bot/assistant/internal/latency"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 )
 
@@ -192,6 +193,8 @@ func (p *Pipeline) HandleEvents(ctx context.Context, req tool.Request, transcrip
 	if p.confirmation != nil {
 		res := p.confirmation.Resolve(ctx, req, transcript)
 		if res.Handled {
+			// Settling the Confirmation is this request's routing decision.
+			latency.SetStage(ctx, latency.StageRouting, time.Since(started))
 			reply := res.Reply
 			reply.RequestID = req.ID
 			if reply.Path == "" {
@@ -201,7 +204,7 @@ func (p *Pipeline) HandleEvents(ctx context.Context, req tool.Request, transcrip
 				p.recordTurn(transcript, reply.Text, []agent.ToolCall{*res.Call})
 			}
 			record.reason = ""
-			p.finish(started, req, transcript, reply, record)
+			p.finish(ctx, started, req, transcript, reply, record)
 			return reply
 		}
 		// Not a clear yes: say "cancelled", then route the new request.
@@ -215,9 +218,10 @@ func (p *Pipeline) HandleEvents(ctx context.Context, req tool.Request, transcrip
 
 	// Silence has nothing to route after it cancels the waiting call.
 	if prefix != "" && strings.TrimSpace(transcript) == "" {
+		latency.SetStage(ctx, latency.StageRouting, time.Since(started))
 		reply := Reply{Text: prefix, Prefix: prefix, Path: tool.PathConfirmation, RequestID: req.ID}
 		record.reason = ""
-		p.finish(started, req, transcript, reply, record)
+		p.finish(ctx, started, req, transcript, reply, record)
 		return reply
 	}
 
@@ -226,18 +230,24 @@ func (p *Pipeline) HandleEvents(ctx context.Context, req tool.Request, transcrip
 		reply.Prefix = prefix
 		reply.Text = strings.TrimSpace(prefix + " " + reply.Text)
 	}
-	p.finish(started, req, transcript, reply, record)
+	p.finish(ctx, started, req, transcript, reply, record)
 	return reply
 }
 
 // route applies the post-Confirmation steps in the fixed order: Agent request
 // prefix, Control phrase, semantic Fast path, then the Agent path.
 func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript string, events Events, record *routeLog) Reply {
+	routingStarted := time.Now()
+	// Routing ends when the path is chosen. Marking is first-wins, so the
+	// fall-through branches reach it once and only once per request.
+	markRouting := func() { latency.SetStage(ctx, latency.StageRouting, time.Since(routingStarted)) }
+
 	reply := Reply{Path: tool.PathFallthrough, RequestID: req.ID, Text: PlaceholderReply}
 	normalized := NormalizePhrase(transcript)
 
 	// 2. Agent request prefix goes straight to the Agent path.
 	if rest, ok := agent.MatchRequestPrefix(transcript, p.prefixes); ok {
+		markRouting()
 		record.reason = ""
 		reply.Path = tool.PathAgent
 		// An empty request makes no model call, so no Agent path cue plays.
@@ -252,6 +262,7 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 
 	// 3. Control phrase is an exact match and must not wait on embeddings.
 	if name, ok := p.phrases[normalized]; ok {
+		markRouting()
 		record.reason = ""
 		reply.Path = tool.PathControlPhrase
 		reply.Tool = name
@@ -268,6 +279,7 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 		record.reason = match.Reason
 		record.embedErr = match.Err
 		if match.Tool != "" {
+			markRouting()
 			record.reason = ""
 			reply.Path = tool.PathFast
 			reply.Tool = match.Tool
@@ -278,9 +290,11 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 
 	// 5. Agent path, or the placeholder until it lands.
 	if p.agent != nil {
+		markRouting()
 		p.callAgent(ctx, req, transcript, events, &reply)
 		return reply
 	}
+	markRouting()
 	if record.reason == "" {
 		record.reason = reasonSemanticNoMatch
 	}
@@ -296,6 +310,16 @@ func (p *Pipeline) callAgent(ctx context.Context, req tool.Request, transcript s
 	reply.Path = tool.PathAgent
 	reply.Text = result.Text
 	reply.Pending = result.Pending
+	// A spoken Unavailable message is still a reply, but the model call
+	// failed; the raw request line must say so rather than look like success.
+	switch {
+	case result.TimedOut:
+		latency.SetAttr(ctx, "agent_error", "timeout")
+		latency.MarkFailed(ctx)
+	case result.Unavailable:
+		latency.SetAttr(ctx, "agent_error", "unavailable")
+		latency.MarkFailed(ctx)
+	}
 	names := make([]string, 0, len(result.Calls))
 	for _, call := range result.Calls {
 		names = append(names, call.Name)
@@ -304,6 +328,9 @@ func (p *Pipeline) callAgent(ctx context.Context, req tool.Request, transcript s
 }
 
 func (p *Pipeline) callTool(ctx context.Context, req tool.Request, transcript, name string, path tool.Path, args json.RawMessage) (string, string) {
+	toolStarted := time.Now()
+	defer func() { latency.AddStage(ctx, latency.StageToolExecute, time.Since(toolStarted)) }()
+
 	req.Path = path
 	result, err := p.registry.Execute(tool.WithRequest(ctx, req), name, args)
 	if err != nil {
@@ -340,8 +367,27 @@ func (p *Pipeline) recordTurn(transcript, spoken string, calls []agent.ToolCall)
 	p.history.Add(agent.Turn{Utterance: transcript, Reply: spoken, Calls: calls})
 }
 
-// finish writes the single structured log line for a request.
-func (p *Pipeline) finish(started time.Time, req tool.Request, transcript string, reply Reply, record routeLog) {
+// finish writes the single structured request log line. A request timeline
+// owns that line when one is attached, so the stages the spoken session adds
+// after playback are logged together; without one, as in a text-only caller,
+// the pipeline logs the routing-only line itself.
+func (p *Pipeline) finish(ctx context.Context, started time.Time, req tool.Request, transcript string, reply Reply, record routeLog) {
+	if latency.FromContext(ctx) != nil {
+		latency.SetRoute(ctx, string(reply.Path), reply.Tool, transcript)
+		latency.SetAttr(ctx, "top_tools", record.top)
+		latency.SetAttr(ctx, "margin", record.margin)
+		latency.SetAttr(ctx, "extract", record.extraction)
+		latency.SetAttr(ctx, "fallthrough_reason", record.reason)
+		if record.embedErr != nil {
+			latency.SetAttr(ctx, "embed_error", record.embedErr.Error())
+		}
+		if record.failure != "" {
+			latency.SetFailure(ctx, record.failure)
+			latency.MarkFailed(ctx)
+		}
+		return
+	}
+
 	attrs := []any{
 		"request_id", req.ID,
 		"path", string(reply.Path),

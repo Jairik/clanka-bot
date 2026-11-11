@@ -30,6 +30,14 @@ Overall precision does not excuse a weak Tool, so the test enforces the floor
 per Tool. Recall is reported but is not a gate; the Agent path is the safe
 fallback.
 
+A Tool with no Fast path predictions has no measurable precision, so the test
+fails it rather than letting an empty denominator score 1.00. It also reports
+coverage split by path (`control_tp` from the exact Control phrase table,
+`semantic_tp` from the MiniLM router) and fails a Tool whose only TP are
+Control-phrase matches: those numbers would say nothing about the semantic
+tuning. The reported per-Tool precision is therefore always computed from
+predictions the router actually made.
+
 ## Running it
 
 The normal suite stays offline: `TestRoutingEvalAgainstMiniLM` skips unless
@@ -65,12 +73,14 @@ docker compose -p clanka-routing-eval \
   -f /tmp/clanka-routing-eval-compose.yml down
 ```
 
-The test prints one `ROUTING_EVAL_TOOL` line per Tool with TP, FP, FN,
-precision and recall, then `ROUTING_EVAL_COMPOUNDS` and `ROUTING_EVAL_TOTAL`.
-It fails if any Tool is below the precision floor. The harness allows a 10s
-embed timeout on purpose: routing quality is under test here, and latency is
-tracked separately (#27). The embeddings are always the real MiniLM output;
-there are no fake or toy vectors in this path.
+The test prints one `ROUTING_EVAL_TOOL` line per Tool with TP, Control-phrase
+TP, semantic TP, FP, FN, precision and recall, then
+`ROUTING_EVAL_COMPOUNDS`, `ROUTING_EVAL_NEGATIVES` and `ROUTING_EVAL_TOTAL`.
+It fails if any Tool is below the precision floor, made no predictions, or was
+only ever right through a Control phrase. The harness allows a 10s embed
+timeout on purpose: routing quality is under test here, and latency is tracked
+separately (#27). The embeddings are always the real MiniLM output; there are
+no fake or toy vectors in this path.
 
 ## Chosen values and measured results
 
@@ -79,22 +89,24 @@ lowest threshold/margin pair found in the sweep that kept every Tool at or
 above the 0.95 precision floor. Run against
 `sentence-transformers/all-MiniLM-L6-v2` (the production model) on 2026-11-11:
 
-| Tool | Positives | TP | FP | FN | Precision | Recall |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| `time.now` | 20 | 13 | 0 | 7 | 1.00 | 0.65 |
-| `date.today` | 20 | 18 | 0 | 2 | 1.00 | 0.90 |
-| `weather.current` | 20 | 11 | 0 | 9 | 1.00 | 0.55 |
-| `audio.volume_set` | 20 | 15 | 0 | 5 | 1.00 | 0.75 |
-| `audio.stop` | 20 | 9 | 0 | 11 | 1.00 | 0.45 |
-| `timer.set` | 20 | 8 | 0 | 12 | 1.00 | 0.40 |
-| `timer.cancel` | 20 | 15 | 0 | 5 | 1.00 | 0.75 |
-| `timer.list` | 20 | 5 | 0 | 15 | 1.00 | 0.25 |
-| **Total** | **160** | **94** | **0** | **66** | **1.00** | **0.59** |
+| Tool | Positives | TP | Control TP | Semantic TP | FP | FN | Precision | Recall |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `time.now` | 20 | 13 | 5 | 8 | 0 | 7 | 1.00 | 0.65 |
+| `date.today` | 20 | 18 | 0 | 18 | 0 | 2 | 1.00 | 0.90 |
+| `weather.current` | 20 | 11 | 4 | 7 | 0 | 9 | 1.00 | 0.55 |
+| `audio.volume_set` | 20 | 15 | 1 | 14 | 0 | 5 | 1.00 | 0.75 |
+| `audio.stop` | 20 | 9 | 2 | 7 | 0 | 11 | 1.00 | 0.45 |
+| `timer.set` | 20 | 8 | 0 | 8 | 0 | 12 | 1.00 | 0.40 |
+| `timer.cancel` | 20 | 15 | 1 | 14 | 0 | 5 | 1.00 | 0.75 |
+| `timer.list` | 20 | 5 | 0 | 5 | 0 | 15 | 1.00 | 0.25 |
+| **Total** | **160** | **94** | **13** | **81** | **0** | **66** | **1.00** | **0.59** |
 
 Plain negatives: **0 of 48** reached the Fast path. Compounds: **0 of 8**
-reached the Fast path. The timer and list confusions are the main reason recall
-is conservative; those requests go to the Agent path rather than risking a
-wrong timer action.
+reached the Fast path. Every Tool was exercised by the semantic router at
+least five times, so no Tool cleared the floor only because the Control phrase
+table happened to cover its positives. The timer and list confusions are the
+main reason recall is conservative; those requests go to the Agent path rather
+than risking a wrong timer action.
 
 For comparison, the old placeholders (`0.70` / `0.08`) scored overall precision
 0.985 and recall 0.79, but missed the floor where it matters: `time.now` at

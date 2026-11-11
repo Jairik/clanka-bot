@@ -203,13 +203,18 @@ type evalVerdict struct {
 type evalCounts struct {
 	positives int
 	tp        int
+	// controlTP counts TP reached by an exact Control phrase, not the semantic router.
+	controlTP int
 	fp        int
 	fn        int
 }
 
+func (c evalCounts) semanticTP() int { return c.tp - c.controlTP }
+
+// precision is 0 with no predictions, so an empty denominator cannot clear the floor.
 func (c evalCounts) precision() float64 {
 	if c.tp+c.fp == 0 {
-		return 1
+		return 0
 	}
 	return float64(c.tp) / float64(c.tp+c.fp)
 }
@@ -325,6 +330,9 @@ func TestRoutingEvalAgainstMiniLM(t *testing.T) {
 			got := classify(utterance)
 			if got.Tool == name && (got.Path == tool.PathFast || got.Path == tool.PathControlPhrase) {
 				counts[name].tp++
+				if got.Path == tool.PathControlPhrase {
+					counts[name].controlTP++
+				}
 				continue
 			}
 			counts[name].fn++
@@ -368,18 +376,27 @@ func TestRoutingEvalAgainstMiniLM(t *testing.T) {
 		c := counts[name]
 		total.positives += c.positives
 		total.tp += c.tp
+		total.controlTP += c.controlTP
 		total.fp += c.fp
 		total.fn += c.fn
-		t.Logf("ROUTING_EVAL_TOOL %s positives=%d tp=%d fp=%d fn=%d precision=%.4f recall=%.4f",
-			name, c.positives, c.tp, c.fp, c.fn, c.precision(), c.recall())
+		t.Logf("ROUTING_EVAL_TOOL %s positives=%d tp=%d control_tp=%d semantic_tp=%d fp=%d fn=%d precision=%.4f recall=%.4f",
+			name, c.positives, c.tp, c.controlTP, c.semanticTP(), c.fp, c.fn, c.precision(), c.recall())
+		// A Tool with no predictions has no measurable precision; fail and disclose it.
+		if c.tp+c.fp == 0 {
+			t.Errorf("%s made no Fast path predictions in %d positives, so its precision is not measurable and cannot clear the %.2f floor", name, c.positives, floor)
+			continue
+		}
+		if c.semanticTP() == 0 {
+			t.Errorf("%s cleared the floor only through Control phrases (%d/%d TP); the semantic router was never exercised for it", name, c.controlTP, c.tp)
+		}
 		if c.precision() < floor {
 			t.Errorf("%s precision = %.3f (%d/%d), below floor %.3f", name, c.precision(), c.tp, c.tp+c.fp, floor)
 		}
 	}
 	t.Logf("ROUTING_EVAL_NEGATIVES total=%d misrouted=%d", len(fixture.Negatives), negativeMisrouted)
 	t.Logf("ROUTING_EVAL_COMPOUNDS total=%d misrouted=%d", len(fixture.Compounds), compoundMisrouted)
-	t.Logf("ROUTING_EVAL_TOTAL tp=%d fp=%d fn=%d precision=%.4f recall=%.4f",
-		total.tp, total.fp, total.fn, total.precision(), total.recall())
+	t.Logf("ROUTING_EVAL_TOTAL tp=%d control_tp=%d semantic_tp=%d fp=%d fn=%d precision=%.4f recall=%.4f",
+		total.tp, total.controlTP, total.semanticTP(), total.fp, total.fn, total.precision(), total.recall())
 }
 
 func sumPositives(counts map[string]*evalCounts) int {

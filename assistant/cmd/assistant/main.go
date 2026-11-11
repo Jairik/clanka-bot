@@ -88,9 +88,9 @@ func run() error {
 	if cfg.TTS.Addr != "" {
 		client := wyoming.NewClient(cfg.TTS.Addr, wyoming.WithTimeout(cfg.TTS.Timeout.Duration()))
 		checkTTSService(logger, client, cfg.TTS.Addr)
-		voice := wyoming.Voice{Name: cfg.TTS.Voice}
-		speechSpeaker = speech.New(client, sink, voice, logger)
-		filler = loadAgentFiller(logger, client, voice, cfg.Agent.Filler, cfg.TTS.Timeout.Duration())
+		wantVoice := wyoming.Voice{Name: cfg.TTS.Voice}
+		speechSpeaker = speech.New(client, sink, wantVoice, logger)
+		filler = loadAgentFiller(logger, client, wantVoice, cfg.Agent.Filler, cfg.TTS.Timeout.Duration())
 	}
 
 	// Timers reuse the reply Speaker for their alert.

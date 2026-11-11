@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/agent"
 	"github.com/Jairik/clanka-bot/assistant/internal/audio"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	"github.com/Jairik/clanka-bot/assistant/internal/reply"
@@ -254,6 +255,27 @@ func TestCancelledSilenceIsSpokenExactlyOnce(t *testing.T) {
 		t.Fatalf("Ask: %v", err)
 	}
 	if got, want := speaker.phrases(), []string{"Cancelled."}; !equal(got, want) {
+		t.Fatalf("spoken = %q, want %q", got, want)
+	}
+}
+
+func TestConfirmationQuestionIsSpokenAfterModelPreamble(t *testing.T) {
+	speaker := newFakeSpeaker()
+	routed := &fakePipeline{}
+	routed.handle = func(events pipeline.Events) pipeline.Reply {
+		events.AgentPath()
+		events.Delta("Sure, I can do that.")
+		return pipeline.Reply{
+			Text:    "Send the email to doctor?",
+			Pending: &agent.PendingConfirm{Tool: "mail.send"},
+		}
+	}
+
+	session := reply.New(routed, speaker, logSink{&eventLog{}}, testFiller())
+	if _, err := session.Ask(context.Background(), request(), "email my doctor"); err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	if got, want := speaker.phrases(), []string{"Sure, I can do that.", "Send the email to doctor?"}; !equal(got, want) {
 		t.Fatalf("spoken = %q, want %q", got, want)
 	}
 }

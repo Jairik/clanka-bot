@@ -86,8 +86,10 @@ func (s *Session) Ask(ctx context.Context, req tool.Request, transcript string) 
 		streamed++
 	}
 	// The Fast path and Agent failures answer without deltas; speak their text.
-	// A prefix already spoken by the Prefix event is not repeated.
-	if streamed == 0 {
+	// A prefix already spoken by the Prefix event is not repeated. A pending
+	// Confirmation question is always spoken, even if the model said something
+	// before proposing the call.
+	if streamed == 0 || reply.Pending != nil {
 		text := reply.Text
 		if prefix != "" {
 			text = strings.TrimSpace(strings.TrimPrefix(text, prefix))

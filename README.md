@@ -49,6 +49,25 @@ Both published ports are bound to the host loopback only. The debug listener
 binds all interfaces inside the container (see `docker-compose.yml`), so the
 host port mapping is what keeps it local.
 
+The date, timer and audio Tools run on the Fast path too:
+
+```sh
+curl -s -X POST localhost:8081/debug/transcript \
+  -H 'Content-Type: application/json' -d '{"text":"what day is it"}'
+curl -s -X POST localhost:8081/debug/transcript \
+  -H 'Content-Type: application/json' -d '{"text":"set a timer for five minutes"}'
+curl -s -X POST localhost:8081/debug/transcript \
+  -H 'Content-Type: application/json' -d '{"text":"how long is left on my timer"}'
+curl -s -X POST localhost:8081/debug/transcript \
+  -H 'Content-Type: application/json' -d '{"text":"turn the volume to 40"}'
+```
+
+Timers speak an alert through the same TTS voice when they fire. The Control
+phrases `stop`, `pause`, `cancel` and `louder` are matched exactly, so they
+answer without waiting on the embed service (`cancel` cancels the timer and
+`louder` steps the volume up).
+
+
 ### Audio
 
 Per [ADR-0001](docs/adr/0001-middleware-owns-all-audio-io.md), only the

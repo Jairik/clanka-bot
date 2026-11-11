@@ -50,7 +50,34 @@ func run() error {
 	slog.SetDefault(logger)
 
 	registry := tool.NewRegistry(cfg.Tools.DefaultTimeout.Duration())
-	if err := tools.RegisterAll(registry, nil); err != nil {
+
+	// One sink serves both reply playback and the audio Tools, so audio.stop
+	// can cancel whatever the assistant is currently playing.
+	sink := audio.NewPulseSink(cfg.Playback.Binary, cfg.Playback.Sink)
+
+	// Speech is optional: without a TTS address the debug entry stays text-only.
+	var sayer api.Sayer
+	if cfg.TTS.Addr != "" {
+		client := wyoming.NewClient(cfg.TTS.Addr, wyoming.WithTimeout(cfg.TTS.Timeout.Duration()))
+		checkTTSService(logger, client, cfg.TTS.Addr)
+		sayer = speech.New(
+			client,
+			sink,
+			wyoming.Voice{Name: cfg.TTS.Voice},
+			logger,
+		)
+	}
+
+	// Timers reuse the reply Speaker for their alert.
+	var timerAlert func(context.Context, string) error
+	if sayer != nil {
+		timerAlert = sayer.SayText
+	}
+	if err := tools.RegisterAll(registry, tools.Settings{
+		Audio:      sink,
+		TimerAlert: timerAlert,
+		Logger:     logger,
+	}); err != nil {
 		return fmt.Errorf("register tools: %w", err)
 	}
 
@@ -100,19 +127,6 @@ func run() error {
 	p, err := pipeline.New(registry, cfg.ControlPhrases, logger, opts...)
 	if err != nil {
 		return err
-	}
-
-	// Speech is optional: without a TTS address the debug entry stays text-only.
-	var sayer api.Sayer
-	if cfg.TTS.Addr != "" {
-		client := wyoming.NewClient(cfg.TTS.Addr, wyoming.WithTimeout(cfg.TTS.Timeout.Duration()))
-		checkTTSService(logger, client, cfg.TTS.Addr)
-		sayer = speech.New(
-			client,
-			audio.NewPulseSink(cfg.Playback.Binary, cfg.Playback.Sink),
-			wyoming.Voice{Name: cfg.TTS.Voice},
-			logger,
-		)
 	}
 
 	// The health listener never serves the debug route; the debug listener does.

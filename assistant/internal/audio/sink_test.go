@@ -134,3 +134,84 @@ func TestPulseSinkStopsWhenContextCancelled(t *testing.T) {
 		t.Fatalf("Close = %v, want context.Canceled", err)
 	}
 }
+
+func TestPulseSinkStopCancelsActivePlayback(t *testing.T) {
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "pacat")
+	script := "#!/bin/sh\nexec sleep 5\n"
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake pacat: %v", err)
+	}
+	sink := audio.NewPulseSink(binary, "")
+	writer, err := sink.Open(context.Background(), audio.Format{Rate: 24000, Width: 2, Channels: 1})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	if err := sink.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if _, err := writer.Write(make([]byte, 64)); err == nil {
+		t.Fatal("Write succeeded after Stop, want cancellation")
+	}
+	if err := writer.Close(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Close = %v, want context.Canceled", err)
+	}
+}
+
+func fakePactl(t *testing.T) (binary, argsPath string) {
+	t.Helper()
+	dir := t.TempDir()
+	argsPath = filepath.Join(dir, "pactl-args.txt")
+	binary = filepath.Join(dir, "pactl")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > '" + argsPath + "'\n"
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake pactl: %v", err)
+	}
+	return binary, argsPath
+}
+
+func TestPulseSinkSetVolumeRunsPactl(t *testing.T) {
+	// The pactl fake sits beside the pacat path so the sink finds it.
+	pactl, argsPath := fakePactl(t)
+	pacat := filepath.Join(filepath.Dir(pactl), "pacat")
+	if err := os.WriteFile(pacat, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake pacat: %v", err)
+	}
+	sink := audio.NewPulseSink(pacat, "echo_dot")
+
+	if err := sink.SetVolume(context.Background(), 40); err != nil {
+		t.Fatalf("SetVolume: %v", err)
+	}
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	for _, want := range []string{"set-sink-volume", "echo_dot", "40%"} {
+		if !strings.Contains(string(args), want) {
+			t.Errorf("pactl args missing %q in:\n%s", want, args)
+		}
+	}
+}
+
+func TestPulseSinkAdjustVolumeUsesRelativePercent(t *testing.T) {
+	pactl, argsPath := fakePactl(t)
+	pacat := filepath.Join(filepath.Dir(pactl), "pacat")
+	if err := os.WriteFile(pacat, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake pacat: %v", err)
+	}
+	sink := audio.NewPulseSink(pacat, "")
+
+	if err := sink.AdjustVolume(context.Background(), 10); err != nil {
+		t.Fatalf("AdjustVolume: %v", err)
+	}
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	for _, want := range []string{"set-sink-volume", "@DEFAULT_SINK@", "+10%"} {
+		if !strings.Contains(string(args), want) {
+			t.Errorf("pactl args missing %q in:\n%s", want, args)
+		}
+	}
+}

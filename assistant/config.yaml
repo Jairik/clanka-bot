@@ -52,6 +52,13 @@ control_phrases:
   "what is the time": time.now
   "tell me the time": time.now
   "time": time.now
+  # Playback and timer controls are single words, which embed poorly, so they
+  # are matched exactly instead. "louder" calls volume_set with no arguments,
+  # which means one step up.
+  "stop": audio.stop
+  "pause": audio.stop
+  "cancel": timer.cancel
+  "louder": audio.volume_set
 
 # The Agent path: one OpenAI-compatible provider, no failover.
 agent:

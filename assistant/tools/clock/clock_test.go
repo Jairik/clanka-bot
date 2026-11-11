@@ -72,3 +72,36 @@ func TestTimeNowIsFastPathEligible(t *testing.T) {
 		t.Error("Examples is empty")
 	}
 }
+
+func TestDateTodaySpeaksTheDate(t *testing.T) {
+	fixed := time.Date(2026, 11, 11, 15, 4, 0, 0, time.UTC)
+	reg := tool.NewRegistry(time.Second)
+	if err := clock.RegisterDate(reg, func() time.Time { return fixed }); err != nil {
+		t.Fatalf("RegisterDate: %v", err)
+	}
+	result, err := reg.Execute(context.Background(), clock.DateName, nil)
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	spoken, ok := reg.Speak(clock.DateName, result)
+	if !ok {
+		t.Fatal("Speak returned false")
+	}
+	if want := "Today is Wednesday, 11 November 2026."; spoken != want {
+		t.Fatalf("Speak = %q, want %q", spoken, want)
+	}
+}
+
+func TestDateTodayIsFastPathEligible(t *testing.T) {
+	reg := tool.NewRegistry(time.Second)
+	if err := clock.RegisterDate(reg, nil); err != nil {
+		t.Fatalf("RegisterDate: %v", err)
+	}
+	info, ok := reg.Info(clock.DateName)
+	if !ok {
+		t.Fatal("date tool not registered")
+	}
+	if info.Permission != tool.PermissionRead || info.LocalOnly || !info.HasSpeak || len(info.Examples) == 0 {
+		t.Fatalf("date.today metadata = %+v, want a read, non-local, spoken Tool with Examples", info)
+	}
+}

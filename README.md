@@ -40,6 +40,19 @@ curl -s -X POST localhost:8081/debug/transcript \
   -d '{"text":"what time is it right now"}'
 ```
 
+Weather answers on the Fast path too. The assistant resolves the city from the
+Pi's public IP at startup and every 24h (only city, region and timezone are
+kept; coordinates are never stored) and asks Open-Meteo for current conditions:
+
+```sh
+curl -s -X POST localhost:8081/debug/transcript \
+  -H 'Content-Type: application/json' \
+  -d "{\"text\":\"what's the weather like\"}"
+```
+
+If the IP lookup fails, the last known place is used, then the optional
+`location.fallback` values in config, then no place at all.
+
 Anything the Fast path does not handle goes to the Agent path, which needs an
 OpenRouter key in `.env` (`OPENROUTER_API_KEY`); without one it answers with
 the configured Unavailable message and the Fast path keeps working. Every
@@ -71,6 +84,14 @@ Non-secret settings live in [`assistant/config.yaml`](assistant/config.yaml);
 ## Tests
 
 ```sh
-cd assistant && go test ./...
+make test
 python -m pytest tts/tests   # needs `pip install wyoming pytest numpy`
 ```
+
+## Deploying
+
+`make deploy` is the deployment path: it pulls the current branch, builds
+SHA-tagged images, starts the stack and waits for health checks. Roll back with
+`make rollback SHA=<commit>`, which reuses that commit's images without a
+rebuild. The Pi provisioning checklist, image-tagging rules and the model-weights
+layer convention are in [`docs/deploy.md`](docs/deploy.md).

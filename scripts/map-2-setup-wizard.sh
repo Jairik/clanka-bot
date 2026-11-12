@@ -262,8 +262,18 @@ TS_LOGIN=$(_ts_field login); TS_HOST=$(_ts_field host)
 note "If nothing was detected, run 'tailscale status --json' and read Self.DNSName and your User LoginName."
 ask ASSISTANT_DASHBOARD_OWNER "Your Tailscale login (e.g. you@github or an email)${TS_LOGIN:+ [detected: $TS_LOGIN]}:"
 [[ -z "$ASSISTANT_DASHBOARD_OWNER" ]] && ASSISTANT_DASHBOARD_OWNER="$TS_LOGIN"
-ask ASSISTANT_DASHBOARD_HOSTS "The Pi's MagicDNS name, no https:// (e.g. pi.tail1234.ts.net)${TS_HOST:+ [detected: $TS_HOST]}:"
+ask ASSISTANT_DASHBOARD_HOSTS "This host's full MagicDNS name, no https:// (e.g. host.tail1234.ts.net)${TS_HOST:+ [detected: $TS_HOST]}:"
 [[ -z "$ASSISTANT_DASHBOARD_HOSTS" ]] && ASSISTANT_DASHBOARD_HOSTS="$TS_HOST"
+# The Dashboard rejects any Host not in this exact list, and the Spotify
+# redirect URI is built from it, so a short name like "pi" breaks both.
+if [[ "$ASSISTANT_DASHBOARD_HOSTS" != *.ts.net* ]]; then
+  warn "'$ASSISTANT_DASHBOARD_HOSTS' is not a full *.ts.net name; the Dashboard would answer 403 over the tailnet."
+  if [[ -n "$TS_HOST" ]] && confirm "Use the detected name $TS_HOST instead?"; then
+    ASSISTANT_DASHBOARD_HOSTS="$TS_HOST"
+  fi
+elif [[ -n "$TS_HOST" && ",$ASSISTANT_DASHBOARD_HOSTS," != *",$TS_HOST,"* ]]; then
+  warn "This machine is $TS_HOST; '$ASSISTANT_DASHBOARD_HOSTS' only works if you run the stack there."
+fi
 write_env ASSISTANT_DASHBOARD_PORT "8082"
 write_env ASSISTANT_DASHBOARD_OWNER "$ASSISTANT_DASHBOARD_OWNER"
 write_env ASSISTANT_DASHBOARD_HOSTS "$ASSISTANT_DASHBOARD_HOSTS"

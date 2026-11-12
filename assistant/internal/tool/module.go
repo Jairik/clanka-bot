@@ -11,6 +11,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/lastreply"
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
 	"github.com/Jairik/clanka-bot/assistant/internal/namematch"
+	"github.com/Jairik/clanka-bot/assistant/internal/notify"
 	"github.com/Jairik/clanka-bot/assistant/internal/quiet"
 	"github.com/Jairik/clanka-bot/assistant/internal/ring"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
@@ -78,15 +79,27 @@ type Deps struct {
 	// the Dashboard. The voice Tools read and write it; nil registration is
 	// allowed so the conformance suite can check metadata without a database.
 	Voices *voicelib.Service
+	// Notify sends Notifications to the user's phone through ntfy. A module
+	// that owns a Scheduled alert installs the missed hook from this seam
+	// before recovery, so a recovered missed row is not lost. Nil means no
+	// Notification is delivered.
+	Notify Notifier
 	// LastReply holds the previous completed Assistant reply and its
-	// provenance. assistant.repeat speaks it again and notify.phone (#62)
-	// resolves "that" from it; a Local-only reply must be refused before it
-	// leaves the Pi. Nil means there is no reply to refer to.
+	// provenance. assistant.repeat speaks it again and notify.phone resolves
+	// "that" from it; a Local-only reply must be refused before it leaves the
+	// Pi. Nil means there is no reply to refer to.
 	LastReply *lastreply.Store
 	// Status runs the shared service/module health checks. It is a function
 	// because the Tool is registered before the live module list has finished
 	// registering; a Tool reads it per call. Nil means status is unavailable.
 	Status func(context.Context) StatusReport
+}
+
+// Notifier is the shared Notification seam. The production implementation is
+// internal/notify.Service; tests may supply a fake.
+type Notifier interface {
+	Send(ctx context.Context, n notify.Notification) error
+	NotifyMissed(ctx context.Context, alert notify.MissedAlert)
 }
 
 // StatusState is one health-check outcome. The string values are stable for

@@ -20,7 +20,9 @@ type recorder struct {
 	ch    chan string
 }
 
-func newRecorder() *recorder { return &recorder{ch: make(chan string, 16)} }
+// newRecorder buffers enough events for the concurrent test's 200 enqueues; a
+// full channel would block SayText and then Queue.Close in cleanup.
+func newRecorder() *recorder { return &recorder{ch: make(chan string, 512)} }
 
 // blockingSpeaker holds one line of speech until its context is cancelled, so
 // the Barge-in test can observe the interruption.

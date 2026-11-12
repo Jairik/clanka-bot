@@ -61,6 +61,9 @@ tools:
   audio:
     # One "louder" or "quieter" step in percent.
     step_percent: 10
+  notify:
+    # Title shown on the phone Notification. The topic and token are secrets.
+    title: "Assistant"
   timer:
     alert_text: "Your timer is done."
   voice:
@@ -76,8 +79,8 @@ embed:
   timeout: 150ms
 
 # Semantic Fast path tuning from the #26 routing evaluation. The corpus is
-# internal/pipeline/testdata/routing_eval.yaml (537 positives, at least 20 per
-# Tool, 108 negatives and 19 compounds) run against
+# internal/pipeline/testdata/routing_eval.yaml (559 positives, at least 20 per
+# Tool, 118 negatives and 20 compounds) run against
 # sentence-transformers/all-MiniLM-L6-v2. At these values every Tool has
 # precision 1.00 against the confirmed 0.95 per-Tool floor, overall recall is
 # 0.6443, and no negative or compound reaches the Fast path. Recall is
@@ -227,6 +230,17 @@ quiet:
   end: "07:00"
   # Absolute percent, independent of the media volume.
   volume: 35
+
+# ntfy Notifications. The URL is a live setting defaulting to the public
+# ntfy.sh; a stored Dashboard override wins. The topic is generated once on
+# first use and stored in the write-only secrets table, never here. An optional
+# server-issued access token lives in NTFY_TOKEN. On ntfy.sh the random topic
+# is an unguessable name, not access control: anyone who learns it can
+# subscribe. Missed Timer/Alarm Notifications are muted (dropped, not delayed)
+# during Quiet hours.
+notify:
+  url: "https://ntfy.sh"
+  missed_alerts: true
 
 # Exact-match Control phrases, entered just after STT. These are the config.yaml
 # layer of the live wording settings; a stored override applies on the next

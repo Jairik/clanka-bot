@@ -68,6 +68,11 @@ services:
       # Secrets bootstrap from .env; the write-only store in the database wins
       # when the Dashboard stores the same name. config.yaml names these vars.
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      # Optional ntfy bootstrap. The topic is generated once into the secrets
+      # table when this is empty; set it before first use to connect a phone.
+      # NTFY_TOKEN must be issued by the ntfy server, never generated locally.
+      NTFY_TOPIC: ${NTFY_TOPIC:-}
+      NTFY_TOKEN: ${NTFY_TOKEN:-}
       TZ: ${TZ:-UTC}
     volumes:
       # The one SQLite database (ADR-0003). Only assistant mounts this volume;

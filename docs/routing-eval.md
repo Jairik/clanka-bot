@@ -8,8 +8,8 @@ misroute from the request log.
 ## What is checked in
 
 - `assistant/internal/pipeline/testdata/routing_eval.yaml` — the labelled
-  oracle. It has at least 20 positives for each of the twenty-six Fast path Tools
-  (537 total), 108 plain negatives, and 19 compound requests.
+  oracle. It has at least 20 positives for each Fast path Tool, 118 plain
+  negatives, and 20 compound requests (exact counts in the results table).
 - `assistant/internal/pipeline/testdata/routing_baseline.yaml` — the recorded
   Map 1 totals the real-MiniLM evaluation must not fall below.
 - `assistant/internal/pipeline/routing_eval_test.go` —
@@ -150,37 +150,40 @@ above the 0.95 precision floor. Run against
 | `quiet.off` | 20 | 16 | 2 | 14 | 0 | 4 | 1.00 | 0.80 |
 | `quiet.dnd` | 20 | 20 | 0 | 20 | 0 | 0 | 1.00 | 1.00 |
 | `quiet.awake` | 20 | 20 | 2 | 18 | 0 | 0 | 1.00 | 1.00 |
+| `notify.phone` | 22 | 22 | 0 | 22 | 0 | 0 | 1.00 | 1.00 |
 | `reminder.set` | 24 | 13 | 0 | 13 | 0 | 11 | 1.00 | 0.5417 |
 | `reminder.list` | 22 | 12 | 0 | 12 | 0 | 10 | 1.00 | 0.5455 |
 | `reminder.cancel` | 22 | 12 | 0 | 12 | 0 | 10 | 1.00 | 0.5455 |
 | `assistant.repeat` | 20 | 14 | 0 | 14 | 0 | 6 | 1.00 | 0.70 |
 | `assistant.help` | 20 | 15 | 0 | 15 | 0 | 5 | 1.00 | 0.75 |
 | `system.status` | 20 | 10 | 0 | 10 | 0 | 10 | 1.00 | 0.50 |
-| **Total** | **537** | **346** | **23** | **323** | **0** | **191** | **1.00** | **0.6443** |
+| **Total** | **559** | **368** | **23** | **345** | **0** | **191** | **1.00** | **0.6583** |
 
-These numbers are from the merged #53 Alarm, #54 Reminder and #59 quick-wins
-tree and include the earlier #34, #44, #51, #55, #61 and #63 corpus additions.
-Precision is 1.00 with no negative or compound misroute, and every Tool clears
-the 0.95 floor. The #59 Tools add 60 positives and three negative/compound
-groups; `assistant.repeat` and `assistant.help` are Local-only, so their recall
-only exercises the semantic router and never the Agent path. Reminder recall is conservative because the
-set/list/cancel Examples are kept lexically distinct so no pair sits inside the
-0.23 margin: "list my reminders" and "delete my reminder" are ~0.22 apart from
-the other Reminder Tool, which is just under the shipped 0.23 margin. Those
-variants fall to the Agent path rather than risk a wrong Reminder action; the
-Agent can call `reminder.set`/`reminder.cancel`, while `reminder.list` is
-Local-only, so a list variant that lacks a strong phrasing is better served by
-the Scheduled alerts page (#58) than guessed. The voice and quiet recall notes
-below are unchanged.
+These numbers are from the merged #53 Alarm, #54 Reminder, #59 quick-wins and
+#62 Notifications tree and include the earlier #34, #44, #51, #55, #61 and #63
+corpus additions. Precision is 1.00 with no negative or compound misroute, and
+every Tool clears the 0.95 floor. The #59 Tools add 60 positives and three
+negative/compound groups; `assistant.repeat` and `assistant.help` are Local-only,
+so their recall only exercises the semantic router and never the Agent path.
+`notify.phone`'s positives include demonstrative "send that to my phone" wording
+and explicit-message forms; its phone-shaped negatives and compound keep it
+from swallowing device questions, other transports and two-action requests.
+Reminder recall is conservative because the set/list/cancel Examples are kept
+lexically distinct so no pair sits inside the 0.23 margin: "list my reminders"
+and "delete my reminder" are ~0.22 apart from the other Reminder Tool, which is
+just under the shipped 0.23 margin. Those variants fall to the Agent path rather
+than risk a wrong Reminder action; the Agent can call
+`reminder.set`/`reminder.cancel`, while `reminder.list` is Local-only, so a list
+variant that lacks a strong phrasing is better served by the Scheduled alerts
+page (#58) than guessed. The voice and quiet recall notes below apply.
 
-Plain negatives: **0 of 108** reached the Fast path, including the new
-reminder-shaped non-requests (no time, no message, a statement about another
-device, or a knowledge question). Compounds: **0 of 19** reached the Fast path.
-Every Tool is exercised by the semantic router at least five times, so no Tool
-clears the floor only because the Control phrase table happened to cover its
-positives. The timer and list confusions are the main reason recall is
-conservative; those requests go to the Agent path rather than risking a wrong
-timer action.
+Plain negatives: **0 of 118** reached the Fast path, including the new
+reminder-shaped non-requests and phone-shaped device questions. Compounds:
+**0 of 20** reached the Fast path. Every Tool is exercised by the semantic
+router at least twice, so no Tool clears the floor only because the Control
+phrase table happened to cover its positives. The timer and list confusions are
+the main reason recall is conservative; those requests go to the Agent path
+rather than risking a wrong timer action.
 
 ### Focus cases
 

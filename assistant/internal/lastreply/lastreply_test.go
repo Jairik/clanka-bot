@@ -15,9 +15,9 @@ func TestRecordAndLastKeepProvenance(t *testing.T) {
 		t.Fatal("a new store has a reply")
 	}
 
-	at := time.Date(2026, 11, 11, 15, 4, 0, 0, time.UTC)
+	at := time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
 	store.Record(lastreply.Reply{
-		Text:      "It's 3:04 PM.",
+		Text:      "It is 9 o'clock.",
 		Tool:      "time.now",
 		Path:      "fast_path",
 		LocalOnly: false,
@@ -28,7 +28,7 @@ func TestRecordAndLastKeepProvenance(t *testing.T) {
 	if !ok {
 		t.Fatal("Last returned no reply after Record")
 	}
-	if got.Text != "It's 3:04 PM." || got.Tool != "time.now" || got.Path != "fast_path" || got.LocalOnly {
+	if got.Text != "It is 9 o'clock." || got.Tool != "time.now" || got.Path != "fast_path" || got.LocalOnly {
 		t.Fatalf("Last = %+v", got)
 	}
 	if !got.At.Equal(at) {
@@ -36,10 +36,18 @@ func TestRecordAndLastKeepProvenance(t *testing.T) {
 	}
 }
 
+func TestNilStoreIsSafe(t *testing.T) {
+	var store *lastreply.Store
+	store.Record(lastreply.Reply{Text: "ignored"})
+	if _, ok := store.Last(); ok {
+		t.Fatal("nil store returned a reply")
+	}
+}
+
 func TestBlankRepliesDoNotEraseTheLastOne(t *testing.T) {
 	store := lastreply.New()
 	store.Record(lastreply.Reply{Text: "The first reply."})
-	store.Record(lastreply.Reply{Text: "   "})
+	store.Record(lastreply.Reply{Text: "   \n"})
 	store.Record(lastreply.Reply{})
 
 	got, ok := store.Last()
@@ -55,14 +63,6 @@ func TestZeroTimeGetsARecordTimestamp(t *testing.T) {
 	got, _ := store.Last()
 	if got.At.IsZero() || got.At.Before(before) {
 		t.Fatalf("At = %s, want a current timestamp", got.At)
-	}
-}
-
-func TestNilStoreIsSafe(t *testing.T) {
-	var store *lastreply.Store
-	store.Record(lastreply.Reply{Text: "ignored"})
-	if _, ok := store.Last(); ok {
-		t.Fatal("nil store returned a reply")
 	}
 }
 

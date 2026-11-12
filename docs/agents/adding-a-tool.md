@@ -84,6 +84,23 @@ authenticated Dashboard's `/secrets` page discovers declarations from the same
 service, so a name added here appears automatically with Replace and Clear
 forms; no page edit is needed.
 
+### If the Tool sends a Notification or refers to the previous reply
+
+`tool.Deps.Notify` is the one ntfy service (`Send` and `NotifyMissed`); do not
+build a second HTTP client, and do not put the topic or token in a setting or a
+log line. `tool.Deps.LastReply` returns the previous completed reply with its `Tool`,
+`Path` and `LocalOnly` provenance, so "say that again" or "send that to my
+phone" can resolve it without persisting private text. `pipeline.WithLastReply`
+fills it after every completed turn; a blank or cancelled turn leaves the
+previous record alone. Any Tool that leaves the Pi must refuse a reply whose
+`LocalOnly` is true; the declared privacy of another Tool is not overridable by
+a follow-up. If the follow-up Tool itself could turn a Local-only result into
+model-visible output, declare that Tool `LocalOnlyYes`; that is the explicit
+safe choice `assistant.repeat` and `assistant.help` make. A Scheduled-alert
+module installs
+`deps.Notify.NotifyMissed` before its recovery runs, so a missed row recovered
+at startup is not lost.
+
 ### If the Tool can hold Focus
 
 A shared Control phrase (`stop`, `pause`, `resume`, `next`, `cancel`, `snooze`)
@@ -107,18 +124,6 @@ request that may route a shared phrase: the phrase must still reach the holder
 it is meant to stop. `tool.IntentDeclarer` is the static module declaration; the
 conformance suite checks every intent is in the fixed vocabulary. A module that
 never takes Focus omits both.
-
-### If the Tool needs the previous reply
-
-`tool.Deps.LastReply` is the in-memory Last reply with its provenance: the
-reply text, the producing Tool, the routing path and whether the result was
-Local-only. `pipeline.WithLastReply` fills it after every completed turn; a
-blank or cancelled turn leaves the previous record alone. A follow-up Tool such
-as `assistant.repeat` reads it with `Last()`. If a Tool can send the reply off
-the Pi (a Notification), refuse a record whose `LocalOnly` is true and never
-echo its text in the error. If the Tool itself would turn a Local-only result
-into model-visible output, declare the follow-up Tool `LocalOnlyYes`; that is
-the explicit safe choice `assistant.repeat` and `assistant.help` make.
 
 ### If the Tool reports system health
 

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/announce"
 	"github.com/Jairik/clanka-bot/assistant/internal/parse"
@@ -169,13 +170,23 @@ func (m *Manager) alert(timer Timer) {
 	}
 	text := m.alertText
 	if timer.Label != "" {
-		text = strings.ToUpper(timer.Label[:1]) + timer.Label[1:] + " timer is done."
+		text = capitalize(timer.Label) + " timer is done."
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), alertTimeout)
 	defer cancel()
 	if err := m.say(ctx, text); err != nil {
 		m.logger.Error("timer alert", "timer_id", timer.ID, "error", err.Error())
 	}
+}
+
+// capitalize upper-cases the first rune of a spoken label without cutting a
+// multi-byte character.
+func capitalize(label string) string {
+	if label == "" {
+		return ""
+	}
+	first, size := utf8.DecodeRuneInString(label)
+	return strings.ToUpper(string(first)) + label[size:]
 }
 
 // List returns the active timers, soonest first.
@@ -356,7 +367,7 @@ func NewSet(m *Manager) tool.Tool[SetIn, SetOut] {
 		Speak: func(out SetOut) string {
 			duration := parse.HumanDuration(time.Duration(out.DurationSeconds) * time.Second)
 			if out.Label != "" {
-				return strings.ToUpper(out.Label[:1]) + out.Label[1:] + " timer set for " + duration + "."
+				return capitalize(out.Label) + " timer set for " + duration + "."
 			}
 			return "Timer set for " + duration + "."
 		},

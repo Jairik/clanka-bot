@@ -263,7 +263,7 @@ func Load(path string) (Config, error) {
 	if err := applyEnv(&cfg); err != nil {
 		return Config{}, err
 	}
-	if err := cfg.validate(); err != nil {
+	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
@@ -342,7 +342,10 @@ func applyEnv(cfg *Config) error {
 	return nil
 }
 
-func (c Config) validate() error {
+// Validate re-checks a loaded Config. Load calls it after applying config.yaml
+// and the environment; main calls it again after resolving connection-level
+// stored overrides, so a restart cannot start on an invalid combination.
+func (c Config) Validate() error {
 	if c.HTTP.Addr == "" {
 		return fmt.Errorf("config: http.addr is required")
 	}
@@ -476,6 +479,11 @@ func validateControlPhrases(phrases map[string]string) error {
 // VoiceEnabled reports whether microphone capture is configured. An empty
 // wakeword address leaves the assistant typed/debug only.
 func (c Config) VoiceEnabled() bool { return c.Wakeword.Addr != "" }
+
+// ValidateDashboardAddr enforces the Dashboard listener rule: loopback, or all
+// interfaces so Docker can publish to the host loopback. A stored override is
+// held to the same rule as config.yaml, so it cannot widen the listener.
+func ValidateDashboardAddr(addr string) error { return validateDashboardAddr(addr) }
 
 // validateDashboardAddr keeps the listener on loopback. The all-interfaces
 // form is allowed only because the container must bind that way for Docker's

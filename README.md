@@ -169,10 +169,11 @@ Compose keeps it on the `assistant-data` volume, so restarts and rebuilds keep
 the data; the file is created mode 0600 and migrations run at startup.
 
 Every setting resolves as **stored override → `config.yaml` → code default**;
-`DELETE` removes the override and the lower layer applies again. The first
-overridable settings are each Tool's `enabled` flag and Permission level. A
-stored Permission may only tighten (`read` → `act` → `confirm`), never loosen,
-and Local-only is code-declared and cannot be overridden.
+`DELETE` removes the override and the lower layer applies again. Overridable
+settings include each Tool's `enabled` flag and Permission level, the wording
+below and the connection-level values. A stored Permission may only tighten
+(`read` → `act` → `confirm`), never loosen, and Local-only is code-declared and
+cannot be overridden.
 
 The `timezone` setting is a live IANA name for clock-time Alarms and Reminders.
 An empty value falls back to the container's `TZ`, then UTC, and UTC logs a
@@ -181,9 +182,9 @@ one the alert scheduler reads, so a change applies without a restart. No
 timezone is ever guessed from an IP address.
 
 The JSON API is mounted under `/api/` on the localhost debug listener, never on
-the public health listener. The authenticated Dashboard mounts the same handler
-behind Tailscale identity. Settings, Tool overrides and Secrets share that
-handler.
+the public health listener. The authenticated Dashboard (#47) mounts the
+same handler behind Tailscale identity. Settings, Tool overrides and Secrets
+share that handler; writes there also need a same-origin fetch.
 
 ```sh
 # List every effective value and the layer it came from.
@@ -198,6 +199,49 @@ curl -s -X PUT localhost:8081/api/tools/weather.current \
 # Reset both: config.yaml, then the code declaration, applies again.
 curl -s -X DELETE localhost:8081/api/tools/weather.current
 ```
+
+#### Live wording
+
+The user-facing wording is overridable through the same settings API. Every
+value reports the layer that won and a `kind`: `live` values are read per turn;
+`restart_required` values are only read at startup and need a process restart.
+There is no general hot-reload framework.
+
+| Key | Live effect |
+| --- | --- |
+| `tools.<name>.control_phrases` | The exact phrases that route to that Tool. A replacement applies to the next request. |
+| `focus.<intent>.phrases` | Exact phrases for one shared Focus intent (`stop`, `pause`, `resume`, `next`, `cancel`, `snooze`). They act on a ringing alert, the current reply or music; with nothing in Focus they fall through to the semantic Fast path. |
+| `tools.<name>.examples` | Semantic Fast path Examples. A change re-embeds in the background; routing keeps the old vectors until the new ones are ready, and a superseded rebuild is discarded. |
+| `agent.request_prefixes` | Prefixes that go straight to the Agent path. A change applies to the next request. |
+| `agent.filler` | The phrase played while the Agent path waits. A change re-synthesizes the cached audio in the background; the old audio plays until the new clip is ready, and at most one Filler still plays per request. |
+| `agent.unavailable_message` | The phrase spoken when the model is unreachable. A change applies to the next failure. |
+| `http.addr`, `debug.addr`, `dashboard.addr`, `tts.addr`, `wakeword.addr`, `stt.addr`, `embed.url`, `capture.source`, `playback.sink` | Connection-level settings, reported as `restart_required`. A stored override is applied on the next process start. |
+
+```sh
+# Route two new phrases to the clock Tool, then reset to config.yaml.
+curl -s -X PUT localhost:8081/api/settings/tools.time.now.control_phrases \
+  -H 'Content-Type: application/json' \
+  -d '{"value":["what time is it","current time"]}'
+curl -s -X DELETE localhost:8081/api/settings/tools.time.now.control_phrases
+
+# Move "stop" to a different shared intent phrase, then reset it.
+curl -s -X PUT localhost:8081/api/settings/focus.stop.phrases \
+  -H 'Content-Type: application/json' -d '{"value":["stop","halt"]}'
+curl -s -X DELETE localhost:8081/api/settings/focus.stop.phrases
+
+# Change the Agent cue and the model-unreachable line.
+curl -s -X PUT localhost:8081/api/settings/agent.filler \
+  -H 'Content-Type: application/json' -d '{"value":"Just a moment."}'
+curl -s -X PUT localhost:8081/api/settings/agent.unavailable_message \
+  -H 'Content-Type: application/json' -d '{"value":"I can't reach my brain right now."}'
+```
+
+A blank phrase, a duplicate within one list, an unknown Tool, an unknown
+intent, or a Control phrase pointing at a confirm Tool is rejected at write
+time. If two owners ever claim the same normalized phrase (two Tools, two
+intents, or a Tool and an intent; possible only through separate overrides),
+the phrase is dropped from the Control phrase table so it falls through to the
+semantic or Agent path instead of choosing an owner at random.
 
 ### Secrets
 

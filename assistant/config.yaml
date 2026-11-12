@@ -160,11 +160,13 @@ location:
     region: ""
     timezone: ""
 
-# Exact-match Control phrases, entered just after STT. A value names one Tool
-# ("audio.stop") or one shared Focus intent from the fixed list: stop, pause,
-# resume, next, cancel, snooze. An intent goes to whatever holds Focus, in the
-# fixed order ringing Scheduled alert > current reply > playing music; with
-# nothing in Focus the utterance falls through to the semantic Fast path.
+# Exact-match Control phrases, entered just after STT. These are the config.yaml
+# layer of the live wording settings; a stored override applies on the next
+# request. A value names one Tool ("audio.stop") or one shared Focus intent from
+# the fixed list: stop, pause, resume, next, cancel, snooze. An intent goes to
+# whatever holds Focus, in the fixed order ringing Scheduled alert > current
+# reply > playing music; with nothing in Focus the utterance falls through to
+# the semantic Fast path.
 control_phrases:
   "what time is it": time.now
   "what's the time": time.now
@@ -202,11 +204,14 @@ agent:
         # are forced in code (ADR-0002), not configurable here.
         sort: latency
   # Spoken cue played the moment a request goes to the Agent path. It is
-  # synthesized once at startup and cached, so it is heard instantly. Empty is a
-  # startup error; a config change needs a restart, which rebuilds the cache.
+  # synthesized once at startup and cached, so it is heard instantly. This is
+  # the config layer of the live `agent.filler` setting: an override re-synthesizes
+  # the cached audio in the background and keeps serving the old clip until ready.
   filler: "One moment."
+  # Config layer of the live `agent.unavailable_message` setting.
   unavailable_message: "Sorry, I can't answer that right now."
-  # Typed prefixes that skip the Fast path entirely.
+  # Typed prefixes that skip the Fast path entirely. Config layer of the live
+  # `agent.request_prefixes` setting; a stored override applies next request.
   request_prefixes:
     - ask the agent
     - agent

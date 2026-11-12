@@ -242,3 +242,51 @@ func TestFocusIntentFallsToTheAgentWhenSemanticIsDisabled(t *testing.T) {
 		t.Fatalf("reply = %+v, want the Agent path", result)
 	}
 }
+
+// focusWording is the settings-backed source the pipeline reads once per request.
+type focusWording struct {
+	mu    sync.Mutex
+	words pipeline.RoutingWords
+}
+
+func (w *focusWording) Routing() pipeline.RoutingWords {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.words
+}
+
+func (w *focusWording) set(words pipeline.RoutingWords) {
+	w.mu.Lock()
+	w.words = words
+	w.mu.Unlock()
+}
+
+// TestLiveWordingIntentAppliesOnTheNextRequest proves a stored phrase override
+// reaches the Focus route without rebuilding the pipeline.
+func TestLiveWordingIntentAppliesOnTheNextRequest(t *testing.T) {
+	var registry focus.Registry
+	reply := &focusHolder{name: "Stopped", intents: []focus.Intent{focus.Stop}}
+	claim := registry.Claim(focus.Reply, reply)
+	defer claim.Release()
+
+	words := &focusWording{}
+	reg := tool.NewRegistry(time.Second)
+	logger, _ := testLogger()
+	p, err := pipeline.New(reg, nil, logger,
+		pipeline.WithWording(words),
+		pipeline.WithFocus(&registry),
+	)
+	if err != nil {
+		t.Fatalf("pipeline.New: %v", err)
+	}
+
+	if result := p.Handle(context.Background(), request(), "stop"); result.Path == tool.PathFocusIntent {
+		t.Fatalf("reply = %+v, want no Focus route before the override", result)
+	}
+
+	words.set(pipeline.RoutingWords{IntentPhrases: map[string]string{"stop": "stop"}})
+	result := p.Handle(context.Background(), request(), "stop")
+	if result.Path != tool.PathFocusIntent || result.Text != "Stopped stop." {
+		t.Fatalf("reply = %+v, want the live intent to reach the holder", result)
+	}
+}

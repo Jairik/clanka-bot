@@ -100,6 +100,33 @@ func WithSemanticRouter(router *SemanticRouter) Option {
 	return func(p *Pipeline) { p.semantic = router }
 }
 
+// RoutingWords is the wording one request routes with. The fields come from
+// one settings snapshot, so a batch update cannot pair an old Control phrase
+// table with new prefixes.
+type RoutingWords struct {
+	// ControlPhrases maps a normalized phrase to a canonical Tool name.
+	ControlPhrases map[string]string
+	// IntentPhrases maps a normalized phrase to one shared Focus intent. A
+	// phrase in both maps is dropped by the live wording source, so it falls
+	// through instead of choosing an owner at random.
+	IntentPhrases map[string]string
+	// RequestPrefixes are the Agent request prefixes, in any order.
+	RequestPrefixes []string
+}
+
+// Wording is the live wording source. It is read once per request, after the
+// pending-Confirmation stage, so a changed phrase or prefix applies to the
+// next request without rebuilding the pipeline.
+type Wording interface {
+	Routing() RoutingWords
+}
+
+// WithWording makes Control phrases and Agent request prefixes live. Without
+// it the values passed to New are fixed for the process lifetime.
+func WithWording(w Wording) Option {
+	return func(p *Pipeline) { p.wording = w }
+}
+
 // WithConfirmationResolver wires the pending-Confirmation stage.
 func WithConfirmationResolver(resolver ConfirmationResolver) Option {
 	return func(p *Pipeline) { p.confirmation = resolver }
@@ -124,13 +151,15 @@ func (p *Pipeline) DropPending() (tool.PendingConfirmation, bool) {
 
 // Pipeline routes one transcript at a time. It is safe for concurrent use.
 type Pipeline struct {
-	registry *tool.Registry
-	phrases  map[string]string
-	logger   *slog.Logger
-	agent    AgentRunner
-	prefixes []string
-	history  *agent.History
-	semantic *SemanticRouter
+	registry      *tool.Registry
+	phrases       map[string]string
+	intentPhrases map[string]string
+	logger        *slog.Logger
+	agent         AgentRunner
+	prefixes      []string
+	history       *agent.History
+	semantic      *SemanticRouter
+	wording       Wording
 
 	confirmation ConfirmationResolver
 	focus        *focus.Registry
@@ -148,6 +177,7 @@ func New(reg *tool.Registry, phrases map[string]string, logger *slog.Logger, opt
 		logger = slog.Default()
 	}
 	normalized := make(map[string]string, len(phrases))
+	intents := make(map[string]string, len(phrases))
 	for phrase, name := range phrases {
 		key := NormalizePhrase(phrase)
 		if key == "" {
@@ -160,11 +190,14 @@ func New(reg *tool.Registry, phrases map[string]string, logger *slog.Logger, opt
 		if prev, exists := normalized[key]; exists && prev != target {
 			return nil, fmt.Errorf("pipeline: control phrase %q maps to both %q and %q", phrase, prev, target)
 		}
+		if prev, exists := intents[key]; exists && prev != target {
+			return nil, fmt.Errorf("pipeline: control phrase %q maps to both %q and %q", phrase, prev, target)
+		}
 		if focus.IsIntentTarget(target) {
 			if _, ok := focus.ParseIntent(target); !ok {
 				return nil, fmt.Errorf("pipeline: control phrase %q points at unknown intent %q", phrase, target)
 			}
-			normalized[key] = target
+			intents[key] = target
 			continue
 		}
 		info, ok := reg.Info(target)
@@ -179,7 +212,7 @@ func New(reg *tool.Registry, phrases map[string]string, logger *slog.Logger, opt
 		}
 		normalized[key] = target
 	}
-	p := &Pipeline{registry: reg, phrases: normalized, logger: logger}
+	p := &Pipeline{registry: reg, phrases: normalized, intentPhrases: intents, logger: logger}
 	for _, opt := range opts {
 		opt(p)
 	}
@@ -268,8 +301,16 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 	reply := Reply{Path: tool.PathFallthrough, RequestID: req.ID, Text: PlaceholderReply}
 	normalized := NormalizePhrase(transcript)
 
+	// Live wording is read once, from one snapshot, after the Confirmation
+	// stage and before either routing step that uses it.
+	phrases, intentPhrases, prefixes := p.phrases, p.intentPhrases, p.prefixes
+	if p.wording != nil {
+		words := p.wording.Routing()
+		phrases, intentPhrases, prefixes = words.ControlPhrases, words.IntentPhrases, words.RequestPrefixes
+	}
+
 	// 2. Agent request prefix goes straight to the Agent path.
-	if rest, ok := agent.MatchRequestPrefix(transcript, p.prefixes); ok {
+	if rest, ok := agent.MatchRequestPrefix(transcript, prefixes); ok {
 		markRouting()
 		record.reason = ""
 		reply.Path = tool.PathAgent
@@ -287,9 +328,9 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 	// phrase may name one Tool, or a shared Focus intent that acts on whatever
 	// currently holds Focus. With nothing in Focus the intent falls through to
 	// the semantic Fast path below, exactly like an unmatched utterance.
-	if target, ok := p.phrases[normalized]; ok {
-		if focus.IsIntentTarget(target) {
-			intent, _ := focus.ParseIntent(target)
+	if target, ok := intentPhrases[normalized]; ok {
+		intent, valid := focus.ParseIntent(target)
+		if valid {
 			if text, handled := p.focusIntent(ctx, intent); handled {
 				markRouting()
 				record.reason = ""
@@ -299,14 +340,14 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 			}
 			// Keep the honest reason unless the semantic router replaces it.
 			record.reason = reasonNoFocus
-		} else {
-			markRouting()
-			record.reason = ""
-			reply.Path = tool.PathControlPhrase
-			reply.Tool = target
-			reply.Text, record.failure, reply.Pending = p.callTool(ctx, req, transcript, target, tool.PathControlPhrase, nil)
-			return reply
 		}
+	} else if name, ok := phrases[normalized]; ok {
+		markRouting()
+		record.reason = ""
+		reply.Path = tool.PathControlPhrase
+		reply.Tool = name
+		reply.Text, record.failure, reply.Pending = p.callTool(ctx, req, transcript, name, tool.PathControlPhrase, nil)
+		return reply
 	}
 
 	// 4. Semantic match, then extraction, then the Fast path.

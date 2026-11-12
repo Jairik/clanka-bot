@@ -202,7 +202,14 @@ HTTPS `*.ts.net` URL, which carries the real identity.
 The Dashboard also mounts the settings/Tool-override API under `/api/`
 (`/api/settings`, `/api/tools`) behind the same identity check. Mutating API
 requests must be same-origin; the debug listener keeps its own localhost-only
-mount of the same handler.
+mount of the same handler. Wording settings (`tools.<name>.control_phrases`,
+`tools.<name>.examples`, `agent.request_prefixes`, `agent.filler`,
+`agent.unavailable_message`) are marked `live` and apply to the next request or
+in the background. Connection-level settings (`http.addr`, `debug.addr`,
+`dashboard.addr`, `tts.addr`, `wakeword.addr`, `stt.addr`, `embed.url`,
+`capture.source`, `playback.sink`) are marked `restart_required`: the override
+is stored, but only the next process start reads it. See the README for the
+curl examples.
 
 The Health page shows the five current Compose services (`embed`, `assistant`,
 `wakeword`, `stt`, `tts`), the resolved location and each Tool module that

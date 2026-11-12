@@ -289,6 +289,7 @@ python3 scripts/wake_over_music.py init --out /tmp/wake-over-music.json \
   --volumes 25,50,75
 
 # 2. After one real cell, record the actual counts and timestamps.
+#    The numbers below are placeholders, not a measurement.
 python3 scripts/wake_over_music.py record --file /tmp/wake-over-music.json \
   --volume 50 --aec on --trials 20 --hits 18 --false-wakes 1 \
   --exposure-min 30 \

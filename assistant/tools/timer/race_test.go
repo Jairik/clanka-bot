@@ -23,7 +23,10 @@ func TestConcurrentSetCancelAndFire(t *testing.T) {
 	m := timer.NewManager(nil, say, slog.Default())
 	defer m.Close()
 
-	var wg sync.WaitGroup
+	var (
+		wg        sync.WaitGroup
+		cancelled atomic.Int64
+	)
 	for i := 0; i < 80; i++ {
 		wg.Add(1)
 		go func(i int) {
@@ -34,10 +37,14 @@ func TestConcurrentSetCancelAndFire(t *testing.T) {
 				return
 			}
 			if i%2 == 0 {
-				if _, err := m.CancelTimers(tm.ID); err != nil {
+				n, err := m.CancelTimers(tm.ID)
+				if err != nil {
 					t.Errorf("CancelTimers: %v", err)
 					return
 				}
+				// A timer that fired before this call was not cancelled; only
+				// count the calls that actually removed an entry.
+				cancelled.Add(int64(n))
 			}
 		}(i)
 	}
@@ -51,8 +58,8 @@ func TestConcurrentSetCancelAndFire(t *testing.T) {
 	if _, err := m.CancelTimers(""); err != nil {
 		t.Fatalf("CancelTimers(all): %v", err)
 	}
-	if got := spoken.Load(); got > 40 {
-		t.Fatalf("alerts = %d, want at most the 40 uncancelled timers", got)
+	if got := spoken.Load(); got > 80-cancelled.Load() {
+		t.Fatalf("alerts = %d, want at most the %d timers that were not cancelled", got, 80-cancelled.Load())
 	}
 	if got := len(m.List()); got != 0 {
 		t.Fatalf("timers = %d after cancelling everything, want 0", got)

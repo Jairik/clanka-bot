@@ -46,7 +46,11 @@ type Settings struct {
 	SystemPrompt string
 	// SystemPromptFunc, when set, overrides SystemPrompt and is read per
 	// request so refreshed location data is used.
-	SystemPromptFunc   func() string
+	SystemPromptFunc func() string
+	// PersonaFunc, when set, supplies the active personality prompt. It is read
+	// once per turn when the labelled system part is built; it never adds a
+	// second egress path (ADR-0002).
+	PersonaFunc        func() Persona
 	UnavailableMessage string
 	// UnavailableMessageFunc, when set, is read for each failure so a stored
 	// wording override applies without rebuilding the Agent path.
@@ -118,6 +122,11 @@ func New(settings Settings, registry *tool.Registry, logger *slog.Logger) (*Agen
 	prompt := NewPromptBuilder(settings.SystemPrompt)
 	if settings.SystemPromptFunc != nil {
 		prompt = NewPromptBuilderFunc(settings.SystemPromptFunc)
+	}
+	// The Persona prompt is part of the same labelled system message. A nil
+	// source keeps the plain prompt, so a setup without Personas is unchanged.
+	if settings.PersonaFunc != nil {
+		prompt = prompt.WithPersona(settings.PersonaFunc)
 	}
 	// Resolve the Unavailable wording per failure. The static value stays the
 	// required fallback, so a resolver that returns nothing cannot silence the

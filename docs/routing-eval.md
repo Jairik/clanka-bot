@@ -8,8 +8,8 @@ misroute from the request log.
 ## What is checked in
 
 - `assistant/internal/pipeline/testdata/routing_eval.yaml` — the labelled
-  oracle. It has at least 20 positives for each Fast path Tool, 138 plain
-  negatives, and 28 compound requests (exact counts in the results table).
+  oracle. It has at least 20 positives for each Fast path Tool, 159 plain
+  negatives, and 30 compound requests (exact counts in the results table).
 - `assistant/internal/pipeline/testdata/routing_baseline.yaml` — the recorded
   Map 1 totals the real-MiniLM evaluation must not fall below.
 - `assistant/internal/pipeline/routing_eval_test.go` —
@@ -135,19 +135,23 @@ above the 0.95 precision floor. Run against
 | `time.in_city` | 21 | 9 | 0 | 9 | 0 | 12 | 1.00 | 0.4286 |
 | `date.countdown` | 22 | 22 | 0 | 22 | 0 | 0 | 1.00 | 1.00 |
 | `weather.current` | 20 | 11 | 4 | 7 | 0 | 9 | 1.00 | 0.55 |
-| `audio.volume_set` | 20 | 12 | 1 | 11 | 0 | 8 | 1.00 | 0.60 |
+| `audio.volume_set` | 20 | 9 | 1 | 8 | 0 | 11 | 1.00 | 0.45 |
 | `audio.stop` | 20 | 8 | 0 | 8 | 0 | 12 | 1.00 | 0.40 |
 | `timer.set` | 26 | 11 | 0 | 11 | 0 | 15 | 1.00 | 0.4231 |
 | `timer.cancel` | 20 | 14 | 0 | 14 | 0 | 6 | 1.00 | 0.70 |
 | `timer.remaining` | 20 | 9 | 0 | 9 | 0 | 11 | 1.00 | 0.45 |
 | `timer.list` | 20 | 12 | 0 | 12 | 0 | 8 | 1.00 | 0.60 |
-| `alarm.set` | 22 | 13 | 0 | 13 | 0 | 9 | 1.00 | 0.5909 |
+| `alarm.set` | 30 | 13 | 0 | 13 | 0 | 17 | 1.00 | 0.4333 |
 | `alarm.list` | 21 | 13 | 0 | 13 | 0 | 8 | 1.00 | 0.6190 |
-| `alarm.cancel` | 20 | 11 | 0 | 11 | 0 | 9 | 1.00 | 0.5500 |
+| `alarm.cancel` | 20 | 8 | 0 | 8 | 0 | 12 | 1.00 | 0.4000 |
+| `alarm.update` | 23 | 23 | 0 | 23 | 0 | 0 | 1.00 | 1.00 |
 | `voice.set` | 20 | 20 | 0 | 20 | 0 | 0 | 1.00 | 1.00 |
 | `voice.list` | 20 | 6 | 4 | 2 | 0 | 14 | 1.00 | 0.30 |
-| `voice.current` | 20 | 8 | 3 | 5 | 0 | 12 | 1.00 | 0.40 |
+| `voice.current` | 20 | 7 | 3 | 4 | 0 | 13 | 1.00 | 0.35 |
 | `voice.rate` | 20 | 16 | 2 | 14 | 0 | 4 | 1.00 | 0.80 |
+| `persona.switch` | 20 | 20 | 0 | 20 | 0 | 0 | 1.00 | 1.00 |
+| `persona.list` | 20 | 17 | 3 | 14 | 0 | 3 | 1.00 | 0.85 |
+| `persona.current` | 20 | 9 | 4 | 5 | 0 | 11 | 1.00 | 0.45 |
 | `quiet.set` | 20 | 20 | 0 | 20 | 0 | 0 | 1.00 | 1.00 |
 | `quiet.off` | 20 | 16 | 2 | 14 | 0 | 4 | 1.00 | 0.80 |
 | `quiet.dnd` | 20 | 20 | 0 | 20 | 0 | 0 | 1.00 | 1.00 |
@@ -164,15 +168,20 @@ above the 0.95 precision floor. Run against
 | `assistant.repeat` | 20 | 14 | 0 | 14 | 0 | 6 | 1.00 | 0.70 |
 | `assistant.help` | 20 | 15 | 0 | 15 | 0 | 5 | 1.00 | 0.75 |
 | `system.status` | 20 | 10 | 0 | 10 | 0 | 10 | 1.00 | 0.50 |
-| **Total** | **713** | **497** | **23** | **474** | **0** | **216** | **1.00** | **0.6971** |
+| **Total** | **804** | **559** | **30** | **529** | **0** | **245** | **1.00** | **0.6953** |
 
-These numbers are from the merged #53 Alarm, #54 Reminder, #59 quick-wins, #62
-Notifications and #60 utility Tools tree and include the earlier #34, #44, #51,
-#55, #61 and #63 corpus additions. Precision is 1.00 with no negative or
-compound misroute, and every Tool clears the 0.95 floor. The #59 Tools add 60
-positives and three negative/compound groups; `assistant.repeat` and
-`assistant.help` are Local-only, so their recall only exercises the semantic
-router and never the Agent path. `notify.phone`'s positives include
+These numbers are from the merged #57 per-Alarm overrides, #59 quick-wins, #65
+Persona, #53 Alarm, #54 Reminder, #62 Notifications and #60 utility Tools tree.
+Precision is 1.00 with no negative or compound misroute, and every Tool clears
+the 0.95 floor. The #57 overrides add 31 Alarm positives, the #59 Tools add 60
+positives and three negative/compound groups, and the Persona Tools add 60
+positives and 11 plain negatives. `assistant.repeat` and `assistant.help` are
+Local-only, so their recall only exercises the semantic router and never the
+Agent path. `persona.switch`
+resolves all 20 positives, so "switch to the GLaDOS persona" reaches the Fast
+path; the list/current questions are lexically close to each other, so their
+short forms are exact Control phrases and the paraphrases fall to the Agent
+path rather than risk the wrong read Tool. `notify.phone`'s positives include
 demonstrative "send that to my phone" wording and explicit-message forms; its
 phone-shaped negatives and compound keep it from swallowing device questions,
 other transports and two-action requests. Reminder recall is conservative
@@ -188,10 +197,10 @@ is low because the city token dominates the embedding: known phrasings route,
 and an unlisted city reaches the same Tool through the Agent path, which then
 uses the local city table rather than a guess.
 
-Plain negatives: **0 of 138** reached the Fast path, including the utility
+Plain negatives: **0 of 159** reached the Fast path, including the utility
 non-requests such as an unsupported event, a currency conversion, a bare
 "roll out the red carpet" and an open-ended pick, plus the reminder-, phone-
-and repeat-shaped non-requests. Compounds: **0 of 28** reached the Fast path,
+and repeat-shaped non-requests. Compounds: **0 of 30** reached the Fast path,
 including mixed utility requests such as calculating a percentage and
 converting miles. Every Tool is exercised by the semantic
 router at least twice, so no Tool clears the floor only because the Control

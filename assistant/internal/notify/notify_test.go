@@ -299,6 +299,31 @@ func TestNoAuthorizationWhenNoTokenIsStored(t *testing.T) {
 	}
 }
 
+func TestURLSettingAppliesToTheNextSend(t *testing.T) {
+	first, firstRequests := captureServer(t)
+	second, secondRequests := captureServer(t)
+	reader := newFakeReader(map[string]any{URLKey: first.URL})
+	svc, err := New(Options{Reader: reader, Secrets: newFakeSecrets(), Config: DefaultConfig()})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if err := svc.Send(context.Background(), Notification{Kind: "phone", Message: "one"}); err != nil {
+		t.Fatalf("first Send: %v", err)
+	}
+	waitForRequest(t, firstRequests)
+	// A live settings write takes effect on the next send without a restart.
+	reader.set(map[string]any{URLKey: second.URL})
+	if err := svc.Send(context.Background(), Notification{Kind: "phone", Message: "two"}); err != nil {
+		t.Fatalf("second Send: %v", err)
+	}
+	waitForRequest(t, secondRequests)
+	select {
+	case req := <-firstRequests:
+		t.Fatalf("the updated URL still used the old server: %+v", req)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
 func TestQuietMutesBeforeNetworkAndTopicProvisioning(t *testing.T) {
 	server, requests := captureServer(t)
 	secretSvc := newFakeSecrets()

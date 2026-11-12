@@ -118,21 +118,24 @@ unrelated request, or a Barge-in drops the pending call. The create request is
 sent exactly once, with no automatic retry, so a timeout cannot duplicate an
 issue.
 
-The credential is the write-only `GITHUB_TOKEN` secret (Dashboard `/secrets` or
-`.env`). A fine-grained PAT is the intended token: give it access to the
+There are two write-only secrets (Dashboard `/secrets` or `.env`). `GITHUB_TOKEN`
+is a fine-grained PAT for `issue_create` and `pr_list`: give it access to the
 repositories in `tools.github.allowed_repos` and "Issues: Read and write" for
 `issue_create`; the review-requested search needs no extra fine-grained
 permission. `github.pr_list` asks GitHub for
 `is:open is:pr review-requested:@me` — the "waiting on me" semantics, not every
 open pull request — and needs no identity request of its own.
 
-Notifications are the documented exception: GitHub's notifications endpoints
-only support a classic personal access token with the `notifications` or `repo`
-scope. Fine-grained PATs are not supported by that API, so
-`github.notifications` fails cleanly and names that contract instead of
-pretending otherwise. Use a classic token for that one Tool, or leave it unused;
-the other two work with the fine-grained token. This is a GitHub API limitation,
-not a module switch.
+Notifications use a second, **optional** secret, `GITHUB_NOTIFICATIONS_TOKEN`:
+a classic personal access token with only the `notifications` scope. GitHub's
+notifications endpoints do not accept fine-grained PATs, so
+`github.notifications` uses that token exclusively, and `issue_create` and
+`pr_list` never touch it. The fine-grained `GITHUB_TOKEN` is never sent to the
+notifications endpoint, even as a fallback. If the classic secret is unset,
+`github.notifications` says aloud that a classic notifications token is needed;
+the Health page shows a separate `github notifications` row as not configured
+(not an error), and issue and pull-request use stay healthy. The Tool is
+read-only and never marks a thread read.
 
 `tools.github.default_repo` (shipped as `Jairik/clanka-bot`) is operator config;
 the Tool code hardcodes no target. `tools.github.allowed_repos` is the write

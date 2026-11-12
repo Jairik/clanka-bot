@@ -127,9 +127,10 @@ tools:
       max_redirects: 5
   github:
     # Agent-path GitHub Tools. The token is a write-only secret, never here.
-    # issue_create and pr_list work with a fine-grained PAT; notifications are
-    # the exception because GitHub's notifications API only accepts a classic
-    # token (see README.md "GitHub").
+    # issue_create and pr_list use the fine-grained GITHUB_TOKEN; notifications
+    # use only the optional classic GITHUB_NOTIFICATIONS_TOKEN (notifications
+    # scope) because GitHub's notifications API rejects fine-grained tokens
+    # (see README.md "GitHub").
     base_url: "https://api.github.com"
     # One HTTP request, including reading the response body.
     timeout: 4s

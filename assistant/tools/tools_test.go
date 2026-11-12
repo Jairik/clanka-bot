@@ -373,15 +373,18 @@ func TestFocusIntentsListsTheModuleDeclarations(t *testing.T) {
 // GitHub module's declaration is what makes GITHUB_TOKEN appear there without a
 // page edit, and the same name is the module's required secret.
 func TestModuleListDeclaresTheGitHubToken(t *testing.T) {
-	found := false
-	for _, name := range tools.NewSet().SecretNames() {
-		if name == github.SecretName {
-			found = true
-			break
+	names := tools.NewSet().SecretNames()
+	for _, want := range []string{github.SecretName, github.NotificationsSecretName} {
+		found := false
+		for _, name := range names {
+			if name == want {
+				found = true
+				break
+			}
 		}
-	}
-	if !found {
-		t.Fatalf("SecretNames() = %v, want %s", tools.NewSet().SecretNames(), github.SecretName)
+		if !found {
+			t.Fatalf("SecretNames() = %v, want %s", names, want)
+		}
 	}
 }
 

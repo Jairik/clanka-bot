@@ -91,7 +91,9 @@ contract in the Tool description and return a clean `tool.ToolError` that says
 what is required (for example, `github.notifications` says GitHub only accepts a
 classic token for its notifications API). Keep the module's health check to the
 credential's general validity, so one unsupported endpoint does not make the
-whole module look broken, and record the partial acceptance in the handoff.
+whole module look broken. When the upstream needs a different credential, add a
+separate optional secret and report it through `tool.AuxHealthChecker` (a
+not-configured row, never an error), as `github.notifications` does. Record any partial acceptance in the handoff.
 
 ### If the Tool sends a Notification or refers to the previous reply
 

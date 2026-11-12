@@ -186,3 +186,32 @@ func TestLabels(t *testing.T) {
 		}
 	}
 }
+
+func TestSeparateModuleCheckKeepsItsOwnStateAndNeverFailsTheReport(t *testing.T) {
+	source := status.New(status.Options{
+		Timeout: time.Second,
+		Modules: fakeModules{
+			names: []string{"github"},
+			health: []tools.Health{
+				{Module: "github"},
+				{Module: "github notifications", Check: &tool.StatusCheck{
+					Name: "github notifications", State: tool.StatusNotConfigured, Detail: "needs a classic token",
+				}},
+			},
+		},
+	})
+	report := source.Status(context.Background())
+	byName := map[string]tool.StatusCheck{}
+	for _, check := range report.Modules {
+		byName[check.Name] = check
+	}
+	if byName["github"].State != tool.StatusOK {
+		t.Errorf("github = %+v, want ok", byName["github"])
+	}
+	if got := byName["github notifications"]; got.State != tool.StatusNotConfigured || got.Detail != "needs a classic token" {
+		t.Errorf("github notifications = %+v, want its own not-configured row", got)
+	}
+	if !report.OK() {
+		t.Error("OK() = false; an unset optional secret must not make the report unhealthy")
+	}
+}

@@ -188,6 +188,21 @@ type HealthChecker interface {
 	Health(ctx context.Context) error
 }
 
+// AuxHealth is one extra, separately named health result a module reports
+// for an optional capability (for example a second, optional credential). An
+// unconfigured optional capability is StatusNotConfigured, not an error, and
+// never marks the module's own health check unhealthy.
+type AuxHealth struct {
+	Name   string
+	State  StatusState
+	Detail string
+}
+
+// AuxHealthChecker is a Module's optional list of separate health results.
+type AuxHealthChecker interface {
+	AuxHealth(ctx context.Context) []AuxHealth
+}
+
 // SecretDeclarer is a Module's optional list of secret names it needs. A name
 // is both the secrets-table key and the .env bootstrap variable; the stored
 // value wins. Modules that need no secret omit this interface.

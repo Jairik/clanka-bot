@@ -79,7 +79,8 @@ F1/P1 (Control-intent compound), F2/P2 (startup embed recovery) and F3/P3
 `wake me at 7 with the birds sound` remains the disclosed conservative
 Fast-path recall miss; no threshold or floor was relaxed. The spec wording
 issues (#62 token wording, #68 notifications, the 12/18-tensor note) were not
-edited to claim success.
+edited to claim success. (Later amended: the #68 spec line now states the
+two-token contract below.)
 
 ### Security
 
@@ -122,9 +123,12 @@ the review pin.
 
 - **#62** ntfy: topic/token contract is code+fake-HTTP only; a server-issued
   token and live phone delivery remain external.
-- **#68** GitHub notifications: the notifications endpoint does not support a
-  fine-grained PAT; code reports the classic-token contract, not a silent
-  credential widening.
+- **#68** GitHub notifications: decided as a two-token contract. The optional
+  `GITHUB_NOTIFICATIONS_TOKEN` (classic PAT, `notifications` scope only) is used
+  only by `github.notifications`; `GITHUB_TOKEN` (fine-grained) is never sent to
+  the notifications endpoint and there is no fallback. Code + fake-GitHub tests
+  assert which token reaches which endpoint. Live acceptance (a real classic
+  token against api.github.com) is not done.
 - **#69 / #70 / #74** physical/Pi: no RAM, AEC, microphone, speaker or
   music-volume measurement; #70 remains prep only and must not unblock #72.
 - **#71** Spotify: no real account pairing, playback or real

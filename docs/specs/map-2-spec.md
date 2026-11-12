@@ -85,7 +85,7 @@ Status: **grilled, ready for `/to-tickets`** (2026-11-11). Built from [map-2-bri
 
 ### Tier 2 (Agent path)
 - SearXNG `web.search` + `web.fetch`, as in the brief. Kiwix, a "deep think" model switch and memory beyond the 10-turn history are out of Map 2.
-- GitHub as plain Tool modules in phase 3, using a fine-grained PAT from the secrets table: `github.issue_create` (`confirm`), `github.pr_list` and `github.notifications` (`read`).
+- GitHub as plain Tool modules in phase 3, using two tokens from the secrets table: a fine-grained PAT (`GITHUB_TOKEN`) for `github.issue_create` (`confirm`) and `github.pr_list` (`read`), and a separate OPTIONAL classic PAT with only the `notifications` scope (`GITHUB_NOTIFICATIONS_TOKEN`) used exclusively by `github.notifications` (`read`, never marks threads read). GitHub's notifications API does not accept fine-grained PATs. The fine-grained token is never sent to the notifications endpoint; without the classic secret, `github.notifications` says a classic notifications token is needed and its health entry reads not-configured, while issue and PR use stay healthy.
 
 ### RAM budget
 - A measurement ticket at the end of phases 3, 4 and 6: `docker stats` on the Pi under a scripted load (wake → STT → agent → TTS with music playing). If peak RAM is above 6.5 GB, the next phase waits until something is trimmed.

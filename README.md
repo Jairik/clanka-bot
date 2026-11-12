@@ -186,11 +186,11 @@ hold is on.
 
 Voice is a persistent setting, not a per-request choice. The library is the
 Pocket TTS voices warmed in the `tts` image (`TTS_VOICES`, default `alba`) plus
-pre-exported `.safetensors` voice states copied into `voices/` on the
-`assistant-data` volume. Compose mounts that folder read-only into `tts` at
-`/voices`; files are never baked into an image or committed. `voice.dir` may
-name another volume path, and `voice.tts_dir` is the same folder's path inside
-`tts`.
+pre-exported `.safetensors` voice states copied into `voices/` on the separate
+`assistant-voices` volume. Compose mounts that volume read-only into `tts` at
+`/voices`, so `tts` sees only voice states and never the database or secrets;
+files are never baked into an image or committed. `voice.dir` may name another
+volume path, and `voice.tts_dir` is the same folder's path inside `tts`.
 
 Only `.safetensors` is accepted: `.pt`, `.pth` and other pickle-backed torch
 files are refused and never opened. A copied file is at most 32 MB and is

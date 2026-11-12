@@ -109,17 +109,17 @@ tts:
   timeout: 30s
 
 # Custom voice states: pre-exported Pocket TTS .safetensors files in one folder
-# on the data volume. The folder is mounted read-only into tts and is never
-# baked into an image or committed. Only .safetensors is accepted (no
+# on the voices volume. Only that folder is mounted read-only into tts and is
+# never baked into an image or committed. Only .safetensors is accepted (no
 # .pt/.pth/pickle), at most 32 MB; a file is usable after a library rescan
 # smoke-tests it against the running model revision.
 voice:
   # Empty means data.dir/voices. A relative path resolves under data.dir; an
   # absolute path names a volume path, so files can be copied in headlessly.
   dir: "voices"
-  # The same folder inside the tts container. Compose mounts the data volume at
-  # /voices read-only; the assistant sends "<tts_dir>/<file>" to tts and never
-  # a host path.
+  # The same folder inside the tts container. Compose mounts only the voices
+  # volume at /voices read-only; the assistant sends "<tts_dir>/<file>" to tts
+  # and never a host path.
   tts_dir: "/voices"
   # Config layer of the live `voice.rate` setting: 1.0 is normal, 1.2 is 20%
   # faster. Implemented by resampling, so pitch rises with speed; values are

@@ -254,3 +254,19 @@ func TestCancelledAgentTurnIsNotMarkedFailed(t *testing.T) {
 		t.Fatal("cancelled agent turn was marked failed")
 	}
 }
+
+// TestAgentUnavailableMarksTheReply is the seam the reply session uses to play
+// the error Cue before the Unavailable message.
+func TestAgentUnavailableMarksTheReply(t *testing.T) {
+	runner := newFakeRunner()
+	runner.result = agent.Result{Text: "Sorry, I can't answer that right now.", Unavailable: true}
+	p := newAgentPipeline(t, runner, tool.NewRegistry(time.Second), nil)
+
+	reply := p.Handle(context.Background(), tool.Request{ID: "req-agent", Device: tool.DevicePi}, "ask the agent anything")
+	if !reply.Unavailable {
+		t.Fatalf("reply.Unavailable = false for %+v", reply)
+	}
+	if reply.Path != tool.PathAgent || reply.Text != runner.result.Text {
+		t.Fatalf("reply = %+v", reply)
+	}
+}

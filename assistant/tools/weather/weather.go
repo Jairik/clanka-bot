@@ -146,25 +146,9 @@ func current(ctx context.Context, deps Deps, in In, cache *cache) (Out, error) {
 		ctx, cancel = context.WithTimeout(ctx, deps.Budget)
 		defer cancel()
 	}
-	city := strings.TrimSpace(in.City)
-	if city == "" {
-		if deps.Location == nil {
-			return Out{}, unknownLocation()
-		}
-		loc, ok := deps.Location()
-		if !ok {
-			return Out{}, unknownLocation()
-		}
-		city = strings.TrimSpace(loc.City)
-		if city == "" {
-			city = strings.TrimSpace(loc.Region)
-		}
-		if city == "" {
-			city = strings.TrimSpace(loc.Timezone)
-		}
-		if city == "" {
-			return Out{}, unknownLocation()
-		}
+	city, err := resolveCity(in, deps)
+	if err != nil {
+		return Out{}, err
 	}
 
 	place, err := cachedGeocode(ctx, deps, cache, city)
@@ -188,6 +172,27 @@ func current(ctx context.Context, deps Deps, in In, cache *cache) (Out, error) {
 
 func unknownLocation() error {
 	return &tool.ToolError{Say: "I don't know where I am yet."}
+}
+
+// resolveCity uses the named city, then city, region and timezone from the
+// current location, so an incomplete lookup still gives a geocodable name.
+func resolveCity(in In, deps Deps) (string, error) {
+	if city := strings.TrimSpace(in.City); city != "" {
+		return city, nil
+	}
+	if deps.Location == nil {
+		return "", unknownLocation()
+	}
+	loc, ok := deps.Location()
+	if !ok {
+		return "", unknownLocation()
+	}
+	for _, candidate := range []string{loc.City, loc.Region, loc.Timezone} {
+		if city := strings.TrimSpace(candidate); city != "" {
+			return city, nil
+		}
+	}
+	return "", unknownLocation()
 }
 
 // userFacing keeps a specific ToolError (unknown place, unknown location) but

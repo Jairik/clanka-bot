@@ -17,6 +17,7 @@ import (
 
 	"github.com/Jairik/clanka-bot/assistant/internal/agent"
 	"github.com/Jairik/clanka-bot/assistant/internal/embed"
+	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
@@ -36,6 +37,7 @@ var routingEvalTools = []string{
 	audiocontrol.StopName,
 	timer.SetName,
 	timer.CancelName,
+	timer.RemainingName,
 	timer.ListName,
 }
 
@@ -53,6 +55,17 @@ type routingFixture struct {
 	Positives map[string][]string `yaml:"positives"`
 	Negatives []string            `yaml:"negatives"`
 	Compounds []string            `yaml:"compounds"`
+	Focus     []routingFocusCase  `yaml:"focus"`
+}
+
+// routingFocusCase is one shared-phrase case: the holders present, the intent
+// the utterance must deliver, and which holder must take it. An empty Intent
+// means no holder takes it and the utterance must fall through.
+type routingFocusCase struct {
+	Utterance string   `yaml:"utterance"`
+	Holders   []string `yaml:"holders"`
+	Intent    string   `yaml:"intent"`
+	HandledBy string   `yaml:"handled_by"`
 }
 
 // routingConfig is the subset of assistant/config.yaml the evaluation reads, so
@@ -64,6 +77,47 @@ type routingConfig struct {
 		Margin    float64  `yaml:"margin"`
 		Joiners   []string `yaml:"joiners"`
 	} `yaml:"semantic"`
+}
+
+// routingBaseline is the checked-in Map 1 accuracy the evaluation must not drop
+// below. Counts, not rounded floats, so the gate is exact.
+type routingBaseline struct {
+	TP                int `yaml:"tp"`
+	FP                int `yaml:"fp"`
+	Positives         int `yaml:"positives"`
+	NegativeMisroutes int `yaml:"negative_misroutes"`
+	CompoundMisroutes int `yaml:"compound_misroutes"`
+}
+
+func (b routingBaseline) precision() float64 {
+	if b.TP+b.FP == 0 {
+		return 0
+	}
+	return float64(b.TP) / float64(b.TP+b.FP)
+}
+
+func (b routingBaseline) recall() float64 {
+	if b.Positives == 0 {
+		return 0
+	}
+	return float64(b.TP) / float64(b.Positives)
+}
+
+func baselinePath() string {
+	return filepath.Join("testdata", "routing_baseline.yaml")
+}
+
+func loadRoutingBaseline(t *testing.T) routingBaseline {
+	t.Helper()
+	raw, err := os.ReadFile(baselinePath())
+	if err != nil {
+		t.Fatalf("read baseline: %v", err)
+	}
+	var baseline routingBaseline
+	if err := yaml.Unmarshal(raw, &baseline); err != nil {
+		t.Fatalf("parse baseline: %v", err)
+	}
+	return baseline
 }
 
 func fixturePath() string {
@@ -142,6 +196,29 @@ func TestRoutingEvalFixtureShape(t *testing.T) {
 	}
 }
 
+// TestRoutingEvalBaselineShape keeps the recorded Map 1 baseline honest
+// without the embed service: it must describe a measurable, non-negative
+// result.
+func TestRoutingEvalBaselineShape(t *testing.T) {
+	baseline := loadRoutingBaseline(t)
+	if baseline.Positives <= 0 {
+		t.Errorf("baseline positives = %d, want a positive count", baseline.Positives)
+	}
+	if baseline.TP < 0 || baseline.FP < 0 {
+		t.Errorf("baseline tp = %d, fp = %d; counts must not be negative", baseline.TP, baseline.FP)
+	}
+	if baseline.TP+baseline.FP == 0 {
+		t.Error("baseline has no predictions; precision would not be measurable")
+	}
+	if baseline.TP > baseline.Positives {
+		t.Errorf("baseline tp = %d, positives = %d; TP cannot exceed positives", baseline.TP, baseline.Positives)
+	}
+	if baseline.NegativeMisroutes < 0 || baseline.CompoundMisroutes < 0 {
+		t.Errorf("baseline misroutes = %d negatives, %d compounds; counts must not be negative",
+			baseline.NegativeMisroutes, baseline.CompoundMisroutes)
+	}
+}
+
 // evalAudio records audio Tool calls without touching a real sink.
 type evalAudio struct{}
 
@@ -198,6 +275,7 @@ type evalVerdict struct {
 	Tool   string
 	Path   tool.Path
 	Reason string
+	Top    []pipeline.ToolScore
 }
 
 type evalCounts struct {
@@ -254,6 +332,7 @@ func TestRoutingEvalAgainstMiniLM(t *testing.T) {
 
 	fixture := loadRoutingFixture(t)
 	cfg := loadRoutingConfig(t)
+	baseline := loadRoutingBaseline(t)
 	threshold := envFloat(t, "ROUTING_EVAL_THRESHOLD", cfg.Semantic.Threshold)
 	margin := envFloat(t, "ROUTING_EVAL_MARGIN", cfg.Semantic.Margin)
 	if threshold <= 0 || threshold > 1 {
@@ -291,9 +370,13 @@ func TestRoutingEvalAgainstMiniLM(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(&logBuf, nil))
 	runner := newFakeRunner()
 	runner.result = agent.Result{Text: "agent answer"}
+	var focusRegistry focus.Registry
 	p, err := pipeline.New(reg, cfg.ControlPhrases, logger,
 		pipeline.WithSemanticRouter(router),
 		pipeline.WithAgent(runner, nil),
+		// The corpus runs with no Focus holder, which is the production
+		// fall-through case; the Focus cases claim holders per case.
+		pipeline.WithFocus(&focusRegistry),
 	)
 	if err != nil {
 		t.Fatalf("pipeline.New: %v", err)
@@ -308,15 +391,18 @@ func TestRoutingEvalAgainstMiniLM(t *testing.T) {
 		manager.Cancel("")
 
 		reason := ""
+		var top []pipeline.ToolScore
 		if line := strings.TrimSpace(logBuf.String()); line != "" {
 			var record struct {
-				Reason string `json:"fallthrough_reason"`
+				Reason string               `json:"fallthrough_reason"`
+				Top    []pipeline.ToolScore `json:"top_tools"`
 			}
 			if err := json.Unmarshal([]byte(line), &record); err == nil {
 				reason = record.Reason
+				top = record.Top
 			}
 		}
-		return evalVerdict{Tool: reply.Tool, Path: reply.Path, Reason: reason}
+		return evalVerdict{Tool: reply.Tool, Path: reply.Path, Reason: reason, Top: top}
 	}
 
 	counts := make(map[string]*evalCounts, len(routingEvalTools))
@@ -341,7 +427,7 @@ func TestRoutingEvalAgainstMiniLM(t *testing.T) {
 					other.fp++
 				}
 			}
-			t.Logf("MISS positive tool=%s utterance=%q got_tool=%s path=%s reason=%s", name, utterance, got.Tool, got.Path, got.Reason)
+			t.Logf("MISS positive tool=%s utterance=%q got_tool=%s path=%s reason=%s top=%v", name, utterance, got.Tool, got.Path, got.Reason, got.Top)
 		}
 	}
 
@@ -368,6 +454,12 @@ func TestRoutingEvalAgainstMiniLM(t *testing.T) {
 			t.Logf("MISS compound utterance=%q reached tool=%s path=%s", utterance, got.Tool, got.Path)
 		}
 	}
+
+	// Focus cases use the same pipeline and phrase table; only the holders
+	// differ. A delivered case must take the Focus path, and a fall-through
+	// case must not.
+	focusDelivered, focusFellThrough := runFocusEvalCases(t, p, &focusRegistry, fixture.Focus, classify)
+	t.Logf("ROUTING_EVAL_FOCUS_TOTAL total=%d delivered=%d fallthrough=%d", len(fixture.Focus), focusDelivered, focusFellThrough)
 
 	var total evalCounts
 	t.Logf("ROUTING_EVAL threshold=%.3f margin=%.3f positives=%d negatives=%d compounds=%d floor=%.3f",
@@ -397,6 +489,26 @@ func TestRoutingEvalAgainstMiniLM(t *testing.T) {
 	t.Logf("ROUTING_EVAL_COMPOUNDS total=%d misrouted=%d", len(fixture.Compounds), compoundMisrouted)
 	t.Logf("ROUTING_EVAL_TOTAL tp=%d control_tp=%d semantic_tp=%d fp=%d fn=%d precision=%.4f recall=%.4f",
 		total.tp, total.controlTP, total.semanticTP(), total.fp, total.fn, total.precision(), total.recall())
+	t.Logf("ROUTING_EVAL_BASELINE tp=%d fp=%d positives=%d negative_misroutes=%d compound_misroutes=%d precision=%.4f recall=%.4f",
+		baseline.TP, baseline.FP, baseline.Positives, baseline.NegativeMisroutes, baseline.CompoundMisroutes,
+		baseline.precision(), baseline.recall())
+
+	// CI gates on the recorded Map 1 baseline. New positives may raise recall,
+	// but no change may lower it or the precision/misroute counts.
+	if total.precision() < baseline.precision() {
+		t.Errorf("overall precision = %.4f (%d/%d), below the Map 1 baseline %.4f (%d/%d)",
+			total.precision(), total.tp, total.tp+total.fp, baseline.precision(), baseline.TP, baseline.TP+baseline.FP)
+	}
+	if total.recall() < baseline.recall() {
+		t.Errorf("overall recall = %.4f (%d/%d), below the Map 1 baseline %.4f (%d/%d)",
+			total.recall(), total.tp, total.positives, baseline.recall(), baseline.TP, baseline.Positives)
+	}
+	if negativeMisrouted > baseline.NegativeMisroutes {
+		t.Errorf("negatives misrouted = %d, above the Map 1 baseline %d", negativeMisrouted, baseline.NegativeMisroutes)
+	}
+	if compoundMisrouted > baseline.CompoundMisroutes {
+		t.Errorf("compounds misrouted = %d, above the Map 1 baseline %d", compoundMisrouted, baseline.CompoundMisroutes)
+	}
 }
 
 func sumPositives(counts map[string]*evalCounts) int {

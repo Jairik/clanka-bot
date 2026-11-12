@@ -190,3 +190,17 @@ func TestIPWhoIsProviderReportsFailure(t *testing.T) {
 		t.Fatal("Lookup succeeded, want an error")
 	}
 }
+
+// TestLocationHealthReportsWhetherAPlaceIsKnown is the location check the
+// Dashboard Health page shows next to the Tool module checks.
+func TestLocationHealthReportsWhetherAPlaceIsKnown(t *testing.T) {
+	known := location.NewService(nil, london, 24*time.Hour, discardLogger())
+	if err := known.Health(context.Background()); err != nil {
+		t.Fatalf("Health with a config fallback = %v, want nil", err)
+	}
+
+	unknown := location.NewService(nil, location.Location{}, 24*time.Hour, discardLogger())
+	if err := unknown.Health(context.Background()); err == nil {
+		t.Fatal("Health with no place = nil, want an error")
+	}
+}

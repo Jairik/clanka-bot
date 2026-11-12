@@ -4,14 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math"
 	"regexp"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/phrase"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
+	"github.com/Jairik/clanka-bot/assistant/internal/vector"
 )
 
 // Fall-through reasons reported in the request log.
@@ -45,16 +46,44 @@ type SemanticConfig struct {
 	Timeout   time.Duration
 }
 
-// SemanticRouter holds Tool example vectors computed once at Build.
+// SemanticRouter holds Tool example vectors. Build fills the live set; a later
+// rebuild builds a new set off to the side and Swap installs it, so matching
+// keeps using the old vectors until the replacements are ready.
 type SemanticRouter struct {
 	registry *tool.Registry
 	embedder Embedder
 	cfg      SemanticConfig
 
+	// source, when set, supplies the effective Examples for each Tool. A nil
+	// source uses the code declarations.
+	source ExamplesSource
+
+	// live is the current example set. Readers load it once per Match, so a
+	// concurrent Swap can never mix vectors from two builds.
+	live atomic.Pointer[ExampleSet]
+}
+
+// ExamplesSource returns the effective Examples per Tool. A missing Tool falls
+// back to its code declaration only when the whole map is nil; an explicit
+// empty list removes that Tool from the index.
+type ExamplesSource interface {
+	Examples() map[string][]string
+}
+
+// ExampleSet is one built, immutable example index. It is created by BuildSet
+// and installed by Swap.
+type ExampleSet struct {
 	examples []example
 	dims     int
 	tools    int
-	ready    bool
+}
+
+// ToolCount returns how many Tools the set indexes.
+func (s *ExampleSet) ToolCount() int {
+	if s == nil {
+		return 0
+	}
+	return s.tools
 }
 
 type example struct {
@@ -78,39 +107,71 @@ func NewSemanticRouter(reg *tool.Registry, embedder Embedder, cfg SemanticConfig
 	return &SemanticRouter{registry: reg, embedder: embedder, cfg: cfg}
 }
 
-// Build embeds every eligible Tool example once. Call it before requests.
+// SetExamplesSource supplies the effective Examples for Build and later
+// rebuilds. Set it before Build.
+func (r *SemanticRouter) SetExamplesSource(source ExamplesSource) {
+	if r == nil {
+		return
+	}
+	r.source = source
+}
+
+// Build embeds every eligible Tool example and swaps the result in. A failed
+// build leaves the current vectors, if any, untouched.
 func (r *SemanticRouter) Build(ctx context.Context) error {
 	if r == nil {
 		return nil
 	}
-	r.examples = nil
-	r.tools = 0
-	r.dims = 0
-	r.ready = false
+	examples := map[string][]string(nil)
+	if r.source != nil {
+		examples = r.source.Examples()
+	}
+	set, err := r.BuildSet(ctx, examples)
+	if err != nil {
+		return err
+	}
+	r.Swap(set)
+	return nil
+}
+
+// BuildSet embeds one explicit Examples snapshot without touching the live
+// vectors. A nil map uses the code declarations; a non-nil map is used as-is,
+// so an empty list removes that Tool from the index.
+func (r *SemanticRouter) BuildSet(ctx context.Context, examples map[string][]string) (*ExampleSet, error) {
+	if r == nil {
+		return nil, fmt.Errorf("semantic router: router is required")
+	}
 	if r.registry == nil {
-		return fmt.Errorf("semantic router: registry is required")
+		return nil, fmt.Errorf("semantic router: registry is required")
 	}
 	if r.embedder == nil {
-		return fmt.Errorf("semantic router: embedder is required")
+		return nil, fmt.Errorf("semantic router: embedder is required")
 	}
 
 	type ref struct{ tool, text string }
 	var refs []ref
 	for _, name := range r.registry.Names() {
 		info, ok := r.registry.Info(name)
-		if !ok || !fastPathEligible(info) {
+		if !ok {
 			continue
 		}
-		for _, text := range info.Examples {
+		list := info.Examples
+		if examples != nil {
+			list = examples[name]
+		}
+		if !fastPathEligible(info, list) {
+			continue
+		}
+		for _, text := range list {
 			if strings.TrimSpace(text) == "" {
 				continue
 			}
 			refs = append(refs, ref{tool: name, text: text})
 		}
 	}
+	set := &ExampleSet{}
 	if len(refs) == 0 {
-		r.ready = true
-		return nil
+		return set, nil
 	}
 
 	texts := make([]string, len(refs))
@@ -119,27 +180,35 @@ func (r *SemanticRouter) Build(ctx context.Context) error {
 	}
 	vectors, err := r.embedder.Embed(ctx, texts)
 	if err != nil {
-		return fmt.Errorf("semantic router: embed examples: %w", err)
+		return nil, fmt.Errorf("semantic router: embed examples: %w", err)
 	}
 	if len(vectors) != len(texts) {
-		return fmt.Errorf("semantic router: got %d example vectors for %d examples", len(vectors), len(texts))
+		return nil, fmt.Errorf("semantic router: got %d example vectors for %d examples", len(vectors), len(texts))
 	}
 	seen := make(map[string]bool, len(refs))
 	for i, vec := range vectors {
 		if len(vec) == 0 {
-			return fmt.Errorf("semantic router: example vector %d is empty", i)
+			return nil, fmt.Errorf("semantic router: example vector %d is empty", i)
 		}
-		if r.dims == 0 {
-			r.dims = len(vec)
-		} else if len(vec) != r.dims {
-			return fmt.Errorf("semantic router: example vector %d has %d dimensions, want %d", i, len(vec), r.dims)
+		if set.dims == 0 {
+			set.dims = len(vec)
+		} else if len(vec) != set.dims {
+			return nil, fmt.Errorf("semantic router: example vector %d has %d dimensions, want %d", i, len(vec), set.dims)
 		}
-		r.examples = append(r.examples, example{tool: refs[i].tool, vec: normalize(vec)})
+		set.examples = append(set.examples, example{tool: refs[i].tool, vec: vector.Normalize(vec)})
 		seen[refs[i].tool] = true
 	}
-	r.tools = len(seen)
-	r.ready = true
-	return nil
+	set.tools = len(seen)
+	return set, nil
+}
+
+// Swap installs a built set. Readers see either the complete old set or the
+// complete new one, never a partial rebuild.
+func (r *SemanticRouter) Swap(set *ExampleSet) {
+	if r == nil || set == nil {
+		return
+	}
+	r.live.Store(set)
 }
 
 // ToolCount returns how many eligible Tools are indexed.
@@ -147,18 +216,23 @@ func (r *SemanticRouter) ToolCount() int {
 	if r == nil {
 		return 0
 	}
-	return r.tools
+	return r.live.Load().ToolCount()
 }
 
 // Match scores a transcript against the indexed examples and applies the
 // threshold, margin, compound and eligibility rules.
 func (r *SemanticRouter) Match(ctx context.Context, transcript string) SemanticResult {
 	result := SemanticResult{Extraction: "none", Top: []ToolScore{}}
-	if r == nil || !r.ready {
+	if r == nil {
 		result.Reason = reasonSemanticDisabled
 		return result
 	}
-	if len(r.examples) == 0 {
+	set := r.live.Load()
+	if set == nil {
+		result.Reason = reasonSemanticDisabled
+		return result
+	}
+	if len(set.examples) == 0 {
 		result.Reason = reasonSemanticNoTools
 		return result
 	}
@@ -178,16 +252,16 @@ func (r *SemanticRouter) Match(ctx context.Context, transcript string) SemanticR
 		result.Err = err
 		return result
 	}
-	if len(vectors) != 1 || len(vectors[0]) != r.dims {
+	if len(vectors) != 1 || len(vectors[0]) != set.dims {
 		result.Reason = reasonEmbedFailed
-		result.Err = fmt.Errorf("semantic router: utterance vector shape %d/%d, want 1/%d", len(vectors), vectorLen(vectors), r.dims)
+		result.Err = fmt.Errorf("semantic router: utterance vector shape %d/%d, want 1/%d", len(vectors), vectorLen(vectors), set.dims)
 		return result
 	}
-	query := normalize(vectors[0])
+	query := vector.Normalize(vectors[0])
 
-	best := make(map[string]float64, r.tools)
-	for _, ex := range r.examples {
-		score := dot(query, ex.vec)
+	best := make(map[string]float64, set.tools)
+	for _, ex := range set.examples {
+		score := vector.Dot(query, ex.vec)
 		if current, ok := best[ex.tool]; !ok || score > current {
 			best[ex.tool] = score
 		}
@@ -239,7 +313,7 @@ func (r *SemanticRouter) Match(ctx context.Context, transcript string) SemanticR
 // resolveArgs applies Extract, or passes no arguments for no-argument Tools.
 func (r *SemanticRouter) resolveArgs(name, transcript string) (json.RawMessage, string, bool) {
 	info, ok := r.registry.Info(name)
-	if !ok || !fastPathEligible(info) {
+	if !ok || !FastPathEligible(info) {
 		return nil, "none", false
 	}
 	if !info.HasExtract {
@@ -252,9 +326,19 @@ func (r *SemanticRouter) resolveArgs(name, transcript string) (json.RawMessage, 
 	return args, "ok", true
 }
 
-// fastPathEligible enforces issue #10's Fast path rules.
-func fastPathEligible(info tool.Info) bool {
-	if len(info.Examples) == 0 || !info.HasSpeak {
+// FastPathEligible reports whether the semantic router may send an utterance
+// to this Tool: enabled, read/act Permission, a Speak renderer, at least one
+// Example and either Extract or no required input fields. The conformance suite
+// uses the same rule.
+func FastPathEligible(info tool.Info) bool {
+	return fastPathEligible(info, info.Examples)
+}
+
+// CanUseFastPath is FastPathEligible without the current Examples and enabled
+// state. It answers whether a Tool could ever be routed by meaning, so the
+// wording settings know which Tools can carry overridable Examples.
+func CanUseFastPath(info tool.Info) bool {
+	if !info.HasSpeak {
 		return false
 	}
 	if info.Permission != tool.PermissionRead && info.Permission != tool.PermissionAct {
@@ -264,6 +348,12 @@ func fastPathEligible(info tool.Info) bool {
 		return true
 	}
 	return !hasInputFields(info.InputSchema)
+}
+
+// fastPathEligible is the shared rule with one explicit Examples list, so a
+// rebuilt index applies the same eligibility to effective overrides.
+func fastPathEligible(info tool.Info, examples []string) bool {
+	return info.Enabled && len(examples) > 0 && CanUseFastPath(info)
 }
 
 // hasInputFields reports whether a Tool's In struct declares any fields.
@@ -301,30 +391,6 @@ func topN(scores []ToolScore, n int) []ToolScore {
 		scores = scores[:n]
 	}
 	return append([]ToolScore{}, scores...)
-}
-
-func normalize(vec []float32) []float32 {
-	var sum float64
-	for _, v := range vec {
-		sum += float64(v) * float64(v)
-	}
-	if sum == 0 {
-		return append([]float32{}, vec...)
-	}
-	norm := math.Sqrt(sum)
-	out := make([]float32, len(vec))
-	for i, v := range vec {
-		out[i] = float32(float64(v) / norm)
-	}
-	return out
-}
-
-func dot(a, b []float32) float64 {
-	var sum float64
-	for i := range a {
-		sum += float64(a[i]) * float64(b[i])
-	}
-	return sum
 }
 
 func vectorLen(vectors [][]float32) int {

@@ -4,11 +4,14 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/focus"
+	"github.com/Jairik/clanka-bot/assistant/internal/tz"
 	"gopkg.in/yaml.v3"
 )
 
@@ -21,8 +24,27 @@ type Config struct {
 		Enabled bool   `yaml:"enabled"`
 		Addr    string `yaml:"addr"`
 	} `yaml:"debug"`
-	Tools struct {
+	Dashboard Dashboard `yaml:"dashboard"`
+	Data      struct {
+		// Dir holds the one SQLite database (ADR-0003). Compose mounts the
+		// named volume here; local runs use ./data.
+		Dir string `yaml:"dir"`
+	} `yaml:"data"`
+	// Timezone is the IANA zone that clock-time Alarms and Reminders use. It is
+	// the config layer of the live `timezone` setting; empty falls back to TZ,
+	// then UTC. Nothing is inferred from an IP address.
+	Timezone string `yaml:"timezone"`
+	Tools    struct {
 		DefaultTimeout Duration `yaml:"default_timeout"`
+		// Disabled is the config layer for a Tool's enabled setting. Names are
+		// canonical Tool names such as weather.current.
+		Disabled []string `yaml:"disabled"`
+		// Permissions is the config layer for Tool Permission levels. An entry
+		// may only tighten the code-declared level.
+		Permissions map[string]string `yaml:"permissions"`
+		// Sections holds each Tool module's tools.<name> block verbatim; the
+		// module decodes its own typed config over its code defaults.
+		Sections map[string]yaml.Node `yaml:",inline"`
 	} `yaml:"tools"`
 	TTS struct {
 		Addr    string   `yaml:"addr"` // empty disables spoken replies
@@ -62,6 +84,10 @@ type Config struct {
 		Binary string `yaml:"binary"`
 		Sink   string `yaml:"sink"` // empty uses the Pulse default sink
 	} `yaml:"playback"`
+	// Sounds is the config layer for the five fixed Cue roles. Each value is a
+	// built-in name, a WAV file in data/sounds, a volume path, or none. Empty
+	// leaves the built-in chime; a stored override wins.
+	Sounds         Sounds            `yaml:"sounds"`
 	ControlPhrases map[string]string `yaml:"control_phrases"`
 	Embed          struct {
 		URL     string   `yaml:"url"`
@@ -73,9 +99,29 @@ type Config struct {
 		Margin    float64  `yaml:"margin"`
 		Joiners   []string `yaml:"joiners"`
 	} `yaml:"semantic"`
+	// NameMatch tunes the shared spoken-name matcher. Threshold is the config
+	// layer of the live name_match.threshold setting.
+	NameMatch struct {
+		Threshold float64 `yaml:"threshold"`
+	} `yaml:"name_match"`
 	Location Location `yaml:"location"`
 	Agent    Agent    `yaml:"agent"`
 }
+
+// Dashboard is the Tailscale-only web UI listener. Owner empty keeps it off.
+type Dashboard struct {
+	// Owner is the only Tailscale login allowed in. Empty leaves the Dashboard
+	// disabled, so a fresh checkout serves nothing on this listener.
+	Owner string `yaml:"owner"`
+	// Addr must be loopback or all interfaces. Compose binds all interfaces in
+	// the container and publishes only the host loopback port (docs/deploy.md).
+	Addr string `yaml:"addr"`
+	// HealthTimeout bounds one Health page refresh, including network checks.
+	HealthTimeout Duration `yaml:"health_timeout"`
+}
+
+// Enabled reports whether an owner is configured.
+func (d Dashboard) Enabled() bool { return strings.TrimSpace(d.Owner) != "" }
 
 // Location is the public-IP geolocation settings and the optional fallback
 // used when a lookup fails and nothing better is known.
@@ -127,6 +173,16 @@ type AgentHistory struct {
 	Quiet Duration `yaml:"quiet"`
 }
 
+// Sounds names the sound assigned to each fixed Cue role. Duration caps are
+// checked when the value is assigned, never by trimming the file.
+type Sounds struct {
+	Wake      string `yaml:"wake"`
+	TimerRing string `yaml:"timer_ring"`
+	AlarmRing string `yaml:"alarm_ring"`
+	Reminder  string `yaml:"reminder"`
+	Error     string `yaml:"error"`
+}
+
 // Duration is a YAML-friendly time.Duration written as "2s" or "750ms".
 type Duration time.Duration
 
@@ -149,6 +205,12 @@ func Default() Config {
 	cfg.HTTP.Addr = ":8080"
 	cfg.Debug.Enabled = true
 	cfg.Debug.Addr = "127.0.0.1:8081"
+	// The Dashboard stays disabled (owner empty) until the Pi's Tailscale
+	// login is configured; the loopback address is where tailscale serve
+	// proxies from.
+	cfg.Dashboard.Addr = "127.0.0.1:8082"
+	cfg.Dashboard.HealthTimeout = Duration(3 * time.Second)
+	cfg.Data.Dir = "data"
 	cfg.Tools.DefaultTimeout = Duration(2 * time.Second)
 	cfg.Embed.URL = "http://embed:8085"
 	cfg.Embed.Model = "sentence-transformers/all-MiniLM-L6-v2"
@@ -156,6 +218,7 @@ func Default() Config {
 	cfg.Semantic.Threshold = 0.70
 	cfg.Semantic.Margin = 0.08
 	cfg.Semantic.Joiners = []string{"and", "then", "also"}
+	cfg.NameMatch.Threshold = 0.60
 	cfg.TTS.Voice = "alba"
 	cfg.TTS.Timeout = Duration(30 * time.Second)
 	cfg.Playback.Binary = "pacat"
@@ -220,7 +283,7 @@ func Load(path string) (Config, error) {
 	if err := applyEnv(&cfg); err != nil {
 		return Config{}, err
 	}
-	if err := cfg.validate(); err != nil {
+	if err := cfg.Validate(); err != nil {
 		return Config{}, err
 	}
 	return cfg, nil
@@ -239,6 +302,15 @@ func applyEnv(cfg *Config) error {
 			return fmt.Errorf("config: ASSISTANT_DEBUG_ENABLED=%q: %w", v, err)
 		}
 		cfg.Debug.Enabled = enabled
+	}
+	if v := os.Getenv("ASSISTANT_DASHBOARD_OWNER"); v != "" {
+		cfg.Dashboard.Owner = v
+	}
+	if v := os.Getenv("ASSISTANT_DASHBOARD_ADDR"); v != "" {
+		cfg.Dashboard.Addr = v
+	}
+	if v := os.Getenv("ASSISTANT_DATA_DIR"); v != "" {
+		cfg.Data.Dir = v
 	}
 	if v := os.Getenv("ASSISTANT_EMBED_URL"); v != "" {
 		cfg.Embed.URL = v
@@ -290,15 +362,50 @@ func applyEnv(cfg *Config) error {
 	return nil
 }
 
-func (c Config) validate() error {
+// Validate re-checks a loaded Config. Load calls it after applying config.yaml
+// and the environment; main calls it again after resolving connection-level
+// stored overrides, so a restart cannot start on an invalid combination.
+func (c Config) Validate() error {
 	if c.HTTP.Addr == "" {
 		return fmt.Errorf("config: http.addr is required")
 	}
 	if c.Debug.Enabled && c.Debug.Addr == "" {
 		return fmt.Errorf("config: debug.addr is required when the debug entry is enabled")
 	}
+	if c.Dashboard.Enabled() {
+		if err := validateDashboardAddr(c.Dashboard.Addr); err != nil {
+			return err
+		}
+		if c.Dashboard.HealthTimeout.Duration() <= 0 {
+			return fmt.Errorf("config: dashboard.health_timeout must be positive")
+		}
+		if strings.ContainsAny(c.Dashboard.Owner, " \t\r\n,") {
+			return fmt.Errorf("config: dashboard.owner must be one Tailscale login without spaces")
+		}
+	}
+	if strings.TrimSpace(c.Data.Dir) == "" {
+		return fmt.Errorf("config: data.dir is required")
+	}
+	if _, err := tz.Load(c.Timezone); err != nil {
+		return fmt.Errorf("config: timezone: %w", err)
+	}
 	if c.Tools.DefaultTimeout.Duration() <= 0 {
 		return fmt.Errorf("config: tools.default_timeout must be positive")
+	}
+	for _, name := range c.Tools.Disabled {
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("config: tools.disabled must not contain an empty Tool name")
+		}
+	}
+	for name, level := range c.Tools.Permissions {
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("config: tools.permissions must not contain an empty Tool name")
+		}
+		switch level {
+		case "read", "act", "confirm":
+		default:
+			return fmt.Errorf("config: tools.permissions.%s must be read, act or confirm, got %q", name, level)
+		}
 	}
 	if c.Embed.URL == "" {
 		return fmt.Errorf("config: embed.url is required")
@@ -314,6 +421,9 @@ func (c Config) validate() error {
 	}
 	if c.Semantic.Margin < 0 || c.Semantic.Margin >= 1 {
 		return fmt.Errorf("config: semantic.margin must be in [0, 1)")
+	}
+	if c.NameMatch.Threshold <= 0 || c.NameMatch.Threshold > 1 {
+		return fmt.Errorf("config: name_match.threshold must be in (0, 1]")
 	}
 	if c.TTS.Addr != "" {
 		if c.TTS.Timeout.Duration() <= 0 {
@@ -361,12 +471,70 @@ func (c Config) validate() error {
 	if c.Agent.MaxSteps <= 0 {
 		return fmt.Errorf("config: agent.max_steps must be positive")
 	}
+	if err := validateControlPhrases(c.ControlPhrases); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateControlPhrases checks the shared phrase table's shape. A bare value
+// names one of the fixed Focus intents; a dotted value names a Tool, which the
+// pipeline resolves against the registry once it is built.
+func validateControlPhrases(phrases map[string]string) error {
+	for phrase, raw := range phrases {
+		if strings.TrimSpace(phrase) == "" {
+			return fmt.Errorf("config: control_phrases has an empty phrase")
+		}
+		target := strings.TrimSpace(raw)
+		if target == "" {
+			return fmt.Errorf("config: control_phrases.%q has no target", phrase)
+		}
+		if !focus.IsIntentTarget(target) {
+			continue
+		}
+		if _, ok := focus.ParseIntent(target); !ok {
+			return fmt.Errorf("config: control_phrases.%q points at unknown intent %q", phrase, target)
+		}
+	}
 	return nil
 }
 
 // VoiceEnabled reports whether microphone capture is configured. An empty
 // wakeword address leaves the assistant typed/debug only.
 func (c Config) VoiceEnabled() bool { return c.Wakeword.Addr != "" }
+
+// ValidateDashboardAddr enforces the Dashboard listener rule: loopback, or all
+// interfaces so Docker can publish to the host loopback. A stored override is
+// held to the same rule as config.yaml, so it cannot widen the listener.
+func ValidateDashboardAddr(addr string) error { return validateDashboardAddr(addr) }
+
+// validateDashboardAddr keeps the listener on loopback. The all-interfaces
+// form is allowed only because the container must bind that way for Docker's
+// published port; the host publication and the handler's source-address check
+// are what keep it off the LAN (the debug entry uses the same topology).
+func validateDashboardAddr(addr string) error {
+	if addr == "" {
+		return fmt.Errorf("config: dashboard.addr is required when the Dashboard is enabled")
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("config: dashboard.addr must be host:port: %w", err)
+	}
+	number, err := strconv.Atoi(port)
+	if err != nil || number < 1 || number > 65535 {
+		return fmt.Errorf("config: dashboard.addr has an invalid port %q", port)
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		return nil
+	}
+	if strings.EqualFold(host, "localhost") {
+		return nil
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return nil
+	}
+	return fmt.Errorf("config: dashboard.addr must be loopback or all interfaces, got %q", host)
+}
 
 func (c Config) validateVoice() error {
 	if !c.VoiceEnabled() {

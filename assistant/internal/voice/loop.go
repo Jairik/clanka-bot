@@ -71,6 +71,14 @@ type PendingDropper interface {
 	DropPending() (tool.PendingConfirmation, bool)
 }
 
+// Announcer is the Announcement queue as the voice loop sees it. A wake word
+// starts a turn, which stops unprompted speech before capture so it is not
+// recorded as part of the question.
+type Announcer interface {
+	TurnStarted()
+	TurnFinished()
+}
+
 // Config is the voice loop's fixed settings.
 type Config struct {
 	// FrameBytes is the PCM frame size handed to the services. 1024 bytes is
@@ -93,6 +101,12 @@ type Deps struct {
 	// Dropper is optional: when set, a Barge-in also drops a waiting
 	// Confirmation so a stale yes cannot run later.
 	Dropper PendingDropper
+	// Announcer is optional: when set, a wake word stops unprompted speech
+	// before capture starts.
+	Announcer Announcer
+	// WakeCue resolves the live wake Cue once per detection. When set it
+	// replaces Config.Chime, and ok=false means the role is assigned none.
+	WakeCue func() (pcm []byte, format audio.Format, ok bool)
 	Logger  *slog.Logger
 }
 
@@ -121,8 +135,8 @@ func New(cfg Config, deps Deps) (*Loop, error) {
 	if deps.Source == nil || deps.Wake == nil || deps.STT == nil || deps.Responder == nil {
 		return nil, errors.New("voice: source, wake, stt and responder are required")
 	}
-	if len(cfg.Chime) > 0 && deps.Player == nil {
-		return nil, errors.New("voice: a player is required when a chime is configured")
+	if (len(cfg.Chime) > 0 || deps.WakeCue != nil) && deps.Player == nil {
+		return nil, errors.New("voice: a player is required when a wake Cue is configured")
 	}
 	if deps.Logger == nil {
 		deps.Logger = slog.Default()
@@ -220,19 +234,33 @@ func (l *Loop) waitForWake(ctx context.Context) (bool, error) {
 // speak. It reports whether the wake word interrupted the reply (Barge-in) so
 // the caller starts a fresh turn without waiting for another wake word.
 func (l *Loop) session(ctx context.Context) (bool, error) {
+	// A wake word starts a turn: stop unprompted speech before capture, so its
+	// audio is not recorded as part of the question.
+	if l.deps.Announcer != nil {
+		l.deps.Announcer.TurnStarted()
+		defer l.deps.Announcer.TurnFinished()
+	}
 	sessCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// The chime plays while STT starts, so the user can begin speaking at once.
-	// Endpointing waits for it to finish: the chime comes back through the mic
-	// and must not count as the start of the question.
+	// The wake Cue plays while STT starts, so the user can begin speaking at
+	// once. Resolve it per detection: a Dashboard write changes the next wake
+	// without a restart. Endpointing waits for it to finish because the sound
+	// comes back through the mic.
+	wakePCM, wakeFormat := l.cfg.Chime, l.cfg.ChimeFormat
+	if l.deps.WakeCue != nil {
+		wakePCM, wakeFormat = nil, audio.Format{}
+		if pcm, format, ok := l.deps.WakeCue(); ok {
+			wakePCM, wakeFormat = pcm, format
+		}
+	}
 	chimeDone := make(chan struct{})
 	var chimeEnded atomic.Value // time.Time, stored before chimeDone closes
-	if len(l.cfg.Chime) > 0 {
+	if len(wakePCM) > 0 {
 		go func() {
 			defer close(chimeDone)
-			if err := l.deps.Player.Play(sessCtx, l.cfg.Chime, l.cfg.ChimeFormat); err != nil && sessCtx.Err() == nil {
-				l.deps.Logger.Warn("voice: chime", "error", err.Error())
+			if err := l.deps.Player.Play(sessCtx, wakePCM, wakeFormat); err != nil && sessCtx.Err() == nil {
+				l.deps.Logger.Warn("voice: wake cue", "error", err.Error())
 			}
 			chimeEnded.Store(time.Now())
 		}()
@@ -255,7 +283,7 @@ func (l *Loop) session(ctx context.Context) (bool, error) {
 	// mic. Drop them, including any still buffered when it ends, instead of
 	// endpointing them after chimeDone and opening a 15 s utterance on the tail
 	// (#18/S6). Frames captured after the chime ends are the user.
-	chimeOver := len(l.cfg.Chime) == 0
+	chimeOver := len(wakePCM) == 0
 	var chimeEnd time.Time
 	for ended := false; !ended; {
 		select {

@@ -1,0 +1,74 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+# Read-only: the workflow only checks out code and runs Go tests.
+permissions:
+  contents: read
+
+jobs:
+  go-test:
+    name: Go tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: assistant
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: assistant/go.mod
+          cache-dependency-path: assistant/go.sum
+      - name: Vet
+        run: go vet ./...
+      - name: Test
+        run: go test -count=1 ./...
+
+  routing-eval:
+    name: Routing eval (real MiniLM)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: assistant/go.mod
+          cache-dependency-path: assistant/go.sum
+      - uses: docker/setup-buildx-action@v3
+      - name: Build the pinned MiniLM image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./embed
+          load: true
+          tags: clanka/embed:ci
+          # The model bake is the slow layer; keep it across workflow runs.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Start the real embed service
+        run: |
+          docker run -d --name clanka-embed-ci -p 127.0.0.1:18085:8085 clanka/embed:ci
+          # The app loads MiniLM at startup; wait for its real readiness probe.
+          for attempt in $(seq 1 90); do
+            if curl -fsS http://127.0.0.1:18085/healthz; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "embed service did not become healthy" >&2
+          docker logs clanka-embed-ci >&2
+          exit 1
+      - name: Test with conformance Example routing
+        working-directory: assistant
+        env:
+          ROUTING_EVAL_EMBED_URL: http://127.0.0.1:18085
+        run: go test -count=1 ./...
+      - name: Routing eval baseline gate
+        working-directory: assistant
+        env:
+          ROUTING_EVAL_EMBED_URL: http://127.0.0.1:18085
+        run: go test ./internal/pipeline -run TestRoutingEvalAgainstMiniLM -count=1 -v
+      - name: Stop the embed service
+        if: always()
+        run: docker rm -f clanka-embed-ci || true

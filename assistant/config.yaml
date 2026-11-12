@@ -1,19 +1,68 @@
-# Non-secret assistant settings. Secrets belong in .env, never here.
+# Non-secret assistant settings. Secrets belong in .env or the write-only
+# secrets store, never here.
 
 http:
   # Health endpoint. Docker publishes this on the host loopback only.
   addr: ":8080"
 
 debug:
-  # Localhost-only typed-transcript entry used to exercise the pipeline.
+  # Localhost-only typed-transcript and Announcement entries used to exercise
+  # the pipeline.
   enabled: true
   # Loopback by default. Compose overrides this to ":8081" because the
   # published port is already bound to 127.0.0.1 on the host.
   addr: "127.0.0.1:8081"
 
+dashboard:
+  # Tailscale login allowed to use the Dashboard. Empty disables the listener,
+  # so a fresh checkout exposes no web UI. Set this to the login reported by
+  # `tailscale status --json`, then expose the loopback port with
+  # `tailscale serve` and an owner-only ACL (docs/deploy.md).
+  owner: ""
+  # Loopback listener. Compose overrides this to ":8082" because a
+  # container-bound 127.0.0.1 is unreachable through Docker's published port;
+  # the host mapping is still 127.0.0.1 only.
+  addr: "127.0.0.1:8082"
+  # One Health page refresh, covering every service and module check. Checks
+  # that overrun are shown as timed out; no request waits longer than this.
+  health_timeout: 3s
+
+data:
+  # The one SQLite database (ADR-0003): settings overrides, write-only secrets
+  # and alerts. Compose mounts the assistant-data volume at /app/data and sets
+  # ASSISTANT_DATA_DIR; local runs default to ./data. The file is mode 0600 and
+  # unencrypted, so treat a backup like the secrets it contains.
+  dir: "data"
+
+# The IANA timezone clock-time Alarms and Reminders are interpreted in. This is
+# the config layer of the live `timezone` setting; a Dashboard or voice override
+# wins. Empty uses the TZ environment variable, then UTC, and UTC logs a startup
+# warning. The location service's IP lookup never supplies this value.
+timezone: ""
+
 tools:
   # Applied to Tools that do not declare their own timeout.
   default_timeout: 2s
+  # Config layer for Tool overrides. A stored override wins over these, and
+  # these win over the code defaults; DELETE /api/tools/<name> returns here.
+  # Permissions may only tighten the code-declared level; unknown names fail
+  # startup.
+  disabled: []
+  permissions: {}
+  # Each Tool module reads its own tools.<name> block; an omitted key or block
+  # uses the code defaults shown here.
+  weather:
+    geocoding_url: "https://geocoding-api.open-meteo.com/v1/search"
+    forecast_url: "https://api.open-meteo.com/v1/forecast"
+    # Per upstream call.
+    timeout: 1500ms
+    # Geocode plus forecast together.
+    budget: 2s
+  audio:
+    # One "louder" or "quieter" step in percent.
+    step_percent: 10
+  timer:
+    alert_text: "Your timer is done."
 
 # Embed service (MiniLM). Model name is here so bge-small can be tried later.
 embed:
@@ -34,6 +83,14 @@ semantic:
   margin: 0.23
   # Compound requests with one of these joiners go to the Agent path.
   joiners: ["and", "then", "also"]
+
+# The shared spoken-name matcher for sounds, voices and Spotify playlists.
+# This value is the config layer of the live `name_match.threshold` setting; a
+# Dashboard or voice override wins. Exact and normalised names always resolve
+# first; only a near miss needs the embed service. Raise it to be stricter,
+# lower it to accept looser wording. See README.md "Name matching".
+name_match:
+  threshold: 0.60
 
 tts:
   # Wyoming TTS service. Compose sets this to the tts container; an empty
@@ -65,7 +122,9 @@ wakeword:
   model: "okay_nabu"
   timeout: 10s
   chime:
-    # Two-tone chime on wake detection. Not played when a request is accepted.
+    # Master switch for the wake Cue. The sound itself is sounds.wake (default:
+    # the two-tone chime); false silences wake even when a role is assigned.
+    # Not played when a request is accepted.
     enabled: true
 
 stt:
@@ -98,6 +157,22 @@ playback:
   # Empty uses the host's default sink.
   sink: ""
 
+# Fixed Cue roles (GLOSSARY: Cue). Each value names a built-in sound ("chime"),
+# a WAV file in data/sounds (for example "birds"), a path under the data volume
+# (for example "sounds/birds.wav"), or "none" to stay silent. A Dashboard or
+# voice write stores the same live setting and wins over this layer. Length
+# caps are checked on assignment and a longer sound is rejected, never trimmed:
+# wake 1.0 s, reminder/error 3 s, timer_ring/alarm_ring 60 s.
+# Cue role assignments. A value is a built-in name, a library sound uploaded
+# from the Dashboard, a WAV path under the data volume, or none. The Dashboard
+# Sounds page also uploads canonical WAVs into data/sounds/.
+sounds:
+  wake: chime
+  timer_ring: chime
+  alarm_ring: chime
+  reminder: chime
+  error: chime
+
 # Public-IP geolocation. Only city, region and timezone are kept; the fields
 # parameter stops the service sending coordinates at all.
 location:
@@ -111,7 +186,13 @@ location:
     region: ""
     timezone: ""
 
-# Exact-match Control phrases, entered just after STT.
+# Exact-match Control phrases, entered just after STT. These are the config.yaml
+# layer of the live wording settings; a stored override applies on the next
+# request. A value names one Tool ("audio.stop") or one shared Focus intent from
+# the fixed list: stop, pause, resume, next, cancel, snooze. An intent goes to
+# whatever holds Focus, in the fixed order ringing Scheduled alert > current
+# reply > playing music; with nothing in Focus the utterance falls through to
+# the semantic Fast path.
 control_phrases:
   "what time is it": time.now
   "what's the time": time.now
@@ -120,10 +201,13 @@ control_phrases:
   "time": time.now
   # Playback and timer controls are single words, which embed poorly, so they
   # are matched exactly instead. "louder" calls volume_set with no arguments,
-  # which means one step up.
-  "stop": audio.stop
-  "pause": audio.stop
-  "cancel": timer.cancel
+  # which means one step up. "stop", "pause", "cancel" and "snooze" are shared
+  # intents: they reach a ringing alert, the current reply or music before any
+  # Tool. Snooze on a Timer acts as stop; #53 gives an Alarm its real snooze.
+  "stop": stop
+  "pause": pause
+  "cancel": cancel
+  "snooze": snooze
   "louder": audio.volume_set
   "what's the weather like": weather.current
   "what is the weather like": weather.current
@@ -136,8 +220,12 @@ agent:
   providers:
     openrouter:
       base_url: https://openrouter.ai/api/v1
-      # The key lives only in the environment, never in this file.
+      # The key resolves from the write-only secrets table first, then this
+      # environment variable. Set it on the Dashboard Secrets page, through
+      # /api/secrets, or in .env; never here.
       api_key_env: OPENROUTER_API_KEY
+      # Config layer of the live `agent.model` setting. A Dashboard override
+      # wins and is read before the next provider request.
       model: deepseek/deepseek-v4.1-flash
       # Written second choice for a manual switch only. There is no runtime
       # failover (ADR-0002), so this value is not read by the client.
@@ -147,11 +235,14 @@ agent:
         # are forced in code (ADR-0002), not configurable here.
         sort: latency
   # Spoken cue played the moment a request goes to the Agent path. It is
-  # synthesized once at startup and cached, so it is heard instantly. Empty is a
-  # startup error; a config change needs a restart, which rebuilds the cache.
+  # synthesized once at startup and cached, so it is heard instantly. This is
+  # the config layer of the live `agent.filler` setting: an override re-synthesizes
+  # the cached audio in the background and keeps serving the old clip until ready.
   filler: "One moment."
+  # Config layer of the live `agent.unavailable_message` setting.
   unavailable_message: "Sorry, I can't answer that right now."
-  # Typed prefixes that skip the Fast path entirely.
+  # Typed prefixes that skip the Fast path entirely. Config layer of the live
+  # `agent.request_prefixes` setting; a stored override applies next request.
   request_prefixes:
     - ask the agent
     - agent

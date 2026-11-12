@@ -65,7 +65,8 @@ services:
       PULSE_SERVER: "unix:/run/pulse/native"
       PULSE_COOKIE: "/pulse-cookie/cookie"
       HOME: /tmp
-      # Secrets stay in .env; config.yaml names these variables.
+      # Secrets bootstrap from .env; the write-only store in the database wins
+      # when the Dashboard stores the same name. config.yaml names these vars.
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       TZ: ${TZ:-UTC}
     volumes:

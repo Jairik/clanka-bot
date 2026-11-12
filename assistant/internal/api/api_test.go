@@ -220,3 +220,42 @@ func TestSettingsRoutesAreLocalOnlyAndAbsentFromTheHealthListener(t *testing.T) 
 		t.Fatalf("settings route on the health listener = %d, want 404", rec.Code)
 	}
 }
+
+// TestWithAPIMountsComposedHandlersBehindTheDebugGate proves the general
+// composition seam (settings, Tools and secrets share one mux) is local-only
+// and never appears on the health listener.
+func TestWithAPIMountsComposedHandlersBehindTheDebugGate(t *testing.T) {
+	calls := 0
+	apiHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusOK)
+	})
+	handler, _ := newTestServerWith(t,
+		api.WithAPI(apiHandler),
+		api.WithDebugAllowlist(func(ip net.IP) bool { return ip.IsLoopback() }),
+	)
+
+	get := func(remote string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/api/secrets", nil)
+		req.RemoteAddr = remote
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := get("127.0.0.1:40000"); rec.Code != http.StatusOK {
+		t.Fatalf("loopback API status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if rec := get("172.18.0.5:40000"); rec.Code != http.StatusForbidden {
+		t.Fatalf("sibling API status = %d, want 403", rec.Code)
+	}
+	if calls != 1 {
+		t.Fatalf("API handler calls = %d, want only the loopback request", calls)
+	}
+
+	health := api.NewHandler(nil, slog.Default(), false, api.WithAPI(apiHandler))
+	rec := httptest.NewRecorder()
+	health.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/secrets", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("API route on the health listener = %d, want 404", rec.Code)
+	}
+}

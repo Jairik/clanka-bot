@@ -3,6 +3,7 @@ package tool
 import (
 	"context"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/announce"
@@ -28,9 +29,19 @@ type Deps struct {
 	// Store is the assistant's one SQLite database (ADR-0003); nil means a
 	// module cannot persist state.
 	Store *store.Store
+	// Secrets resolves a module's declared secrets from the store, then the
+	// environment bootstrap. Nil means no secret can be resolved.
+	Secrets SecretResolver
 	// Announcements queues speech the user did not just ask for. A ringing
 	// Timer or Alarm is not an Announcement; nil drops it.
 	Announcements *announce.Queue
+}
+
+// SecretResolver is the shared seam a module uses to read a declared secret.
+// The stored value wins over the environment; the second result is false when
+// neither layer has one.
+type SecretResolver interface {
+	Get(name string) (string, bool)
 }
 
 // Speaker is the speech seam a module uses for alert speech.
@@ -61,4 +72,37 @@ type Configurable interface {
 // HealthChecker is a Module's optional health check.
 type HealthChecker interface {
 	Health(ctx context.Context) error
+}
+
+// SecretDeclarer is a Module's optional list of secret names it needs. A name
+// is both the secrets-table key and the .env bootstrap variable; the stored
+// value wins. Modules that need no secret omit this interface.
+type SecretDeclarer interface {
+	RequiredSecrets() []string
+}
+
+// SecretNames collects every secret declared by the modules, in module order,
+// with duplicate names collapsed. Blank declarations are omitted here and
+// rejected by the conformance suite.
+func SecretNames(modules ...Module) []string {
+	seen := make(map[string]struct{})
+	var names []string
+	for _, module := range modules {
+		declarer, ok := module.(SecretDeclarer)
+		if !ok {
+			continue
+		}
+		for _, raw := range declarer.RequiredSecrets() {
+			name := strings.TrimSpace(raw)
+			if name == "" {
+				continue
+			}
+			if _, ok := seen[name]; ok {
+				continue
+			}
+			seen[name] = struct{}{}
+			names = append(names, name)
+		}
+	}
+	return names
 }

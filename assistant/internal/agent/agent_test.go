@@ -8,12 +8,15 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/agent"
+	"github.com/Jairik/clanka-bot/assistant/internal/secrets"
+	"github.com/Jairik/clanka-bot/assistant/internal/store"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/tools/clock"
 )
@@ -733,5 +736,87 @@ func TestUnavailableMessageFuncAppliesToTheNextFailure(t *testing.T) {
 	result = a.Run(context.Background(), tool.Request{ID: "req-live-3"}, "hello", nil)
 	if result.Text != settings.UnavailableMessage {
 		t.Fatalf("empty resolver result = %q, want the static fallback", result.Text)
+	}
+}
+
+// openSecretService gives the Agent path the same real store-backed resolver
+// production uses, so key precedence is exercised at the provider boundary.
+func openSecretService(t *testing.T, names ...string) *secrets.Service {
+	t.Helper()
+	st, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "data", "assistant.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Errorf("store.Close: %v", err)
+		}
+	})
+	svc, err := secrets.New(context.Background(), st.DB(), names)
+	if err != nil {
+		t.Fatalf("secrets.New: %v", err)
+	}
+	return svc
+}
+
+func TestAgentKeyIsResolvedPerRequestAndAStoredValueTakesOverWithoutRestart(t *testing.T) {
+	const keyName = "AGENT_TEST_SECRET_KEY"
+	t.Setenv(keyName, "env-key-123456")
+	svc := openSecretService(t, keyName)
+	fake := newFakeProvider(t, textReply("First."), textReply("Second."))
+	settings := testSettings(fake.start().URL)
+	settings.APIKeyEnv = keyName
+	settings.APIKey = func() string {
+		value, _ := svc.Get(keyName)
+		return value
+	}
+	a, err := agent.New(settings, newRegistry(t), nil)
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+
+	if result := a.Run(context.Background(), tool.Request{ID: "req-env"}, "hello", nil); result.Text != "First." {
+		t.Fatalf("first reply = %q, want First.", result.Text)
+	}
+	if got := fake.request(t, 0).Header.Get("Authorization"); got != "Bearer env-key-123456" {
+		t.Fatalf("first Authorization = %q, want the environment key", got)
+	}
+
+	if _, err := svc.Set(context.Background(), keyName, "stored-key-abcdef"); err != nil {
+		t.Fatalf("secrets.Set: %v", err)
+	}
+	if result := a.Run(context.Background(), tool.Request{ID: "req-store"}, "hello again", nil); result.Text != "Second." {
+		t.Fatalf("second reply = %q, want Second.", result.Text)
+	}
+	if got := fake.request(t, 1).Header.Get("Authorization"); got != "Bearer stored-key-abcdef" {
+		t.Fatalf("second Authorization = %q, want the stored key without a restart", got)
+	}
+}
+
+func TestAgentStartsWithNoKeyAndUsesAStoredKeyStoredAfterStartup(t *testing.T) {
+	const keyName = "AGENT_TEST_STORE_ONLY_KEY"
+	t.Setenv(keyName, "")
+	svc := openSecretService(t, keyName)
+	fake := newFakeProvider(t, textReply("Stored."))
+	settings := testSettings(fake.start().URL)
+	settings.APIKeyEnv = keyName
+	settings.APIKey = func() string {
+		value, _ := svc.Get(keyName)
+		return value
+	}
+	// Startup sees no key at all: this must stay constructible, not disable
+	// the provider for the life of the process.
+	a, err := agent.New(settings, newRegistry(t), nil)
+	if err != nil {
+		t.Fatalf("agent.New without a key: %v", err)
+	}
+	if _, err := svc.Set(context.Background(), keyName, "store-only-key-abcdef"); err != nil {
+		t.Fatalf("secrets.Set: %v", err)
+	}
+	if result := a.Run(context.Background(), tool.Request{ID: "req-store-alone"}, "hello", nil); result.Text != "Stored." {
+		t.Fatalf("reply = %q, want Stored.", result.Text)
+	}
+	if got := fake.request(t, 0).Header.Get("Authorization"); got != "Bearer store-only-key-abcdef" {
+		t.Fatalf("Authorization = %q, want the stored key with no environment value", got)
 	}
 }

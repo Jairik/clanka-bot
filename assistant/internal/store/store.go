@@ -32,7 +32,9 @@ type migration struct {
 }
 
 // migrations is the schema history. Version 1 is the settings overrides table
-// shared by the Dashboard, voice Tools and the tool policy.
+// shared by the Dashboard, voice Tools and the tool policy. Version 2 adds the
+// write-only secrets table: values never take a settings key, so the settings
+// API cannot list or return them.
 var migrations = []migration{
 	{
 		version: 1,
@@ -40,6 +42,17 @@ var migrations = []migration{
 		statements: []string{
 			`CREATE TABLE settings (
 				key        TEXT PRIMARY KEY,
+				value      TEXT NOT NULL,
+				updated_at TEXT NOT NULL
+			)`,
+		},
+	},
+	{
+		version: 2,
+		name:    "secrets",
+		statements: []string{
+			`CREATE TABLE secrets (
+				name       TEXT PRIMARY KEY,
 				value      TEXT NOT NULL,
 				updated_at TEXT NOT NULL
 			)`,

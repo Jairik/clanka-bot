@@ -114,6 +114,7 @@ func inspect(module tool.Module) inspection {
 		result.problems = append(result.problems, fmt.Sprintf("module %s: registered no Tools", module.Name()))
 	}
 	result.problems = append(result.problems, metadataProblems(module, result.registry, result.tools)...)
+	result.problems = append(result.problems, secretProblems(module)...)
 	return result
 }
 
@@ -128,6 +129,34 @@ func productionModules(module tool.Module) []tool.Module {
 		}
 	}
 	return append(modules, module)
+}
+
+// secretProblems checks a module's required-secret declarations. The seam is
+// optional, but a declaration that is set must be usable as both a store key
+// and an environment variable name.
+func secretProblems(module tool.Module) []string {
+	declarer, ok := module.(tool.SecretDeclarer)
+	if !ok {
+		return nil
+	}
+	var problems []string
+	seen := make(map[string]bool)
+	for i, raw := range declarer.RequiredSecrets() {
+		name := strings.TrimSpace(raw)
+		if name == "" {
+			problems = append(problems, fmt.Sprintf("module %s: RequiredSecrets[%d] is empty", module.Name(), i))
+			continue
+		}
+		if name != raw {
+			problems = append(problems, fmt.Sprintf("module %s: RequiredSecrets[%d] %q has surrounding whitespace", module.Name(), i, raw))
+		}
+		if seen[name] {
+			problems = append(problems, fmt.Sprintf("module %s: RequiredSecrets repeats %q", module.Name(), name))
+			continue
+		}
+		seen[name] = true
+	}
+	return problems
 }
 
 // metadataProblems checks the declarations and renderers of the module's Tools.
@@ -327,8 +356,13 @@ func testDeps() tool.Deps {
 		},
 		Speaker: discardSpeaker{},
 		Audio:   discardAudio{},
+		Secrets: discardSecrets{},
 	}
 }
+
+type discardSecrets struct{}
+
+func (discardSecrets) Get(string) (string, bool) { return "", false }
 
 type discardSpeaker struct{}
 

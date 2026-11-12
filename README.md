@@ -54,10 +54,13 @@ curl -s -X POST localhost:8081/debug/transcript \
 If the IP lookup fails, the last known place is used, then the optional
 `location.fallback` values in config, then no place at all.
 
-Anything the Fast path does not handle goes to the Agent path, which needs an
-OpenRouter key in `.env` (`OPENROUTER_API_KEY`); without one it answers with
-the configured Unavailable message and the Fast path keeps working. Every
-provider request forces OpenRouter's `provider.zdr` and
+Anything the Fast path does not handle goes to the Agent path. Its OpenRouter
+key resolves from the write-only secrets store first, then the
+`OPENROUTER_API_KEY` environment variable in `.env`; either alone is enough,
+and the stored value wins. A key stored from the Dashboard takes effect on the
+next turn without a restart. Without any key the Agent path answers with the
+configured Unavailable message and the Fast path keeps working. Every provider
+request forces OpenRouter's `provider.zdr` and
 `provider.data_collection: "deny"` in code.
 
 Agent path replies are spoken as they are generated: the first chunk is flushed
@@ -163,8 +166,9 @@ stored Permission may only tighten (`read` → `act` → `confirm`), never loose
 and Local-only is code-declared and cannot be overridden.
 
 The JSON API is mounted under `/api/` on the localhost debug listener, never on
-the public health listener. The authenticated Dashboard (#47) mounts the same
-handler behind Tailscale identity; writes there also need a same-origin fetch.
+the public health listener. The authenticated Dashboard (#47) mounts the
+same handler behind Tailscale identity. Settings, Tool overrides and Secrets
+share that handler; writes there also need a same-origin fetch.
 
 ```sh
 # List every effective value and the layer it came from.
@@ -216,6 +220,27 @@ Tools ever claim the same normalized phrase (possible only through separate
 overrides), the phrase is dropped from the Control phrase table so it falls
 through to the semantic or Agent path instead of choosing an owner at random.
 
+### Secrets
+
+Secrets are write-only. A stored value wins over the `.env` bootstrap with the
+same name, and only metadata comes back: whether it is set, the last four
+characters (only for values of at least 12 characters), the update date and the
+active source (`store` or `env`). Values never appear in the settings API,
+logs or error responses. The database file is mode 0600, but it is unencrypted:
+back it up accordingly.
+
+```sh
+# Store or rotate the OpenRouter key. The value is never returned.
+curl -s -X PUT localhost:8081/api/secrets/OPENROUTER_API_KEY \
+  -H 'Content-Type: application/json' -d '{"value":"sk-or-v1-..."}'
+
+# Clear the stored value; the .env value applies again when present.
+curl -s -X DELETE localhost:8081/api/secrets/OPENROUTER_API_KEY
+```
+
+The secrets route is part of the same `/api/` handler as settings; it is mounted
+only on the localhost debug listener and behind the authenticated Dashboard.
+
 ### Audio
 
 Per [ADR-0001](docs/adr/0001-middleware-owns-all-audio-io.md), only the
@@ -225,8 +250,9 @@ read the host Pulse cookie, and plays through `pacat`. Set
 `ASSISTANT_PULSE_SINK` to a sink name from `pactl list short sinks`; empty uses
 the default sink. On the Pi this is the Echo Dot once Bluetooth A2DP is set up.
 
-Non-secret settings live in [`assistant/config.yaml`](assistant/config.yaml);
-`.env` holds deployment inputs only. An empty `tts.addr` disables spoken replies.
+Non-secret settings live in [`assistant/config.yaml`](assistant/config.yaml).
+`.env` holds deployment inputs and the secret bootstrap; a value stored through
+`/api/secrets` wins. An empty `tts.addr` disables spoken replies.
 
 ### Latency
 

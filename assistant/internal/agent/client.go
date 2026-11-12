@@ -41,7 +41,10 @@ func (e *providerError) Unwrap() error { return e.Err }
 // provider is the single OpenAI-compatible client. Only one is active at a
 // time; there is no failover.
 type provider struct {
-	client         openai.Client
+	client openai.Client
+	// apiKey is read before every request, so a secret stored through the
+	// Dashboard applies to the next turn without rebuilding the client.
+	apiKey         func() string
 	model          string
 	routing        map[string]any
 	firstToken     time.Duration
@@ -51,16 +54,21 @@ type provider struct {
 func newProvider(settings Settings) *provider {
 	opts := []option.RequestOption{
 		option.WithBaseURL(settings.BaseURL),
-		// An empty key is left for the provider to reject, so the Fast path
-		// still works and the failure looks like any other provider error.
-		option.WithAPIKey(os.Getenv(settings.APIKeyEnv)),
 		option.WithMaxRetries(0),
 	}
 	for name, value := range settings.Headers {
 		opts = append(opts, option.WithHeader(name, value))
 	}
+	// The key is not a client option: it is applied per request below, after
+	// the secrets store has had a chance to win over the environment.
+	apiKey := settings.APIKey
+	if apiKey == nil {
+		env := settings.APIKeyEnv
+		apiKey = func() string { return os.Getenv(env) }
+	}
 	return &provider{
 		client:         openai.NewClient(opts...),
+		apiKey:         apiKey,
 		model:          settings.Model,
 		routing:        settings.Routing,
 		firstToken:     settings.FirstTokenTimeout,
@@ -92,7 +100,14 @@ func (p *provider) stream(ctx context.Context, messages []openai.ChatCompletionM
 	defer func() { timer.Stop() }()
 
 	started := time.Now()
-	stream := p.client.Chat.Completions.NewStreaming(runCtx, params)
+	// Apply the current key per request. An empty key is left for the provider
+	// to reject, so the Fast path still works and a key stored later needs no
+	// restart.
+	var requestOpts []option.RequestOption
+	if key := p.apiKey(); key != "" {
+		requestOpts = append(requestOpts, option.WithAPIKey(key))
+	}
+	stream := p.client.Chat.Completions.NewStreaming(runCtx, params, requestOpts...)
 	defer stream.Close()
 
 	var out completion

@@ -1,4 +1,5 @@
-# Non-secret assistant settings. Secrets belong in .env, never here.
+# Non-secret assistant settings. Secrets belong in .env or the write-only
+# secrets store, never here.
 
 http:
   # Health endpoint. Docker publishes this on the host loopback only.
@@ -27,9 +28,10 @@ dashboard:
   health_timeout: 3s
 
 data:
-  # The one SQLite database (ADR-0003): settings overrides today, secrets and
-  # alerts later. Compose mounts the assistant-data volume at /app/data and
-  # sets ASSISTANT_DATA_DIR; local runs default to ./data.
+  # The one SQLite database (ADR-0003): settings overrides, write-only secrets
+  # and alerts. Compose mounts the assistant-data volume at /app/data and sets
+  # ASSISTANT_DATA_DIR; local runs default to ./data. The file is mode 0600 and
+  # unencrypted, so treat a backup like the secrets it contains.
   dir: "data"
 
 tools:
@@ -179,7 +181,8 @@ agent:
   providers:
     openrouter:
       base_url: https://openrouter.ai/api/v1
-      # The key lives only in the environment, never in this file.
+      # The key resolves from the write-only secrets table first, then this
+      # environment variable. Set it through /api/secrets or .env; never here.
       api_key_env: OPENROUTER_API_KEY
       model: deepseek/deepseek-v4.1-flash
       # Written second choice for a manual switch only. There is no runtime

@@ -225,6 +225,17 @@ file leaves the library unchanged. Previews synthesize one short phrase to WAV
 and never play on the Pi speaker or change the active voice. See the README for
 the validation and rollback sequence.
 
+The **Personas** page at `/personas` creates, edits and selects a persistent
+bundle of voice, personality prompt, Agent Filler and Unavailable wording.
+Selecting applies all four settings in one transaction after validating the
+voice state, so a stale or unknown voice leaves the previous voice and wording
+untouched. The personality prompt reaches the Agent path only through the one
+prompt builder's labelled system part. The active voice and the active
+Persona's voice both warm-load at startup; a stale Persona voice is skipped and
+reported, while the speaking voice keeps #63's single fallback Announcement.
+Creating or editing a Persona makes no model call, and the page needs no TTS
+service to list or edit the library. See the README for the spoken examples.
+
 The **Secrets** page at `/secrets` lists every declared secret (Tool modules
 and the active Agent provider) with `set`, `last4`, update time and source
 (`.env` or stored). Replace and Clear post to the same authenticated Dashboard;

@@ -93,11 +93,11 @@ embed:
   timeout: 150ms
 
 # Semantic Fast path tuning from the #26 routing evaluation. The corpus is
-# internal/pipeline/testdata/routing_eval.yaml (744 positives, at least 20 per
-# Tool, 154 negatives and 30 compounds) run against
+# internal/pipeline/testdata/routing_eval.yaml (804 positives, at least 20 per
+# Tool, 165 negatives and 30 compounds) run against
 # sentence-transformers/all-MiniLM-L6-v2. At these values every Tool has
 # precision 1.00 against the confirmed 0.95 per-Tool floor, overall recall is
-# 0.6909, and no negative or compound reaches the Fast path. Recall is
+# 0.6953, and no negative or compound reaches the Fast path. Recall is
 # deliberately conservative: ambiguous phrasing goes to the Agent path instead
 # of risking a wrong Tool call. See docs/routing-eval.md.
 semantic:
@@ -292,6 +292,16 @@ control_phrases:
   "which voice is this": voice.current
   "what voice are you using": voice.current
   "what's your current voice": voice.current
+  # Persona questions are close to each other and to the voice questions, so
+  # the short ones are exact. Selecting a named persona still uses the semantic
+  # Fast path and extracts the spoken name.
+  "what personas do you have": persona.list
+  "list the personas": persona.list
+  "what personas are available": persona.list
+  "which persona are you using": persona.current
+  "what persona is active": persona.current
+  "what persona is selected right now": persona.current
+  "are you in character": persona.current
   # A bare Control phrase means one step faster; "slower" and "normal speed"
   # go through the semantic Fast path so their direction is extracted.
   "speak faster": voice.rate

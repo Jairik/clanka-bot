@@ -76,6 +76,7 @@ type Manager struct {
 	db            *sql.DB
 	announcements *announce.Queue
 	focus         *focus.Registry
+	ring          func(context.Context, Timer) bool
 	closed        bool
 
 	seq     int
@@ -102,6 +103,17 @@ func NewManagerText(now func() time.Time, say func(ctx context.Context, text str
 	return &Manager{now: now, say: say, logger: logger, alertText: alertText, entries: make(map[string]*entry)}
 }
 
+// SetRing installs the Ring callback that runs when a Timer fires. It reports
+// whether it handled the alert; returning false keeps the configured spoken
+// line. The context is cancelled by a Focus stop or cancel, so a looping Ring
+// can stop its sound. #52 replaces that single line with the Ring engine; this
+// seam exists so the Manager does not grow a second fire path meanwhile.
+func (m *Manager) SetRing(ring func(context.Context, Timer) bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ring = ring
+}
+
 // WithFocus makes a ringing alert hold Focus, so a shared "stop" or "cancel"
 // reaches the alert instead of the current reply or music. It returns the
 // manager so a module can wire it in one line.
@@ -113,7 +125,7 @@ func (m *Manager) WithFocus(registry *focus.Registry) *Manager {
 }
 
 // alertHolder is the ringing alert's Focus holder. It handles stop and cancel
-// by cancelling the alert's speech context; the stop turn says the line.
+// by cancelling the alert's speech or Ring context; the stop turn says the line.
 type alertHolder struct {
 	cancel context.CancelFunc
 	done   atomic.Bool
@@ -198,6 +210,7 @@ func (m *Manager) fire(id string) {
 		return
 	}
 	delete(m.entries, id)
+	ring := m.ring
 	say := m.say
 	focusRegistry := m.focus
 	db := m.db
@@ -211,20 +224,17 @@ func (m *Manager) fire(id string) {
 		cancel()
 	}
 
-	m.alert(e.timer, say, focusRegistry)
+	m.alert(e.timer, ring, say, focusRegistry)
 }
 
-// alert speaks one timer's done line through the shared speaker seam. While it
-// sounds, the alert holds Focus at Ring priority so a shared phrase reaches it.
-func (m *Manager) alert(timer Timer, say func(ctx context.Context, text string) error, focusRegistry *focus.Registry) {
+// alert hands one firing Timer to the Ring seam, then falls back to the single
+// spoken line. While either sounds, the alert holds Focus at Ring priority so a
+// shared "stop" or "cancel" cancels the sound instead of the current reply.
+func (m *Manager) alert(timer Timer, ring func(context.Context, Timer) bool, say func(ctx context.Context, text string) error, focusRegistry *focus.Registry) {
 	m.logger.Info("timer fired", "timer_id", timer.ID, "label", timer.Label)
-	if say == nil {
+	if ring == nil && say == nil {
 		m.logger.Warn("timer alert dropped: speech is not configured", "timer_id", timer.ID)
 		return
-	}
-	text := m.alertText
-	if timer.Label != "" {
-		text = capitalize(timer.Label) + " timer is done."
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), alertTimeout)
 	defer cancel()
@@ -237,6 +247,18 @@ func (m *Manager) alert(timer Timer, say func(ctx context.Context, text string) 
 			holder.done.Store(true)
 			claim.Release()
 		}()
+	}
+	if ring != nil && ring(ctx, timer) {
+		m.logger.Info("timer rung", "timer_id", timer.ID, "label", timer.Label)
+		return
+	}
+	if say == nil {
+		m.logger.Warn("timer alert dropped: speech is not configured", "timer_id", timer.ID)
+		return
+	}
+	text := m.alertText
+	if timer.Label != "" {
+		text = capitalize(timer.Label) + " timer is done."
 	}
 	if err := say(ctx, text); err != nil && ctx.Err() == nil {
 		m.logger.Error("timer alert", "timer_id", timer.ID, "error", err.Error())

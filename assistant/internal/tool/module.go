@@ -10,6 +10,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
 	"github.com/Jairik/clanka-bot/assistant/internal/namematch"
+	"github.com/Jairik/clanka-bot/assistant/internal/sound"
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
 	"github.com/Jairik/clanka-bot/assistant/internal/tz"
 	"gopkg.in/yaml.v3"
@@ -45,6 +46,10 @@ type Deps struct {
 	// Zone resolves the live timezone for clock-time Alarms and Reminders.
 	// Duration Timers do not need it; nil means UTC.
 	Zone *tz.Service
+	// Cues plays a fixed-role Cue through the shared speaker. #54 plays the
+	// Reminder Cue before announcing and #52 loops a Ring Cue; #55 wires the
+	// seam but neither consumer exists yet. Nil means no Cue sound.
+	Cues *sound.Service
 	// Names is the one shared matcher for spoken library names: sounds,
 	// voices and Spotify playlists. It reads the live threshold per lookup and
 	// never forces a guess; nil means a module cannot resolve spoken names.

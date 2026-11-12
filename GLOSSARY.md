@@ -131,3 +131,7 @@ _Avoid_: Alert sound
 **Cue**:
 A non-speech sound the Assistant plays for a fixed role, such as on wake detection or as a Ring. Which sound fills each role is the user's choice.
 _Avoid_: Chime, earcon, beep, notification sound
+
+**Sound library**:
+The built-in sounds that ship in the image plus the WAV files in `sounds/` on the data volume, indexed by name, duration and added date. A Cue role names one library sound or `none`.
+_Avoid_: Sound bank, audio collection

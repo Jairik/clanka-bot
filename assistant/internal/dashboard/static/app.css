@@ -108,6 +108,77 @@ h3 { margin: 1.7rem 0 .55rem; font-size: .8rem; letter-spacing: .08em; text-tran
 }
 .button:hover { filter: brightness(1.08); }
 .button:focus-visible, a:focus-visible { outline: 3px solid #9bc8b3; outline-offset: 2px; }
+.button-quiet { background: var(--surface); color: var(--accent); }
+.button-quiet:hover { background: #f0f4f1; filter: none; }
+
+.notice {
+  margin: .8rem 0;
+  padding: .7rem .9rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.notice-success { border-color: #b7d8c5; background: #eef7f1; color: var(--ok); }
+.notice-error { border-color: #e3bbbb; background: #fbeeee; color: var(--error); }
+.notice-warn { border-color: #e6d3b0; background: #fbf5e9; color: var(--warn); }
+
+.setting { padding: 1rem 0; border-top: 1px solid var(--line); }
+.setting:first-of-type { border-top: 0; padding-top: .2rem; }
+.setting-head h3 {
+  margin: 0 0 .2rem;
+  font-size: 1rem;
+  letter-spacing: normal;
+  text-transform: none;
+  color: var(--ink);
+}
+.setting-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .35rem .6rem;
+  margin: .35rem 0;
+  color: var(--muted);
+  font-size: .85rem;
+}
+.setting-grid {
+  display: grid;
+  gap: 1rem;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  margin-top: .6rem;
+}
+.setting-field {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: .8rem;
+  background: #fbfbf8;
+}
+.key { margin: .15rem 0 0; color: var(--muted); font-size: .8rem; overflow-wrap: anywhere; }
+.key code, .effective {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: .85rem;
+}
+.effective { color: var(--ink); white-space: pre-wrap; overflow-wrap: anywhere; }
+.setting label { display: block; margin-bottom: .3rem; font-size: .85rem; font-weight: 600; }
+.setting select,
+.setting input,
+.setting textarea {
+  width: 100%;
+  font: inherit;
+  font-size: .9rem;
+  padding: .45rem .55rem;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.setting textarea { min-height: 5rem; resize: vertical; }
+.setting select:focus-visible,
+.setting input:focus-visible,
+.setting textarea:focus-visible { outline: 3px solid #9bc8b3; outline-offset: 1px; }
+.actions { display: flex; flex-wrap: wrap; gap: .5rem; margin-top: .55rem; }
+.pill-source-override { color: var(--warn); }
+.pill-source-config { color: var(--neutral); }
+.pill-source-default { color: var(--muted); }
+.pill-restart { color: var(--warn); }
 
 .table-wrap { overflow-x: auto; }
 

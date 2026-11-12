@@ -22,6 +22,7 @@ const (
 // the same view for both a full page load and an htmx refresh.
 type healthView struct {
 	Owner         string
+	Page          string
 	CheckedAt     string
 	HealthTimeout string
 	Services      []checkView
@@ -44,6 +45,7 @@ func (h *Handler) health(ctx context.Context) healthView {
 	defer cancel()
 	return healthView{
 		Owner:         h.owner,
+		Page:          "health",
 		CheckedAt:     h.now().UTC().Format("2006-01-02 15:04:05 UTC"),
 		HealthTimeout: h.healthTimeout.String(),
 		Services:      h.checkServices(ctx),

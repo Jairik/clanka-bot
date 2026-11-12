@@ -1,4 +1,4 @@
-{{define "layout"}}<!doctype html>
+{{define "page_head"}}<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -13,12 +13,15 @@
   <header class="top">
     <div class="brand">assistant<span>·</span>dashboard</div>
     <nav aria-label="Dashboard">
-      <a href="/health" aria-current="page">Health</a>
+      <a href="/health" {{if eq .Page "health"}}aria-current="page"{{end}}>Health</a>
+      <a href="/settings" {{if eq .Page "settings"}}aria-current="page"{{end}}>Settings</a>
     </nav>
     <div class="who">{{.Owner}}</div>
   </header>
   <main id="main">
-    {{template "content" .}}
+{{end}}
+
+{{define "page_foot"}}
   </main>
   <footer>Tailnet only · server-rendered Go templates + htmx</footer>
 </body>

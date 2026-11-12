@@ -186,6 +186,16 @@ the public health listener. The authenticated Dashboard (#47) mounts the
 same handler behind Tailscale identity. Settings, Tool overrides and Secrets
 share that handler; writes there also need a same-origin fetch.
 
+The Dashboard also has a server-rendered **Tools and settings** page at
+`/settings`. Every Tool is listed with its effective and code-declared
+Permission, Local-only flag and enabled state; Permission choices are only the
+valid tightening levels. Every wording value is an ordinary text or one-entry-
+per-line form with its effective value, source layer and a Reset button.
+Settings the service exposes but this page does not know by name (for example a
+future sound setting) appear automatically, and connection settings carry a
+Restart required badge. The forms work without JavaScript and use htmx for the
+same-page fragment update when it is available.
+
 ```sh
 # List every effective value and the layer it came from.
 curl -s localhost:8081/api/settings
@@ -215,6 +225,7 @@ There is no general hot-reload framework.
 | `agent.request_prefixes` | Prefixes that go straight to the Agent path. A change applies to the next request. |
 | `agent.filler` | The phrase played while the Agent path waits. A change re-synthesizes the cached audio in the background; the old audio plays until the new clip is ready, and at most one Filler still plays per request. |
 | `agent.unavailable_message` | The phrase spoken when the model is unreachable. A change applies to the next failure. |
+| `agent.model` | The model name sent to the configured provider. A change applies to the next turn (the model is resolved per request); there is no automatic failover. |
 | `http.addr`, `debug.addr`, `dashboard.addr`, `tts.addr`, `wakeword.addr`, `stt.addr`, `embed.url`, `capture.source`, `playback.sink` | Connection-level settings, reported as `restart_required`. A stored override is applied on the next process start. |
 
 ```sh

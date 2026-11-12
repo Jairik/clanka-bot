@@ -243,6 +243,14 @@ func run() error {
 		Reminder:  baseCfg.Sounds.Reminder,
 		Error:     baseCfg.Sounds.Error,
 	})...)
+	// The model name is a live setting like the wording. Its default comes
+	// from the active provider's code default when that provider is built in;
+	// otherwise the configured model is both the default and the config layer.
+	modelDefault := provider.Model
+	if defaultProvider, err := config.Default().Agent.ActiveProvider(); err == nil && config.Default().Agent.Provider == baseCfg.Agent.Provider {
+		modelDefault = defaultProvider.Model
+	}
+	defs = append(defs, agent.ModelDefinition(modelDefault, provider.Model))
 	settingsSvc, err := settings.New(ctx, st, defs...)
 	if err != nil {
 		return fmt.Errorf("settings: %w", err)
@@ -307,7 +315,10 @@ func run() error {
 			value, _ := secretsSvc.Get(provider.APIKeyEnv)
 			return value
 		},
-		Model:              provider.Model,
+		Model: provider.Model,
+		// Read the live setting per request, so a Dashboard model change
+		// applies to the next turn without rebuilding the Agent path.
+		ModelFunc:          func() string { return settingsSvc.String(agent.ModelKey) },
 		Headers:            provider.Headers,
 		Routing:            provider.Routing,
 		SystemPrompt:       cfg.Agent.SystemPrompt,
@@ -460,6 +471,8 @@ func run() error {
 			Services:      dashboard.ComposeServiceChecks(cfg),
 			Modules:       toolSet,
 			Location:      locSvc,
+			Settings:      settingsSvc,
+			ToolPolicy:    toolPolicy,
 			API:           apiHandler,
 		})
 		if err != nil {

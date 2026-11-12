@@ -253,11 +253,13 @@ reaches `timer.cancel` and `louder` still steps the volume up. A volume phrase
 runs the Tool's extraction even though it matched exactly, so `quieter` steps
 down and `mute` sets the sink volume to zero; `unmute` steps up because there is
 no stored pre-mute level. These drive the actual Pulse sink through `pactl`.
-They do not change `quiet.volume` or any `ring.<kind>.volume`: a Ring's
-configured volume stays absolute and independent of the media volume, so a
-mute never rewrites the alarm settings. The Pulse sink is shared, though, so a
-sink mute also silences anything currently playing through it; raise the volume
-again after the Ring or alarm. Music ducking and its restore belong to the
+`mute` is an explicit master mute of the host's default sink, not a per-stream
+music volume, so it silences every stream on that sink: the next spoken reply
+and any Ring are inaudible until the volume is raised again. Nothing restores
+the previous level automatically, because the mute was a direct user command.
+The volume change does not rewrite `quiet.volume` or any `ring.<kind>.volume`:
+those configured levels stay as they were, and a Ring still applies its own
+volume once the sink is audible. Music ducking and its restore belong to the
 Ring's `ring.Music` seam (#72), not to this volume control.
 
 Speech the Assistant starts without being asked (a Reminder, a finished Hermes

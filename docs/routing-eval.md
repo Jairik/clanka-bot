@@ -164,7 +164,7 @@ above the 0.95 precision floor. Run against
 | `assistant.repeat` | 20 | 14 | 0 | 14 | 0 | 6 | 1.00 | 0.70 |
 | `assistant.help` | 20 | 15 | 0 | 15 | 0 | 5 | 1.00 | 0.75 |
 | `system.status` | 20 | 10 | 0 | 10 | 0 | 10 | 1.00 | 0.50 |
-| **Total** | **713** | **TOTAL_TP** | **TOTAL_CTRL** | **TOTAL_SEM** | **0** | **TOTAL_FN** | **1.00** | **TOTAL_RECALL** |
+| **Total** | **713** | **497** | **23** | **474** | **0** | **216** | **1.00** | **0.6971** |
 
 These numbers are from the merged #53 Alarm, #54 Reminder, #59 quick-wins, #62
 Notifications and #60 utility Tools tree and include the earlier #34, #44, #51,

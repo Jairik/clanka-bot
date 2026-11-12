@@ -83,7 +83,7 @@ embed:
 # Tool, 138 negatives and 28 compounds) run against
 # sentence-transformers/all-MiniLM-L6-v2. At these values every Tool has
 # precision 1.00 against the confirmed 0.95 per-Tool floor, overall recall is
-# RECALL_PLACEHOLDER, and no negative or compound reaches the Fast path. Recall is
+# 0.6971, and no negative or compound reaches the Fast path. Recall is
 # deliberately conservative: ambiguous phrasing goes to the Agent path instead
 # of risking a wrong Tool call. See docs/routing-eval.md.
 semantic:

@@ -285,7 +285,7 @@ are what keep them local. The Dashboard is disabled until
 
 ### Voice
 
-Say the wake word (default `okay_nabu`), ask a question, and hear the answer:
+Say the wake word (**"clanker"**, the default), ask a question, and hear the answer:
 
 1. `assistant` captures the named Pulse source (`ASSISTANT_PULSE_SOURCE`, empty
    uses the host default) with `parec` and streams 16 kHz mono PCM to
@@ -309,7 +309,11 @@ level, produced no false barge-in; if that changes in a louder room,
 
 `wakeword` and `stt` do computation only and never mount Pulse (ADR-0001).
 Their Compose health checks are Wyoming `describe` calls, so startup waits for
-the models to be warm. Moonshine weights are downloaded anonymously from
+the service, not for a model: openWakeWord loads a detector on the first
+`Detect` for it. `wakeword` bakes the locally trained `clanker` detector next to
+the upstream built-ins, so set `WAKEWORD_MODEL` to `okay_nabu` (or another
+upstream name) to use one of those instead; see `wakeword/training/README.md`
+for how it is trained and how to add the owner's own voice. Moonshine weights are downloaded anonymously from
 `download.moonshine.ai` at build time and baked in; the container starts
 offline. Rebuild `stt` after changing `STT_MODELS` or `STT_MODEL`. Set
 `ASSISTANT_PULSE_SOURCE` from `pactl list short sources` (the dev box uses the

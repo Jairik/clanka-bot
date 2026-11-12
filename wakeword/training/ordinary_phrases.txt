@@ -1,0 +1,74 @@
+okay google
+hey google
+what's the weather
+what is the weather
+set a timer
+set a ten minute timer
+turn on the lights
+turn off the lights
+play some music
+stop the music
+stop
+cancel
+never mind
+hello
+good morning
+good night
+what time is it
+how are you
+tell me a joke
+call mom
+open the door
+close the door
+lights off
+volume up
+volume down
+louder
+quieter
+what's on my calendar
+add milk to my shopping list
+remind me to call the dentist
+how many ounces in a cup
+where is the nearest pharmacy
+is it going to rain today
+play my playlist
+skip this song
+pause
+resume
+next track
+previous track
+mute
+unmute
+start a timer for five minutes
+what day is it
+what's the date
+read my messages
+send a text to john
+turn up the heat
+turn down the heat
+lock the front door
+unlock the front door
+turn on the fan
+turn off the fan
+set an alarm for seven
+snooze
+what's the temperature outside
+do i need an umbrella
+how long is the drive
+navigate home
+call an uber
+order a pizza
+book a table
+check the news
+play the radio
+what's my schedule
+who is calling
+answer the phone
+hang up
+take a note
+remember to buy eggs
+clear my reminders
+delete my timer
+pause the timer
+resume the timer
+stop the timer

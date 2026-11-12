@@ -478,6 +478,8 @@ weights in an early layer **before any `COPY` of application code**, so editing
 Go/Python code reuses the weights layer instead of re-downloading a model.
 Dependency manifests (`requirements.txt`, `pyproject.toml`, `go.mod`, …) and the
 fetch script itself (`prefetch.py`) may be copied before the weights layer.
+`wakeword` copies its trained `models/clanker.tflite` in that early layer, before
+the `healthcheck.py` COPY.
 
 `scripts/check-compose.sh` (run by `make check`) parses each locally built ML
 Dockerfile and fails when a detected weights download comes after the first
@@ -493,8 +495,9 @@ networking and the host Pulse socket, so it is not run under `--network none`.
 The ML images still start healthy with `--network none`. A
 code-only `stt` rebuild logs `RUN python prefetch.py` as **CACHED** and rebuilds
 only the app-code `COPY`; the same holds for `tts` (prefetch layer cached) and
-`embed` (`SentenceTransformer(...)` layer cached), and `wakeword` only reruns
-its `healthcheck.py` `COPY` because its models come from the base image.
+`embed` (`SentenceTransformer(...)` layer cached), and `wakeword` keeps its
+`models/clanker.tflite` layer cached and reruns only its `healthcheck.py`
+`COPY`.
 `web-search` wraps the pinned upstream SearXNG image and carries no weights
 layer of its own.
 

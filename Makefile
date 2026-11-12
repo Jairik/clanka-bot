@@ -4,7 +4,7 @@ SHELL := /bin/bash
 GIT_SHA ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
 export GIT_SHA
 
-.PHONY: build up down logs deploy rollback build-arm64 test tts-test check routing-eval latency-report new-tool
+.PHONY: build up down logs deploy rollback build-arm64 test tts-test check routing-eval latency-report new-tool wakeword-test
 
 build: ## Build every service image for this host.
 	docker compose build
@@ -60,3 +60,8 @@ routing-eval: ## Real-MiniLM routing check; enforces the 0.95 per-Tool floor.
 
 latency-report: ## Summarize per-stage Response latency from the running stack.
 	bash scripts/latency-report.sh
+
+# The detector acceptance test builds the real wakeword image and drives the
+# real Wyoming service; it needs Docker and the trained models/clanker.tflite.
+wakeword-test: ## Build the wakeword image and assert clanker fires, near misses do not
+	bash wakeword/tests/run_detection_test.sh

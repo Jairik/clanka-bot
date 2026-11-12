@@ -375,6 +375,14 @@ without the other.
       with `docker compose logs web-search` and
       `docker compose exec web-search wget -qO- http://127.0.0.1:8080/healthz`.
       See `searxng/README.md` for the pinned image and the settings rationale.
+- [ ] `web.fetch` makes direct public HTTP(S) connections from `assistant`:
+      it ignores `HTTP_PROXY`/`HTTPS_PROXY`, refuses loopback, private,
+      link-local, CGNAT/tailnet and special-purpose addresses before dialling,
+      pins the validated DNS answer and revalidates every redirect. Do not put
+      a transparent proxy in front of the container; that would bypass the
+      dial-time address policy. The Tool reads at most
+      `tools.web.fetch.max_bytes` (2 MiB) and returns at most
+      `tools.web.fetch.max_chars` (4000) runes of readable text.
 - [ ] The separate `assistant-voices` volume holds custom voice states at
       `/app/data/voices` in `assistant`; `tts` mounts only that volume,
       read-only, at `/voices`. Only the voices subtree is exposed, never the

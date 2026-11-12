@@ -1,8 +1,10 @@
 // Package web implements the Agent-path web Tools. web.search picks its search
 // backend through the Provider interface, so the backend is a config switch and
-// an unknown name fails startup. The Tool is AgentOnly: the semantic Fast path
-// is a precision-first voice surface, and an open-ended search belongs to the
-// Agent, which can read the results and answer in context.
+// an unknown name fails startup. web.fetch reads one public page behind an SSRF
+// guard that resolves, validates and pins every address before dialling. Both
+// are AgentOnly: the semantic Fast path is a precision-first voice surface, and
+// an open-ended lookup or article read belongs to the Agent, which can read the
+// result and answer in context.
 package web
 
 import (
@@ -57,6 +59,8 @@ type Config struct {
 	Results int `yaml:"results"`
 	// MaxResults caps a model-supplied max_results.
 	MaxResults int `yaml:"max_results"`
+	// Fetch holds web.fetch's bounds. An omitted block uses the code defaults.
+	Fetch FetchConfig `yaml:"fetch"`
 }
 
 // DefaultConfig is the shipped SearXNG service and its answer-sized bounds.
@@ -67,12 +71,21 @@ func DefaultConfig() Config {
 		Timeout:    config.Duration(defaultTimeout),
 		Results:    defaultResults,
 		MaxResults: defaultMaxResult,
+		Fetch:      DefaultFetchConfig(),
 	}
 }
 
 // validate rejects a config the module cannot honour. A typo in the backend is
 // a startup error, never a silent fallback to a guessed backend.
 func (c Config) validate() error {
+	if err := c.validateSearch(); err != nil {
+		return err
+	}
+	return c.Fetch.validate()
+}
+
+// validateSearch checks only the tools.web fields the search Provider needs.
+func (c Config) validateSearch() error {
 	switch strings.ToLower(strings.TrimSpace(c.Backend)) {
 	case defaultBackend:
 	default:
@@ -121,7 +134,7 @@ func (c Config) normalize() Config {
 func FromConfig(cfg config.Config) Config {
 	out := DefaultConfig()
 	if node, ok := cfg.Tools.Sections["web"]; ok {
-		var decoded Config
+		decoded := DefaultConfig()
 		if err := node.Decode(&decoded); err == nil {
 			out = decoded
 		}
@@ -163,8 +176,9 @@ func (m *Module) Configure(section *yaml.Node) error {
 	return nil
 }
 
-// Register builds the configured Provider and adds web.search. The keep-alive
-// client is created once here and reused for every request.
+// Register builds the configured Provider and the SSRF-guarded fetcher, then
+// adds web.search and web.fetch. The keep-alive clients are created once here
+// and reused for every request.
 func (m *Module) Register(r *tool.Registry, deps tool.Deps) error {
 	m.logger = deps.Logger
 	if m.logger == nil {
@@ -175,7 +189,13 @@ func (m *Module) Register(r *tool.Registry, deps tool.Deps) error {
 		return err
 	}
 	m.provider = provider
-	return tool.Add(r, New(m.cfg, provider, m.logger))
+	// Build the guarded reader once and share its keep-alive client.
+	// Registration itself never opens a connection.
+	fetcher := newFetcher(m.cfg.Fetch)
+	if err := tool.Add(r, New(m.cfg, provider, m.logger)); err != nil {
+		return err
+	}
+	return tool.Add(r, NewFetch(m.cfg.Fetch, fetcher, m.logger))
 }
 
 // Health probes the configured backend's local /healthz. It shares the same
@@ -262,7 +282,7 @@ func New(cfg Config, provider Provider, logger *slog.Logger) tool.Tool[In, Out] 
 // the failure for an unknown name.
 func NewProvider(cfg Config) (Provider, error) {
 	cfg = cfg.normalize()
-	if err := cfg.validate(); err != nil {
+	if err := cfg.validateSearch(); err != nil {
 		return nil, err
 	}
 	switch cfg.Backend {

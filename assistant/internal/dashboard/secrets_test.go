@@ -16,6 +16,8 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/dashboard"
 	"github.com/Jairik/clanka-bot/assistant/internal/secrets"
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
+	"github.com/Jairik/clanka-bot/assistant/tools"
+	"github.com/Jairik/clanka-bot/assistant/tools/github"
 )
 
 // The declared names stand in for today's provider key and the future ntfy,
@@ -583,5 +585,22 @@ func TestSecretsPageHidesShortSuffixes(t *testing.T) {
 	}
 	if strings.Contains(article, short) || strings.Contains(article, "t-49") {
 		t.Errorf("short value or its suffix leaked:\n%s", article)
+	}
+}
+
+// TestSecretsPageListsTheRealModuleDeclarations proves the page is fed by the
+// production module list, not a hand-maintained test list: adding the GitHub
+// Tool's GITHUB_TOKEN declaration is enough for its row to appear.
+func TestSecretsPageListsTheRealModuleDeclarations(t *testing.T) {
+	names := tools.NewSet().SecretNames()
+	f := newSecretsFixture(t, names...)
+	body := f.get("/secrets").Body.String()
+	if !strings.Contains(body, github.SecretName) {
+		t.Fatalf("the Secrets page does not show %s: %s", github.SecretName, body)
+	}
+	for _, name := range names {
+		if !strings.Contains(body, name) {
+			t.Errorf("the Secrets page does not show the declared secret %s", name)
+		}
 	}
 }

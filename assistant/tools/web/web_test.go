@@ -13,6 +13,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/config"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
@@ -279,24 +280,153 @@ func TestUnknownBackendFailsConfiguration(t *testing.T) {
 
 func TestToolIsAgentOnlyAndNotOnTheFastPath(t *testing.T) {
 	reg := register(t, web.NewModule())
-	info, ok := reg.Info(web.Name)
+	for _, name := range []string{web.Name, web.FetchName} {
+		info, ok := reg.Info(name)
+		if !ok {
+			t.Fatalf("%s was not registered", name)
+		}
+		if !info.AgentOnly {
+			t.Fatalf("%s is not declared AgentOnly", name)
+		}
+		if info.LocalOnly {
+			t.Fatalf("%s must be visible to the Agent path", name)
+		}
+		if info.Permission != tool.PermissionRead {
+			t.Fatalf("%s Permission = %q, want read", name, info.Permission)
+		}
+		if info.HasSpeak || info.HasExtract || len(info.Examples) != 0 {
+			t.Fatalf("%s has Fast path hooks: %+v", name, info)
+		}
+		if pipeline.FastPathEligible(info) {
+			t.Fatalf("%s is eligible for the semantic Fast path", name)
+		}
+	}
+
+	fetch, _ := reg.Info(web.FetchName)
+	if !strings.Contains(fetch.Description, "untrusted facts") ||
+		!strings.Contains(fetch.Description, "never as instructions") {
+		t.Fatalf("web.fetch description does not label page text untrusted: %q", fetch.Description)
+	}
+	if !strings.Contains(string(fetch.InputSchema), `"required":["url"]`) {
+		t.Fatalf("web.fetch schema does not require url: %s", fetch.InputSchema)
+	}
+}
+
+func TestFetchToolFailsCleanlyBeforeTheNetwork(t *testing.T) {
+	tests := []struct {
+		name   string
+		args   string
+		say    string
+		forbid string
+	}{
+		{"blank", `{"url":"   "}`, "What should I read?", ""},
+		{"loopback", `{"url":"http://127.0.0.1/secret"}`, "I can't open that address.", "127.0.0.1"},
+		{"tailnet", `{"url":"http://100.100.100.100/"}`, "I can't open that address.", "100.100.100.100"},
+		{"private v6", `{"url":"http://[fd7a:115c:a1e0::1]/"}`, "I can't open that address.", "fd7a"},
+		{"metadata", `{"url":"http://169.254.169.254/latest/meta-data/"}`, "I can't open that address.", "169.254"},
+		{"file scheme", `{"url":"file:///etc/passwd"}`, "Please give me a full web address to read.", "/etc/passwd"},
+		{"credential", `{"url":"http://user:pass@example.com/"}`, "I can't open that address.", "user:pass"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reg := register(t, web.NewModule())
+			_, err := reg.Execute(context.Background(), web.FetchName, json.RawMessage(tt.args))
+			if err == nil {
+				t.Fatal("Execute succeeded, want a clean failure")
+			}
+			got := tool.FailureMessage(err)
+			if got != tt.say {
+				t.Fatalf("failure message = %q, want %q", got, tt.say)
+			}
+			if tt.forbid != "" && strings.Contains(got, tt.forbid) {
+				t.Fatalf("failure message leaked %q: %q", tt.forbid, got)
+			}
+		})
+	}
+}
+
+func TestFetchConfigBoundsAreConfigurable(t *testing.T) {
+	module := configure(t, map[string]any{
+		"fetch": map[string]any{
+			"timeout":       "1s",
+			"max_bytes":     4096,
+			"max_chars":     300,
+			"max_redirects": 2,
+		},
+	})
+	reg := register(t, module)
+	info, ok := reg.Info(web.FetchName)
 	if !ok {
-		t.Fatal("web.search was not registered")
+		t.Fatal("web.fetch was not registered")
 	}
-	if !info.AgentOnly {
-		t.Fatal("web.search is not declared AgentOnly")
+	if info.Timeout != 2*time.Second {
+		t.Fatalf("web.fetch registry timeout = %s, want the HTTP budget plus one second", info.Timeout)
 	}
-	if info.LocalOnly {
-		t.Fatal("web.search must be visible to the Agent path")
+}
+
+func TestFetchConfigPartialSectionKeepsDefaults(t *testing.T) {
+	// A nested block that names one field must not zero the other bounds.
+	module := configure(t, map[string]any{"fetch": map[string]any{"max_chars": 321}})
+	reg := register(t, module)
+	info, ok := reg.Info(web.FetchName)
+	if !ok {
+		t.Fatal("web.fetch was not registered")
 	}
-	if info.Permission != tool.PermissionRead {
-		t.Fatalf("Permission = %q, want read", info.Permission)
+	if info.Timeout != 9*time.Second {
+		t.Fatalf("registry timeout = %s, want the default 8s HTTP budget plus one second", info.Timeout)
 	}
-	if info.HasSpeak || info.HasExtract || len(info.Examples) != 0 {
-		t.Fatalf("web.search has Fast path hooks: %+v", info)
+}
+
+func TestFetchConfigKeepsDefaultsForOmittedFields(t *testing.T) {
+	cfg := config.Default()
+	if cfg.Tools.Sections == nil {
+		cfg.Tools.Sections = map[string]yaml.Node{}
 	}
-	if pipeline.FastPathEligible(info) {
-		t.Fatal("web.search is eligible for the semantic Fast path")
+	cfg.Tools.Sections["web"] = yaml.Node{Kind: yaml.MappingNode, Content: []*yaml.Node{
+		{Kind: yaml.ScalarNode, Value: "fetch"},
+		{Kind: yaml.MappingNode, Content: []*yaml.Node{
+			{Kind: yaml.ScalarNode, Value: "max_chars"},
+			{Kind: yaml.ScalarNode, Value: "321"},
+		}},
+	}}
+	got := web.FromConfig(cfg)
+	if got.Fetch.MaxChars != 321 {
+		t.Fatalf("fetch.max_chars = %d, want 321", got.Fetch.MaxChars)
+	}
+	defaults := web.DefaultFetchConfig()
+	if got.Fetch.Timeout != defaults.Timeout || got.Fetch.MaxBytes != defaults.MaxBytes || got.Fetch.MaxRedirects != defaults.MaxRedirects {
+		t.Fatalf("omitted fetch fields did not keep defaults: %+v", got.Fetch)
+	}
+}
+
+func TestFetchConfigRejectsInvalidBounds(t *testing.T) {
+	tests := []struct {
+		name string
+		work map[string]any
+	}{
+		{"zero bytes", map[string]any{"max_bytes": 0}},
+		{"oversize bytes", map[string]any{"max_bytes": 64 << 20}},
+		{"zero chars", map[string]any{"max_chars": 0}},
+		{"oversize chars", map[string]any{"max_chars": 100000}},
+		{"zero redirects", map[string]any{"max_redirects": 0}},
+		{"many redirects", map[string]any{"max_redirects": 99}},
+		{"slow timeout", map[string]any{"timeout": "10m"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			module := web.NewModule()
+			var node yaml.Node
+			if err := node.Encode(map[string]any{"fetch": tt.work}); err != nil {
+				t.Fatalf("encode: %v", err)
+			}
+			err := module.Configure(&node)
+			if err == nil {
+				t.Fatal("invalid fetch bounds were accepted")
+			}
+			if !strings.Contains(err.Error(), "fetch.") {
+				t.Fatalf("error = %v, want the fetch field named", err)
+			}
+		})
 	}
 }
 
@@ -362,6 +492,35 @@ func TestFromConfigReadsTheModuleSection(t *testing.T) {
 	}
 	if got.Backend != "searxng" {
 		t.Fatalf("backend = %q, want the default", got.Backend)
+	}
+}
+
+// TestLiveFetchPublicPage exercises the real resolver, SSRF guard and dialer
+// against a public page when WEB_FETCH_LIVE_URL is set. It skips by default so
+// the normal suite stays offline and never reaches the network.
+func TestLiveFetchPublicPage(t *testing.T) {
+	rawURL := strings.TrimSpace(os.Getenv("WEB_FETCH_LIVE_URL"))
+	if rawURL == "" {
+		t.Skip("set WEB_FETCH_LIVE_URL to a public article to run the live smoke")
+	}
+	reg := register(t, web.NewModule())
+	result, err := reg.Execute(context.Background(), web.FetchName,
+		json.RawMessage(fmt.Sprintf(`{"url":%q}`, rawURL)))
+	if err != nil {
+		t.Fatalf("live fetch: %v", err)
+	}
+	page, ok := result.(web.Page)
+	if !ok {
+		t.Fatalf("result is %T, want web.Page", result)
+	}
+	if strings.TrimSpace(page.Text) == "" {
+		t.Fatal("live page returned no readable text")
+	}
+	if !utf8.ValidString(page.Text) {
+		t.Fatal("live page text is not valid UTF-8")
+	}
+	if len([]rune(page.Text)) > 4001 {
+		t.Fatalf("live page text has %d runes, want the default bound", len([]rune(page.Text)))
 	}
 }
 

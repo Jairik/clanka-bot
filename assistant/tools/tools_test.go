@@ -18,6 +18,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/tools"
 	"github.com/Jairik/clanka-bot/assistant/tools/audiocontrol"
 	"github.com/Jairik/clanka-bot/assistant/tools/clock"
+	"github.com/Jairik/clanka-bot/assistant/tools/github"
 	"github.com/Jairik/clanka-bot/assistant/tools/timer"
 	"github.com/Jairik/clanka-bot/assistant/tools/weather"
 	"github.com/Jairik/clanka-bot/assistant/tools/web"
@@ -219,6 +220,10 @@ tools:
 	if !ok || !info.AgentOnly || info.LocalOnly {
 		t.Fatalf("web.search metadata = %+v, want AgentOnly and not Local-only", info)
 	}
+	fetchInfo, ok := reg.Info(web.FetchName)
+	if !ok || !fetchInfo.AgentOnly || fetchInfo.LocalOnly {
+		t.Fatalf("web.fetch metadata = %+v, want AgentOnly and not Local-only", fetchInfo)
+	}
 }
 
 func TestModuleConfigRejectsUnknownModule(t *testing.T) {
@@ -362,4 +367,77 @@ func TestFocusIntentsListsTheModuleDeclarations(t *testing.T) {
 			t.Fatalf("FocusIntents()[%d] = %q, want %q", i, got[i], want[i])
 		}
 	}
+}
+
+// TestModuleListDeclaresTheGitHubToken keeps the Secrets page discoverable: the
+// GitHub module's declaration is what makes GITHUB_TOKEN appear there without a
+// page edit, and the same name is the module's required secret.
+func TestModuleListDeclaresTheGitHubToken(t *testing.T) {
+	found := false
+	for _, name := range tools.NewSet().SecretNames() {
+		if name == github.SecretName {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("SecretNames() = %v, want %s", tools.NewSet().SecretNames(), github.SecretName)
+	}
+}
+
+// TestGitHubToolsAreAgentOnly keeps the GitHub surface deliberate: an issue
+// write is confirm, both reads are read, and none of them can claim a semantic
+// Fast path route.
+func TestGitHubToolsAreAgentOnly(t *testing.T) {
+	reg := register(t, tool.Deps{}, nil)
+	tests := []struct {
+		name       string
+		permission tool.Permission
+		hasSpeak   bool
+	}{
+		{github.Name, tool.PermissionConfirm, true},
+		{github.PRListName, tool.PermissionRead, false},
+		{github.NotificationsName, tool.PermissionRead, false},
+	}
+	for _, tt := range tests {
+		info, ok := reg.Info(tt.name)
+		if !ok {
+			t.Fatalf("%s is not registered", tt.name)
+		}
+		if info.Permission != tt.permission {
+			t.Errorf("%s Permission = %q, want %q", tt.name, info.Permission, tt.permission)
+		}
+		if info.LocalOnly {
+			t.Errorf("%s is LocalOnly; GitHub Answers are requested explicitly", tt.name)
+		}
+		if !info.AgentOnly {
+			t.Errorf("%s is not AgentOnly", tt.name)
+		}
+		if info.HasSpeak != tt.hasSpeak {
+			t.Errorf("%s HasSpeak = %v, want %v", tt.name, info.HasSpeak, tt.hasSpeak)
+		}
+		if len(info.Examples) != 0 {
+			t.Errorf("%s has Examples; AgentOnly Tools must not", tt.name)
+		}
+	}
+}
+
+// TestGitHubMissingTokenAppearsInModuleHealth is the acceptance path for a
+// missing PAT: the one module list surfaces it, so the Dashboard Health page
+// and system.status cannot disagree.
+func TestGitHubMissingTokenAppearsInModuleHealth(t *testing.T) {
+	set := tools.NewSet()
+	if err := set.RegisterAll(tool.NewRegistry(time.Second), tool.Deps{}, nil); err != nil {
+		t.Fatalf("RegisterAll: %v", err)
+	}
+	for _, result := range set.Health(context.Background()) {
+		if result.Module != "github" {
+			continue
+		}
+		if result.Err == nil || !strings.Contains(result.Err.Error(), github.SecretName) {
+			t.Fatalf("github health = %v, want a missing %s error", result.Err, github.SecretName)
+		}
+		return
+	}
+	t.Fatal("the module list returned no github health check")
 }

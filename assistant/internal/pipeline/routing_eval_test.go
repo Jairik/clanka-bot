@@ -36,6 +36,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/tools/audiocontrol"
 	"github.com/Jairik/clanka-bot/assistant/tools/calc"
 	"github.com/Jairik/clanka-bot/assistant/tools/clock"
+	"github.com/Jairik/clanka-bot/assistant/tools/github"
 	notifytools "github.com/Jairik/clanka-bot/assistant/tools/notify"
 	personatools "github.com/Jairik/clanka-bot/assistant/tools/persona"
 	quiettools "github.com/Jairik/clanka-bot/assistant/tools/quiet"
@@ -477,11 +478,16 @@ func evalRegistry(t *testing.T) (*tool.Registry, *timer.Manager, *alarm.Manager,
 	if err := personaModule.Register(reg, tool.Deps{Voices: personaVoices}); err != nil {
 		t.Fatalf("register persona: %v", err)
 	}
-	// web.search is AgentOnly and must never be indexed by the semantic
-	// router; registering it proves the ToolCount check below is scoped to the
-	// Fast path rather than to every Agent-visible Tool.
+	// web.search and web.fetch are AgentOnly and must never be indexed by the
+	// semantic router; registering the module proves the ToolCount check below
+	// is scoped to the Fast path rather than to every Agent-visible Tool.
 	if err := web.NewModule().Register(reg, tool.Deps{}); err != nil {
 		t.Fatalf("register web: %v", err)
+	}
+	// The GitHub Tools are AgentOnly for the same reason. The empty Deps means
+	// no secret and no handler execution; only their metadata is present.
+	if err := github.NewModule().Register(reg, tool.Deps{}); err != nil {
+		t.Fatalf("register github: %v", err)
 	}
 	return reg, manager, alarmManager, reminderModule.Manager()
 }

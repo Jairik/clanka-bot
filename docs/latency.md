@@ -54,6 +54,25 @@ percentiles. A failed Agent call also logs `agent_error=unavailable|timeout`.
 
 The typed `/debug/transcript` entry has `source=debug`: it has no endpointing
 or STT stages and no `response_ms`, because there was no speech to start from.
+The authenticated Dashboard typed box has `source=dashboard` and the same
+limitation: it never claims a Response latency.
+
+## Activity page
+
+`/activity` is a bounded in-memory ring (100 requests) fed by the same
+`Timeline.Complete` event that writes the line above. It is not a second
+tracing protocol and it does not tail a log file. It shows the route, the
+measured stage timings, the Tool calls and the outcome. Missing stages are
+shown as absent, never as `0`, and `response_ms` is shown only when the
+timeline actually measured reply audio. A typed request therefore shows its
+routing and Tool stages and "Not measured", not an HTTP round-trip time.
+
+The ring also carries the reply text and each Tool call's human-facing result,
+including Local-only results. That is display-only data for the authenticated
+Dashboard: it is not in the request log line, not persisted, and not available
+to the Agent prompt builder, history sent off the Pi, Notifications or the
+public health listener. The page caps its display at 50 rows; the ring drops
+the oldest entries beyond 100.
 
 ## Budgets (#12)
 

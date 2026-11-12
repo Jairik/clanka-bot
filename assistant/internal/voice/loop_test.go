@@ -687,3 +687,52 @@ func TestLoopDropsBufferedChimeEchoFrames(t *testing.T) {
 		}
 	}
 }
+
+// TestLoopFeedsTheActivityObserver proves the voice path hands its completed
+// request to the same store the Dashboard reads. The responder plays the part
+// the reply session does in production: set route and reply, then complete the
+// one timeline.
+func TestLoopFeedsTheActivityObserver(t *testing.T) {
+	source := &scriptSource{frames: append(repeat(loudFrame(), 8), repeat(silentFrame(), 40)...)}
+	wake := &fakeWake{afterWords: 5}
+	stt := &fakeSTT{text: "what time is it"}
+	completed := make(chan latency.Completed, 1)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	responder := &fakeResponder{
+		calls: make(chan string, 1),
+		onCall: func(ctx context.Context) {
+			latency.SetRoute(ctx, "control_phrase", "time.now", "what time is it")
+			latency.SetSummary(ctx, "It's 3:04 PM.", false, false)
+			latency.Complete(ctx, logger, latency.OutcomeNoAudio, nil)
+		},
+	}
+	loop := newLoop(t, voice.Config{
+		FrameBytes: frameBytes,
+		Endpoint:   endpointConfig(500 * time.Millisecond),
+	}, voice.Deps{
+		Source: source, Wake: wake, STT: stt, Responder: responder,
+		Observer: func(c latency.Completed) {
+			select {
+			case completed <- c:
+			default:
+			}
+		},
+		Logger: logger,
+	})
+	runLoop(t, loop)
+
+	select {
+	case got := <-completed:
+		if got.Source != latency.SourceVoice || got.Path != "control_phrase" || got.Tool != "time.now" {
+			t.Fatalf("completed = %+v", got)
+		}
+		if got.Transcript != "what time is it" || got.Detail == nil || got.Detail.Reply != "It's 3:04 PM." {
+			t.Fatalf("completed detail = %+v", got.Detail)
+		}
+		if got.HasResponse {
+			t.Fatal("a text-only fake reply claimed a Response latency")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("voice completion did not reach the observer")
+	}
+}

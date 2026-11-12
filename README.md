@@ -647,6 +647,27 @@ returned anywhere. Clearing a stored value exposes the `.env` bootstrap
 immediately and the page says which source is active. A new module declaration
 appears without a page change.
 
+The **Activity** page at `/activity` lists the recent requests and hosts a
+typed-request box. Its bounded in-memory ring is fed by the same completion that
+writes the one structured `request` log line: the route the pipeline chose
+(Control phrase/Fast path, Agent path, Confirmation, Focus intent or an
+unrouted fall-through), the stage timings that were actually measured, the Tool
+calls and the outcome. Response latency is shown only when reply audio actually
+started, so a typed request reports its routing and Tool stages without an
+invented number. Nothing is persisted, and the page reads the ring rather than
+tail-ing container logs.
+
+The typed box replaces the localhost-only debug entry for Dashboard users but
+uses the same pipeline, pending Confirmation, Permission checks, Tool policy,
+Local-only rules and shared history. It is deliberately **text-only**: the
+reply appears in the page and is not spoken on the Pi speaker. A waiting
+Confirmation is settled by typing `yes` or `no`, and anything else cancels it
+and routes the new request normally. One typed request runs at a time so two
+turns cannot interleave. Local-only Tool results are visible on this
+authenticated page, with a Local-only badge, and are never sent to a model,
+Agent prompt, Notification or any other egress path; the public health listener
+does not know about the ring at all.
+
 ```sh
 # List every effective value and the layer it came from.
 curl -s localhost:8081/api/settings

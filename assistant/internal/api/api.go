@@ -77,6 +77,13 @@ func WithAPI(handler http.Handler) Option {
 	return func(s *server) { s.api = handler }
 }
 
+// WithObserver feeds completed debug requests into the Dashboard Activity
+// store, so a localhost typed request appears in the same recent list as voice
+// and Dashboard requests. A nil observer leaves the debug entry unchanged.
+func WithObserver(observer latency.Observer) Option {
+	return func(s *server) { s.observer = observer }
+}
+
 // NewHandler builds the HTTP surface: GET /healthz, plus POST
 // /debug/transcript when the debug entry is enabled.
 func NewHandler(p *pipeline.Pipeline, logger *slog.Logger, debugEnabled bool, opts ...Option) http.Handler {
@@ -106,6 +113,7 @@ type server struct {
 	responder    Responder
 	api          http.Handler
 	announcer    Announcer
+	observer     latency.Observer
 	debugAllowed func(net.IP) bool
 }
 
@@ -170,7 +178,7 @@ func (s *server) debugTranscript(w http.ResponseWriter, r *http.Request) {
 	}
 	// The debug entry has no endpointing or STT, so its timeline never
 	// reports Response latency; routing and playback stages still correlate.
-	timeline := latency.New(requestID, latency.SourceDebug)
+	timeline := latency.New(requestID, latency.SourceDebug, latency.WithObserver(s.observer))
 	requestCtx := latency.WithContext(r.Context(), timeline)
 
 	// Speaking is part of the reply, so the request waits for playback to

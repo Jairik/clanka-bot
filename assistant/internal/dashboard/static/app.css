@@ -202,8 +202,8 @@ tbody th { font-weight: 600; white-space: nowrap; }
 }
 .pill-ok { color: var(--ok); }
 .pill-error { color: var(--error); }
-.pill-timed-out { color: var(--warn); }
-.pill-not-configured, .pill-no-check { color: var(--neutral); }
+.pill-timed-out, .pill-warn { color: var(--warn); }
+.pill-not-configured, .pill-no-check, .pill-neutral { color: var(--neutral); }
 
 footer {
   padding: 0 clamp(1rem, 4vw, 3rem) 2rem;
@@ -222,3 +222,27 @@ footer {
 caption { text-align: left; padding-bottom: .6rem; }
 .library audio { width: min(16rem, 45vw); min-width: 10rem; }
 .library td:last-child, .library th:last-child { text-align: right; }
+
+/* Activity page: the typed request is the page's one large control, and the
+   per-request details open in place without a second page or script. */
+.typed-form { margin-top: .7rem; }
+.typed-form label { display: block; margin-bottom: .3rem; font-size: .85rem; font-weight: 600; }
+.typed-form textarea {
+  width: 100%;
+  font: inherit;
+  font-size: .95rem;
+  padding: .55rem .65rem;
+  color: var(--ink);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  min-height: 5rem;
+  resize: vertical;
+}
+.typed-form textarea:focus-visible { outline: 3px solid #9bc8b3; outline-offset: 1px; }
+.activity-table tbody th { white-space: nowrap; }
+.activity-detail td { padding-top: 0; }
+.activity-detail summary { color: var(--accent); cursor: pointer; font-size: .88rem; }
+.activity-call { display: inline-block; margin-right: .35rem; }
+.activity-timing { display: inline-block; margin-right: .55rem; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .82rem; }
+.activity-call-result { padding: .7rem 0; }

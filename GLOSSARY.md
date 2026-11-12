@@ -82,6 +82,12 @@ _Avoid_: Error message, brain-offline line
 The most recent completed Assistant answer kept in memory, with the Tool that produced it and whether that result was Local-only. Follow-ups ("say that again", "send that to my phone") read it; a cancelled or blank turn does not replace it.
 _Avoid_: Previous output, last message, say-again buffer
 
+**Activity**:
+The authenticated Dashboard's recent-request view: the route, the measured stage
+timings, the Tool calls and the outcome, built from the same completion as the
+structured request log. Local-only Tool results appear there, and nowhere else.
+_Avoid_: Request log viewer, trace, transcript history
+
 **Name matcher**:
 The one lookup that resolves a spoken library name — a sound, a voice or a Spotify playlist — first by exact or normalised spelling and then by embedding similarity above a threshold. It returns one name or no match, never a forced guess.
 _Avoid_: Fuzzy search, autocomplete

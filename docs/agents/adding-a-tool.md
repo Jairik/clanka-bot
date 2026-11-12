@@ -214,7 +214,9 @@ Fast path returns it. `web.search` in `tools/web` is the reference.
 see or call it, and neither can Hermes or the MCP surface. `LocalOnlyNo` leaves
 it available to both paths. Registration fails until you choose one explicitly,
 and no setting can override it. The scaffold default `LocalOnlyNo` is only safe
-because the placeholder has no private data.
+because the placeholder has no private data. The authenticated Dashboard
+Activity page displays each call's human-facing result with a Local-only badge;
+that is display-only and never relaxes the egress rule.
 
 Completion: the declaration matches where the Tool's results may travel.
 

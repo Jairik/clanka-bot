@@ -68,9 +68,12 @@ cached, so it plays the moment a request is routed to the Agent path; an empty
 Filler is a startup error. The same cached phrase covers a slow Fast path Tool:
 if nothing has been said 1.5 seconds after you stop talking, it plays once. A
 request never plays it twice, and it never talks over an answer.
-Both published ports are bound to the host loopback only. The debug listener
-binds all interfaces inside the container (see `docker-compose.yml`), so the
-host port mapping is what keeps it local.
+All three published ports are bound to the host loopback only. The debug and
+Dashboard listeners bind all interfaces inside the container (see
+`docker-compose.yml`), so the host port mapping and their source-address checks
+are what keep them local. The Dashboard is disabled until
+`ASSISTANT_DASHBOARD_OWNER` is set and is meant to be reached through
+`tailscale serve`; see `docs/deploy.md`.
 
 ### Voice
 

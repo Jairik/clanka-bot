@@ -4,6 +4,7 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -21,7 +22,8 @@ type Config struct {
 		Enabled bool   `yaml:"enabled"`
 		Addr    string `yaml:"addr"`
 	} `yaml:"debug"`
-	Tools struct {
+	Dashboard Dashboard `yaml:"dashboard"`
+	Tools     struct {
 		DefaultTimeout Duration `yaml:"default_timeout"`
 		// Sections holds each Tool module's tools.<name> block verbatim; the
 		// module decodes its own typed config over its code defaults.
@@ -79,6 +81,21 @@ type Config struct {
 	Location Location `yaml:"location"`
 	Agent    Agent    `yaml:"agent"`
 }
+
+// Dashboard is the Tailscale-only web UI listener. Owner empty keeps it off.
+type Dashboard struct {
+	// Owner is the only Tailscale login allowed in. Empty leaves the Dashboard
+	// disabled, so a fresh checkout serves nothing on this listener.
+	Owner string `yaml:"owner"`
+	// Addr must be loopback or all interfaces. Compose binds all interfaces in
+	// the container and publishes only the host loopback port (docs/deploy.md).
+	Addr string `yaml:"addr"`
+	// HealthTimeout bounds one Health page refresh, including network checks.
+	HealthTimeout Duration `yaml:"health_timeout"`
+}
+
+// Enabled reports whether an owner is configured.
+func (d Dashboard) Enabled() bool { return strings.TrimSpace(d.Owner) != "" }
 
 // Location is the public-IP geolocation settings and the optional fallback
 // used when a lookup fails and nothing better is known.
@@ -152,6 +169,11 @@ func Default() Config {
 	cfg.HTTP.Addr = ":8080"
 	cfg.Debug.Enabled = true
 	cfg.Debug.Addr = "127.0.0.1:8081"
+	// The Dashboard stays disabled (owner empty) until the Pi's Tailscale
+	// login is configured; the loopback address is where tailscale serve
+	// proxies from.
+	cfg.Dashboard.Addr = "127.0.0.1:8082"
+	cfg.Dashboard.HealthTimeout = Duration(3 * time.Second)
 	cfg.Tools.DefaultTimeout = Duration(2 * time.Second)
 	cfg.Embed.URL = "http://embed:8085"
 	cfg.Embed.Model = "sentence-transformers/all-MiniLM-L6-v2"
@@ -243,6 +265,12 @@ func applyEnv(cfg *Config) error {
 		}
 		cfg.Debug.Enabled = enabled
 	}
+	if v := os.Getenv("ASSISTANT_DASHBOARD_OWNER"); v != "" {
+		cfg.Dashboard.Owner = v
+	}
+	if v := os.Getenv("ASSISTANT_DASHBOARD_ADDR"); v != "" {
+		cfg.Dashboard.Addr = v
+	}
 	if v := os.Getenv("ASSISTANT_EMBED_URL"); v != "" {
 		cfg.Embed.URL = v
 	}
@@ -299,6 +327,17 @@ func (c Config) validate() error {
 	}
 	if c.Debug.Enabled && c.Debug.Addr == "" {
 		return fmt.Errorf("config: debug.addr is required when the debug entry is enabled")
+	}
+	if c.Dashboard.Enabled() {
+		if err := validateDashboardAddr(c.Dashboard.Addr); err != nil {
+			return err
+		}
+		if c.Dashboard.HealthTimeout.Duration() <= 0 {
+			return fmt.Errorf("config: dashboard.health_timeout must be positive")
+		}
+		if strings.ContainsAny(c.Dashboard.Owner, " \t\r\n,") {
+			return fmt.Errorf("config: dashboard.owner must be one Tailscale login without spaces")
+		}
 	}
 	if c.Tools.DefaultTimeout.Duration() <= 0 {
 		return fmt.Errorf("config: tools.default_timeout must be positive")
@@ -370,6 +409,34 @@ func (c Config) validate() error {
 // VoiceEnabled reports whether microphone capture is configured. An empty
 // wakeword address leaves the assistant typed/debug only.
 func (c Config) VoiceEnabled() bool { return c.Wakeword.Addr != "" }
+
+// validateDashboardAddr keeps the listener on loopback. The all-interfaces
+// form is allowed only because the container must bind that way for Docker's
+// published port; the host publication and the handler's source-address check
+// are what keep it off the LAN (the debug entry uses the same topology).
+func validateDashboardAddr(addr string) error {
+	if addr == "" {
+		return fmt.Errorf("config: dashboard.addr is required when the Dashboard is enabled")
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("config: dashboard.addr must be host:port: %w", err)
+	}
+	number, err := strconv.Atoi(port)
+	if err != nil || number < 1 || number > 65535 {
+		return fmt.Errorf("config: dashboard.addr has an invalid port %q", port)
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		return nil
+	}
+	if strings.EqualFold(host, "localhost") {
+		return nil
+	}
+	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
+		return nil
+	}
+	return fmt.Errorf("config: dashboard.addr must be loopback or all interfaces, got %q", host)
+}
 
 func (c Config) validateVoice() error {
 	if !c.VoiceEnabled() {

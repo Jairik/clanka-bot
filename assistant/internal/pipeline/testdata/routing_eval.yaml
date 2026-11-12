@@ -1074,6 +1074,15 @@ negatives:
   - are you there
   - are you sure
   - what can you do about my alarm
+  # Agent-path web search: open-ended lookups must not be captured by a Fast
+  # path Tool. web.search itself is AgentOnly, so a match here would be a real
+  # misroute to some other Tool.
+  - who won the match last night
+  - search the web for last night's match result
+  - look up the score online
+  - find an article about the election
+  - what does the web say about the new phone
+  - browse for a lasagna recipe
 
 # Compound requests ask for more than one thing. They are kept separate so
 # the evaluation can report compound handling on its own.

@@ -10,6 +10,7 @@ import (
 
 	"github.com/Jairik/clanka-bot/assistant/internal/config"
 	"github.com/Jairik/clanka-bot/assistant/internal/wyoming"
+	"github.com/Jairik/clanka-bot/assistant/tools/web"
 )
 
 // wyomingHealthTimeout bounds a connected service that stops answering. The
@@ -17,16 +18,18 @@ import (
 // Health refresh short even when a model container is wedged.
 const wyomingHealthTimeout = 2 * time.Second
 
-// ComposeServiceChecks returns the five services in the current Compose stack.
+// ComposeServiceChecks returns the six services in the current Compose stack.
 // The checks are endpoint checks, not Docker's health field: the page answers
 // whether the assistant can actually reach what it needs.
 func ComposeServiceChecks(cfg config.Config) []ServiceCheck {
+	webCfg := web.FromConfig(cfg)
 	return []ServiceCheck{
 		HTTPService("embed", strings.TrimRight(cfg.Embed.URL, "/")+"/healthz"),
 		SelfService("assistant"),
 		WyomingService("wakeword", cfg.Wakeword.Addr),
 		WyomingService("stt", cfg.STT.Addr),
 		WyomingService("tts", cfg.TTS.Addr),
+		HTTPService("web-search", strings.TrimRight(webCfg.BaseURL, "/")+"/healthz"),
 	}
 }
 

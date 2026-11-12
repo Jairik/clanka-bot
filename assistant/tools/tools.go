@@ -22,6 +22,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/tools/units"
 	"github.com/Jairik/clanka-bot/assistant/tools/voice"
 	"github.com/Jairik/clanka-bot/assistant/tools/weather"
+	"github.com/Jairik/clanka-bot/assistant/tools/web"
 	"gopkg.in/yaml.v3"
 )
 
@@ -48,6 +49,7 @@ func NewSet() *Set {
 		units.NewModule(),
 		random.NewModule(),
 		persona.NewModule(),
+		web.NewModule(),
 	}}
 }
 

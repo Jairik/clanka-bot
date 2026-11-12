@@ -223,6 +223,14 @@ func metadataProblems(module tool.Module, registry *tool.Registry, names []strin
 			}
 		}
 		if len(info.Examples) == 0 {
+			if info.AgentOnly {
+				continue
+			}
+			problems = append(problems, fmt.Sprintf("%s: is not on the semantic Fast path and is not declared AgentOnly; add Speak + Examples (+ Extract for arguments), or set AgentOnly", name))
+			continue
+		}
+		if info.AgentOnly {
+			problems = append(problems, fmt.Sprintf("%s: AgentOnly must not declare Examples; remove them or drop AgentOnly", name))
 			continue
 		}
 		if !pipeline.FastPathEligible(info) {
@@ -283,7 +291,9 @@ func routingProblems(registry *tool.Registry, names []string, endpoint string, t
 	var problems []string
 	for _, name := range names {
 		info, ok := registry.Info(name)
-		if !ok || len(info.Examples) == 0 {
+		if !ok || !pipeline.FastPathEligible(info) {
+			// Agent-only Tools have no Examples by contract; skip them rather
+			// than inventing a route the semantic path must never take.
 			continue
 		}
 		for _, example := range info.Examples {

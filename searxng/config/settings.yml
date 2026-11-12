@@ -1,0 +1,51 @@
+# SearXNG settings for the assistant's Agent-path web.search.
+#
+# This instance is internal-only: Compose publishes no host port, runs no
+# valkey, mounts no database and turns the limiter off. The only caller is the
+# assistant container, so the public-instance features and engagement metrics
+# stay off. Source: the official settings reference (2026.11.12):
+# https://docs.searxng.org/admin/settings/settings.html
+use_default_settings:
+  engines:
+    # Three fast general engines. Keeping the list small bounds fan-out on the
+    # Pi and makes one slow engine visible instead of hidden in a long tail.
+    keep_only:
+      - duckduckgo
+      - brave
+      - bing
+
+general:
+  instance_name: "clanka-search"
+  # Nothing consumes /stats, /metrics or /preferences on an internal instance.
+  enable_metrics: false
+
+search:
+  safe_search: 0
+  # web.search reads JSON. HTML stays available for a manual curl when
+  # diagnosing an engine. Requesting an unlisted format is a 403 by design.
+  formats:
+    - html
+    - json
+
+outgoing:
+  # The assistant's Tool budget is 1.5 s per search. Let one slow engine time
+  # out rather than hold the whole turn open; SearXNG answers with whatever
+  # the other engines returned.
+  request_timeout: 1.5
+  # Three engines per request; the default pool is sized for a public site.
+  pool_connections: 20
+
+server:
+  # ADR / ticket: no rate limiter and no public instance. The limiter also
+  # needs valkey, which this service intentionally does not run.
+  limiter: false
+  public_instance: false
+  # Used for internal hashing, not authentication. The service is reachable
+  # only on the Compose network; SEARXNG_SECRET can override it per host.
+  secret_key: "clanka-internal-search"
+
+engines:
+  # Bing ships disabled in the default settings; keep_only selected it, and
+  # this entry turns it on. DuckDuckGo and Brave are enabled by default.
+  - name: bing
+    disabled: false

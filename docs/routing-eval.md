@@ -173,10 +173,11 @@ above the 0.95 precision floor. Run against
 These numbers are from the merged #57 per-Alarm overrides, #59 quick-wins, #65
 Persona, #53 Alarm, #54 Reminder, #62 Notifications and #60 utility Tools tree.
 Precision is 1.00 with no negative or compound misroute, and every Tool clears
-the 0.95 floor. The #59 Tools add 60 positives and three negative/compound
-groups;
-`assistant.repeat` and `assistant.help` are Local-only, so their recall only
-exercises the semantic router and never the Agent path. `persona.switch`
+the 0.95 floor. The #57 overrides add 31 Alarm positives, the #59 Tools add 60
+positives and three negative/compound groups, and the Persona Tools add 60
+positives and 11 plain negatives. `assistant.repeat` and `assistant.help` are
+Local-only, so their recall only exercises the semantic router and never the
+Agent path. `persona.switch`
 resolves all 20 positives, so "switch to the GLaDOS persona" reaches the Fast
 path; the list/current questions are lexically close to each other, so their
 short forms are exact Control phrases and the paraphrases fall to the Agent

@@ -342,8 +342,8 @@ control_phrases:
   # phrase. "stop", "pause", "resume", "next", "cancel" and "snooze" are shared
   # intents: they reach a ringing alert, the current reply or music before any
   # Tool. Snooze on a Timer acts as stop; #53 gives an Alarm its real snooze.
-  # Resume and next currently reach music only; they fall through when nothing
-  # holds that Transport intent (#72 adds the music holder).
+  # Resume and next reach music while it holds Focus (spotify.play claims it);
+  # with nothing in Focus they fall through to the semantic Fast path.
   "stop": stop
   "pause": pause
   "resume": resume

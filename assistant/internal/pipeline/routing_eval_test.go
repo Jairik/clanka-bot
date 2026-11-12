@@ -27,6 +27,7 @@ import (
 	quietcore "github.com/Jairik/clanka-bot/assistant/internal/quiet"
 	"github.com/Jairik/clanka-bot/assistant/internal/secrets"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
+	spotifycore "github.com/Jairik/clanka-bot/assistant/internal/spotify"
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/internal/voicelib"
@@ -42,6 +43,7 @@ import (
 	quiettools "github.com/Jairik/clanka-bot/assistant/tools/quiet"
 	"github.com/Jairik/clanka-bot/assistant/tools/random"
 	"github.com/Jairik/clanka-bot/assistant/tools/reminder"
+	spotifytools "github.com/Jairik/clanka-bot/assistant/tools/spotify"
 	"github.com/Jairik/clanka-bot/assistant/tools/system"
 	"github.com/Jairik/clanka-bot/assistant/tools/timer"
 	"github.com/Jairik/clanka-bot/assistant/tools/units"
@@ -91,6 +93,11 @@ var routingEvalTools = []string{
 	random.FlipName,
 	random.RollName,
 	random.PickName,
+	spotifytools.PlayName,
+	spotifytools.PauseName,
+	spotifytools.NextName,
+	spotifytools.VolumeName,
+	spotifytools.NowPlayingName,
 }
 
 const (
@@ -519,8 +526,34 @@ func evalRegistry(t *testing.T) (*tool.Registry, *timer.Manager, *alarm.Manager,
 	if err := github.NewModule().Register(reg, tool.Deps{}); err != nil {
 		t.Fatalf("register github: %v", err)
 	}
+	// Spotify executes its real handlers against a scripted player, so the
+	// corpus never opens a socket or needs an account. Focus is nil here: the
+	// shared-phrase cases below build their own holders.
+	if err := spotifytools.RegisterTools(reg, spotifytools.NewService(evalSpotifyPlayer{}, nil)); err != nil {
+		t.Fatalf("register spotify: %v", err)
+	}
 	return reg, manager, alarmManager, reminderModule.Manager()
 }
+
+// evalSpotifyPlayer is a successful in-memory Player for the routing corpus.
+type evalSpotifyPlayer struct{}
+
+func (evalSpotifyPlayer) Play(_ context.Context, req spotifycore.PlayRequest) (spotifycore.Played, error) {
+	return spotifycore.Played{Name: req.Query, Resumed: req.Query == "" && req.Kind == ""}, nil
+}
+func (evalSpotifyPlayer) Pause(context.Context) error  { return nil }
+func (evalSpotifyPlayer) Resume(context.Context) error { return nil }
+func (evalSpotifyPlayer) Next(context.Context) error   { return nil }
+func (evalSpotifyPlayer) SetVolume(_ context.Context, percent int) (int, bool, error) {
+	return percent, false, nil
+}
+func (evalSpotifyPlayer) AdjustVolume(_ context.Context, delta int) (int, bool, error) {
+	return 50 + delta, false, nil
+}
+func (evalSpotifyPlayer) NowPlaying(context.Context) (spotifycore.NowPlaying, error) {
+	return spotifycore.NowPlaying{Track: "Creep", Artists: "Radiohead", Playing: true}, nil
+}
+func (evalSpotifyPlayer) Cap() int { return 0 }
 
 type evalVerdict struct {
 	Tool   string

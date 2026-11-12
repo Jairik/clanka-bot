@@ -370,6 +370,18 @@ without the other.
       connected/configured/reconnect needed separately. A missing or stale
       librespot heartbeat is never guessed as paired. Development-mode refresh
       tokens last six months; a **reconnect needed** state means Connect again.
+- [ ] Playback (#72, code-complete, live acceptance pending): after pairing and
+      Web API connect, say "play Radiohead"; the Tools target only the Connect
+      device named `SPOTIFY_DEVICE_NAME` (`Clanka`). Check that "pause",
+      "resume" and "next" act on the music, that music dips during a reply, a
+      Timer Ring and after the wake word, and that "what's playing" answers.
+      Ducking uses `pactl` against the `librespot` Pulse sink input, so it needs
+      the same Pulse socket the Assistant already mounts; none of this has been
+      run on a Pi yet.
+- [ ] `music.max_volume` (Dashboard Settings) is unset, meaning no cap, until the
+      #70 spike gives a value. Set it there once measured; it caps
+      `spotify.volume`, a level passed to `spotify.play`, and a louder device at
+      play start.
 - [ ] Troubleshoot with `docker compose logs librespot`,
       `docker compose ps`, and `avahi-browse -t _spotify-connect._tcp`. The
       `librespot-status` volume is metadata only; `librespot-cache` holds

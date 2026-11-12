@@ -79,6 +79,12 @@ type Announcer interface {
 	TurnFinished()
 }
 
+// Ducker lowers playing music for one turn. internal/music.Ducker satisfies
+// it; the restore it returns must always run.
+type Ducker interface {
+	Duck(ctx context.Context) (restore func(), err error)
+}
+
 // Config is the voice loop's fixed settings.
 type Config struct {
 	// FrameBytes is the PCM frame size handed to the services. 1024 bytes is
@@ -104,6 +110,9 @@ type Deps struct {
 	// Announcer is optional: when set, a wake word stops unprompted speech
 	// before capture starts.
 	Announcer Announcer
+	// Ducker is optional: when set, music is ducked from the wake word through
+	// the end of the reply and restored afterwards (ADR-0004).
+	Ducker Ducker
 	// WakeCue resolves the live wake Cue once per detection. When set it
 	// replaces Config.Chime, and ok=false means the role is assigned none.
 	WakeCue func() (pcm []byte, format audio.Format, ok bool)
@@ -243,6 +252,17 @@ func (l *Loop) session(ctx context.Context) (bool, error) {
 	if l.deps.Announcer != nil {
 		l.deps.Announcer.TurnStarted()
 		defer l.deps.Announcer.TurnFinished()
+	}
+	// Music stays ducked for the whole turn (wake Cue, listening and reply);
+	// a Barge-in turn restores and re-ducks at the turn boundary.
+	if l.deps.Ducker != nil {
+		restore, err := l.deps.Ducker.Duck(ctx)
+		if err != nil {
+			l.deps.Logger.Warn("voice: music duck", "error", err.Error())
+		}
+		if restore != nil {
+			defer restore()
+		}
 	}
 	sessCtx, cancel := context.WithCancel(ctx)
 	defer cancel()

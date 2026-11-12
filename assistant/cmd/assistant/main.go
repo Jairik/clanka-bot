@@ -29,6 +29,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/lastreply"
 	"github.com/Jairik/clanka-bot/assistant/internal/latency"
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
+	"github.com/Jairik/clanka-bot/assistant/internal/music"
 	"github.com/Jairik/clanka-bot/assistant/internal/namematch"
 	"github.com/Jairik/clanka-bot/assistant/internal/notify"
 	"github.com/Jairik/clanka-bot/assistant/internal/persona"
@@ -295,6 +296,10 @@ func run() error {
 	// overlapping on the single speaker. The wake chime uses the raw sink:
 	// it plays before any reply is chosen.
 	playSink := speech.NewSerialSink(sink)
+	// ADR-0004: librespot plays into the same Pulse server, so a reply, a Ring
+	// and the wake word duck its stream locally with pactl, never through the
+	// Web API. One refcounted Ducker serves all three.
+	musicDucker := music.NewDucker(music.NewPulseStreams(cfg.Playback.Binary, ""), music.DefaultDuckPercent, logger)
 
 	// Speech is optional: without a TTS address the debug entry stays text-only.
 	// The Filler audio is synthesized after the settings service resolves the
@@ -352,6 +357,7 @@ func run() error {
 	var settingsSvc *settings.Service
 	ringDeps := ring.Deps{
 		Focus:    focusRegistry,
+		Music:    musicDucker,
 		Boundary: speechGate,
 		Settings: func(kind ring.Kind) ring.Settings {
 			var reader ring.Reader = recoverySettings
@@ -469,6 +475,8 @@ func run() error {
 	// Quiet hours shares the one settings service with the Dashboard and voice
 	// Tools; the startup reader above is replaced by this full service.
 	defs = append(defs, quiet.Definitions(baseCfg.Quiet)...)
+	// music.max_volume is a live Spotify setting, unset (no cap) by default.
+	defs = append(defs, spotify.Definitions()...)
 	// Notify's URL and missed-alert switch are live settings; the topic and
 	// optional token remain write-only secrets.
 	defs = append(defs, notify.Definitions(baseCfg.Notify)...)
@@ -789,7 +797,7 @@ func run() error {
 			}
 			return clip.PCM, clip.Format, true
 		}
-		loop, err := newVoiceLoop(cfg, session, p, sink, announcements, wakeCue, activityStore.Observe, logger)
+		loop, err := newVoiceLoop(cfg, session, p, sink, announcements, wakeCue, activityStore.Observe, musicDucker, logger)
 		if err != nil {
 			return err
 		}
@@ -938,7 +946,7 @@ func run() error {
 // STT, the live wake Cue, and the shared reply Session. The pipeline is the
 // Barge-in seam that drops a waiting Confirmation, and the Announcement queue
 // stops unprompted speech as soon as a wake word starts a turn.
-func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingDropper, sink audio.Sink, announcements *announce.Queue, wakeCue func() ([]byte, audio.Format, bool), observer latency.Observer, logger *slog.Logger) (*voice.Loop, error) {
+func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingDropper, sink audio.Sink, announcements *announce.Queue, wakeCue func() ([]byte, audio.Format, bool), observer latency.Observer, ducker voice.Ducker, logger *slog.Logger) (*voice.Loop, error) {
 	captureFormat := audio.Format{Rate: cfg.Capture.Rate, Width: cfg.Capture.Width, Channels: cfg.Capture.Channels}
 	frameBytes := cfg.Capture.Rate * cfg.Capture.Width * cfg.Capture.Channels * cfg.Capture.FrameMS / 1000
 	if frameBytes <= 0 {
@@ -982,6 +990,7 @@ func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingD
 		Dropper:   pending,
 		WakeCue:   wakeCue,
 		Observer:  observer,
+		Ducker:    ducker,
 		Logger:    logger,
 	}
 	// Leave the seam absent rather than storing a typed nil: a text-only setup

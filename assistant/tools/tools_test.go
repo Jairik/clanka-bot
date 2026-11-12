@@ -358,6 +358,7 @@ func TestFocusIntentsListsTheModuleDeclarations(t *testing.T) {
 	want := []string{
 		"timer:stop", "timer:cancel", "timer:snooze",
 		"alarm:stop", "alarm:cancel", "alarm:snooze",
+		"spotify:pause", "spotify:resume", "spotify:next", "spotify:stop",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("FocusIntents() = %v, want %v", got, want)

@@ -254,6 +254,8 @@ func TestToolEndpointRejectsLooseningLocalOnlyAndBadRequests(t *testing.T) {
 		{"unknown setting", http.MethodGet, "/settings/agent.missing", nil, http.StatusNotFound},
 		{"wrong type", http.MethodPut, "/settings/agent.filler", map[string]any{"value": 42}, http.StatusBadRequest},
 		{"missing value", http.MethodPut, "/settings/agent.filler", map[string]any{}, http.StatusBadRequest},
+		{"loosen via settings", http.MethodPut, "/settings/tools.test.act.permission", map[string]any{"value": "read"}, http.StatusBadRequest},
+		{"local-only via settings", http.MethodPut, "/settings/tools.test.read.local_only", map[string]any{"value": true}, http.StatusNotFound},
 		{"wrong method", http.MethodPost, "/settings", nil, http.StatusMethodNotAllowed},
 	}
 	for _, tt := range tests {

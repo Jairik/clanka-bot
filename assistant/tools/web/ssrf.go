@@ -231,6 +231,9 @@ func (f *fetcher) checkRedirect(req *http.Request, via []*http.Request) error {
 	if err := checkFetchURL(req.URL); err != nil {
 		return err
 	}
+	// Do not forward the source URL (which may carry a signed token) to the
+	// redirect target. Go adds Referer automatically; this Tool never needs it.
+	req.Header.Del("Referer")
 	// A downgrade would resend the URL (which may carry a signed token) in
 	// clear text. Refuse it rather than follow the hop.
 	if len(via) > 0 {

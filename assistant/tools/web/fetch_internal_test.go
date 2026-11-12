@@ -380,6 +380,33 @@ func TestFetchReusesThePinAcrossSameHostRedirects(t *testing.T) {
 	}
 }
 
+func TestFetchRedirectDropsReferer(t *testing.T) {
+	page := `<html><head><title>No referer</title></head><body><article><p>` +
+		strings.Repeat("The redirect target must not receive the source URL. ", 20) +
+		`</p></article></body></html>`
+	var referer string
+	fixture := newFetchFixture(t, FetchConfig{Timeout: config.Duration(time.Second)},
+		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/start" {
+				http.Redirect(w, r, "http://public.example.test/story", http.StatusFound)
+				return
+			}
+			referer = r.Header.Get("Referer")
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprint(w, page)
+		}), map[string][]netip.Addr{
+			"article.example.test": publicV4(),
+			"public.example.test":  {netip.MustParseAddr("93.184.216.35")},
+		})
+
+	if _, err := fixture.fetcher.Fetch(context.Background(), "http://article.example.test/start"); err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	if referer != "" {
+		t.Fatalf("redirect target received Referer %q, want none", referer)
+	}
+}
+
 func TestFetchRejectsHTTPSDowngrade(t *testing.T) {
 	fixture := newFetchFixture(t, DefaultFetchConfig(),
 		http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),

@@ -36,7 +36,9 @@ type migration struct {
 // write-only secrets table: values never take a settings key, so the settings
 // API cannot list or return them. Version 3 holds the Scheduled alerts (Timer
 // rows today; Alarm and Reminder rows reuse the shape), so they survive a
-// restart (ADR-0003).
+// restart (ADR-0003). Version 4 indexes the Sound library: built-in sounds and
+// WAV files in sounds/ with their name, duration and first-added time. Cue role
+// assignments are ordinary settings rows, so they share this database too.
 var migrations = []migration{
 	{
 		version: 1,
@@ -72,6 +74,22 @@ var migrations = []migration{
 				created_at  INTEGER NOT NULL
 			)`,
 			`CREATE INDEX timers_fires_at ON timers (fires_at)`,
+		},
+	},
+	{
+		version: 4,
+		name:    "sounds",
+		statements: []string{
+			// path is relative to the library (data.dir/sounds) and empty for a
+			// built-in. added_at is the first time the name was indexed, so a
+			// rescan does not reorder the library.
+			`CREATE TABLE sounds (
+				name        TEXT PRIMARY KEY,
+				path        TEXT NOT NULL DEFAULT '',
+				builtin     INTEGER NOT NULL DEFAULT 0,
+				duration_ms INTEGER NOT NULL,
+				added_at    TEXT NOT NULL
+			)`,
 		},
 	},
 }

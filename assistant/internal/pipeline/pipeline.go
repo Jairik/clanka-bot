@@ -71,6 +71,9 @@ type Reply struct {
 	Path      tool.Path
 	RequestID string
 	Pending   *agent.PendingConfirm
+	// Unavailable marks an Agent-path failure whose Text is the configured
+	// Unavailable message. The reply session plays the error Cue before it.
+	Unavailable bool
 }
 
 // Option configures a Pipeline without changing the constructor signature.
@@ -339,6 +342,7 @@ func (p *Pipeline) callAgent(ctx context.Context, req tool.Request, transcript s
 	reply.Path = tool.PathAgent
 	reply.Text = result.Text
 	reply.Pending = result.Pending
+	reply.Unavailable = result.Unavailable
 	// A spoken Unavailable message is still a reply, but the model call
 	// failed; the raw request line must say so rather than look like success.
 	switch {

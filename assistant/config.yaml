@@ -114,7 +114,9 @@ wakeword:
   model: "okay_nabu"
   timeout: 10s
   chime:
-    # Two-tone chime on wake detection. Not played when a request is accepted.
+    # Master switch for the wake Cue. The sound itself is sounds.wake (default:
+    # the two-tone chime); false silences wake even when a role is assigned.
+    # Not played when a request is accepted.
     enabled: true
 
 stt:
@@ -146,6 +148,19 @@ playback:
   # Named Pulse sink, e.g. the Echo Dot once Bluetooth A2DP is set up.
   # Empty uses the host's default sink.
   sink: ""
+
+# Fixed Cue roles (GLOSSARY: Cue). Each value names a built-in sound ("chime"),
+# a WAV file in data/sounds (for example "birds"), a path under the data volume
+# (for example "sounds/birds.wav"), or "none" to stay silent. A Dashboard or
+# voice write stores the same live setting and wins over this layer. Length
+# caps are checked on assignment and a longer sound is rejected, never trimmed:
+# wake 1.0 s, reminder/error 3 s, timer_ring/alarm_ring 60 s.
+sounds:
+  wake: chime
+  timer_ring: chime
+  alarm_ring: chime
+  reminder: chime
+  error: chime
 
 # Public-IP geolocation. Only city, region and timezone are kept; the fields
 # parameter stops the service sending coordinates at all.

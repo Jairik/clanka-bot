@@ -14,6 +14,7 @@ import (
 
 	"github.com/Jairik/clanka-bot/assistant/internal/latency"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
+	"github.com/Jairik/clanka-bot/assistant/internal/sound"
 	"github.com/Jairik/clanka-bot/assistant/internal/speech"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 )
@@ -47,6 +48,12 @@ type Announcer interface {
 	TurnFinished()
 }
 
+// CueSource resolves a fixed-role Cue for the current settings. sound.Service
+// satisfies it; a fake is enough for session tests.
+type CueSource interface {
+	Clip(role sound.Role) (sound.Clip, bool)
+}
+
 // Session is the seam for one spoken turn: #18's capture loop calls Ask, and
 // #25 cancels playback through the request context.
 type Session struct {
@@ -57,6 +64,7 @@ type Session struct {
 	fillerSource  FillerSource
 	logger        *slog.Logger
 	announcements Announcer
+	cues          CueSource
 }
 
 // Option configures a Session.
@@ -76,6 +84,12 @@ func WithLogger(logger *slog.Logger) Option {
 // Confirmation.
 func WithAnnouncements(a Announcer) Option {
 	return func(s *Session) { s.announcements = a }
+}
+
+// WithCues adds the Cue library. The only consumer today is the error Cue
+// before an Unavailable message; the same seam serves later consumers.
+func WithCues(cues CueSource) Option {
+	return func(s *Session) { s.cues = cues }
 }
 
 // WithFillerSource makes the Filler live: it is read once per turn, after any
@@ -192,6 +206,13 @@ func (s *Session) ask(ctx context.Context, req tool.Request, transcript string, 
 		if prefix != "" {
 			text = strings.TrimSpace(strings.TrimPrefix(text, prefix))
 		}
+		// The error Cue is queued before the Unavailable text, on the same
+		// player, so the two can never overlap or reverse order.
+		if text != "" && reply.Unavailable && s.cues != nil && s.sink != nil {
+			if clip, ok := s.cues.Clip(sound.RoleError); ok {
+				player.play(item{cue: &clip})
+			}
+		}
 		if text != "" {
 			player.play(item{text: text})
 		}
@@ -275,10 +296,12 @@ func (s *Session) cueSlowReply(player *player, filler *speech.Filler, from time.
 	}
 }
 
-// item is one queued sound: streamed text for the speaker, or cached filler PCM.
+// item is one queued sound: streamed text for the speaker, cached filler PCM,
+// or a fixed-role Cue.
 type item struct {
 	text   string
 	filler *speech.Filler
+	cue    *sound.Clip
 }
 
 // player plays queued sounds in order on its own goroutine, so generation never
@@ -316,9 +339,12 @@ func (p *player) run() {
 			continue // Drain on cancellation or after a playback failure.
 		}
 		var err error
-		if next.filler != nil {
+		switch {
+		case next.cue != nil:
+			err = next.cue.Play(p.ctx, p.sink)
+		case next.filler != nil:
 			err = next.filler.Play(p.ctx, p.sink)
-		} else {
+		default:
 			// The first reply text unit handed to TTS, after any Filler.
 			latency.Checkpoint(p.ctx, latency.CheckpointFirstChunk)
 			err = p.speaker.SayText(p.ctx, next.text)

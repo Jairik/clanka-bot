@@ -83,6 +83,10 @@ type Config struct {
 		Binary string `yaml:"binary"`
 		Sink   string `yaml:"sink"` // empty uses the Pulse default sink
 	} `yaml:"playback"`
+	// Sounds is the config layer for the five fixed Cue roles. Each value is a
+	// built-in name, a WAV file in data/sounds, a volume path, or none. Empty
+	// leaves the built-in chime; a stored override wins.
+	Sounds         Sounds            `yaml:"sounds"`
 	ControlPhrases map[string]string `yaml:"control_phrases"`
 	Embed          struct {
 		URL     string   `yaml:"url"`
@@ -161,6 +165,16 @@ type Provider struct {
 type AgentHistory struct {
 	Turns int      `yaml:"turns"`
 	Quiet Duration `yaml:"quiet"`
+}
+
+// Sounds names the sound assigned to each fixed Cue role. Duration caps are
+// checked when the value is assigned, never by trimming the file.
+type Sounds struct {
+	Wake      string `yaml:"wake"`
+	TimerRing string `yaml:"timer_ring"`
+	AlarmRing string `yaml:"alarm_ring"`
+	Reminder  string `yaml:"reminder"`
+	Error     string `yaml:"error"`
 }
 
 // Duration is a YAML-friendly time.Duration written as "2s" or "750ms".

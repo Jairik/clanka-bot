@@ -6,10 +6,16 @@ package announce
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 )
+
+// blockedRecheck bounds how long a queued item waits for an opaque blocked
+// predicate to clear without a queue event, such as a Ring that times out.
+const blockedRecheck = 250 * time.Millisecond
 
 // Speaker speaks one line of unprompted speech. speech.Speaker satisfies it.
 type Speaker interface {
@@ -20,11 +26,26 @@ type Speaker interface {
 type Option func(*Queue)
 
 // WithBlocked makes the queue wait while blocked reports true. The Assistant
-// passes the pending Confirmation here: a Confirmation must resolve before an
-// Announcement can speak. Blocked runs on the playback goroutine and must not
-// call back into the Queue.
+// passes the pending Confirmation and a ringing alert here: both must resolve
+// before unprompted speech or a preview can play. Blocked runs on the playback
+// goroutine and must not call back into the Queue.
 func WithBlocked(blocked func() bool) Option {
 	return func(q *Queue) { q.blocked = blocked }
+}
+
+// WithPlayback starts the worker even when no speaker is configured, so a
+// text-only Dashboard can still queue a sound preview on the Pi. Text
+// announcements remain unavailable without a speaker.
+func WithPlayback() Option {
+	return func(q *Queue) { q.audio = true }
+}
+
+// item is one queued unprompted action: a line to speak, or a sound to play.
+// Both obey the same turn, hold and blocked gates, so a Pi preview cannot cut
+// a reply or a pending Confirmation.
+type item struct {
+	text string
+	play func(context.Context) error
 }
 
 // Queue plays Announcements one at a time, in the order they were queued. The
@@ -34,9 +55,12 @@ type Queue struct {
 	speaker Speaker
 	logger  *slog.Logger
 	blocked func() bool
+	// audio keeps the worker alive without a speaker so a Dashboard can queue
+	// a Pi preview on a text-only setup (WithPlayback).
+	audio bool
 
 	mu      sync.Mutex
-	items   []string
+	items   []item
 	held    bool
 	closed  bool
 	turns   int
@@ -70,7 +94,11 @@ func New(speaker Speaker, logger *slog.Logger, opts ...Option) *Queue {
 	for _, opt := range opts {
 		opt(q)
 	}
-	if speaker == nil {
+	if speaker != nil {
+		// A speaker implies sound playback; WithPlayback covers the nil case.
+		q.audio = true
+	}
+	if speaker == nil && !q.audio {
 		close(q.done)
 		return q
 	}
@@ -93,7 +121,25 @@ func (q *Queue) Enqueue(text string) bool {
 		q.mu.Unlock()
 		return false
 	}
-	q.items = append(q.items, text)
+	q.items = append(q.items, item{text: text})
+	q.mu.Unlock()
+	q.notify()
+	return true
+}
+
+// EnqueuePlay queues one sound to play through the same between-turns gates as
+// an Announcement. The play callback runs on the worker; it must respect the
+// context, which TurnStarted cancels for Barge-in.
+func (q *Queue) EnqueuePlay(play func(context.Context) error) bool {
+	if q == nil || play == nil {
+		return false
+	}
+	q.mu.Lock()
+	if q.closed || !q.audio {
+		q.mu.Unlock()
+		return false
+	}
+	q.items = append(q.items, item{play: play})
 	q.mu.Unlock()
 	q.notify()
 	return true
@@ -191,45 +237,71 @@ func (q *Queue) Close() {
 func (q *Queue) run() {
 	defer close(q.done)
 	for {
+		for {
+			next, ok := q.next()
+			if !ok {
+				break
+			}
+			q.playItem(next)
+		}
+		// Every other gate wakes the queue when it changes. The blocked
+		// predicate is opaque, so recheck it while it is the only reason to
+		// wait; a Ring ending without a turn must still resume a preview.
+		var recheck <-chan time.Time
+		if q.blockedWaiting() {
+			recheck = time.After(blockedRecheck)
+		}
 		select {
 		case <-q.ctx.Done():
 			return
 		case <-q.wake:
-		}
-		for {
-			text, ok := q.next()
-			if !ok {
-				break
-			}
-			q.speak(text)
+		case <-recheck:
 		}
 	}
 }
 
-// next claims the oldest announcement when one may start now.
-func (q *Queue) next() (string, bool) {
+// blockedWaiting reports that only the blocked predicate keeps a queued item
+// from starting.
+func (q *Queue) blockedWaiting() bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	if q.closed || q.held || q.turns > 0 || q.playing || len(q.items) == 0 {
-		return "", false
+		return false
+	}
+	return q.blocked != nil && q.blocked()
+}
+
+// next claims the oldest item when one may start now.
+func (q *Queue) next() (item, bool) {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.closed || q.held || q.turns > 0 || q.playing || len(q.items) == 0 {
+		return item{}, false
 	}
 	if q.blocked != nil && q.blocked() {
-		return "", false
+		return item{}, false
 	}
-	text := q.items[0]
+	next := q.items[0]
 	q.items = q.items[1:]
 	q.playing = true
 	q.play, q.cancelPlay = context.WithCancel(q.ctx)
-	return text, true
+	return next, true
 }
 
-// speak plays one announcement and records whether it finished.
-func (q *Queue) speak(text string) {
+// playItem speaks or plays one queued item and records whether it finished.
+func (q *Queue) playItem(next item) {
 	q.mu.Lock()
 	ctx := q.play
 	q.mu.Unlock()
 
-	err := q.speaker.SayText(ctx, text)
+	var err error
+	if next.play != nil {
+		err = next.play(ctx)
+	} else if q.speaker == nil {
+		err = errors.New("announce: no speaker configured")
+	} else {
+		err = q.speaker.SayText(ctx, next.text)
+	}
 
 	q.mu.Lock()
 	if q.cancelPlay != nil {
@@ -240,12 +312,14 @@ func (q *Queue) speak(text string) {
 	q.mu.Unlock()
 
 	switch {
+	case err == nil && next.play != nil:
+		q.logger.Info("audio item")
 	case err == nil:
-		q.logger.Info("announcement", "text_chars", len(text))
+		q.logger.Info("announcement", "text_chars", len(next.text))
 	case ctx.Err() != nil:
-		q.logger.Info("announcement interrupted", "text_chars", len(text))
+		q.logger.Info("unprompted item interrupted", "audio", next.play != nil)
 	default:
-		q.logger.Error("announcement", "text_chars", len(text), "error", err.Error())
+		q.logger.Error("unprompted item", "audio", next.play != nil, "error", err.Error())
 	}
 }
 

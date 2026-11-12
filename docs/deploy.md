@@ -262,13 +262,13 @@ container health field.
 - [ ] `make deploy` (or `scripts/deploy.sh`)
 - [ ] Verify: `docker compose ps`, `curl -s localhost:8080/healthz`
 - [ ] The `assistant-data` volume holds the SQLite database (ADR-0003), the
-      `sounds/` sound library and the `voices/` custom voice states. It survives
-      container restarts and image rebuilds. `assistant` mounts it read-write;
-      `tts` mounts the same volume read-only at `/voices` for voice states. It
-      holds settings overrides and unencrypted secrets (API keys, tokens) in a
-      file mode 0600; treat a backup like the secrets it contains.
-      `docker compose down -v` deletes it: back it up first if the settings,
-      sounds, voices or secrets matter.
+      `sounds/` sound library (canonical WAVs uploaded or dropped there) and the
+      `voices/` custom voice states. It survives container restarts and image
+      rebuilds. `assistant` mounts it read-write; `tts` mounts the same volume
+      read-only at `/voices` for voice states. It holds settings overrides and
+      unencrypted secrets (API keys, tokens) in a file mode 0600; treat a backup
+      like the secrets it contains. `docker compose down -v` deletes it: back it
+      up first if the settings, sounds, voices or secrets matter.
 - [ ] Custom voices: copy pre-exported Pocket TTS `.safetensors` files into the
       volume's `voices/` folder (for the default compose file,
       `/var/lib/docker/volumes/clanka-bot_assistant-data/_data/voices` or through

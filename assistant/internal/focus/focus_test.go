@@ -238,3 +238,21 @@ func upper(text string) string {
 	}
 	return string(out)
 }
+
+func TestHeldReportsTheClaimedPriorityOnly(t *testing.T) {
+	registry := focus.New()
+	if registry.Held(focus.Ring) || registry.Held(focus.Reply) || registry.Held(focus.Music) {
+		t.Fatal("an empty registry reports a holder")
+	}
+	claim := registry.Claim(focus.Reply, &fakeHolder{name: "reply"})
+	if registry.Held(focus.Ring) {
+		t.Fatal("Ring held while only a reply is claimed")
+	}
+	if !registry.Held(focus.Reply) {
+		t.Fatal("Reply is not held after Claim")
+	}
+	claim.Release()
+	if registry.Held(focus.Reply) {
+		t.Fatal("Reply still held after Release")
+	}
+}

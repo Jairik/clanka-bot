@@ -157,7 +157,7 @@ unchanged. The raw `ROUTING_EVAL_*` lines are in
 for the pre-#44/#51 run.
 
 #63 added the four voice Tools and 80 positive voice utterances. The final run
-on the merged corpus is 164/266 (recall 0.6165) with precision 1.00, 0 of 63
+on the merged corpus is 165/266 (recall 0.6203) with precision 1.00, 0 of 63
 plain negatives and 0 of 10 compounds misrouted. `voice.set` resolves every
 positive; `voice.list`/`voice.current` are conservative because their
 paraphrases are close to each other, so their common exact phrasings are also

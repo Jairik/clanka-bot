@@ -145,6 +145,12 @@ positives:
     # in the corpus; recall is not gated.
     - Set a timer for ten minutes.
     - Set a timer for ten seconds.
+    # Labelled timers: the name is part of the request and is extracted, not
+    # matched semantically, but the phrasing still belongs to timer.set.
+    - set a pasta timer for 10 minutes
+    - start a tea timer for five minutes
+    - set a timer for 10 minutes called pasta
+    - set a timer called tea for five minutes
   timer.cancel:
     - cancel the timer
     - cancel my timer
@@ -158,7 +164,7 @@ positives:
     - cancel that timer
     - please cancel the timer
     - stop my timer
-    - cancel the alarm
+    - cancel my kitchen timer
     - cancel the current timer
     - turn off the timer
     - end the timer
@@ -167,41 +173,741 @@ positives:
     - stop that timer
     - I want to cancel the timer
   timer.list:
-    - how long is left on my timer
-    - how much time is left
+    # Enumerating the active timers. "How long is left" belongs to
+    # timer.remaining now that it exists.
     - what timers do I have
     - list my timers
+    - show me my timers
+    - what timers are running
+    - how many timers are running
+    - do I have any timers
+    - what timers are active
+    - show all my timers
+    - what timers have I got
+    - list all timers
+    - are any timers running
+    - what's on my timer list
+    - which timers are set
+    - give me my timers
+    - tell me my timers
+    - what are my timers
+    - how many timers do I have
+    - are there any active timers
+    - show me all of the timers
+    - which timers are running
+  timer.remaining:
+    # The remaining-time lookup, with and without an explicit label.
+    - how long is left on my timer
+    - how much time is left
     - how much time is left on the timer
     - how long until the timer goes off
     - when does my timer finish
     - what's the time remaining
-    - do I have any timers
-    - how many timers are running
     - check the timer
     - what's left on the timer
     - how long does the timer have left
-    - show me my timers
     - is my timer still running
     - how long is the timer
     - time left on the timer
-    - what timers are active
     - how much longer on the timer
     - tell me the timer status
+    - how long is left on the pasta timer
+    - how much time is left on the pasta timer
+    - time remaining on the tea timer
+    - when is the egg timer done
+    - how long until the pasta timer goes off
+    - how long does the tea timer have left
+  reminder.set:
+    # A message is required: "remind me in ten minutes" alone stays a timer
+    # request, while these all name what to say.
+    - remind me in 20 minutes to check the oven
+    - remind me at 5 pm to call mum
+    - remind me to take the bins out in ten minutes
+    - set a reminder for 30 minutes to stretch
+    - remind me at 7:30 to leave for work
+    - remind me tomorrow at 9 am to call the dentist
+    - can you remind me to water the plants at 6 pm
+    - remind me in an hour to switch the laundry
+    - remind me to check the oven in 20 minutes
+    - set a reminder for 10 minutes to check the pasta
+    - remind me at 6:30 to feed the cat
+    - remind me tomorrow at 7 am to take my pills
+    - remind me in 45 minutes to take the cake out
+    - remind me at noon to eat lunch
+    - remind me at midnight to put the bins out
+    - set a reminder for two hours to call the plumber
+    - remind me in 90 seconds to check the rice
+    - remind me at 8 pm to call my sister
+    - i need a reminder to leave for the station at 4:30
+    - remind me at 10 am to send the invoice
+    - remind me in 15 minutes that the oven is on
+    - set a reminder for tomorrow at 6 am to go for a run
+    - remind me to phone the vet at 3 pm
+    - please remind me in five minutes to check the soup
+  reminder.list:
+    # Enumerating the reminders. "When is my reminder" has no remaining Tool,
+    # so the corpus uses true list phrasings.
+    - what reminders do I have
+    - list my reminders
+    - show me my reminders
+    - what reminders are set
+    - do I have any reminders
+    - which reminders do I have
+    - tell me my reminders
+    - what's on my reminder list
+    - list all reminders
+    - are any reminders set
+    - how many reminders do I have
+    - show all my reminders
+    - what reminders are active
+    - give me my reminders
+    - what reminders have I got
+    - which reminders are active
+    - are there any reminders
+    - show me all of the reminders
+    - what reminders are on my list
+    - read out my reminders
+    - do I have any reminders set
+    - what are my reminders
+  reminder.cancel:
+    - cancel the reminder
+    - cancel my reminder
+    - cancel the oven reminder
+    - delete my reminder
+    - remove the reminder
+    - cancel the reminder to call mum
+    - forget the reminder about the dentist
+    - cancel all reminders
+    - cancel the reminder for the oven
+    - get rid of the reminder
+    - clear my reminders
+    - cancel the dentist reminder
+    - delete the reminder about the bins
+    - remove all reminders
+    - cancel that reminder
+    - cancel the reminder to take my pills
+    - delete every reminder
+    - forget my reminder
+    - cancel the laundry reminder
+    - clear all reminders
+    - stop the oven reminder
+    - cancel the reminder about the invoice
+  alarm.set:
+    # Clock-time Alarms, one-off and repeating. The noun and the wake phrasing
+    # keep these apart from the duration Timers.
+    - wake me at 7
+    - wake me up at 7
+    - wake me at 6:30
+    - set an alarm for 7 am
+    - set an alarm for 7am
+    - set an alarm for 6:30
+    - set an alarm for 6:30 on weekdays
+    - set an alarm for 8 on weekends
+    - set an alarm for 7 every day
+    - set an alarm for 6:45 on monday
+    - set an alarm for 7 on tuesdays and thursdays
+    - wake me at 7 tomorrow
+    - set an alarm for 5:30 in the morning
+    - set my alarm for 9
+    - can you wake me at 7
+    - set an alarm for 6:30 am on weekdays
+    - set an alarm for 8:15 on weekends
+    - wake me up at 7:30 tomorrow
+    - set a work alarm for 7:30
+    - set an alarm for noon
+    - set an alarm for midnight
+    - please set an alarm for 6:30
+    # Per-Alarm sound phrasings: "with the X sound" is still a create request.
+    - wake me at 7 with the birds sound
+    - wake me up at 6:30 with the birds sound
+    - set an alarm for 7 with the birds sound
+    - set an alarm for 7 am with the birds sound
+    - set an alarm for 6:30 on weekdays with the birds sound
+    - set an alarm for 8 on weekends with the birds sound
+    - set a work alarm for 7:30 with the birds sound
+    - wake me at 7 with the chime sound
+  alarm.update:
+    # Changing an existing Alarm's per-alert overrides. "change"/"update"/
+    # "switch" and "my alarm sound/volume/ramp" keep these apart from a new
+    # alarm.
+    - change my 7 am alarm to the birds sound
+    - change my 7 am alarm to birds
+    - change my alarm sound to the birds sound
+    - change my alarm sound to birds
+    - change my alarm's sound to birds
+    - update my 7 am alarm to the birds sound
+    - update my alarm sound to birds
+    - switch my 7 am alarm to the birds sound
+    - switch my alarm to birds
+    - make my 7 am alarm use the birds sound
+    - make my alarm use birds
+    - use the birds sound for my 7 am alarm
+    - use the birds sound for my alarm
+    - set my alarm sound to birds
+    - set my alarm volume to 40
+    - change my alarm volume to 40
+    - update my alarm volume to 30
+    - change my alarm ramp to 10 seconds
+    - update my alarm ramp to 20 seconds
+    - change my 7 am alarm ramp to 5 seconds
+    - clear my alarm sound
+    - reset my alarm volume
+    - use the default sound for my alarm
+  alarm.list:
+    - what alarms do I have
+    - list my alarms
+    - show me my alarms
+    - what alarms are set
+    - do I have any alarms
+    - when is my next alarm
+    - what alarm is set
+    - tell me my alarms
+    - which alarms are set
+    - show all my alarms
+    - what alarms are active
+    - are there any alarms set
+    - give me my alarms
+    - how many alarms do I have
+    - when does my alarm go off
+    - what is my next alarm
+    - list all alarms
+    - check my alarms
+    - which alarm is next
+    - tell me the alarms I have
+    - what alarms will go off
+  alarm.cancel:
+    - cancel my 7 am alarm
+    - cancel the alarm
+    - cancel my alarm
+    - delete my alarm
+    - remove the 6:30 alarm
+    - cancel my work alarm
+    - cancel the 7 am alarm
+    - turn off my alarm
+    - get rid of my alarm
+    - clear my alarm
+    - cancel my 6:30 alarm
+    - delete the alarm
+    - remove my alarm
+    - cancel my alarm for 7
+    - cancel the alarm at 6:30
+    - cancel my wake up alarm
+    - turn off the 7 am alarm
+    - delete my 8 o'clock alarm
+    - cancel the alarm I set for 6:30
+    - cancel my 6:45 alarm
+  voice.set:
+    # Changing the persistent voice. The name is resolved by the shared name
+    # matcher, so the corpus uses library-style names rather than inventing a
+    # catalogue.
+    - use the jarvis voice
+    - switch to the alba voice
+    - change your voice to jarvis
+    - set your voice to the alba voice
+    - can you talk in the jarvis voice
+    - please use the alba voice
+    - I want the jarvis voice
+    - make your voice jarvis
+    - change to the alba voice
+    - switch your voice to jarvis
+    - use jarvis as your voice
+    - I'd like you to use the jarvis voice
+    - can you change your voice to alba
+    - set the voice to jarvis
+    - talk in the alba voice
+    - speak in the jarvis voice
+    - use the jarvis voice from now on
+    - change your speaking voice to jarvis
+    - I want you to sound like jarvis
+    - switch to jarvis
+  voice.list:
+    # Enumerating the voice library: built-ins plus copied states.
+    - what voices do you have
+    - list the voices
+    - which voices can you do
+    - what voices are installed
+    - tell me the voices in your library
+    - show me the available voices
+    - what voices are available
+    - list your voices
+    - which voices do you know
+    - what voice options do I have
+    - what voices can you speak in
+    - tell me what voices you have
+    - show me your voice library
+    - which voices are loaded
+    - what are my voice choices
+    - can you list the voices
+    - what voices are in the library
+    - name the voices you can use
+    - what voices do you support
+    - give me the list of voices
+  voice.current:
+    # Asking about the voice speaking right now, not the catalogue.
+    - which voice is this
+    - what voice are you using
+    - what's your current voice
+    - which voice am I hearing
+    - tell me what voice you're speaking in
+    - what voice is selected
+    - which voice is active
+    - what voice are you speaking with
+    - what voice do you have now
+    - tell me which voice this is
+    - what is your voice right now
+    - which voice are you set to
+    - what voice is speaking
+    - am I hearing alba
+    - what's the voice you're using
+    - which voice did I pick
+    - what voice are you on
+    - tell me the current voice
+    - which voice is this speaking
+    - what voice setting is active
+  voice.rate:
+    # Changing the speech-rate multiplier, not music or speaker volume.
+    - speak faster
+    - talk faster
+    - speak a little slower
+    - slow down your voice
+    - speed up
+    - go back to normal speed
+    - can you speak faster
+    - please slow down
+    - talk more slowly
+    - speed up your speech
+    - slow your speaking down
+    - speak at normal speed
+    - can you speak a bit faster
+    - I want you to talk slower
+    - increase your speaking speed
+    - make your voice faster
+    - speak more quickly
+    - slow down a little
+    - return to your normal speaking rate
+    - can you slow down your voice
+  quiet.set:
+    # The daily window: two clock times, including the common reversed
+    # "from 10:30 to 7" phrasing that means 10:30 pm to 7 am.
+    - set quiet hours from 10:30 to 7
+    - set quiet hours from 11 pm to 6 am
+    - set quiet hours from 9 at night to 6 in the morning
+    - set my quiet hours from 10 pm to 7 am
+    - quiet hours from 11:30 pm until 6:30 am
+    - quiet hours from 10 at night to 7 in the morning
+    - change quiet hours to 10 pm to 7 am
+    - make quiet hours from 10:30 to 7
+    - set the quiet window from 9 pm to 6 am
+    - quiet hours should run from 11 to 7
+    - configure quiet hours from 10 pm until 7 am
+    - start quiet hours at 10 pm and end at 7
+    - quiet hours every night from 10:30 to 7
+    - I want quiet hours from 11 pm to 7 am
+    - set quiet time from 10:30 pm to 7 am
+    - quiet hours begin at 10 and end at 6
+    - change my quiet hours to 11 pm to 6 am
+    - set nightly quiet hours from 10:30 to 7
+    - quiet hours from 9 in the evening to 6 in the morning
+    - quiet hours from 10:30 in the evening to 7 in the morning
+  quiet.off:
+    - turn off quiet hours
+    - disable quiet hours
+    - quiet hours off
+    - stop quiet hours
+    - turn quiet hours off
+    - cancel quiet hours
+    - end quiet hours
+    - quiet hours are over
+    - I don't want quiet hours anymore
+    - remove quiet hours
+    - switch off quiet hours
+    - quiet hours aren't needed
+    - get rid of quiet hours
+    - deactivate quiet hours
+    - turn off the quiet window
+    - no more quiet hours
+    - quiet hours should be disabled
+    - stop the quiet schedule
+    - turn off nightly quiet hours
+    - disable my quiet hours
+  quiet.dnd:
+    # A timed do-not-disturb period, distinct from the daily window.
+    - do not disturb for two hours
+    - do not disturb for 30 minutes
+    - turn on do not disturb for an hour
+    - mute everything for an hour
+    - dnd for 45 minutes
+    - be quiet for the next two hours
+    - do not disturb me for 90 minutes
+    - silence things for 20 minutes
+    - quiet down for the next hour
+    - hold everything for two hours
+    - set do not disturb for 15 minutes
+    - turn on dnd for two hours
+    - pause notifications for 10 minutes
+    - keep things quiet for 30 minutes
+    - I need quiet for the next two hours
+    - turn on do not disturb mode for 1 hour
+    - start do not disturb for 3 hours
+    - give me two hours of quiet
+    - mute the house for an hour
+    - do not disturb for 20 minutes
+  quiet.awake:
+    # Ending only the current window, not the schedule.
+    - I'm awake
+    - I am awake
+    - I'm up
+    - I am up now
+    - I'm awake now
+    - I'm already awake
+    - I'm up for the day
+    - I'm awake, you can talk normally
+    - I'm awake and up
+    - I'm awake, stop whispering
+    - stop whispering, I'm awake
+    - I'm awake, speak normally
+    - I'm awake, no need to whisper
+    - awake now
+    - I'm awake, normal volume please
+    - I'm awake, you can be loud again
+    - I'm awake, back to normal
+    - I'm up now, no more whispering
+    - I'm awake, end the quiet please
+    - I'm awake, quiet time is over
+  assistant.repeat:
+    # Repeat the last spoken reply, not the current utterance and not a
+    # schedule's repeat rule.
+    - say that again
+    - what did you say
+    - repeat that
+    - can you repeat that
+    - say it again
+    - what was that
+    - I missed that
+    - come again
+    - say that once more
+    - repeat what you just said
+    - could you say that again
+    - what did you just say
+    - say it one more time
+    - I didn't catch that
+    - repeat your last answer
+    - tell me that again
+    - I didn't hear what you said
+    - can you say that again please
+    - what were you saying
+    - run that by me again
+  assistant.help:
+    # Generated from the enabled registry; the wording asks for capabilities,
+    # not a specific Tool.
+    - what can you do
+    - what can you help with
+    - what are your capabilities
+    - what are you able to do
+    - list your tools
+    - what tools do you have
+    - help
+    - tell me what you can do
+    - what can you do for me
+    - what are you capable of
+    - show me your tools
+    - list what you can do
+    - what functions do you have
+    - what can I ask you
+    - what kind of things can you do
+    - what commands do you have
+    - tell me your abilities
+    - what services can you offer
+    - what are the things you can do
+    - give me a list of your tools
+  system.status:
+    # Health and availability questions about the Assistant itself, not the
+    # weather, an alarm or a phone.
+    - are you ok
+    - are you okay
+    - how are you
+    - how are you doing
+    - are you healthy
+    - is everything working
+    - is everything okay
+    - any problems
+    - system status
+    - status report
+    - check your health
+    - check the services
+    - are your services up
+    - is the system running
+    - how are things running
+    - are you still healthy
+    - is anything broken
+    - is the system healthy
+    - do you have any issues
+    - how's the system doing
+
+  notify.phone:
+    # "That" refers to the previous Assistant reply; the handler resolves it
+    # with provenance and refuses a Local-only result.
+    - send that to my phone
+    - send this to my phone
+    - send it to my phone
+    - send that to my phone please
+    - send that to my phone right now
+    - push that to my phone
+    - push this to my phone
+    - send me that on my phone
+    - send your answer to my phone
+    - send the last answer to my phone
+    - send your last reply to my phone
+    - send that answer to my phone
+    - send this answer to my phone
+    - put that on my phone
+    - copy that to my phone
+    - forward that to my phone
+    - text me that
+    - notify my phone
+    - ping my phone
+    - send me a notification
+    - notify my phone that I'm on my way
+    - send buy milk to my phone
+  time.in_city:
+    - what time is it in Tokyo
+    - what's the time in Tokyo
+    - what time is it in London
+    - what time is it in Paris
+    - what time is it in New York
+    - what time is it in Los Angeles
+    - what time is it in Berlin
+    - what time is it in Sydney
+    - what time is it in Tokyo Japan
+    - what's the current time in Chicago
+    - tell me the time in Rome
+    - what's the local time in Madrid
+    - time in Tokyo
+    - what time is it in Singapore
+    - what time is it in Mexico City
+    - what's the time in Toronto
+    - what time is it in São Paulo
+    - what time is it in Delhi
+    - current time in Dubai
+    - what time is it in Cape Town
+    - what time is it in Auckland
+  date.countdown:
+    - how many days until Christmas
+    - how many days till Christmas
+    - days until Christmas
+    - how many days until Halloween
+    - how many days till Halloween
+    - how many days until New Year
+    - how many days until New Year's Day
+    - how many days till New Year's Day
+    - countdown to Christmas
+    - countdown to New Year
+    - how many days before Valentine's Day
+    - how many days until Valentine's Day
+    - how many days are there until Christmas
+    - how many days left until Christmas
+    - how many days left till Christmas
+    - how many days until Xmas
+    - how many days until Christmas Day
+    - how many days to Christmas
+    - days till Halloween
+    - countdown to Valentine's Day
+    - how many days until valentines day
+    - days before Christmas
+  calc.evaluate:
+    - what is 15% of 80
+    - what is 20 percent of 150
+    - what's 17 times 24
+    - what is 2 plus 2
+    - calculate 12 plus 7
+    - how much is 100 divided by 4
+    - work out 8 times 9
+    - compute 3 plus 4 times 2
+    - what is 50 minus 18
+    - what's 5 times 12
+    - calculate 7 plus 8
+    - what is 100 minus 15%
+    - what's 25% of 200
+    - how much is 9 times 7
+    - what is 45 divided by 5
+    - calculate 6 plus 6
+    - what's 12 plus 30
+    - what is 3 x 4
+    - compute 10 minus 3
+    - work out 2 plus 3 times 4
+    - what is 99 plus 1
+    - what's 10 percent of 90
+  units.convert:
+    - convert 5 miles to km
+    - what is 5 miles in kilometers
+    - how many kilometers in 5 miles
+    - convert 100 fahrenheit to celsius
+    - how many minutes in a day
+    - convert 1 kilogram to pounds
+    - what is 30 celsius in fahrenheit
+    - convert 2 gallons to liters
+    - how many feet in a mile
+    - convert 10 kilometers to miles
+    - how many cups in a liter
+    - convert 1 pound to grams
+    - what is 72 fahrenheit in celsius
+    - convert 3 hours to minutes
+    - how many seconds in an hour
+    - convert 60 mph to kph
+    - what is 1 acre in square meters
+    - how many ounces in a pound
+    - convert 500 milliliters to cups
+    - how many inches in a foot
+    - convert 10 miles to kilometers
+    - what is 2 liters in gallons
+    - convert 5 feet to meters
+    - how many grams in a kilogram
+  random.flip:
+    - flip a coin
+    - toss a coin
+    - heads or tails
+    - flip a coin for me
+    - coin flip
+    - let's flip a coin
+    - can you flip a coin
+    - flip a coin please
+    - toss a coin for me
+    - flip the coin
+    - do a coin flip
+    - give me heads or tails
+    - heads or tails please
+    - flip a coin to decide
+    - toss a coin to decide
+    - quick coin flip
+    - flip it
+    - toss it
+    - coin toss
+    - give me a coin flip
+    - what's it going to be heads or tails
+  random.roll:
+    - roll a d20
+    - roll a die
+    - roll two dice
+    - roll 2d6
+    - roll a six sided die
+    - roll 3 dice
+    - roll a twenty sided die
+    - roll d20
+    - roll one die
+    - roll some dice
+    - roll a pair of dice
+    - roll 2 dice
+    - roll a d6
+    - roll a d100
+    - roll three six sided dice
+    - roll a ten sided die
+    - roll 4d6
+    - roll a twelve sided die
+    - roll two six sided dice
+    - roll a fair d20
+    - roll an eight sided die
+    - roll a handful of dice
+  random.pick:
+    - pick between pizza and tacos
+    - choose between tea and coffee
+    - pick from pizza, tacos or sushi
+    - "pick one: red or blue"
+    - randomly pick between the red one and the blue one
+    - help me choose between a cat and a dog
+    - pick pizza or tacos
+    - choose a movie or a book
+    - pick between the beach and the mountains
+    - choose between staying in and going out
+    - pick one of pasta or salad
+    - pick from walk or drive
+    - choose between the train and the bus
+    - pick between coffee and tea
+    - choose between italian and mexican food
+    - randomly choose between yes and no
+    - pick between London and Paris
+    - choose between the movie and the concert
+    - pick from chicken, fish or vegetables
+    - pick between hiking and swimming
+    - choose between this one and that one
+    - pick between the cat and the dog
+  persona.switch:
+    # Selecting a stored Persona, not changing a voice or listing the library.
+    - switch to the GLaDOS persona
+    - switch to GLaDOS persona
+    - use the GLaDOS persona
+    - activate the GLaDOS persona
+    - change to the GLaDOS persona
+    - become GLaDOS
+    - be GLaDOS
+    - adopt the GLaDOS persona
+    - put on the GLaDOS persona
+    - switch to the villain persona
+    - use the villain persona
+    - activate the butler persona
+    - change your persona to GLaDOS
+    - set your persona to GLaDOS
+    - can you switch to the GLaDOS persona
+    - please use the GLaDOS persona
+    - switch personas to GLaDOS
+    - I want the GLaDOS persona
+    - make yourself GLaDOS
+    - go into the GLaDOS persona
+  persona.list:
+    # Asking which Personas exist, not selecting one or naming the active one.
+    - what personas do you have
+    - list the personas
+    - show me the persona library
+    - which personas are installed
+    - what persona choices are there
+    - give me the full persona list
+    - enumerate the personas
+    - read out the persona catalogue
+    - what personas are available
+    - which personas can I choose
+    - list every persona
+    - show me all personas
+    - what personas are defined
+    - tell me the personas you know
+    - what's in the persona library
+    - list my personas
+    - show the available personas
+    - what personas are saved
+    - read me the persona names
+    - give me the list of personas
+  persona.current:
+    # Asking which Persona is active right now, not selecting or listing.
+    - which persona are you using
+    - what persona is active
+    - are you in character
+    - tell me your current persona
+    - which personality are you running
+    - is a persona selected
+    - what persona is selected right now
+    - do you have a persona active
+    - who are you right now in character
+    - does a persona define your voice
+    - which character are you
+    - are you playing a character
+    - what's your persona setting
+    - show me the active persona
+    - tell me which persona is loaded
+    - are you using a persona
+    - what personality is active
+    - is the GLaDOS persona active
+    - current persona please
+    - which persona am I talking to
 negatives:
   - what's the capital of France
   - who wrote hamlet
   - how do I make pancakes
   - explain quantum entanglement
   - tell me a joke
-  - what's 17 times 24
-  - convert 10 kilometers to miles
   - who won the world cup in 2018
   - summarize the news
   - will it rain next Tuesday
   - what's the stock price of Apple
   - write an email to my boss
   - play some jazz music
-  - set an alarm for 7am tomorrow
   - remind me to call mom at noon
   - turn on the lights
   - order a pizza
@@ -232,10 +938,143 @@ negatives:
   - what's the weather like on Mars
   - tell me a story
   - what's the time difference between here and Tokyo
-  - how many minutes in a day
   - what's the date of the next full moon
   - stop the car
   - cancel my subscription
+  # Timer-shaped but not Fast path requests: no duration, no timer, or a
+  # question about cooking rather than a running Timer.
+  - set a timer
+  - timer for the pasta
+  - how long is left on the oven
+  - what's the timer setting
+  # Alarm-shaped but not a new Alarm: a sound preview, a volume change for a
+  # later per-Alarm override, or a phone alarm the assistant does not own.
+  - play the alarm sound
+  - turn up the alarm volume
+  - what's the alarm on my phone
+  - set a timer for 7 minutes
+  - wake up the house
+  # Override-shaped but not a supported change: a sound preview, a time-only
+  # change, a label change, a phone alarm, or a non-alarm playlist.
+  - play the birds sound
+  - what sound does my alarm make
+  - change my alarm tone
+  - change my 7 am alarm to 8 am
+  - change my alarm label to work
+  - delete the birds sound
+  - cancel my alarm sound
+  - change my 7 am alarm
+  - set the alarm volume on my phone
+  - change my playlist to birds
+  # Voice-shaped but not a library or rate request: playback, volume, privacy,
+  # or a different voice service.
+  - play the jarvis song
+  - turn up the volume
+  - speak up
+  - talk to the agent
+  - what voices does Spotify have
+  - who is jarvis
+  - use the kitchen lights
+  - slow down the music
+  - change the voice memo settings on my phone
+  - speak after the tone
+  - make the music louder
+  - what are my quiet hours
+  - why is my phone on do not disturb
+  - do not disturb is enabled on my phone
+  - sleep mode on my phone
+  - I woke up at 7 this morning
+  - remind me to be quiet at 10
+  - play some quiet music
+  - turn down the volume
+  - good night
+  - how many hours until morning
+  - set quiet hours
+  # Notification-shaped but not a send request: device settings, questions,
+  # another transport, or another recipient.
+  - what's my phone number
+  - where is my phone
+  - call my phone
+  - text my mom
+  - send an email
+  - notify the team
+  - turn on notifications
+  - put my phone on silent
+  - read my notifications
+  - send that to my laptop
+  # Reminder-shaped but not a Fast path request: no message, no time, a
+  # statement, or another device's reminder store.
+  - remind me to buy milk
+  - remind me at 5
+  - set a reminder
+  - set a reminder for 10 minutes
+  - reminder that the meeting is at noon
+  - reminder app settings
+  - I set a reminder on my phone
+  - what reminders does my phone have
+  - how do I set a reminder on my phone
+  - remind me how to solve this equation
+  - my phone reminded me to call mum
+  # Utility-Tool shaped but not Fast path requests: unsupported arithmetic,
+  # an unknown unit or event, an open-ended choice, or a physical action.
+  - how many days until my birthday
+  - how many days until the weekend
+  - what day is Christmas this year
+  - convert my garage into a bedroom
+  - convert 5 miles to dollars
+  - what's the exchange rate from dollars to euros
+  - how many calories in an apple
+  - calculate the tip on a 60 dollar bill
+  - roll out the red carpet
+  - roll up the window
+  - roll the dough
+  - pick up the groceries
+  - pick a restaurant for dinner
+  - pick a number between 1 and 10
+  - pick a card
+  - choose a password
+  - select all
+  - flip the mattress
+  - flip the page
+  - toss the salad
+  - how many people live in Tokyo
+  - what's the weather in Tokyo
+  - what time is it in the movie
+  # Persona-shaped words that are not a library request: a game, a personality
+  # test, a character question, or a different device/Tool owner.
+  - persona 5 is a good game
+  - what characters are in persona 5
+  - what is my personality type
+  - take a personality test
+  - who is GLaDOS
+  - tell me about GLaDOS
+  - switch to Spotify
+  - change the music
+  - activate the kitchen lights
+  - use the force
+  - switch to the news
+  # Repeat and self-description shaped, but a request for another action or
+  # another kind of repeat.
+  - repeat the alarm tomorrow
+  - set the alarm to repeat every day
+  - repeat the song
+  - repeat after me
+  - say hello to my mother
+  - tell me a joke
+  - what did I say earlier
+  - help me set a timer
+  - I need help with my alarm
+  - what tools does the alarm use
+  - how are the roads
+  - what's the status of my timer
+  - is my alarm set
+  - is everything on my shopping list
+  - check the weather
+  - are you awake
+  - are you there
+  - are you sure
+  - what can you do about my alarm
+
 # Compound requests ask for more than one thing. They are kept separate so
 # the evaluation can report compound handling on its own.
 compounds:
@@ -247,3 +1086,73 @@ compounds:
   - tell me the time then play some music
   - set a timer for 5 minutes and remind me to check the oven
   - stop talking and tell me the time
+  - set an alarm for 7 and a timer for 10 minutes
+  - cancel my alarm and set a new one for 7
+  - what time is my alarm and what's the weather
+  - set an alarm for 7 and turn the volume down
+  - wake me at 7 with the birds sound and turn the volume down
+  - change my alarm sound and set another alarm for 8
+  - change your voice to jarvis and speak faster
+  - tell me what voice you use and what time it is
+  - set quiet hours from 10 to 7 and set a timer for five minutes
+  - do not disturb for two hours and set a timer for five minutes
+  - what can you do and send that to my phone
+  - what can you do and set a timer
+  - are you ok and what time is it
+  - send that to my phone and set a timer for five minutes
+# Focus cases: the same shared word must reach whatever holds Focus. Each case
+# names the holders present, the phrase's intent, and which holder wins. An
+# empty handled_by means no present holder declares the intent, so the utterance
+# must fall through to the semantic Fast path (or the Agent path when nothing
+# matches). Holder capabilities mirror the production declarations: a ringing
+# alert handles stop and cancel, the current reply handles stop, and music
+# handles the transport controls.
+  - what time is it in Tokyo and flip a coin
+  - how many days until Christmas and what's the date
+  - calculate 15% of 80 and convert 5 miles to km
+  - roll a d20 and pick between pizza and tacos
+  - flip a coin then roll a d20
+  - convert 5 miles to km also tell me the weather
+  - what's the time in London and set a timer for five minutes
+  - pick between pizza and tacos and set a timer for five minutes
+focus:
+  - utterance: stop
+    holders: [ring, reply, music]
+    intent: stop
+    handled_by: ring
+  - utterance: stop
+    holders: [reply, music]
+    intent: stop
+    handled_by: reply
+  - utterance: stop
+    holders: [music]
+    intent: stop
+    handled_by: music
+  - utterance: stop
+    holders: []
+    intent: stop
+    handled_by: ""
+  - utterance: pause
+    holders: [reply, music]
+    intent: pause
+    handled_by: music
+  - utterance: pause
+    holders: []
+    intent: pause
+    handled_by: ""
+  - utterance: cancel
+    holders: [ring, reply]
+    intent: cancel
+    handled_by: ring
+  - utterance: cancel
+    holders: []
+    intent: cancel
+    handled_by: ""
+  - utterance: snooze
+    holders: [ring]
+    intent: snooze
+    handled_by: ring
+  - utterance: snooze
+    holders: []
+    intent: snooze
+    handled_by: ""

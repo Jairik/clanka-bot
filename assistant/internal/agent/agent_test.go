@@ -8,12 +8,16 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/agent"
+	"github.com/Jairik/clanka-bot/assistant/internal/secrets"
+	"github.com/Jairik/clanka-bot/assistant/internal/settings"
+	"github.com/Jairik/clanka-bot/assistant/internal/store"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/tools/clock"
 )
@@ -258,6 +262,99 @@ func TestRequestCarriesPrivacyAndProviderFields(t *testing.T) {
 	}
 	if provider["sort"] != "latency" {
 		t.Errorf("provider.sort = %v, want latency", provider["sort"])
+	}
+}
+
+func TestModelFuncAppliesToTheNextRequest(t *testing.T) {
+	fake := newFakeProvider(t, textReply("one"), textReply("two"))
+	server := fake.start()
+	settings := testSettings(server.URL)
+	// The resolver stands in for the live settings service: reading it before
+	// every request is what makes a Dashboard edit apply without a restart.
+	var mu sync.Mutex
+	model := "openrouter/one"
+	settings.ModelFunc = func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return model
+	}
+	a := newTestAgent(t, settings, nil, nil)
+
+	if result := a.Run(context.Background(), tool.Request{ID: "req-model-1"}, "first", nil); result.Text != "one" {
+		t.Fatalf("first reply = %q, want one", result.Text)
+	}
+	mu.Lock()
+	model = "openrouter/two"
+	mu.Unlock()
+	if result := a.Run(context.Background(), tool.Request{ID: "req-model-2"}, "second", nil); result.Text != "two" {
+		t.Fatalf("second reply = %q, want two", result.Text)
+	}
+
+	if got := fake.request(t, 0).Body["model"]; got != "openrouter/one" {
+		t.Errorf("first request model = %v, want openrouter/one", got)
+	}
+	if got := fake.request(t, 1).Body["model"]; got != "openrouter/two" {
+		t.Errorf("second request model = %v, want openrouter/two", got)
+	}
+}
+
+func TestModelSettingOverrideAppliesToTheNextRequest(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "model-live.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer st.Close()
+	svc, err := settings.New(ctx, st, agent.ModelDefinition("first/model", "first/model"))
+	if err != nil {
+		t.Fatalf("settings.New: %v", err)
+	}
+
+	fake := newFakeProvider(t, textReply("one"), textReply("two"))
+	candidate := testSettings(fake.start().URL)
+	candidate.Model = "first/model"
+	// This is the same resolver main installs: the setting is read before the
+	// next provider request, not frozen when the Agent path is built.
+	candidate.ModelFunc = func() string { return svc.String(agent.ModelKey) }
+	a := newTestAgent(t, candidate, nil, nil)
+
+	a.Run(ctx, tool.Request{ID: "req-live-1"}, "first", nil)
+	if _, err := svc.Set(ctx, agent.ModelKey, "second/model"); err != nil {
+		t.Fatalf("set model: %v", err)
+	}
+	a.Run(ctx, tool.Request{ID: "req-live-2"}, "second", nil)
+
+	if got := fake.request(t, 0).Body["model"]; got != "first/model" {
+		t.Errorf("first request model = %v", got)
+	}
+	if got := fake.request(t, 1).Body["model"]; got != "second/model" {
+		t.Errorf("second request model = %v, want the stored override", got)
+	}
+}
+
+func TestModelDefinitionCarriesTheConfigLayerAndRejectsBlank(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "model.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer st.Close()
+	svc, err := settings.New(ctx, st, agent.ModelDefinition("code/model", "config/model"))
+	if err != nil {
+		t.Fatalf("settings.New: %v", err)
+	}
+	value, ok := svc.Get(agent.ModelKey)
+	if !ok {
+		t.Fatalf("%s is not defined", agent.ModelKey)
+	}
+	if value.Value != "config/model" || value.Source != settings.SourceConfig {
+		t.Errorf("effective model = %v from %q, want config/model from config", value.Value, value.Source)
+	}
+	if value.Kind != settings.Live {
+		t.Errorf("kind = %q, want live", value.Kind)
+	}
+	if _, err := svc.SetJSON(ctx, agent.ModelKey, json.RawMessage(`"   "`)); err == nil {
+		t.Fatal("a blank model override was accepted")
 	}
 }
 
@@ -702,5 +799,118 @@ func TestConfirmProposalRunsSiblingCalls(t *testing.T) {
 	}
 	if fake.requestCount() != 1 {
 		t.Fatalf("provider calls = %d, want the turn to stop after the confirm", fake.requestCount())
+	}
+}
+
+func TestUnavailableMessageFuncAppliesToTheNextFailure(t *testing.T) {
+	fake := newFakeProvider(t, textReply("unused"))
+	fake.status = 500
+	settings := testSettings(fake.start().URL)
+	current := "First unavailable message."
+	settings.UnavailableMessageFunc = func() string { return current }
+	a := newTestAgent(t, settings, nil, nil)
+
+	result := a.Run(context.Background(), tool.Request{ID: "req-live-1"}, "hello", nil)
+	if result.Text != "First unavailable message." {
+		t.Fatalf("first failure = %q", result.Text)
+	}
+	if !result.Unavailable {
+		t.Error("first result.Unavailable = false")
+	}
+
+	current = "Second unavailable message."
+	result = a.Run(context.Background(), tool.Request{ID: "req-live-2"}, "hello", nil)
+	if result.Text != "Second unavailable message." {
+		t.Fatalf("second failure = %q, want the changed wording", result.Text)
+	}
+
+	// An empty resolver result falls back to the required static value rather
+	// than speaking nothing.
+	current = " "
+	result = a.Run(context.Background(), tool.Request{ID: "req-live-3"}, "hello", nil)
+	if result.Text != settings.UnavailableMessage {
+		t.Fatalf("empty resolver result = %q, want the static fallback", result.Text)
+	}
+}
+
+// openSecretService gives the Agent path the same real store-backed resolver
+// production uses, so key precedence is exercised at the provider boundary.
+func openSecretService(t *testing.T, names ...string) *secrets.Service {
+	t.Helper()
+	st, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "data", "assistant.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Errorf("store.Close: %v", err)
+		}
+	})
+	svc, err := secrets.New(context.Background(), st.DB(), names)
+	if err != nil {
+		t.Fatalf("secrets.New: %v", err)
+	}
+	return svc
+}
+
+func TestAgentKeyIsResolvedPerRequestAndAStoredValueTakesOverWithoutRestart(t *testing.T) {
+	const keyName = "AGENT_TEST_SECRET_KEY"
+	t.Setenv(keyName, "env-key-123456")
+	svc := openSecretService(t, keyName)
+	fake := newFakeProvider(t, textReply("First."), textReply("Second."))
+	settings := testSettings(fake.start().URL)
+	settings.APIKeyEnv = keyName
+	settings.APIKey = func() string {
+		value, _ := svc.Get(keyName)
+		return value
+	}
+	a, err := agent.New(settings, newRegistry(t), nil)
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+
+	if result := a.Run(context.Background(), tool.Request{ID: "req-env"}, "hello", nil); result.Text != "First." {
+		t.Fatalf("first reply = %q, want First.", result.Text)
+	}
+	if got := fake.request(t, 0).Header.Get("Authorization"); got != "Bearer env-key-123456" {
+		t.Fatalf("first Authorization = %q, want the environment key", got)
+	}
+
+	if _, err := svc.Set(context.Background(), keyName, "stored-key-abcdef"); err != nil {
+		t.Fatalf("secrets.Set: %v", err)
+	}
+	if result := a.Run(context.Background(), tool.Request{ID: "req-store"}, "hello again", nil); result.Text != "Second." {
+		t.Fatalf("second reply = %q, want Second.", result.Text)
+	}
+	if got := fake.request(t, 1).Header.Get("Authorization"); got != "Bearer stored-key-abcdef" {
+		t.Fatalf("second Authorization = %q, want the stored key without a restart", got)
+	}
+}
+
+func TestAgentStartsWithNoKeyAndUsesAStoredKeyStoredAfterStartup(t *testing.T) {
+	const keyName = "AGENT_TEST_STORE_ONLY_KEY"
+	t.Setenv(keyName, "")
+	svc := openSecretService(t, keyName)
+	fake := newFakeProvider(t, textReply("Stored."))
+	settings := testSettings(fake.start().URL)
+	settings.APIKeyEnv = keyName
+	settings.APIKey = func() string {
+		value, _ := svc.Get(keyName)
+		return value
+	}
+	// Startup sees no key at all: this must stay constructible, not disable
+	// the provider for the life of the process.
+	a, err := agent.New(settings, newRegistry(t), nil)
+	if err != nil {
+		t.Fatalf("agent.New without a key: %v", err)
+	}
+	if _, err := svc.Set(context.Background(), keyName, "store-only-key-abcdef"); err != nil {
+		t.Fatalf("secrets.Set: %v", err)
+	}
+	if result := a.Run(context.Background(), tool.Request{ID: "req-store-alone"}, "hello", nil); result.Text != "Stored." {
+		t.Fatalf("reply = %q, want Stored.", result.Text)
+	}
+	if got := fake.request(t, 0).Header.Get("Authorization"); got != "Bearer store-only-key-abcdef" {
+		t.Fatalf("Authorization = %q, want the stored key with no environment value", got)
 	}
 }

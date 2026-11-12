@@ -1,0 +1,137 @@
+{{define "sounds_page"}}{{template "page_head" .}}{{template "sounds_content" .}}{{template "page_foot" .}}{{end}}
+
+{{define "sounds_content"}}
+<div id="sounds-content">
+  {{if .Flash}}<p class="notice notice-success" role="status">{{.Flash}}</p>{{end}}
+  {{if .Error}}<p class="notice notice-error" role="alert">{{.Error}}</p>{{end}}
+
+  <div class="page-head">
+    <p class="eyebrow">Dashboard</p>
+    <h1>Sounds</h1>
+    <p class="lede">Upload a WAV or MP3 once; the assistant stores a mono canonical WAV and lists it here. Assign a sound to a Cue role, or edit the per-kind Ring behaviour. Length caps apply when a role is assigned, never by trimming the file.</p>
+  </div>
+
+  {{if not .HasLibrary}}
+  <section class="panel">
+    <h2>The sound library is not configured</h2>
+    <p class="muted">This Dashboard was built without the sound service, so there is nothing to edit.</p>
+  </section>
+  {{else}}
+
+  <section class="panel" aria-labelledby="upload-heading">
+    <div class="panel-head">
+      <div>
+        <h2 id="upload-heading">Upload a sound</h2>
+        <p class="muted">WAV or MP3 up to {{.MaxUpload}}. The file is decoded in Go, downmixed, resampled to the speaker format and loudness-normalised. Undecodable files are rejected without leaving a partial file.</p>
+      </div>
+    </div>
+    <form class="inline-form" method="post" action="/sounds/upload" enctype="multipart/form-data"
+          hx-post="/sounds/upload" hx-encoding="multipart/form-data" hx-target="#sounds-content" hx-swap="outerHTML">
+      <label for="sound-upload">Sound file</label>
+      <input id="sound-upload" type="file" name="file" accept=".wav,.mp3,audio/wav,audio/mpeg" required>
+      <div class="actions"><button class="button" type="submit">Upload sound</button></div>
+    </form>
+  </section>
+
+  <section class="panel" aria-labelledby="library-heading">
+    <div class="panel-head">
+      <div>
+        <h2 id="library-heading">Library</h2>
+        <p class="muted">Browser preview plays the canonical audio here. Play on Pi queues the same sound on the speaker; it waits for the current reply and any pending Confirmation, and a new turn cancels it.</p>
+      </div>
+    </div>
+    {{if .Sounds}}
+    <div class="table-wrap">
+      <table class="library">
+        <caption class="muted">Sound library, newest index information first by name.</caption>
+        <thead>
+          <tr><th scope="col">Name</th><th scope="col">Duration</th><th scope="col">Origin</th><th scope="col">Added</th><th scope="col">Browser preview</th><th scope="col">Pi preview</th></tr>
+        </thead>
+        <tbody>
+          {{range .Sounds}}
+          <tr>
+            <th scope="row">{{.Name}}</th>
+            <td>{{.Duration}}</td>
+            <td>{{.Origin}}</td>
+            <td>{{.Added}}</td>
+            <td><audio controls preload="none" src="{{.AudioURL}}" aria-label="Browser preview of {{.Name}}"></audio></td>
+            <td>
+              <form class="inline-form" method="post" action="/sounds/preview/{{.Name}}"
+                    hx-post="/sounds/preview/{{.Name}}" hx-target="#sounds-content" hx-swap="outerHTML">
+                <button class="button button-quiet" type="submit">Play on Pi</button>
+              </form>
+            </td>
+          </tr>
+          {{end}}
+        </tbody>
+      </table>
+    </div>
+    {{else}}
+    <p class="muted">No sounds are indexed yet.</p>
+    {{end}}
+  </section>
+
+  <section class="panel" aria-labelledby="roles-heading">
+    <div class="panel-head">
+      <div>
+        <h2 id="roles-heading">Cue roles</h2>
+        <p class="muted">Each role is one live setting. Saving writes an override; Reset removes it and config.yaml or the code default applies again. A sound longer than the role cap is rejected with the cap in the error.</p>
+      </div>
+    </div>
+    {{if .HasRoles}}
+    {{range .Roles}}
+    <article class="setting" id="role-{{.Role}}">
+      <div class="setting-head">
+        <h3>{{.Label}}</h3>
+        <p class="key"><code>{{.Key}}</code></p>
+      </div>
+      <p class="setting-meta">
+        <span class="muted">Effective:</span> <span class="effective">{{.Display}}</span>
+        <span class="muted">Source:</span> <span class="pill pill-source-{{.Source}}">{{.SourceLabel}}</span>
+        <span class="pill">Max {{.Cap}}</span>
+      </p>
+      <form class="inline-form" method="post" action="/sounds/roles/{{.Role}}"
+            hx-post="/sounds/roles/{{.Role}}" hx-target="#sounds-content" hx-swap="outerHTML">
+        <label for="role-value-{{.Role}}">{{.Label}} sound</label>
+        <select id="role-value-{{.Role}}" name="value">
+          {{range .Options}}<option value="{{.Value}}" {{if .Selected}}selected{{end}}>{{.Label}}</option>{{end}}
+        </select>
+        <div class="actions"><button class="button" type="submit">Save assignment</button></div>
+      </form>
+      {{if .Override}}
+      <form class="inline-form" method="post" action="/sounds/roles/{{.Role}}/reset"
+            hx-post="/sounds/roles/{{.Role}}/reset" hx-target="#sounds-content" hx-swap="outerHTML">
+        <button class="button button-quiet" type="submit">Reset to {{.LowerLabel}}</button>
+      </form>
+      {{else}}
+      <p class="muted">No override; showing the {{.SourceLabel}} assignment.</p>
+      {{end}}
+    </article>
+    {{end}}
+    {{else}}
+    <p class="muted">No Cue role settings are defined.</p>
+    {{end}}
+  </section>
+
+  <section class="panel" aria-labelledby="ring-heading">
+    <div class="panel-head">
+      <div>
+        <h2 id="ring-heading">Ring settings by kind</h2>
+        <p class="muted">Timer and Alarm Rings share one set of keys per kind. These forms are discovered from the settings service, so a future kind or field appears here automatically; edits and resets use the same stored overrides as the Settings page.</p>
+      </div>
+    </div>
+    {{if .HasRing}}
+    {{range .RingKinds}}
+    <article class="setting" id="ring-kind-{{.Kind}}">
+      <div class="setting-head"><h3>{{.Label}}</h3></div>
+      {{range .Settings}}{{template "setting_form" .}}{{end}}
+    </article>
+    {{end}}
+    {{else}}
+    <p class="muted">No per-kind Ring settings are defined yet. The Timer and Alarm modules add them to the settings service; this page renders whatever they define.</p>
+    {{end}}
+  </section>
+
+  {{end}}
+</div>
+{{end}}

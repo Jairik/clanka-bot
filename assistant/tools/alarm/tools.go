@@ -230,7 +230,7 @@ func extractUpdate(text string) (UpdateIn, bool) {
 	if hour, minute, ok := parse.Clock(stripOverridePhrases(text)); ok {
 		in.Time = fmt.Sprintf("%02d:%02d", hour, minute)
 	}
-	in.Label = labelForAlarm(text)
+	in.Label = labelForAlarm(stripOverridePhrases(text))
 	return in, true
 }
 

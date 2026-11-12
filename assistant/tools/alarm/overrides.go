@@ -197,6 +197,9 @@ func stripOverridePhrases(text string) string {
 	out = soundWith.ReplaceAllString(out, " ")
 	out = soundTo.ReplaceAllString(out, " ")
 	out = soundFor.ReplaceAllString(out, " ")
+	out = soundReset.ReplaceAllString(out, " ")
+	out = volumeReset.ReplaceAllString(out, " ")
+	out = rampReset.ReplaceAllString(out, " ")
 	return out
 }
 

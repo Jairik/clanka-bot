@@ -290,6 +290,39 @@ func TestUpdateExtractsSelectorsAndOverrides(t *testing.T) {
 	}
 }
 
+// TestUpdateResetPhrasesDoNotInventALabel proves a reset phrase targets the
+// one Alarm instead of reading its filler words as a spoken label.
+func TestUpdateResetPhrasesDoNotInventALabel(t *testing.T) {
+	fixture := newOverrideFixture(t)
+	clock := &fixedClock{now: time.Date(2026, 11, 12, 6, 0, 0, 0, time.UTC)}
+	manager := newOverrideManager(t, clock, fixture, nil)
+	reg := tool.NewRegistry(5 * time.Second)
+	if err := alarm.Register(reg, manager); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	extract := func(utterance string) alarm.UpdateIn {
+		t.Helper()
+		args, ok := reg.Extract(alarm.UpdateName, utterance)
+		if !ok {
+			t.Fatalf("Extract(%q) failed", utterance)
+		}
+		var in alarm.UpdateIn
+		if err := json.Unmarshal(args, &in); err != nil {
+			t.Fatalf("decode %q: %v", utterance, err)
+		}
+		return in
+	}
+	for _, utterance := range []string{
+		"use the default sound for my alarm",
+		"reset my alarm volume",
+		"clear my alarm sound",
+	} {
+		if in := extract(utterance); in.Label != "" || in.Time != "" {
+			t.Fatalf("%q extracted a selector: %+v", utterance, in)
+		}
+	}
+}
+
 // TestUpdateSelectorsAmbiguityAndPreservation proves an ambiguous selector
 // writes nothing and a single selector updates only that Alarm.
 func TestUpdateSelectorsAmbiguityAndPreservation(t *testing.T) {

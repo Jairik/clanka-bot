@@ -420,8 +420,9 @@ playing on the Pi. Focus order is ringing alert, then reply, then music
 **#73 steps** (the section 4 sign-in already grants the playlist and library
 scopes; no second Connect is needed):
 
-8. Restart the assistant and check the log shows the playlist cache loaded:
-   `docker compose logs --tail=100 assistant | grep -i playlist`.
+8. Restart the assistant and check the playlist refresh did not fail. This
+   must print nothing (a failure logs `spotify playlist refresh failed`):
+   `docker compose logs --tail=200 assistant | grep 'playlist refresh failed'`.
 9. Say "play my <name> playlist on shuffle" with one of your playlist names.
    It must start that playlist with shuffle on. Try a close-but-not-exact name
    too, and note whether it matched or asked.
@@ -442,7 +443,7 @@ scopes; no second Connect is needed):
 | 5 ducking and restore | | |
 | 6 max_volume enforced | | |
 | 7 make test and routing-eval | | |
-| 8 playlist cache loaded | | |
+| 8 no playlist refresh failure | | |
 | 9 playlist on shuffle | | |
 | 10 previous/shuffle/repeat/queue/like | | |
 | 11 new playlist after restart | | |

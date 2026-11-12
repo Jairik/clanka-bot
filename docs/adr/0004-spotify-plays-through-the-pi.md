@@ -11,3 +11,12 @@ Music plays through a librespot (Spotify Connect) service on the Pi, whose outpu
 
 - One more always-on container (librespot) in the Pi's RAM budget.
 - Requires Spotify Premium for both librespot and Web API playback control (confirmed).
+
+## Implementation note
+
+The `librespot` Compose service uses host networking and a container-local
+Avahi responder restricted to the default-route LAN interface. Docker's bridge
+network hides mDNS multicast, so a bridge-only container would never appear in
+Spotify's device list; running Avahi in the container also avoids a host D-Bus
+mount or a host Avahi dependency. Only the metadata-only status volume is
+shared with the Assistant; the credentials cache is not.

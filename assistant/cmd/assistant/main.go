@@ -43,6 +43,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/settingsapi"
 	"github.com/Jairik/clanka-bot/assistant/internal/sound"
 	"github.com/Jairik/clanka-bot/assistant/internal/speech"
+	"github.com/Jairik/clanka-bot/assistant/internal/spotify"
 	"github.com/Jairik/clanka-bot/assistant/internal/status"
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
@@ -56,6 +57,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/tools"
 	"github.com/Jairik/clanka-bot/assistant/tools/alarm"
 	personatools "github.com/Jairik/clanka-bot/assistant/tools/persona"
+	spotifytools "github.com/Jairik/clanka-bot/assistant/tools/spotify"
 	"github.com/Jairik/clanka-bot/assistant/tools/timer"
 )
 
@@ -232,6 +234,14 @@ func run() error {
 	secretsSvc, err := secrets.New(ctx, st.DB(), secretNames)
 	if err != nil {
 		return fmt.Errorf("secrets: %w", err)
+	}
+	// Spotify's non-secret app pair is bound before Tool registration; the
+	// module builds its shared auth seam from the secrets service above. The
+	// module declares SPOTIFY_REFRESH_TOKEN, so the secret is already in the
+	// allowlist and on the Secrets page.
+	spotifyModule, _ := toolSet.Module("spotify").(*spotifytools.Module)
+	if spotifyModule != nil {
+		spotifyModule.BindConfig(cfg.Spotify)
 	}
 	// Notifications are created before Tool registration so a Timer/Alarm
 	// recovered during Register already has the missed hook. The startup reader
@@ -848,6 +858,11 @@ func run() error {
 			ToolModules: toolSet,
 			Zone:        zone,
 			Personas:    personaSvc,
+			Spotify:     spotifyModule.Auth(),
+			SpotifyPairing: &spotify.PairingReader{
+				Path:       cfg.Spotify.PairingStatusFile,
+				StaleAfter: cfg.Spotify.StaleAfter.Duration(),
+			},
 			// One recent-request ring and the text-only session; both share
 			// the pipeline, registry and settings of the voice path.
 			Activity: activityStore,
@@ -890,6 +905,9 @@ func run() error {
 		"tts_addr", cfg.TTS.Addr,
 		"pulse_sink", cfg.Playback.Sink,
 		"pulse_source", cfg.Capture.Source,
+		"spotify_web_api", cfg.Spotify.Enabled(),
+		"spotify_device", cfg.Spotify.DeviceName,
+		"spotify_pairing_status", cfg.Spotify.PairingStatusFile != "",
 		"voice", cfg.VoiceEnabled(),
 		"wakeword_addr", cfg.Wakeword.Addr,
 		"stt_addr", cfg.STT.Addr,

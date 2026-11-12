@@ -340,6 +340,11 @@ func run() error {
 			}
 			return cues.Clip(role)
 		},
+		// A per-Alarm sound override names one library sound; it is resolved
+		// through the same library and Alarm Ring cap as sounds.alarm_ring.
+		ClipName: func(name string) (sound.Clip, bool) {
+			return cues.ClipName(sound.RoleAlarmRing, name)
+		},
 		Play: func(ctx context.Context, clip sound.Clip) error {
 			return clip.Play(ctx, playSink)
 		},

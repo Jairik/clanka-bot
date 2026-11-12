@@ -267,6 +267,20 @@ older ones are recorded missed and summarised in one Announcement, and a
 repeating Alarm then schedules its next occurrence. A max_ring or recovered
 missed Alarm also sends one Notification when `notify.missed_alerts` is on.
 
+Each Alarm can override its Ring `sound`, `volume` and `ramp` for itself:
+"wake me at 7 with the birds sound" or "change my 7 am alarm to the birds
+sound". The sound name goes through the same shared name matcher as the Sound
+library; a name that does not match stores the kind default and the reply says
+so instead of guessing another sound. Volume and ramp are optional per-Alarm
+values, so an explicit 0% volume or 0 s ramp stays different from the kind
+default. `alarm.update` changes only those overrides; it does not move the
+time, label or repeat. "clear my alarm sound" or "reset my alarm volume"
+returns that field to the kind default. The overrides live in the Alarm row, so
+they survive a restart and a snooze, and the Ring engine applies them to that
+one Ring without changing `ring.alarm.*` or another Alarm. The Scheduled
+alerts page (#58) uses the same `alarm.Manager.Update` write, so voice and the
+page cannot disagree.
+
 The Control phrases `stop`, `pause`, `cancel`, `snooze`, `louder`, `quieter`
 and `mute` are matched exactly, so they answer without waiting on the embed
 service. `stop`, `pause`, `cancel` and `snooze` are shared Focus intents: they
@@ -709,6 +723,11 @@ label and stops on "stop" or "snooze". A `none` or missing Ring sound falls
 back to the old single spoken line. A Reminder plays `sounds.reminder` once
 through the urgent Announcement item, then speaks its message; `none` leaves
 only the message.
+
+A per-Alarm sound override is a library name too, resolved by the shared name
+matcher and checked against the same 60 s Ring cap when it is assigned. It is
+applied to that Alarm's Ring only; `sounds.alarm_ring` remains the fallback
+when an Alarm has no override or its stored sound is no longer in the library.
 
 ### Latency
 

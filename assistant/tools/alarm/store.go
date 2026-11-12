@@ -371,11 +371,16 @@ func (m *Manager) beginFire(id string, snoozed bool) (fireState, bool, error) {
 		days     int64
 		nextMS   int64
 		snoozeMS sql.NullInt64
+		sound    string
+		volume   sql.NullInt64
+		rampMS   sql.NullInt64
 	)
 	err = tx.QueryRowContext(ctx,
-		`SELECT label, hour, minute, schedule, weekdays, next_fires_at, snoozed_until
+		`SELECT label, hour, minute, schedule, weekdays, next_fires_at, snoozed_until,
+		        sound, volume, ramp_ms
 		 FROM alarms WHERE id = ?`, id).
-		Scan(&label, &hour, &minute, &schedule, &days, &nextMS, &snoozeMS)
+		Scan(&label, &hour, &minute, &schedule, &days, &nextMS, &snoozeMS,
+			&sound, &volume, &rampMS)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fireState{}, false, nil
 	}
@@ -427,9 +432,18 @@ func (m *Manager) beginFire(id string, snoozed bool) (fireState, bool, error) {
 		Minute:      minute,
 		Schedule:    storedSchedule(schedule),
 		NextFiresAt: occurrence,
+		Sound:       sound,
 	}
 	if alarm.Schedule == Chosen {
 		alarm.Weekdays = weekdayNames(uint8(days))
+	}
+	if volume.Valid {
+		value := int(volume.Int64)
+		alarm.Volume = &value
+	}
+	if rampMS.Valid {
+		value := int(time.Duration(rampMS.Int64) * time.Millisecond / time.Second)
+		alarm.RampSeconds = &value
 	}
 	event := alertstore.Event{
 		Kind:     "alarm",
@@ -456,6 +470,43 @@ func (m *Manager) setNext(ctx context.Context, id string, next time.Time) error 
 		return fmt.Errorf("alarm: repair next occurrence %s: %w", id, err)
 	}
 	return nil
+}
+
+// updateRow writes only the override columns named by the request. Leaving the
+// schedule, label, next_fires_at and snoozed_until out of the UPDATE is what
+// preserves a pending repeat or snooze across an update. The bool is false when
+// the row disappeared first (a concurrent cancel), not an error.
+func (m *Manager) updateRow(ctx context.Context, id string, in UpdateIn, updated Alarm) (bool, error) {
+	var sets []string
+	var args []any
+	if in.SoundReset || strings.TrimSpace(in.Sound) != "" {
+		sets = append(sets, "sound = ?")
+		args = append(args, updated.Sound)
+	}
+	if in.VolumeReset || in.Volume != nil {
+		sets = append(sets, "volume = ?")
+		args = append(args, nullableInt(updated.Volume))
+	}
+	if in.RampReset || in.RampSeconds != nil {
+		sets = append(sets, "ramp_ms = ?")
+		args = append(args, nullableSeconds(updated.RampSeconds))
+	}
+	if len(sets) == 0 {
+		return true, nil
+	}
+	args = append(args, id)
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+	result, err := m.db.ExecContext(ctx,
+		`UPDATE alarms SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...)
+	if err != nil {
+		return false, fmt.Errorf("alarm: update alarm %s: %w", id, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("alarm: update alarm rows %s: %w", id, err)
+	}
+	return rows > 0, nil
 }
 
 // storedSchedule normalises a stored schedule value; an unknown value falls

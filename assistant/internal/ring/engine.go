@@ -44,6 +44,17 @@ type Request struct {
 	// FallbackText is spoken once when no Ring sound is assigned. It mirrors
 	// the pre-Ring spoken Timer alert so a missing/none sound still alerts.
 	FallbackText string
+	// Sound optionally replaces the kind's live Cue with one library sound for
+	// this alert only (#57). Empty keeps sounds.<kind>_ring. The Alarm manager
+	// passes the stored per-Alarm override; a Timer leaves it empty.
+	Sound string
+	// Volume optionally replaces the kind's Ring volume for this alert only.
+	// A nil pointer keeps the live kind setting, so an explicit 0 stays a mute.
+	Volume *int
+	// Ramp optionally replaces the kind's ramp for this alert only. A nil
+	// pointer keeps the live kind setting (30 s for an Alarm), so an explicit
+	// zero stays no ramp.
+	Ramp *time.Duration
 	// OnStart runs when this Ring takes the one speaker slot and claims Focus,
 	// before it waits for the current reply sentence. The scheduler uses it to
 	// persist the fired -> ringing transition.
@@ -113,6 +124,10 @@ type Deps struct {
 	Settings func(Kind) Settings
 	// Clip resolves the live per-kind Cue sound. False means none assigned.
 	Clip func(Kind) (sound.Clip, bool)
+	// ClipName resolves one library sound for a per-alert Request.Sound. It is
+	// optional: nil or a missing name keeps the kind's Clip. The Alarm module
+	// wires the shared sound library; a Timer never sets Request.Sound.
+	ClipName func(name string) (sound.Clip, bool)
 	// Play writes one rendered pass through the shared sink. It must honour
 	// ctx so stop and max_ring can end a pass.
 	Play func(ctx context.Context, clip sound.Clip) error
@@ -133,6 +148,7 @@ type Engine struct {
 	settings   func(Kind) Settings
 	speechGain func(Kind) int
 	clip       func(Kind) (sound.Clip, bool)
+	clipName   func(string) (sound.Clip, bool)
 	play       func(context.Context, sound.Clip) error
 	clock      Clock
 	logger     *slog.Logger
@@ -159,6 +175,7 @@ func New(deps Deps) *Engine {
 		settings:   deps.Settings,
 		speechGain: deps.SpeechGain,
 		clip:       deps.Clip,
+		clipName:   deps.ClipName,
 		play:       deps.Play,
 		clock:      deps.Clock,
 		logger:     deps.Logger,
@@ -183,8 +200,21 @@ func (e *Engine) Ring(parent context.Context, req Request) Result {
 		return Result{Outcome: OutcomeInterrupted, EndedBy: "shutdown"}
 	}
 
-	settings := e.settingsFor(req.Kind)
+	// Per-alert overrides are applied to this Ring's copy of the live kind
+	// settings. Nothing global is written, so the next alert still uses the
+	// kind defaults and an Alarm cannot change another Alarm.
+	settings := withOverrides(e.settingsFor(req.Kind), req.Volume, req.Ramp)
 	clip, hasClip := e.clipFor(req.Kind)
+	if req.Sound != "" {
+		if named, ok := e.clipNamed(req.Sound); ok {
+			clip, hasClip = named, true
+		} else {
+			// The library entry vanished or is over its role cap. Keep the
+			// kind's sound rather than substituting another named sound.
+			e.logger.Warn("ring sound override unavailable; using the kind sound",
+				"kind", req.Kind, "alert_id", req.ID, "sound", req.Sound)
+		}
+	}
 	ctx, cancel := context.WithCancel(parent)
 	holder := &ringHolder{
 		kind:        req.Kind,
@@ -359,12 +389,48 @@ func (e *Engine) settingsFor(kind Kind) Settings {
 	return settings
 }
 
+// withOverrides applies one Request's optional per-alert volume and ramp over
+// the kind settings. It clamps the same ranges settingsFor uses, so a corrupt
+// stored override cannot mute or ring forever.
+func withOverrides(settings Settings, volume *int, ramp *time.Duration) Settings {
+	if volume != nil {
+		value := *volume
+		if value < 0 {
+			value = 0
+		}
+		if value > 100 {
+			value = 100
+		}
+		settings.Volume = value
+	}
+	if ramp != nil {
+		value := *ramp
+		if value < 0 {
+			value = 0
+		}
+		if value > MaxRamp {
+			value = MaxRamp
+		}
+		settings.Ramp = value
+	}
+	return settings
+}
+
 // clipFor resolves the live Cue without dereferencing a nil seam.
 func (e *Engine) clipFor(kind Kind) (sound.Clip, bool) {
 	if e.clip == nil {
 		return sound.Clip{}, false
 	}
 	return e.clip(kind)
+}
+
+// clipNamed resolves one per-alert library sound without dereferencing a nil
+// seam. A missing seam keeps the kind sound.
+func (e *Engine) clipNamed(name string) (sound.Clip, bool) {
+	if e.clipName == nil {
+		return sound.Clip{}, false
+	}
+	return e.clipName(name)
 }
 
 // waitForSentence uses the reply boundary when one is wired.

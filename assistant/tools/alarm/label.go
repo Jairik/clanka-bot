@@ -18,8 +18,13 @@ import (
 var (
 	labelBeforeAlarm = regexp.MustCompile(`\b(?:set|create|make|add)(?:\s+(?:me|us))?(?:\s+(?:a|an|the|another))?\s+([a-z0-9][a-z0-9' -]*?)\s+alarm\b`)
 	labelCalled      = regexp.MustCompile(`\b(?:called|named|labelled|labeled)\s+([a-z0-9][a-z0-9' -]*)`)
+	labelUpdateAlarm = regexp.MustCompile(`\b(?:change|update|edit|modify|adjust|switch)\s+(?:the\s+|my\s+|our\s+)?([a-z0-9][a-z0-9' -]*?)\s+alarm\b`)
 	labelCancelAlarm = regexp.MustCompile(`\b(?:cancel|delete|remove|clear|turn off|get rid of)\s+(?:the\s+|my\s+|our\s+)?([a-z0-9][a-z0-9' -]*?)\s+alarm\b`)
-	labelTrim        = regexp.MustCompile(`^[^a-z0-9]+|[^a-z0-9]+$`)
+	// labelPossessiveAlarm is the last resort for "use birds for my work alarm"
+	// and "remove the sound from my work alarm". A clock is still rejected by
+	// cleanAlarmLabel, so "my 7 am alarm" is not a label.
+	labelPossessiveAlarm = regexp.MustCompile(`\b(?:the\s+|my\s+|our\s+)([a-z0-9][a-z0-9' -]*?)\s+alarm\b`)
+	labelTrim            = regexp.MustCompile(`^[^a-z0-9]+|[^a-z0-9]+$`)
 )
 
 // alarmLabelStopwords are articles and pronouns that are not a name.
@@ -46,7 +51,17 @@ func labelForAlarm(text string) string {
 			return label
 		}
 	}
+	if match := labelUpdateAlarm.FindStringSubmatch(lower); match != nil {
+		if label := cleanAlarmLabel(cutAtSchedule(match[1])); label != "" {
+			return label
+		}
+	}
 	if match := labelCancelAlarm.FindStringSubmatch(lower); match != nil {
+		if label := cleanAlarmLabel(match[1]); label != "" {
+			return label
+		}
+	}
+	if match := labelPossessiveAlarm.FindStringSubmatch(lower); match != nil {
 		if label := cleanAlarmLabel(match[1]); label != "" {
 			return label
 		}

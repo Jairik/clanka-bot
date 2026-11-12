@@ -29,9 +29,9 @@ func (*Module) Intents() []focus.Intent {
 	return []focus.Intent{focus.Stop, focus.Cancel, focus.Snooze}
 }
 
-// Register adds alarm.set, alarm.list and alarm.cancel. Persisted Alarms are
-// recovered by Start, not here, so the first recovered Ring already sees the
-// effective settings, Cues, Zone and Ring seams.
+// Register adds alarm.set, alarm.list, alarm.cancel and alarm.update.
+// Persisted Alarms are recovered by Start, not here, so the first recovered
+// Ring already sees the effective settings, Cues, Zone and Ring seams.
 func (m *Module) Register(r *tool.Registry, deps tool.Deps) error {
 	var say func(context.Context, string) error
 	if deps.Speaker != nil {
@@ -44,6 +44,8 @@ func (m *Module) Register(r *tool.Registry, deps tool.Deps) error {
 		Zone:          deps.Zone,
 		Settings:      deps.Settings,
 		Announcements: deps.Announcements,
+		Cues:          deps.Cues,
+		Names:         deps.Names,
 	})
 	// Attach the Ring engine before Start's recovery so an overdue Alarm that
 	// fires immediately at startup already Rings through the shared engine.

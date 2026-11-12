@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -181,10 +182,13 @@ func TestToolsExtractSetListAndCancel(t *testing.T) {
 	if !ok || !info.LocalOnly || info.Permission != tool.PermissionRead {
 		t.Fatalf("alarm.list info = %+v, want a local-only read", info)
 	}
-	for _, name := range []string{alarm.SetName, alarm.CancelName} {
+	for _, name := range []string{alarm.SetName, alarm.CancelName, alarm.UpdateName} {
 		info, ok := reg.Info(name)
 		if !ok || info.LocalOnly {
 			t.Fatalf("%s info = %+v, want LocalOnlyNo", name, info)
+		}
+		if info.Permission != tool.PermissionAct {
+			t.Fatalf("%s permission = %s, want act", name, info.Permission)
 		}
 	}
 
@@ -227,7 +231,24 @@ func TestToolsExtractSetListAndCancel(t *testing.T) {
 		t.Fatal("alarm.list has no Speak line")
 	}
 
-	args, ok := reg.Extract(alarm.CancelName, "cancel my 7 am alarm")
+	// alarm.update changes the 7:00 Alarm without touching the others.
+	args, ok := reg.Extract(alarm.UpdateName, "change my 7 am alarm volume to 40")
+	if !ok {
+		t.Fatal("update Extract failed")
+	}
+	result, err = reg.Execute(context.Background(), alarm.UpdateName, args)
+	if err != nil {
+		t.Fatalf("Execute update: %v", err)
+	}
+	updated := result.(alarm.UpdateOut)
+	if updated.Matched != 1 || updated.Alarm.Volume == nil || *updated.Alarm.Volume != 40 {
+		t.Fatalf("update = %+v, want one alarm with volume 40", updated)
+	}
+	if text, ok := reg.Speak(alarm.UpdateName, result); !ok || !strings.Contains(text, "volume 40") {
+		t.Fatalf("update Speak = %q, want the concrete change", text)
+	}
+
+	args, ok = reg.Extract(alarm.CancelName, "cancel my 7 am alarm")
 	if !ok {
 		t.Fatal("cancel Extract failed")
 	}

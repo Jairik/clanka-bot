@@ -117,7 +117,7 @@ func Int(key string, def int, opts ...Option) Definition {
 
 // Strings defines a list-of-strings setting.
 func Strings(key string, def []string, opts ...Option) Definition {
-	return newDefinition(key, kindStrings, append([]string(nil), def...), opts)
+	return newDefinition(key, kindStrings, copyStrings(def), opts)
 }
 
 // Duration defines a duration setting. Values cross the API as Go duration
@@ -133,6 +133,13 @@ func newDefinition(key string, kind valueKind, def any, opts []Option) Definitio
 	}
 	return d
 }
+
+// Observer is notified after a change is committed and the in-memory snapshot
+// is updated. keys are the settings that changed. It runs on the writing
+// goroutine, so an implementation that does slow work must hand the keys to its
+// own worker instead of blocking. One observer is enough for the live wording;
+// this is not a general event bus.
+type Observer func(keys []string)
 
 // Value is one setting's effective value and every layer that contributes to
 // it. Config and Override are nil when that layer is absent.
@@ -189,6 +196,7 @@ type Service struct {
 	defs      map[string]Definition
 	order     []string
 	overrides map[string]any
+	observer  Observer
 }
 
 // New validates the definitions, reads stored overrides and returns the
@@ -254,6 +262,32 @@ func New(ctx context.Context, st *store.Store, defs ...Definition) (*Service, er
 		return nil, fmt.Errorf("settings: read overrides: %w", err)
 	}
 	return s, nil
+}
+
+// SetObserver installs the one change observer, or clears it with nil. The
+// observer is called after a successful write, never for a rejected value, so
+// a failed request cannot leak into live behaviour.
+func (s *Service) SetObserver(observer Observer) {
+	s.mu.Lock()
+	s.observer = observer
+	s.mu.Unlock()
+}
+
+// notify calls the observer outside the lock. The caller has already updated
+// the snapshot, so the observer can read the new effective values.
+func (s *Service) notify(keys []string) {
+	if len(keys) == 0 {
+		return
+	}
+	s.mu.RLock()
+	observer := s.observer
+	s.mu.RUnlock()
+	if observer == nil {
+		return
+	}
+	sorted := append([]string(nil), keys...)
+	sort.Strings(sorted)
+	observer(sorted)
 }
 
 // Get returns one effective value.
@@ -326,7 +360,7 @@ func (s *Service) Duration(key string) time.Duration {
 func (s *Service) Strings(key string) []string {
 	value, _ := s.Get(key)
 	list, _ := value.Value.([]string)
-	return append([]string(nil), list...)
+	return copyStrings(list)
 }
 
 // Set stores one override and returns the new effective value.
@@ -411,11 +445,14 @@ func (s *Service) SetMany(ctx context.Context, values map[string]any) error {
 
 	// The database is the source of truth; the snapshot changes only after a
 	// successful commit, so a failed write cannot leak into a request.
+	keys := make([]string, 0, len(prepared))
 	s.mu.Lock()
 	for _, w := range prepared {
 		s.overrides[w.key] = w.value
+		keys = append(keys, w.key)
 	}
 	s.mu.Unlock()
+	s.notify(keys)
 	return nil
 }
 
@@ -470,6 +507,7 @@ func (s *Service) ResetMany(ctx context.Context, keys ...string) error {
 		delete(s.overrides, key)
 	}
 	s.mu.Unlock()
+	s.notify(unique)
 	return nil
 }
 
@@ -500,9 +538,20 @@ func (s *Service) valueLocked(def Definition) Value {
 // copyValue copies the slice layers so a caller cannot mutate the snapshot.
 func copyValue(value any) any {
 	if list, ok := value.([]string); ok {
-		return append([]string(nil), list...)
+		return copyStrings(list)
 	}
 	return value
+}
+
+// copyStrings copies a string list and keeps an empty list distinct from a nil
+// one, so an empty override reports [] rather than null.
+func copyStrings(list []string) []string {
+	if list == nil {
+		return nil
+	}
+	out := make([]string, len(list))
+	copy(out, list)
+	return out
 }
 
 // validateValue applies the definition's optional validator.
@@ -551,7 +600,7 @@ func (k valueKind) decode(raw json.RawMessage) (any, error) {
 		if err := json.Unmarshal(trimmed, &value); err != nil {
 			return nil, fmt.Errorf("want a list of strings: %w", err)
 		}
-		return append([]string(nil), value...), nil
+		return copyStrings(value), nil
 	case kindDuration:
 		var text string
 		if err := json.Unmarshal(trimmed, &text); err != nil {

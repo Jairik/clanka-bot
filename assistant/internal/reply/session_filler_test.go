@@ -299,3 +299,60 @@ func TestReplyAudioBeforeTheFillerDeadlineSuppressesTheFiller(t *testing.T) {
 		t.Fatalf("only sound wrote %d bytes, want reply PCM", sounds[0].bytes)
 	}
 }
+
+// liveFiller is a FillerSource whose audio can change between turns, like the
+// wording manager after a background re-synthesis.
+type liveFiller struct {
+	mu      sync.Mutex
+	current *speech.Filler
+}
+
+func (l *liveFiller) Filler() *speech.Filler {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.current
+}
+
+func (l *liveFiller) set(filler *speech.Filler) {
+	l.mu.Lock()
+	l.current = filler
+	l.mu.Unlock()
+}
+
+func TestFillerSourceReadsOncePerTurnAndUsesTheLatestAudio(t *testing.T) {
+	sink := &timedSink{}
+	speaker := newFakeSpeaker()
+	first := &speech.Filler{Text: "One moment.", PCM: []byte{1, 2, 3, 4}}
+	second := &speech.Filler{Text: "Two moments.", PCM: []byte{9, 9, 9, 9, 9, 9}}
+	source := &liveFiller{current: first}
+
+	turns := 0
+	routed := &fakePipeline{}
+	routed.handle = func(events pipeline.Events) pipeline.Reply {
+		events.AgentPath()
+		if turns == 0 {
+			// A change after this turn claimed its cue must not split the cue
+			// or alter the audio already chosen.
+			source.set(second)
+		}
+		turns++
+		return pipeline.Reply{Text: "Answer."}
+	}
+	session := reply.New(routed, speaker, sink, nil, reply.WithFillerSource(source))
+
+	if _, err := session.Ask(context.Background(), request(), "first"); err != nil {
+		t.Fatalf("first Ask: %v", err)
+	}
+	sounds := sink.stamps()
+	if len(sounds) != 1 || sounds[0].bytes != len(first.PCM) {
+		t.Fatalf("first turn sounds = %+v, want exactly the original filler", sounds)
+	}
+
+	if _, err := session.Ask(context.Background(), request(), "second"); err != nil {
+		t.Fatalf("second Ask: %v", err)
+	}
+	sounds = sink.stamps()
+	if len(sounds) != 2 || sounds[1].bytes != len(second.PCM) {
+		t.Fatalf("second turn sounds = %+v, want exactly the re-synthesized filler", sounds)
+	}
+}

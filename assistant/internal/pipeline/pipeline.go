@@ -98,6 +98,29 @@ func WithSemanticRouter(router *SemanticRouter) Option {
 	return func(p *Pipeline) { p.semantic = router }
 }
 
+// RoutingWords is the wording one request routes with. Both fields come from
+// one settings snapshot, so a batch update cannot pair an old Control phrase
+// table with new prefixes.
+type RoutingWords struct {
+	// ControlPhrases maps a normalized phrase to a canonical Tool name.
+	ControlPhrases map[string]string
+	// RequestPrefixes are the Agent request prefixes, in any order.
+	RequestPrefixes []string
+}
+
+// Wording is the live wording source. It is read once per request, after the
+// pending-Confirmation stage, so a changed phrase or prefix applies to the
+// next request without rebuilding the pipeline.
+type Wording interface {
+	Routing() RoutingWords
+}
+
+// WithWording makes Control phrases and Agent request prefixes live. Without
+// it the values passed to New are fixed for the process lifetime.
+func WithWording(w Wording) Option {
+	return func(p *Pipeline) { p.wording = w }
+}
+
 // WithConfirmationResolver wires the pending-Confirmation stage.
 func WithConfirmationResolver(resolver ConfirmationResolver) Option {
 	return func(p *Pipeline) { p.confirmation = resolver }
@@ -122,6 +145,7 @@ type Pipeline struct {
 	prefixes []string
 	history  *agent.History
 	semantic *SemanticRouter
+	wording  Wording
 
 	confirmation ConfirmationResolver
 }
@@ -245,8 +269,16 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 	reply := Reply{Path: tool.PathFallthrough, RequestID: req.ID, Text: PlaceholderReply}
 	normalized := NormalizePhrase(transcript)
 
+	// Live wording is read once, from one snapshot, after the Confirmation
+	// stage and before either routing step that uses it.
+	phrases, prefixes := p.phrases, p.prefixes
+	if p.wording != nil {
+		words := p.wording.Routing()
+		phrases, prefixes = words.ControlPhrases, words.RequestPrefixes
+	}
+
 	// 2. Agent request prefix goes straight to the Agent path.
-	if rest, ok := agent.MatchRequestPrefix(transcript, p.prefixes); ok {
+	if rest, ok := agent.MatchRequestPrefix(transcript, prefixes); ok {
 		markRouting()
 		record.reason = ""
 		reply.Path = tool.PathAgent
@@ -261,7 +293,7 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 	}
 
 	// 3. Control phrase is an exact match and must not wait on embeddings.
-	if name, ok := p.phrases[normalized]; ok {
+	if name, ok := phrases[normalized]; ok {
 		markRouting()
 		record.reason = ""
 		reply.Path = tool.PathControlPhrase

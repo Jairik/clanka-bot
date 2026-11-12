@@ -34,6 +34,12 @@ type Speaker interface {
 	SayText(ctx context.Context, text string) error
 }
 
+// FillerSource supplies the cached Filler for one request. wording.Manager
+// satisfies it and keeps serving the old audio until a replacement is ready.
+type FillerSource interface {
+	Filler() *speech.Filler
+}
+
 // Announcer is the Announcement queue as a reply turn sees it. A turn holds
 // unprompted speech, and starting one cancels an Announcement already playing
 // so the user is answered promptly.
@@ -55,6 +61,7 @@ type Session struct {
 	speaker       Speaker
 	sink          speech.Sink
 	filler        *speech.Filler
+	fillerSource  FillerSource
 	logger        *slog.Logger
 	announcements Announcer
 	cues          CueSource
@@ -83,6 +90,13 @@ func WithAnnouncements(a Announcer) Option {
 // before an Unavailable message; the same seam serves later consumers.
 func WithCues(cues CueSource) Option {
 	return func(s *Session) { s.cues = cues }
+}
+
+// WithFillerSource makes the Filler live: it is read once per turn, after any
+// re-synthesis has completed, and never mid-playback. The static filler passed
+// to New is the fallback when no source is set.
+func WithFillerSource(source FillerSource) Option {
+	return func(s *Session) { s.fillerSource = source }
 }
 
 // New builds a session. A nil speaker leaves replies text-only.
@@ -140,6 +154,13 @@ func (s *Session) ask(ctx context.Context, req tool.Request, transcript string, 
 		return false
 	}
 
+	// One Filler per request: read the live source once, so a background
+	// re-synthesis cannot swap audio out from under this turn.
+	filler := s.filler
+	if s.fillerSource != nil {
+		filler = s.fillerSource.Filler()
+	}
+
 	player := newPlayer(ctx, s.speaker, s.sink, func() { firstSound() })
 	chunker := speech.NewChunker()
 	var prefix string
@@ -149,10 +170,10 @@ func (s *Session) ask(ctx context.Context, req tool.Request, transcript string, 
 		// The path is known before the model call, so the cached phrase is heard
 		// while the first tokens are still pending.
 		AgentPath: func() {
-			if s.filler == nil || s.sink == nil || !firstSound() {
+			if filler == nil || s.sink == nil || !firstSound() {
 				return
 			}
-			player.play(item{filler: s.filler})
+			player.play(item{filler: filler})
 		},
 		// A dropped Confirmation's "Cancelled." is spoken before any answer.
 		Prefix: func(text string) {
@@ -170,7 +191,7 @@ func (s *Session) ask(ctx context.Context, req tool.Request, transcript string, 
 		},
 	}
 
-	stopCue := s.cueSlowReply(player, from, firstSound, claimedCh)
+	stopCue := s.cueSlowReply(player, filler, from, firstSound, claimedCh)
 	reply := s.pipeline.HandleEvents(ctx, req, transcript, events)
 	if rest := chunker.Flush(); rest != "" {
 		player.play(item{text: rest})
@@ -241,8 +262,8 @@ func isCancellation(ctx context.Context, err error) bool {
 // cueSlowReply plays the one Filler when no reply audio has started by
 // FillerAfter, measured from the endpointer. The returned stop function must run
 // before the session returns; it waits for the cue goroutine to exit.
-func (s *Session) cueSlowReply(player *player, from time.Time, claim func() bool, claimed <-chan struct{}) func() {
-	if s.filler == nil || s.sink == nil {
+func (s *Session) cueSlowReply(player *player, filler *speech.Filler, from time.Time, claim func() bool, claimed <-chan struct{}) func() {
+	if filler == nil || s.sink == nil {
 		return func() {}
 	}
 	stopped := make(chan struct{})
@@ -261,8 +282,8 @@ func (s *Session) cueSlowReply(player *player, from time.Time, claim func() bool
 			// item that is still in TTS synthesis: SerialSink makes a reply
 			// that starts meanwhile wait for this short phrase, so the two
 			// never overlap.
-			if s.filler != nil && s.sink != nil && claim() {
-				if err := s.filler.Play(player.ctx, s.sink); err != nil && player.ctx.Err() == nil {
+			if claim() {
+				if err := filler.Play(player.ctx, s.sink); err != nil && player.ctx.Err() == nil {
 					s.logger.Warn("reply: filler", "error", err.Error())
 				}
 			}

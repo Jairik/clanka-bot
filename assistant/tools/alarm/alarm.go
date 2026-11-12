@@ -428,7 +428,11 @@ func (m *Manager) Update(ctx context.Context, in UpdateIn) (UpdateOut, error) {
 		m.mu.Lock()
 		for _, e := range m.entries {
 			if match(e.alarm) {
-				matches = append(matches, e.alarm)
+				// Report the live occurrence, matching List, so a snoozed or
+				// rescheduled in-memory Alarm describes its pending time.
+				alarm := e.alarm
+				alarm.NextFiresAt = e.occurrence
+				matches = append(matches, alarm)
 			}
 		}
 		m.mu.Unlock()

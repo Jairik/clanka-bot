@@ -81,3 +81,12 @@ def test_synthesize_rejects_an_out_of_range_rate(tmp_path):
     engine = engine_with_model(tmp_path)
     with pytest.raises(ValueError, match="rate"):
         list(engine.synthesize("state", "Hello.", rate=4.0))
+
+
+def test_state_for_caches_a_voice_after_first_use(tmp_path):
+    engine = engine_with_model(tmp_path)
+    first = engine.state_for("/voices/jarvis.safetensors")
+    second = engine.state_for("/voices/jarvis.safetensors")
+    warm = engine.warm_voice("/voices/jarvis.safetensors")
+    assert first == second == warm
+    assert engine._model.state_calls == ["/voices/jarvis.safetensors"]

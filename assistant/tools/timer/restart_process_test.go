@@ -76,6 +76,10 @@ func TestTimerSurvivesProcessRestart(t *testing.T) {
 	if rows != 0 {
 		t.Fatalf("persisted rows after fire = %d, want 0", rows)
 	}
+
+	// A third child opens the same file and must stay silent: the alert is
+	// at-most-once across process restarts, not just across store reopens.
+	runRestartChild(t, "silent", path, alertPath)
 }
 
 // runRestartChild runs this test binary with only the restart test selected.
@@ -133,6 +137,17 @@ func runRestartHelper(t *testing.T, mode string) {
 			}
 		case <-time.After(5 * time.Second):
 			t.Fatal("helper did not hear the recovered Timer")
+		}
+	case "silent":
+		// The previous child deleted the row before speaking. This child must
+		// recover nothing and stay silent, proving at-most-once across restarts.
+		if timers := m.List(); len(timers) != 0 {
+			t.Fatalf("helper recovered %d timers, want none", len(timers))
+		}
+		select {
+		case text := <-alerts:
+			t.Fatalf("helper repeated an alert: %q", text)
+		case <-time.After(time.Second):
 		}
 	default:
 		t.Fatalf("unknown helper mode %q", mode)

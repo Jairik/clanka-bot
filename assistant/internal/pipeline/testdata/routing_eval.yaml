@@ -1083,6 +1083,15 @@ negatives:
   - find an article about the election
   - what does the web say about the new phone
   - browse for a lasagna recipe
+  # Agent-path page reading: the request names an article or link but has no
+  # Fast path Tool. web.fetch itself is AgentOnly; a match here would be a real
+  # misroute to some other Tool.
+  - read me that article
+  - read this page out loud
+  - fetch the page at example dot com
+  - open that link and read it to me
+  - summarise the article I sent you
+  - what does the article say about the election
 
 # Compound requests ask for more than one thing. They are kept separate so
 # the evaluation can report compound handling on its own.

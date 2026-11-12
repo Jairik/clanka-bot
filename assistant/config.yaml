@@ -78,6 +78,19 @@ tools:
     # model-supplied value is clamped to. Each result is title, URL and snippet.
     results: 5
     max_results: 10
+    # Agent-path page reading. One public http(s) page is fetched behind an
+    # SSRF guard (public addresses only, DNS pinned, every redirect checked),
+    # then the main article text is extracted and truncated. Omitted fields
+    # use the code defaults; an explicit zero is rejected.
+    fetch:
+      # One page request, including the decompressed body.
+      timeout: 8s
+      # HTML bound after transparent decompression.
+      max_bytes: 2097152
+      # Readable-text rune limit handed to the model; the Tool marks the cut.
+      max_chars: 4000
+      # Redirect chain bound; every hop is revalidated.
+      max_redirects: 5
   timer:
     alert_text: "Your timer is done."
   voice:
@@ -93,11 +106,11 @@ embed:
   timeout: 150ms
 
 # Semantic Fast path tuning from the #26 routing evaluation. The corpus is
-# internal/pipeline/testdata/routing_eval.yaml (see the results table for the
-# exact totals) run against
+# internal/pipeline/testdata/routing_eval.yaml (804 positives, at least 20 per
+# Tool, 171 negatives and 30 compounds) run against
 # sentence-transformers/all-MiniLM-L6-v2. At these values every Tool has
 # precision 1.00 against the confirmed 0.95 per-Tool floor, overall recall is
-# recorded in docs/routing-eval.md, and no negative or compound reaches the Fast path. Recall is
+# 0.6953, and no negative or compound reaches the Fast path. Recall is
 # deliberately conservative: ambiguous phrasing goes to the Agent path instead
 # of risking a wrong Tool call. See docs/routing-eval.md.
 semantic:

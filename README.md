@@ -86,6 +86,22 @@ are bounded (query, count, title, URL and snippet) and the HTTP client keeps
 connections alive between calls. See [`searxng/README.md`](searxng/README.md)
 for the pinned image, worker/server choice and a manual smoke test.
 
+### Reading a page
+
+The Agent can also call `web.fetch` to read one public page, for example
+"read me that article" after a search. It resolves the host once, refuses any
+loopback, private, link-local, CGNAT/tailnet, multicast or special-purpose
+address, pins the validated IPs for the request, and revalidates every
+redirect. Environment HTTP proxies are ignored so a proxy cannot bypass that
+dial policy. Responses must be HTML, the decompressed body is bounded
+(`tools.web.fetch.max_bytes`, 2 MiB) and the readable article text is
+truncated to `tools.web.fetch.max_chars` (4000 runes) with a `truncated` flag.
+Non-HTML, oversize, timeout and unreadable pages fail with a fixed line; the
+source URL and page text are untrusted facts in the Agent prompt. The
+extraction uses the maintained Readability.js port
+`codeberg.org/readeck/go-readability/v2`. It is Agent-only and never routes on
+the Fast path.
+
 Agent path replies are spoken as they are generated: the first chunk is flushed
 at a clause boundary or after about twelve words, then each sentence is sent to
 TTS while the rest of the answer is still streaming. The configured

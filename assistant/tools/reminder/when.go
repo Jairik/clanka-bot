@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/parse"
+	"github.com/Jairik/clanka-bot/assistant/internal/tz"
 )
 
 // The parser reads the two time forms a Reminder accepts. Duration phrases use
@@ -49,7 +50,7 @@ var (
 
 	// cancelPrefix is the cancel request itself. The optional reminder word is
 	// consumed when it is present, leaving a message query or an empty query.
-	cancelPrefix = regexp.MustCompile(`(?i)^\s*(?:please\s+)?(?:(?:can|could|would|will)\s+you\s+)?(?:cancel|delete|remove|forget|clear|drop|get\s+rid\s+of|stop)\s+(?:the\s+|my\s+|our\s+|all\s+|any\s+)?(?:reminders?|alerts?)?\b`)
+	cancelPrefix = regexp.MustCompile(`(?i)^\s*(?:please\s+)?(?:(?:can|could|would|will)\s+you\s+)?(?:cancel|delete|remove|forget|clear|drop|get\s+rid\s+of|stop)\s+(?:the\s+|my\s+|our\s+|all\s+|any\s+|every\s+|each\s+)?(?:reminders?|alerts?)?\b`)
 	// cancelTrailer removes the noun from "cancel the oven reminder".
 	cancelTrailer = regexp.MustCompile(`(?i)[\s,]+(?:reminders?|alerts?)\s*$`)
 	// wordSpan finds the words a duration phrase can occupy.
@@ -65,9 +66,10 @@ func nextClockTime(now time.Time, hour, minute, dayOffset int, loc *time.Locatio
 		loc = time.UTC
 	}
 	local := now.In(loc)
-	candidate := time.Date(local.Year(), local.Month(), local.Day()+dayOffset, hour, minute, 0, 0, loc)
+	candidate := tz.ResolveWall(local.Year(), local.Month(), local.Day()+dayOffset, hour, minute, loc)
 	if !candidate.After(now) {
-		candidate = time.Date(candidate.Year(), candidate.Month(), candidate.Day()+1, hour, minute, 0, 0, loc)
+		next := candidate.In(loc).AddDate(0, 0, 1)
+		candidate = tz.ResolveWall(next.Year(), next.Month(), next.Day(), hour, minute, loc)
 	}
 	return candidate
 }

@@ -9,6 +9,7 @@ package tz
 import (
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -146,6 +147,51 @@ func (s *Service) Name() string {
 
 // IsUTC reports whether the effective zone is UTC, so startup can warn once.
 func (s *Service) IsUTC() bool { return s.Name() == "UTC" }
+
+// ResolveWall turns a local wall-clock time into an instant. A normal time and
+// a fall-back overlap resolve to the first occurrence. A spring-forward gap
+// has no such instant; the post-transition reading is used, so 02:30 becomes
+// 03:30 when the clock jumps over it. Alarm and Reminder share this rule, so a
+// clock-time alert behaves the same in either Tool.
+func ResolveWall(year int, month time.Month, day, hour, minute int, loc *time.Location) time.Time {
+	if loc == nil {
+		loc = time.UTC
+	}
+	// The nominal wall time as if it were UTC; subtracting a zone offset gives
+	// the real instant without time.Date's unspecified overlap choice.
+	nominal := time.Date(year, month, day, hour, minute, 0, 0, time.UTC)
+	offsets := make(map[int]bool)
+	for _, probe := range []time.Duration{
+		-48 * time.Hour, -24 * time.Hour, -12 * time.Hour,
+		12 * time.Hour, 24 * time.Hour, 48 * time.Hour,
+	} {
+		_, offset := nominal.Add(probe).In(loc).Zone()
+		offsets[offset] = true
+	}
+	var candidates []time.Time
+	for offset := range offsets {
+		instant := nominal.Add(-time.Duration(offset) * time.Second)
+		local := instant.In(loc)
+		if local.Year() == year && local.Month() == month && local.Day() == day &&
+			local.Hour() == hour && local.Minute() == minute {
+			candidates = append(candidates, instant)
+		}
+	}
+	if len(candidates) > 0 {
+		sort.Slice(candidates, func(i, j int) bool { return candidates[i].Before(candidates[j]) })
+		return candidates[0]
+	}
+	// Gap: no instant carries the requested wall time. Use the later reading,
+	// which is the post-transition offset, so the alert fires after the jump.
+	var latest time.Time
+	for offset := range offsets {
+		instant := nominal.Add(-time.Duration(offset) * time.Second)
+		if instant.After(latest) {
+			latest = instant
+		}
+	}
+	return latest
+}
 
 // validLocked returns name when it loads, keeping a small cache so repeated
 // scheduling does not re-read zoneinfo. The caller holds the write lock.

@@ -1,8 +1,11 @@
 package reminder
 
 import (
+	"fmt"
 	"testing"
 	"time"
+
+	"github.com/Jairik/clanka-bot/assistant/internal/parse"
 )
 
 // TestParseSetInputReadsNaturalDurationPhrases covers the duration form: the
@@ -133,6 +136,8 @@ func TestCancellationQueryExtractsTheMessage(t *testing.T) {
 		"forget the reminder for the oven":     "the oven",
 		"remove the reminder to water plants":  "water plants",
 		"clear reminders":                      "",
+		"cancel every reminder":                "",
+		"delete each reminder":                 "",
 	}
 	for text, want := range cases {
 		if got := cancellationQuery(text); got != want {
@@ -173,5 +178,50 @@ func TestClockTimePolicyIsStrictlyFuture(t *testing.T) {
 	got := nextClockTime(now, 17, 0, 1, berlin)
 	if want := time.Date(2026, 11, 12, 17, 0, 0, 0, berlin); !got.Equal(want) {
 		t.Fatalf("tomorrow at 17:00 = %s, want %s", got.In(berlin), want.In(berlin))
+	}
+}
+
+// TestClockTimeDSTUsesTheAlarmResolver keeps Reminder and Alarm identical on
+// the two ambiguous days: 02:30 on the spring-forward day becomes 03:30, and
+// 01:30 on the fall-back day is the first occurrence.
+func TestClockTimeDSTUsesTheAlarmResolver(t *testing.T) {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatalf("load zone: %v", err)
+	}
+	gapNow := time.Date(2026, time.March, 8, 5, 0, 0, 0, time.UTC) // 00:00 EST
+	gap := nextClockTime(gapNow, 2, 30, 0, loc)
+	if want := time.Date(2026, time.March, 8, 7, 30, 0, 0, time.UTC); !gap.Equal(want) {
+		t.Fatalf("spring-forward 02:30 = %s, want %s", gap, want)
+	}
+	overlapNow := time.Date(2026, time.November, 1, 4, 0, 0, 0, time.UTC) // 00:00 EDT
+	overlap := nextClockTime(overlapNow, 1, 30, 0, loc)
+	if want := time.Date(2026, time.November, 1, 5, 30, 0, 0, time.UTC); !overlap.Equal(want) {
+		t.Fatalf("fall-back 01:30 = %s, want the first occurrence %s", overlap, want)
+	}
+}
+
+// TestClockParserMatchesTheAlarmParser keeps the two spoken clock readers in
+// sync: a Reminder must read every form an Alarm accepts the same way.
+func TestClockParserMatchesTheAlarmParser(t *testing.T) {
+	for _, form := range []string{
+		"7", "6:30", "6:30 am", "7 am", "7am", "6:30pm", "6:30 pm",
+		"12 am", "12 pm", "12:15 pm", "17:45", "noon", "midnight",
+		"7 o'clock", "7 a.m.",
+	} {
+		hour, minute, ok := parse.Clock("remind me at " + form + " to check")
+		if !ok {
+			t.Errorf("parse.Clock(%q) rejected the form", form)
+			continue
+		}
+		in, ok := parseSetInput("remind me at " + form + " to check")
+		if !ok {
+			t.Errorf("parseSetInput(%q) rejected the form", form)
+			continue
+		}
+		want := fmt.Sprintf("%02d:%02d", hour, minute)
+		if in.At != want {
+			t.Errorf("%q reminder clock = %q, Alarm clock = %q", form, in.At, want)
+		}
 	}
 }

@@ -275,6 +275,15 @@ func (m *Manager) fire(id string) {
 // speakAlert runs on the Announcement worker as one item: the Cue first, then
 // the message, so a turn cannot come between the sound and its speech.
 func (m *Manager) speakAlert(ctx context.Context, eventID int64, r Reminder) error {
+	m.mu.Lock()
+	closed := m.closed
+	m.mu.Unlock()
+	if closed {
+		// Shutdown won the race with the queue. The history row stays honest
+		// and the next start records the Reminder as missed rather than speech.
+		m.finishEvent(eventID, alertstore.StateInterrupted, "shutdown")
+		return nil
+	}
 	m.markRinging(eventID)
 	if err := m.playCue(ctx); err != nil {
 		if ctx.Err() != nil {
@@ -397,8 +406,9 @@ func (m *Manager) cancelLocked(ids []string, attr string) (int, error) {
 	return len(ids), nil
 }
 
-// History returns the newest Reminder history rows. It is the read seam for
-// the Scheduled alerts page (#58) and later Notification work.
+// History returns the newest alert-history rows across every kind. It is the
+// read seam for the Scheduled alerts page (#58) and later Notification work;
+// the Reminder rows carry kind "reminder".
 func (m *Manager) History(limit int) ([]alertstore.Event, error) {
 	m.mu.Lock()
 	history := m.history

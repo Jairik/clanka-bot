@@ -1029,3 +1029,30 @@ func TestToolDescriptionsLabelGitHubTextAsUntrusted(t *testing.T) {
 		}
 	}
 }
+
+// TestDefaultConfigHasNoRepositoryTarget proves the target is operator config,
+// not a hardcoded repository in the generic Tool logic.
+func TestDefaultConfigHasNoRepositoryTarget(t *testing.T) {
+	cfg := DefaultConfig()
+	if cfg.DefaultRepo != "" {
+		t.Fatalf("DefaultConfig().DefaultRepo = %q, want empty", cfg.DefaultRepo)
+	}
+	if len(cfg.AllowedRepos) != 0 {
+		t.Fatalf("DefaultConfig().AllowedRepos = %v, want empty", cfg.AllowedRepos)
+	}
+}
+
+// TestModuleDoesNotReadTheEnvironmentDirectly proves the Tool uses the declared
+// secrets resolver only. The real secrets service is the layer that may fall
+// back to .env; the module must not call os.Getenv itself.
+func TestModuleDoesNotReadTheEnvironmentDirectly(t *testing.T) {
+	t.Setenv(SecretName, "ghp_environment_bypass")
+	reg, _ := registerModule(t, testConfig(t, nil), nil)
+	_, err := reg.Execute(context.Background(), PRListName, nil)
+	if err == nil {
+		t.Fatal("a nil secret resolver still found an environment token")
+	}
+	if got := tool.FailureMessage(err); !strings.Contains(got, SecretName) {
+		t.Fatalf("failure = %q, want a missing %s line", got, SecretName)
+	}
+}

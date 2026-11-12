@@ -160,8 +160,14 @@ func TestUnknownIntentIsRejected(t *testing.T) {
 		// Tool and an intent; the table is ambiguous.
 		{map[string]string{"Stop": "stop", "stop": audiocontrol.StopName}, "maps to both"},
 	}
+	// Register audio.stop so the phrase/Intent collision is what fails, not an
+	// unknown Tool found first depending on map iteration order.
+	reg := tool.NewRegistry(time.Second)
+	if err := audiocontrol.Register(reg, &audioRecorder{}); err != nil {
+		t.Fatalf("register audio: %v", err)
+	}
 	for _, tc := range cases {
-		_, err := pipeline.New(tool.NewRegistry(time.Second), tc.phrases, logger)
+		_, err := pipeline.New(reg, tc.phrases, logger)
 		if err == nil {
 			t.Fatalf("pipeline.New accepted %v, want an error", tc.phrases)
 		}

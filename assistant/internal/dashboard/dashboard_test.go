@@ -17,6 +17,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/tools"
+	"gopkg.in/yaml.v3"
 )
 
 const owner = "alice@example.com"
@@ -430,13 +431,13 @@ func TestDashboardMountsTheAPIBehindAuthAndSameOrigin(t *testing.T) {
 	}
 }
 
-func TestComposeServiceChecksCoverTheFiveServices(t *testing.T) {
+func TestComposeServiceChecksCoverTheSixServices(t *testing.T) {
 	links := dashboard.ComposeServiceChecks(config.Default())
 	names := make([]string, 0, len(links))
 	for _, link := range links {
 		names = append(names, link.Name)
 	}
-	want := []string{"embed", "assistant", "wakeword", "stt", "tts"}
+	want := []string{"embed", "assistant", "wakeword", "stt", "tts", "web-search"}
 	if strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Fatalf("services = %v, want %v", names, want)
 	}
@@ -448,10 +449,49 @@ func TestComposeServiceChecksCoverTheFiveServices(t *testing.T) {
 	}
 	// The default config has no speech services, so those rows are explicitly
 	// unconfigured rather than failures.
-	for _, link := range links[2:] {
+	for _, link := range links[2:5] {
 		if link.Check != nil {
 			t.Errorf("%s check = wired, want unconfigured", link.Name)
 		}
+	}
+	if links[5].Check == nil {
+		t.Error("web-search check is not wired")
+	}
+}
+
+// TestWebSearchServiceCheckUsesTheModuleSection proves the sixth service check
+// probes the same address tools.web registers, not a second hard-coded one.
+func TestWebSearchServiceCheckUsesTheModuleSection(t *testing.T) {
+	var path string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path = r.URL.Path
+	}))
+	defer server.Close()
+
+	cfg := config.Default()
+	if cfg.Tools.Sections == nil {
+		cfg.Tools.Sections = map[string]yaml.Node{}
+	}
+	cfg.Tools.Sections["web"] = yaml.Node{Kind: yaml.MappingNode, Content: []*yaml.Node{
+		{Kind: yaml.ScalarNode, Value: "base_url"},
+		{Kind: yaml.ScalarNode, Value: server.URL},
+	}}
+
+	links := dashboard.ComposeServiceChecks(cfg)
+	var check dashboard.ServiceCheck
+	for _, link := range links {
+		if link.Name == "web-search" {
+			check = link
+		}
+	}
+	if check.Check == nil {
+		t.Fatal("web-search check is not wired for a configured base_url")
+	}
+	if err := check.Check(context.Background()); err != nil {
+		t.Fatalf("web-search check: %v", err)
+	}
+	if path != "/healthz" {
+		t.Fatalf("health path = %q", path)
 	}
 }
 

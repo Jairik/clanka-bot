@@ -111,6 +111,70 @@ func TestMissingSampleFails(t *testing.T) {
 	wantProblem(t, problems, "add a representative output to ConformanceSamples")
 }
 
+// TestFastPathToolWithoutExamplesFails proves an ordinary Tool must either
+// complete the Fast path contract or say AgentOnly deliberately.
+func TestFastPathToolWithoutExamplesFails(t *testing.T) {
+	module := stubModule{
+		name: "conformance_broken",
+		register: func(r *tool.Registry) error {
+			return tool.Add(r, tool.Tool[struct{}, struct{}]{
+				Name:        "conformance.no_examples",
+				Description: "A Tool with no route at all.",
+				Permission:  tool.PermissionRead,
+				LocalOnly:   tool.LocalOnlyNo,
+				Handler:     func(context.Context, struct{}) (struct{}, error) { return struct{}{}, nil },
+				Speak:       func(struct{}) string { return "Hello." },
+			})
+		},
+		samples: map[string]any{"conformance.no_examples": struct{}{}},
+	}
+	problems := inspect(module).problems
+	wantProblem(t, problems, "is not on the semantic Fast path and is not declared AgentOnly")
+}
+
+// TestAgentOnlyToolPassesStaticContract proves the explicit Agent-only
+// declaration is a complete choice: no Examples, no Extract and no Speak.
+func TestAgentOnlyToolPassesStaticContract(t *testing.T) {
+	module := stubModule{
+		name: "conformance_agent_only",
+		register: func(r *tool.Registry) error {
+			return tool.Add(r, tool.Tool[struct{}, struct{}]{
+				Name:        "conformance.agent_only",
+				Description: "A Tool the Agent calls; the Fast path never sees it.",
+				Permission:  tool.PermissionRead,
+				LocalOnly:   tool.LocalOnlyNo,
+				AgentOnly:   true,
+				Handler:     func(context.Context, struct{}) (struct{}, error) { return struct{}{}, nil },
+			})
+		},
+	}
+	problems := inspect(module).problems
+	if len(problems) != 0 {
+		t.Fatalf("Agent-only module problems = %v, want none", problems)
+	}
+}
+
+// TestAgentOnlyWithExamplesFails proves the contract catches a half-added
+// Agent-only Tool before the semantic router can index it.
+func TestAgentOnlyWithExamplesFails(t *testing.T) {
+	module := stubModule{
+		name: "conformance_broken",
+		register: func(r *tool.Registry) error {
+			return tool.Add(r, tool.Tool[struct{}, struct{}]{
+				Name:        "conformance.agent_only_examples",
+				Description: "A Tool that contradicts its Agent-only declaration.",
+				Permission:  tool.PermissionRead,
+				LocalOnly:   tool.LocalOnlyNo,
+				AgentOnly:   true,
+				Handler:     func(context.Context, struct{}) (struct{}, error) { return struct{}{}, nil },
+				Examples:    []string{"look it up"},
+			})
+		},
+	}
+	problems := inspect(module).problems
+	wantProblem(t, problems, "AgentOnly must not declare Examples")
+}
+
 // TestBadRequiredSecretsFails proves the module contract rejects an unnamed or
 // repeated secret before a module can register with a malformed declaration.
 func TestBadRequiredSecretsFails(t *testing.T) {

@@ -64,6 +64,20 @@ tools:
   notify:
     # Title shown on the phone Notification. The topic and token are secrets.
     title: "Assistant"
+  web:
+    # Agent-path web search. The backend is a config switch over the Provider
+    # interface; only "searxng" exists, and an unknown value fails startup.
+    # The Compose service is internal-only (never published) and answers JSON.
+    backend: "searxng"
+    base_url: "http://web-search:8080"
+    # One search request, including reading the response body. This sits above
+    # SearXNG's own 1.5 s per-engine budget so the container can answer with the
+    # engines that did respond instead of the client cutting the page off.
+    timeout: 2500ms
+    # Default result count when the model omits max_results, and the cap a
+    # model-supplied value is clamped to. Each result is title, URL and snippet.
+    results: 5
+    max_results: 10
   timer:
     alert_text: "Your timer is done."
   voice:
@@ -80,7 +94,7 @@ embed:
 
 # Semantic Fast path tuning from the #26 routing evaluation. The corpus is
 # internal/pipeline/testdata/routing_eval.yaml (713 positives, at least 20 per
-# Tool, 138 negatives and 28 compounds) run against
+# Tool, 144 negatives and 28 compounds) run against
 # sentence-transformers/all-MiniLM-L6-v2. At these values every Tool has
 # precision 1.00 against the confirmed 0.95 per-Tool floor, overall recall is
 # 0.6971, and no negative or compound reaches the Fast path. Recall is

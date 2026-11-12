@@ -21,6 +21,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/tools/units"
 	"github.com/Jairik/clanka-bot/assistant/tools/voice"
 	"github.com/Jairik/clanka-bot/assistant/tools/weather"
+	"github.com/Jairik/clanka-bot/assistant/tools/web"
 	"gopkg.in/yaml.v3"
 )
 
@@ -46,6 +47,7 @@ func NewSet() *Set {
 		calc.NewModule(),
 		units.NewModule(),
 		random.NewModule(),
+		web.NewModule(),
 	}}
 }
 

@@ -22,6 +22,10 @@ _Avoid_: Scope, access level, risk tier
 A Tool whose results must never leave the Pi, so the Agent path can neither see nor call it.
 _Avoid_: Private tool, offline tool, sensitive tool
 
+**Agent-only Tool**:
+A Tool the semantic Fast path must never choose, so only the Agent path can call it. It declares `AgentOnly` and has no matching Examples or Extract; the name is listed for the Agent's tool set, not the Fast path index.
+_Avoid_: Hidden Tool, private tool, non-voice Tool
+
 **Confirmation**:
 The user's spoken yes that a `confirm` Tool call needs before it runs. It lasts one turn, and anything other than a clear yes drops the call.
 _Avoid_: Approval, consent, verification

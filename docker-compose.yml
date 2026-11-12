@@ -94,6 +94,8 @@ services:
         condition: service_healthy
       stt:
         condition: service_healthy
+      web-search:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
       interval: 10s
@@ -184,6 +186,40 @@ services:
       timeout: 5s
       retries: 12
       start_period: 180s
+
+  # SearXNG behind the Agent-path web.search Tool. Internal-only: Compose
+  # publishes no host port, runs no valkey and mounts no database. Two Granian
+  # workers, limiter off, three fast engines and a 1.5 s engine timeout live in
+  # searxng/config/settings.yml; JSON output is enabled for the Tool.
+  web-search:
+    build:
+      context: ./searxng
+    image: clanka/web-search:${GIT_SHA:-dev}
+    restart: unless-stopped
+    # Run as the image's searxng user (977). The config mount is read-only and
+    # the image-owned /var/cache/searxng stays writable for engine metadata.
+    user: "977:977"
+    environment:
+      # Official Granian worker option, not the retired uWSGI variables.
+      # Two workers is the assistant's Pi-sized bound.
+      GRANIAN_WORKERS: "2"
+      SEARXNG_BASE_URL: "http://web-search:8080/"
+      # Internal hashing key, not an authentication secret. The settings file
+      # carries the same safe value; set this on a host that rotates secrets.
+      SEARXNG_SECRET: ${SEARXNG_SECRET:-clanka-internal-search}
+    volumes:
+      # Settings only. No cache/data volume: this instance stores no history
+      # and shares no volume with the assistant (ADR-0003).
+      - ./searxng/config:/etc/searxng:ro
+    expose:
+      - "8080"
+    healthcheck:
+      # The official image ships wget. /healthz is SearXNG's documented probe.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
 
 volumes:
   # Named so the database survives `docker compose down`, rebuilds and deploys.

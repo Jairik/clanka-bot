@@ -186,3 +186,15 @@ _Avoid_: Speed, tempo, speaking pace
 **Persona**:
 A named bundle of a voice, a personality prompt and the Filler and Unavailable wording. Selecting one applies the voice and wording through the live settings and lets the personality prompt enter only the single prompt builder's labelled system part; a later manual voice or wording change is reported as a difference rather than claimed as the bundle.
 _Avoid_: Character, mode, skin, profile
+
+**Spotify Connect pairing**:
+The one-time grant where the Spotify app hands a Connect receiver its cached credentials over zeroconf. The `librespot` container keeps those credentials on its own volume; it is separate from Web API auth and survives container restarts.
+_Avoid_: Login, Spotify password, account link
+
+**Spotify Web API auth**:
+The Authorization Code with PKCE grant whose refresh token is stored in the write-only secrets table. It authorises control calls such as play, pause, search and queue, not the audio path; the refresh token is never a config value or a file.
+_Avoid_: Spotify login, API key, client secret
+
+**Librespot**:
+The Spotify Connect receiver container. It advertises a device over mDNS on the host network and plays into the Assistant's Pulse sink ([ADR-0004](docs/adr/0004-spotify-plays-through-the-pi.md)).
+_Avoid_: Spotify player, Spotify daemon

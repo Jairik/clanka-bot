@@ -77,5 +77,21 @@
   {{else}}
   <p class="muted">No Tool modules are wired.</p>
   {{end}}
+
+  <h3>Spotify</h3>
+  <p class="muted">Connect pairing (librespot's cached credentials) and Web API auth (the OAuth refresh token) are separate grants. One can be healthy while the other is not.</p>
+  <div class="table-wrap">
+    <table>
+      <tbody>
+        {{range .Spotify}}
+        <tr>
+          <th scope="row">{{.Name}}</th>
+          <td><span class="pill pill-{{.Status}}">{{.StatusLabel}}</span></td>
+          <td class="detail">{{.Detail}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
 </section>
 {{end}}

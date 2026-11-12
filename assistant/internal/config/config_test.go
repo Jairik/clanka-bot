@@ -426,3 +426,61 @@ func TestLoadDefaultsTheAgentFiller(t *testing.T) {
 		t.Fatal("Agent.Filler is empty, want a default phrase")
 	}
 }
+
+func TestLoadReadsSpotifyConfigAndEnvironment(t *testing.T) {
+	path := writeConfig(t, `
+spotify:
+  client_id: "0123456789abcdef0123456789abcdef"
+  redirect_uri: "https://pi.tailnet.ts.net/spotify/callback"
+  pairing_status_file: "/spotify-status/librespot.status"
+  device_name: "Clanka"
+  stale_after: 45s
+  timeout: 5s
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Spotify.ClientID != "0123456789abcdef0123456789abcdef" {
+		t.Errorf("client id = %q", cfg.Spotify.ClientID)
+	}
+	if cfg.Spotify.RedirectURI != "https://pi.tailnet.ts.net/spotify/callback" {
+		t.Errorf("redirect uri = %q", cfg.Spotify.RedirectURI)
+	}
+	if cfg.Spotify.PairingStatusFile != "/spotify-status/librespot.status" {
+		t.Errorf("pairing status file = %q", cfg.Spotify.PairingStatusFile)
+	}
+	if cfg.Spotify.Timeout.Duration() != 5*time.Second {
+		t.Errorf("timeout = %s", cfg.Spotify.Timeout.Duration())
+	}
+
+	t.Setenv("SPOTIFY_CLIENT_ID", "fedcba9876543210fedcba9876543210")
+	t.Setenv("SPOTIFY_REDIRECT_URI", "http://127.0.0.1:8082/spotify/callback")
+	t.Setenv("ASSISTANT_SPOTIFY_STATUS_FILE", "/tmp/librespot.status")
+	t.Setenv("SPOTIFY_DEVICE_NAME", "Kitchen")
+	cfg, err = config.Load(writeConfig(t, "{}\n"))
+	if err != nil {
+		t.Fatalf("Load with env: %v", err)
+	}
+	if cfg.Spotify.ClientID != "fedcba9876543210fedcba9876543210" {
+		t.Errorf("env client id = %q", cfg.Spotify.ClientID)
+	}
+	if cfg.Spotify.RedirectURI != "http://127.0.0.1:8082/spotify/callback" {
+		t.Errorf("env redirect uri = %q", cfg.Spotify.RedirectURI)
+	}
+	if cfg.Spotify.PairingStatusFile != "/tmp/librespot.status" {
+		t.Errorf("env status file = %q", cfg.Spotify.PairingStatusFile)
+	}
+	if cfg.Spotify.DeviceName != "Kitchen" {
+		t.Errorf("env device name = %q", cfg.Spotify.DeviceName)
+	}
+}
+
+func TestLoadRejectsHalfConfiguredSpotify(t *testing.T) {
+	if _, err := config.Load(writeConfig(t, "spotify:\n  client_id: \"abc\"\n")); err == nil {
+		t.Fatal("Load accepted a client ID without a redirect URI")
+	}
+	if _, err := config.Load(writeConfig(t, "spotify:\n  redirect_uri: \"https://pi.tailnet.ts.net/spotify/callback\"\n")); err == nil {
+		t.Fatal("Load accepted a redirect URI without a client ID")
+	}
+}

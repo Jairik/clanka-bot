@@ -5,11 +5,13 @@ My lovely always-on voice assistant for stuff written in go. Kind of like a lobo
 ## Run the prototype
 
 The prototype is the `assistant` Go service in Docker, with a `wakeword`
-(openWakeWord), an `stt` (Moonshine Voice), a `tts` (Pocket TTS) service and an
-internal `web-search` (SearXNG) service for Agent-path lookups.
+(openWakeWord), an `stt` (Moonshine Voice), a `tts` (Pocket TTS) service, an
+internal `web-search` (SearXNG) service for Agent-path lookups, and a
+`librespot` Spotify Connect receiver.
 `assistant` owns the microphone and speaker, and also exposes a health endpoint
 and a localhost-only debug entry that accepts a typed transcript (entering the
-pipeline just after STT).
+pipeline just after STT). librespot is the one music exception: it plays into
+the same Pulse sink as the Assistant's speech (ADR-0004).
 
 ```sh
 cp .env.example .env
@@ -140,6 +142,75 @@ spoken result. A missing token appears in the module health check and the
 Secrets page; the token, issue title/body, pull-request titles and notification
 titles never enter a log line. GitHub text is labelled to the model as
 untrusted facts.
+
+### Spotify
+
+Spotify has two separate grants, and the Dashboard's `/spotify` page and Health
+panel show them separately:
+
+- **Connect pairing** is the librespot container. It advertises a Spotify
+  Connect device over mDNS, plays into the same Pulse sink as the Assistant's
+  speech, and caches its credentials in its own `librespot-cache` volume. The
+  Assistant never mounts that volume.
+- **Web API auth** is an OAuth refresh token in the write-only secrets table
+  (`SPOTIFY_REFRESH_TOKEN`). It is used only for control calls such as
+  play/pause, search, queue and now-playing; the audio itself always comes from
+  librespot on the Pi.
+
+**Pair once.** Put the phone or desktop on the same LAN, open Spotify, play
+something, open **Devices**, and choose `Clanka` (or `SPOTIFY_DEVICE_NAME`).
+The first connection writes `credentials.json` to `librespot-cache`, so later
+container restarts reconnect without pairing again. librespot uses host
+networking because Docker's bridge network hides mDNS from the LAN; no port is
+published. Its container runs a small Avahi responder restricted to the
+default-route LAN interface, so the host needs no Avahi or D-Bus mount. If the
+device does not appear on a multi-homed host, set
+`SPOTIFY_ZEROCONF_INTERFACE` to the LAN interface name (for example `wlan0`).
+On a host that runs Avahi, `avahi-browse -t _spotify-connect._tcp` is a quick
+local check.
+
+**Register the Web API app.** Create an app in the Spotify Developer Dashboard
+(development mode is fine; its owner needs Premium and it allows five users),
+then add this exact redirect URI to the app's **Redirect URIs** allowlist:
+
+```
+https://<pi-name>.<tailnet>.ts.net/spotify/callback
+```
+
+Spotify requires HTTPS except for a loopback IP literal (`127.0.0.1` or
+`[::1]`), and does not accept `localhost`. Set the public client ID and the
+same URI in `.env` (`SPOTIFY_CLIENT_ID`, `SPOTIFY_REDIRECT_URI`), then deploy
+or restart. There is no client secret: the flow is Authorization Code with
+PKCE. The requested scopes are only what playback and playlists need:
+`user-read-playback-state`, `user-modify-playback-state`,
+`user-read-currently-playing`, `playlist-read-private`,
+`playlist-read-collaborative`, `user-library-read` and `user-library-modify`.
+No email, profile or Web Playback SDK scope is requested.
+
+Open the Dashboard over Tailscale and click **Connect Web API** on `/spotify`.
+The assistant starts the flow with a random one-use `state`, an S256 PKCE
+verifier and a separate HttpOnly `SameSite=Lax` binding cookie, all bound to the
+Dashboard owner and expiring after ten minutes. The callback rejects a wrong,
+missing, expired or replayed state and never reflects callback text into the
+page. The refresh token is written only through `secrets.Set`; access tokens
+stay in memory. A refresh is single-flight, and a rotated refresh token is
+persisted before the access token is used. The page and logs contain no token,
+code, verifier or state. Spotify development-mode refresh tokens have a
+six-month lifetime; when the page says **reconnect needed**, click Connect
+again. Refreshing an access token does not extend that lifetime.
+
+**Troubleshooting.** `docker compose logs librespot` shows discovery and login
+errors; `docker compose ps` shows the heartbeat healthcheck. The Health page
+reports a stale or missing heartbeat as unavailable rather than guessing. A
+librespot container with no credentials still advertises the device, so
+"not paired" is a normal first-run state. `librespot-cache` contains
+credentials: treat it like the secrets database and do not copy it around.
+
+The playback and playlist voice Tools are #72/#73; #71 lands the container,
+pairing/auth surface, health rows, refresh-token storage and the reusable
+`internal/spotify` client seam. No real Spotify account or playback is
+exercised by the automated tests.
+
 
 Agent path replies are spoken as they are generated: the first chunk is flushed
 at a clause boundary or after about twelve words, then each sentence is sent to
@@ -774,12 +845,15 @@ only on the localhost debug listener and behind the authenticated Dashboard.
 
 ### Audio
 
-Per [ADR-0001](docs/adr/0001-middleware-owns-all-audio-io.md), only the
-`assistant` container mounts the host's Pulse socket; `tts` does computation
-only. Compose runs `assistant` as `${ASSISTANT_UID}` (default 1000) so it can
-read the host Pulse cookie, and plays through `pacat`. Set
-`ASSISTANT_PULSE_SINK` to a sink name from `pactl list short sinks`; empty uses
-the default sink. On the Pi this is the Echo Dot once Bluetooth A2DP is set up.
+Per [ADR-0001](docs/adr/0001-middleware-owns-all-audio-io.md) and
+[ADR-0004](docs/adr/0004-spotify-plays-through-the-pi.md), only the `assistant`
+and `librespot` containers mount the host's Pulse socket; `tts` and the other
+model services do computation only. Compose runs both audio containers as
+`${ASSISTANT_UID}` (default 1000) so they can read the host Pulse cookie.
+`assistant` plays replies through `pacat`; librespot uses the PulseAudio
+backend and the same named sink. Set `ASSISTANT_PULSE_SINK` to a sink name
+from `pactl list short sinks`; empty uses the default sink for both. On the Pi
+this is the Echo Dot once Bluetooth A2DP is set up.
 
 Non-secret settings live in [`assistant/config.yaml`](assistant/config.yaml).
 `.env` holds deployment inputs and the secret bootstrap; a value stored through

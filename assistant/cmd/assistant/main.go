@@ -491,7 +491,7 @@ func run() error {
 }
 
 // newVoiceLoop wires the microphone path: Pulse capture, Wyoming wake word and
-// STT, the wake chime, and the shared reply Session. The pipeline is the
+// STT, the live wake Cue, and the shared reply Session. The pipeline is the
 // Barge-in seam that drops a waiting Confirmation, and the Announcement queue
 // stops unprompted speech as soon as a wake word starts a turn.
 func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingDropper, sink audio.Sink, announcements *announce.Queue, wakeCue func() ([]byte, audio.Format, bool), logger *slog.Logger) (*voice.Loop, error) {

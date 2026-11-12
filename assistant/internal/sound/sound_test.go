@@ -235,6 +235,8 @@ func TestRoleCapsRejectRatherThanTrim(t *testing.T) {
 	f := newFixture(t, sound.Config{})
 	dir := f.sounds.LibraryDir()
 	long := writeLibraryWAV(t, dir, "long.wav", 1500*time.Millisecond)
+	just := writeLibraryWAV(t, dir, "just.wav", 1001*time.Millisecond)
+	exact := writeLibraryWAV(t, dir, "exact.wav", time.Second)
 	long3 := writeLibraryWAV(t, dir, "long3.wav", 4*time.Second)
 	ring := writeLibraryWAV(t, dir, "ring.wav", 61*time.Second)
 	edge := writeLibraryWAV(t, dir, "edge.wav", 59*time.Second)
@@ -246,6 +248,14 @@ func TestRoleCapsRejectRatherThanTrim(t *testing.T) {
 	if _, err := f.settings.Set(ctx, sound.Key(sound.RoleWake), "long"); err == nil ||
 		!strings.Contains(err.Error(), "over the 1s cap") {
 		t.Fatalf("wake assignment error = %v, want the 1s cap error", err)
+	}
+	// A millisecond over the cap is still over, even though the index column
+	// could truncate it to exactly 1000 ms; exactly 1 s is accepted.
+	if _, err := f.settings.Set(ctx, sound.Key(sound.RoleWake), "just"); err == nil {
+		t.Fatal("1001 ms wake sound was accepted")
+	}
+	if _, err := f.settings.Set(ctx, sound.Key(sound.RoleWake), "exact"); err != nil {
+		t.Fatalf("exactly 1 s wake sound was rejected: %v", err)
 	}
 	if _, err := f.settings.Set(ctx, sound.Key(sound.RoleReminder), "long3"); err == nil ||
 		!strings.Contains(err.Error(), "over the 3s cap") {
@@ -264,7 +274,7 @@ func TestRoleCapsRejectRatherThanTrim(t *testing.T) {
 	}
 
 	// Rejection never trims the source: the file still holds its full length.
-	for _, path := range []string{long, long3, ring, edge} {
+	for _, path := range []string{long, just, exact, long3, ring, edge} {
 		info, err := audio.InspectWAV(path)
 		if err != nil {
 			t.Fatalf("InspectWAV %s: %v", path, err)

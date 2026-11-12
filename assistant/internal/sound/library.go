@@ -36,7 +36,7 @@ func (s *Service) Rescan(ctx context.Context) error {
 	if _, err := tx.ExecContext(ctx,
 		`INSERT INTO sounds (name, path, builtin, duration_ms, added_at) VALUES (?, '', 1, ?, ?)
 		 ON CONFLICT(name) DO UPDATE SET path = '', builtin = 1, duration_ms = excluded.duration_ms`,
-		s.chime.Name, s.chime.Duration.Milliseconds(), now); err != nil {
+		s.chime.Name, durationMillis(s.chime.Duration), now); err != nil {
 		return fmt.Errorf("sound: index builtin %s: %w", s.chime.Name, err)
 	}
 
@@ -50,7 +50,7 @@ func (s *Service) Rescan(ctx context.Context) error {
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO sounds (name, path, builtin, duration_ms, added_at) VALUES (?, ?, 0, ?, ?)
 			 ON CONFLICT(name) DO UPDATE SET path = excluded.path, builtin = 0, duration_ms = excluded.duration_ms`,
-			entry.Name, filepath.ToSlash(relative), entry.Duration.Milliseconds(), now); err != nil {
+			entry.Name, filepath.ToSlash(relative), durationMillis(entry.Duration), now); err != nil {
 			return fmt.Errorf("sound: index %s: %w", entry.Name, err)
 		}
 	}
@@ -129,6 +129,16 @@ func (s *Service) scanFiles() ([]Sound, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name) })
 	return out, nil
+}
+
+// durationMillis rounds a duration up to the index's millisecond column. The
+// rounding is deliberate: a file just over a role cap must not slip through
+// assignment because truncation made it look shorter.
+func durationMillis(d time.Duration) int64 {
+	if d <= 0 {
+		return 0
+	}
+	return int64((d + time.Millisecond - 1) / time.Millisecond)
 }
 
 // reload replaces the in-memory index from the database, preserving added_at.

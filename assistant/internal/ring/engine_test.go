@@ -363,6 +363,24 @@ func TestStopEndsTheRingAndRestoresMusic(t *testing.T) {
 	}
 }
 
+// TestMissedRingRestoresMusic proves the duck is restored when max_ring ends
+// the Ring, not only on an explicit stop.
+func TestMissedRingRestoresMusic(t *testing.T) {
+	player := newRecordingPlayer(false)
+	music := &fakeMusic{}
+	engine := engineFor(ring.Settings{
+		MaxRing: 2 * time.Millisecond, Volume: 100, Gap: time.Millisecond, SpeakLabel: ring.SpeakNever,
+	}, player, func(deps *ring.Deps) { deps.Music = music })
+	result := engine.Ring(context.Background(), ring.Request{Kind: ring.Timer})
+	if result.Outcome != ring.OutcomeMissed {
+		t.Fatalf("result = %+v, want missed", result)
+	}
+	events := music.all()
+	if len(events) != 2 || events[0] != "duck" || events[1] != "restore" {
+		t.Fatalf("music events = %v, want duck then restore", events)
+	}
+}
+
 // TestSnoozeOnTimerActsAsStop covers the Timer-specific snooze rule.
 func TestSnoozeOnTimerActsAsStop(t *testing.T) {
 	var registry focus.Registry

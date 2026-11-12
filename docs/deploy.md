@@ -125,12 +125,19 @@ published to the LAN or the internet.
    ```sh
    ASSISTANT_DASHBOARD_PORT=8082
    ASSISTANT_DASHBOARD_OWNER=you@example.com
+   # The exact Host tailscale serve sends, without a scheme or path.
+   ASSISTANT_DASHBOARD_HOSTS=pi.tailnet-name.ts.net
    ```
 
    Then deploy or restart the assistant container. An empty owner disables the
-   listener. If you change `ASSISTANT_DASHBOARD_PORT`, use the same port in the
+   listener. `ASSISTANT_DASHBOARD_HOSTS` is required for serve: the handler
+   rejects any Host outside that exact list, so a DNS-rebinding page cannot
+   borrow the owner identity. It fails closed when empty (only a loopback Host
+   is accepted) and logs the setup instruction. Wildcards are rejected, and
+   loopback names stay allowed so the local curl smoke test keeps working. If
+   you change `ASSISTANT_DASHBOARD_PORT`, use the same port in the
    `tailscale serve` command below. `assistant/config.yaml` documents
-   `dashboard.owner`, `addr` and `health_timeout`.
+   `dashboard.owner`, `addr`, `hosts` and `health_timeout`.
 
 2. **Enable HTTPS on the tailnet** if it is not already on. `tailscale serve`
    provisions the certificate for the Pi's `*.ts.net` name.
@@ -182,9 +189,12 @@ directly therefore cannot authenticate by sending its own
 `Tailscale-User-Login`. Never add a LAN/WAN port mapping for 8082.
 
 `tailscale serve` strips client-supplied `Tailscale-*` headers and adds the
-authenticated `Tailscale-User-Login`. The Dashboard requires exactly one such
-header and compares it to the configured owner; other identities, missing
-headers, duplicate headers and tagged devices are refused with 403.
+authenticated `Tailscale-User-Login`. The Dashboard first requires the Host to
+be the configured `ASSISTANT_DASHBOARD_HOSTS` entry (or loopback), then requires
+exactly one identity header matching the configured owner; other hosts,
+identities, missing headers, duplicate headers and tagged devices are refused
+with 403. The Spotify OAuth callback uses the same host and its own state and
+binding-cookie checks.
 
 Check the listener locally:
 

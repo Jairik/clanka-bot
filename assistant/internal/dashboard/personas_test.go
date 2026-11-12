@@ -80,6 +80,7 @@ func (f *personasFixture) get(target string) *httptest.ResponseRecorder {
 func (f *personasFixture) post(target string, values url.Values) *httptest.ResponseRecorder {
 	f.t.Helper()
 	req := httptest.NewRequest(http.MethodPost, target, strings.NewReader(values.Encode()))
+	req.Host = "127.0.0.1:8082"
 	req.RemoteAddr = "127.0.0.1:12345"
 	req.Header.Set("Tailscale-User-Login", owner)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -302,6 +303,7 @@ func TestPersonaFormsRequireSameOriginAndWorkAsHTMXFragments(t *testing.T) {
 	f := newPersonasFixture(t)
 	// No identity.
 	req := httptest.NewRequest(http.MethodPost, "/personas", strings.NewReader(personaValues("X", "alba", "Prompt.").Encode()))
+	req.Host = "127.0.0.1:8082"
 	req.RemoteAddr = "127.0.0.1:12345"
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
@@ -310,6 +312,7 @@ func TestPersonaFormsRequireSameOriginAndWorkAsHTMXFragments(t *testing.T) {
 	}
 	// Cross-origin.
 	cross := httptest.NewRequest(http.MethodPost, "/personas", strings.NewReader(personaValues("X", "alba", "Prompt.").Encode()))
+	cross.Host = "127.0.0.1:8082"
 	cross.RemoteAddr = "127.0.0.1:12345"
 	cross.Header.Set("Tailscale-User-Login", owner)
 	cross.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -321,6 +324,7 @@ func TestPersonaFormsRequireSameOriginAndWorkAsHTMXFragments(t *testing.T) {
 
 	// An htmx create swaps the content fragment, not a whole document.
 	req = httptest.NewRequest(http.MethodPost, "/personas", strings.NewReader(personaValues("GLaDOS", "alba", "You are GLaDOS.").Encode()))
+	req.Host = "127.0.0.1:8082"
 	req.RemoteAddr = "127.0.0.1:12345"
 	req.Header.Set("Tailscale-User-Login", owner)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -337,6 +341,7 @@ func TestPersonaFormsRequireSameOriginAndWorkAsHTMXFragments(t *testing.T) {
 
 	// An htmx validation error also returns a 200 fragment with the alert.
 	req = httptest.NewRequest(http.MethodPost, "/personas", strings.NewReader(personaValues("", "alba", "").Encode()))
+	req.Host = "127.0.0.1:8082"
 	req.RemoteAddr = "127.0.0.1:12345"
 	req.Header.Set("Tailscale-User-Login", owner)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")

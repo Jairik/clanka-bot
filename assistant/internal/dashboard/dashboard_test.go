@@ -74,6 +74,11 @@ func newHandler(t *testing.T, opts dashboard.Options) *dashboard.Handler {
 	if opts.ProxyAllowed == nil {
 		opts.ProxyAllowed = func(ip net.IP) bool { return ip.IsLoopback() }
 	}
+	if opts.Hosts == nil {
+		// The tests' tailnet name; a loopback Host alone would not exercise the
+		// configured-name path.
+		opts.Hosts = []string{"pi.example.ts.net"}
+	}
 	handler, err := dashboard.New(opts)
 	if err != nil {
 		t.Fatalf("dashboard.New: %v", err)
@@ -83,6 +88,9 @@ func newHandler(t *testing.T, opts dashboard.Options) *dashboard.Handler {
 
 func request(method, target, login string) *http.Request {
 	req := httptest.NewRequest(method, target, nil)
+	// A loopback Host is the documented local smoke test and the default the
+	// handler accepts without extra configuration.
+	req.Host = "127.0.0.1:8082"
 	req.RemoteAddr = "127.0.0.1:12345"
 	if login != "" {
 		req.Header.Set("Tailscale-User-Login", login)

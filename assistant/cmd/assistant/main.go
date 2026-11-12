@@ -708,18 +708,20 @@ func run() error {
 	buildCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	exampleSet, err := semantic.BuildSet(buildCtx, initialExamples)
 	cancel()
-	var liveRouter *pipeline.SemanticRouter
 	if err != nil {
-		logger.Warn("semantic routing disabled", "embed_url", cfg.Embed.URL, "error", err.Error())
+		// Keep the router attached and let the wording worker retry with
+		// bounded backoff. Semantic matching is unavailable until the embed
+		// service returns, but Control phrases and the Agent path keep working
+		// and recovery needs no edit or restart.
+		logger.Warn("semantic routing will retry in the background", "embed_url", cfg.Embed.URL, "error", err.Error())
 	} else {
 		semantic.Swap(exampleSet)
 		wordingMgr.MarkExamplesBuilt(initialExamples)
-		opts = append(opts, pipeline.WithSemanticRouter(semantic))
-		liveRouter = semantic
 	}
-	// The worker only watches wording changes; the startup build above is the
-	// initial state. A nil router still lets the Filler reload.
-	wordingMgr.Start(ctx, liveRouter)
+	// Always attach the router: the worker owns the one settings observer and
+	// retries a failed startup build (or any later failed rebuild) itself.
+	opts = append(opts, pipeline.WithSemanticRouter(semantic))
+	wordingMgr.Start(ctx, semantic)
 
 	p, err := pipeline.New(registry, baseCfg.ControlPhrases, logger, opts...)
 	if err != nil {
@@ -839,6 +841,7 @@ func run() error {
 		}
 		dashboardHandler, err := dashboard.New(dashboard.Options{
 			Owner:         cfg.Dashboard.Owner,
+			Hosts:         cfg.Dashboard.Hosts,
 			Logger:        logger,
 			HealthTimeout: cfg.Dashboard.HealthTimeout.Duration(),
 			Services:      dashboard.ComposeServiceChecks(cfg),
@@ -877,9 +880,18 @@ func run() error {
 			Handler:           dashboardHandler,
 			ReadHeaderTimeout: 5 * time.Second,
 		})
+		if len(cfg.Dashboard.Hosts) == 0 {
+			// Fail closed: only a loopback Host is accepted until the operator
+			// names the tailnet endpoint. This is the setup instruction, not a
+			// silently widened trust boundary.
+			logger.Warn("dashboard hosts are not configured",
+				"detail", "only loopback Host headers are accepted; set ASSISTANT_DASHBOARD_HOSTS to the exact tailscale serve name (for example pi.example.ts.net) or requests through the proxy will be refused",
+			)
+		}
 		logger.Info("dashboard enabled",
 			"addr", cfg.Dashboard.Addr,
 			"owner", cfg.Dashboard.Owner,
+			"hosts", cfg.Dashboard.Hosts,
 		)
 	} else {
 		logger.Info("dashboard disabled", "reason", "dashboard.owner is empty")
@@ -897,7 +909,7 @@ func run() error {
 		"personas", len(personaSvc.List()),
 		"persona", personaSvc.Personality().Name,
 		"activity_limit", activity.DefaultLimit,
-		"voice", settingsSvc.String(voicelib.KeyName),
+		"voice_name", settingsSvc.String(voicelib.KeyName),
 		"voice_rate", settingsSvc.Float(voicelib.KeyRate),
 		"voice_revision", voiceSvc.Revision(),
 		"timezone", zone.Name(),
@@ -908,7 +920,7 @@ func run() error {
 		"spotify_web_api", cfg.Spotify.Enabled(),
 		"spotify_device", cfg.Spotify.DeviceName,
 		"spotify_pairing_status", cfg.Spotify.PairingStatusFile != "",
-		"voice", cfg.VoiceEnabled(),
+		"speech_enabled", cfg.VoiceEnabled(),
 		"wakeword_addr", cfg.Wakeword.Addr,
 		"stt_addr", cfg.STT.Addr,
 		"agent_filler", settingsSvc.String(wording.FillerKey),

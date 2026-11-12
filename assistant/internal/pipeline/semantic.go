@@ -76,6 +76,11 @@ type ExampleSet struct {
 	examples []example
 	dims     int
 	tools    int
+	// leads holds the first word of every indexed Example, so a clause after a
+	// joiner can be judged a new request ("set a timer ... and set another")
+	// without a second embed call. Pronouns, auxiliaries and question words are
+	// omitted: they open questions, not commands.
+	leads map[string]bool
 }
 
 // ToolCount returns how many Tools the set indexes.
@@ -186,6 +191,7 @@ func (r *SemanticRouter) BuildSet(ctx context.Context, examples map[string][]str
 		return nil, fmt.Errorf("semantic router: got %d example vectors for %d examples", len(vectors), len(texts))
 	}
 	seen := make(map[string]bool, len(refs))
+	set.leads = make(map[string]bool, len(refs))
 	for i, vec := range vectors {
 		if len(vec) == 0 {
 			return nil, fmt.Errorf("semantic router: example vector %d is empty", i)
@@ -197,9 +203,80 @@ func (r *SemanticRouter) BuildSet(ctx context.Context, examples map[string][]str
 		}
 		set.examples = append(set.examples, example{tool: refs[i].tool, vec: vector.Normalize(vec)})
 		seen[refs[i].tool] = true
+		if lead := firstWord(refs[i].text); lead != "" && !clauseLeadExclusions[lead] {
+			set.leads[lead] = true
+		}
 	}
 	set.tools = len(seen)
 	return set, nil
+}
+
+// Joiners returns the configured clause joiners in their stored order, so the
+// pipeline can look for a second request after the same words the router
+// treats as compound markers.
+func (r *SemanticRouter) Joiners() []string {
+	if r == nil {
+		return nil
+	}
+	return append([]string(nil), r.cfg.Joiners...)
+}
+
+// ClauseStartsCommand reports whether text begins with a word that opens a
+// Fast-path Example, so the clause after a joiner is a second request rather
+// than a label or a number continuation. A schedule verb followed by a
+// preposition ("end at 7", "start at 10") continues the previous command and
+// is not a command of its own.
+func (r *SemanticRouter) ClauseStartsCommand(text string) bool {
+	if r == nil {
+		return false
+	}
+	set := r.live.Load()
+	if set == nil || len(set.leads) == 0 {
+		return false
+	}
+	words := wordRE.FindAllString(strings.ToLower(text), 3)
+	if len(words) == 0 {
+		return false
+	}
+	if !set.leads[words[0]] {
+		return false
+	}
+	if len(words) > 1 && clauseContinuationVerbs[words[0]] && clauseContinuationPreps[words[1]] {
+		return false
+	}
+	return true
+}
+
+// firstWord returns the first lowercase word of text, or "".
+func firstWord(text string) string {
+	words := wordRE.FindAllString(strings.ToLower(text), 1)
+	if len(words) == 0 {
+		return ""
+	}
+	return words[0]
+}
+
+// clauseLeadExclusions are words that open an Example but cannot carry a
+// command by themselves: question words, pronouns and auxiliaries. Without
+// this list a label such as "and I" would look like a second request.
+var clauseLeadExclusions = map[string]bool{
+	"a": true, "am": true, "an": true, "any": true, "are": true, "be": true,
+	"can": true, "could": true, "did": true, "do": true, "does": true,
+	"got": true, "how": true, "how's": true, "i": true, "i'd": true,
+	"i'll": true, "i'm": true, "is": true, "it": true, "it's": true,
+	"let's": true, "no": true, "please": true, "should": true, "that": true,
+	"that's": true, "the": true, "there": true, "this": true, "today's": true,
+	"we": true, "what": true, "what's": true, "when": true, "where": true,
+	"which": true, "who": true, "why": true, "would": true, "you": true,
+}
+
+// clauseContinuationVerbs and clauseContinuationPreps recognise a schedule
+// continuation: "start quiet hours at 10 and end at 7" is one request, not two.
+var clauseContinuationVerbs = map[string]bool{"end": true, "start": true, "begin": true}
+
+var clauseContinuationPreps = map[string]bool{
+	"at": true, "on": true, "by": true, "before": true, "after": true,
+	"from": true, "to": true, "until": true, "till": true, "in": true,
 }
 
 // Swap installs a built set. Readers see either the complete old set or the

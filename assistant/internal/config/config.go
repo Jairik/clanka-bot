@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
+	"github.com/Jairik/clanka-bot/assistant/internal/httpguard"
 	"github.com/Jairik/clanka-bot/assistant/internal/notify"
 	"github.com/Jairik/clanka-bot/assistant/internal/quiet"
 	"github.com/Jairik/clanka-bot/assistant/internal/spotify"
@@ -133,6 +134,11 @@ type Dashboard struct {
 	// Addr must be loopback or all interfaces. Compose binds all interfaces in
 	// the container and publishes only the host loopback port (docs/deploy.md).
 	Addr string `yaml:"addr"`
+	// Hosts is the explicit public Host allowlist: the tailnet name
+	// `tailscale serve` exposes. A request with any other Host is refused even
+	// when it carries the owner identity, so a DNS-rebinding page cannot reach
+	// the Dashboard. Loopback names stay allowed for the local smoke test.
+	Hosts []string `yaml:"hosts"`
 	// HealthTimeout bounds one Health page refresh, including network checks.
 	HealthTimeout Duration `yaml:"health_timeout"`
 }
@@ -272,8 +278,11 @@ func Default() Config {
 	cfg.Embed.URL = "http://embed:8085"
 	cfg.Embed.Model = "sentence-transformers/all-MiniLM-L6-v2"
 	cfg.Embed.Timeout = Duration(150 * time.Millisecond)
-	cfg.Semantic.Threshold = 0.70
-	cfg.Semantic.Margin = 0.08
+	// Shipped policy from the #26 evaluation: 0.71/0.23. These code defaults
+	// are what a config that omits the semantic block gets, so they must match
+	// config.yaml; a weaker margin here would silently lower the floor.
+	cfg.Semantic.Threshold = 0.71
+	cfg.Semantic.Margin = 0.23
 	cfg.Semantic.Joiners = []string{"and", "then", "also"}
 	cfg.NameMatch.Threshold = 0.60
 	cfg.Quiet = Quiet{Enabled: false, Start: "22:30", End: "07:00", Volume: 35}
@@ -353,6 +362,18 @@ func Load(path string) (Config, error) {
 	return cfg, nil
 }
 
+// splitList reads a comma-separated environment value, ignoring empty entries
+// so an unset or trailing comma cannot create a blank host.
+func splitList(value string) []string {
+	var out []string
+	for _, item := range strings.Split(value, ",") {
+		if item = strings.TrimSpace(item); item != "" {
+			out = append(out, item)
+		}
+	}
+	return out
+}
+
 func applyEnv(cfg *Config) error {
 	if v := os.Getenv("ASSISTANT_HTTP_ADDR"); v != "" {
 		cfg.HTTP.Addr = v
@@ -372,6 +393,9 @@ func applyEnv(cfg *Config) error {
 	}
 	if v := os.Getenv("ASSISTANT_DASHBOARD_ADDR"); v != "" {
 		cfg.Dashboard.Addr = v
+	}
+	if v := os.Getenv("ASSISTANT_DASHBOARD_HOSTS"); v != "" {
+		cfg.Dashboard.Hosts = splitList(v)
 	}
 	if v := os.Getenv("ASSISTANT_DATA_DIR"); v != "" {
 		cfg.Data.Dir = v
@@ -470,6 +494,9 @@ func (c Config) Validate() error {
 		}
 		if c.Dashboard.HealthTimeout.Duration() <= 0 {
 			return fmt.Errorf("config: dashboard.health_timeout must be positive")
+		}
+		if _, err := httpguard.NewHosts(c.Dashboard.Hosts); err != nil {
+			return fmt.Errorf("config: dashboard.hosts: %w", err)
 		}
 		if strings.ContainsAny(c.Dashboard.Owner, " \t\r\n,") {
 			return fmt.Errorf("config: dashboard.owner must be one Tailscale login without spaces")

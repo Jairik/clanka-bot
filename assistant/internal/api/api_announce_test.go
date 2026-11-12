@@ -42,6 +42,8 @@ func newAnnounceQueue(t *testing.T, speaker announce.Speaker) *announce.Queue {
 func postAnnounce(t *testing.T, handler http.Handler, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/debug/announce", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Host = "127.0.0.1:8081"
 	req.RemoteAddr = "127.0.0.1:12345"
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -106,6 +108,7 @@ func TestDebugAnnounceOnlyAcceptsPost(t *testing.T) {
 	handler, _ := newTestServerWith(t, api.WithAnnouncements(queue))
 
 	req := httptest.NewRequest(http.MethodGet, "/debug/announce", nil)
+	req.Host = "127.0.0.1:8081"
 	req.RemoteAddr = "127.0.0.1:12345"
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -122,6 +125,8 @@ func TestDebugAnnounceRejectsSiblingContainers(t *testing.T) {
 	}))
 
 	req := httptest.NewRequest(http.MethodPost, "/debug/announce", strings.NewReader(`{"text":"Dinner is ready."}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Host = "127.0.0.1:8081"
 	req.RemoteAddr = "172.18.0.5:40000"
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)

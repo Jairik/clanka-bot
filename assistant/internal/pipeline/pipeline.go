@@ -229,6 +229,11 @@ func New(reg *tool.Registry, phrases map[string]string, logger *slog.Logger, opt
 		if !info.HasSpeak {
 			return nil, fmt.Errorf("pipeline: control phrase %q points at %q, which has no Speak renderer", phrase, target)
 		}
+		if info.AgentOnly {
+			// A Control phrase is a Fast-path route; an AgentOnly Tool must
+			// never be reachable that way, even if it declares a renderer.
+			return nil, fmt.Errorf("pipeline: control phrase %q points at AgentOnly tool %q", phrase, target)
+		}
 		if info.Permission == tool.PermissionConfirm {
 			return nil, fmt.Errorf("pipeline: control phrase %q points at confirm tool %q", phrase, target)
 		}
@@ -403,13 +408,20 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 		record.reason = match.Reason
 		record.embedErr = match.Err
 		if match.Tool != "" {
-			markRouting()
-			record.reason = ""
-			reply.Path = tool.PathFast
-			reply.Tool = match.Tool
-			reply.Text, record.failure, reply.Pending = p.callTool(ctx, req, transcript, match.Tool, tool.PathFast, match.Args)
-			reply.LocalOnly = p.localOnlyTool(match.Tool)
-			return reply
+			// A Control phrase or a second command after a joiner is a compound
+			// request; executing only the semantic half would silently drop the
+			// other intent. The Agent path receives both clauses.
+			if p.secondCommandClause(transcript, phrases, intentPhrases) {
+				record.reason = reasonCompound
+			} else {
+				markRouting()
+				record.reason = ""
+				reply.Path = tool.PathFast
+				reply.Tool = match.Tool
+				reply.Text, record.failure, reply.Pending = p.callTool(ctx, req, transcript, match.Tool, tool.PathFast, match.Args)
+				reply.LocalOnly = p.localOnlyTool(match.Tool)
+				return reply
+			}
 		}
 	}
 

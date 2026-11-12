@@ -128,6 +128,7 @@ func (f *soundsFixture) get(target string) *httptest.ResponseRecorder {
 func (f *soundsFixture) post(target string, values url.Values) *httptest.ResponseRecorder {
 	f.t.Helper()
 	req := httptest.NewRequest(http.MethodPost, target, strings.NewReader(values.Encode()))
+	req.Host = "127.0.0.1:8082"
 	req.RemoteAddr = "127.0.0.1:12345"
 	req.Header.Set("Tailscale-User-Login", owner)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -153,6 +154,7 @@ func (f *soundsFixture) upload(filename string, data []byte) *httptest.ResponseR
 		f.t.Fatalf("close multipart: %v", err)
 	}
 	req := httptest.NewRequest(http.MethodPost, "/sounds/upload", body)
+	req.Host = "127.0.0.1:8082"
 	req.RemoteAddr = "127.0.0.1:12345"
 	req.Header.Set("Tailscale-User-Login", owner)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
@@ -265,6 +267,7 @@ func TestSoundsAudioServesCanonicalWAVWithRanges(t *testing.T) {
 		t.Fatalf("body is not a WAV (%d bytes)", len(body))
 	}
 	rangeReq := httptest.NewRequest(http.MethodGet, "/sounds/audio/birds", nil)
+	rangeReq.Host = "127.0.0.1:8082"
 	rangeReq.RemoteAddr = "127.0.0.1:12345"
 	rangeReq.Header.Set("Tailscale-User-Login", owner)
 	rangeReq.Header.Set("Range", "bytes=0-1")
@@ -480,6 +483,7 @@ func TestSoundsMutationsRequireIdentityAndSameOrigin(t *testing.T) {
 	writer.Close()
 
 	req := httptest.NewRequest(http.MethodPost, "/sounds/upload", bytes.NewReader(body.Bytes()))
+	req.Host = "127.0.0.1:8082"
 	req.RemoteAddr = "127.0.0.1:12345"
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
@@ -490,6 +494,7 @@ func TestSoundsMutationsRequireIdentityAndSameOrigin(t *testing.T) {
 	}
 
 	req = httptest.NewRequest(http.MethodPost, "/sounds/roles/wake", strings.NewReader("value=chime"))
+	req.Host = "127.0.0.1:8082"
 	req.RemoteAddr = "127.0.0.1:12345"
 	req.Header.Set("Tailscale-User-Login", owner)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -509,6 +514,7 @@ func TestSoundsFormsWorkAsHTMXFragments(t *testing.T) {
 	part.Write(testWAV(16000, 1, 100*time.Millisecond, 0.2))
 	writer.Close()
 	req := httptest.NewRequest(http.MethodPost, "/sounds/upload", bytes.NewReader(body.Bytes()))
+	req.Host = "127.0.0.1:8082"
 	req.RemoteAddr = "127.0.0.1:12345"
 	req.Header.Set("Tailscale-User-Login", owner)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
@@ -534,6 +540,7 @@ func TestSoundsFormsWorkAsHTMXFragments(t *testing.T) {
 	part.Write(testWAV(16000, 1, 1500*time.Millisecond, 0.2))
 	writer.Close()
 	req = httptest.NewRequest(http.MethodPost, "/sounds/upload", bytes.NewReader(body.Bytes()))
+	req.Host = "127.0.0.1:8082"
 	req.RemoteAddr = "127.0.0.1:12345"
 	req.Header.Set("Tailscale-User-Login", owner)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
@@ -546,6 +553,7 @@ func TestSoundsFormsWorkAsHTMXFragments(t *testing.T) {
 	}
 
 	req = httptest.NewRequest(http.MethodPost, "/sounds/roles/wake", strings.NewReader("value=long"))
+	req.Host = "127.0.0.1:8082"
 	req.RemoteAddr = "127.0.0.1:12345"
 	req.Header.Set("Tailscale-User-Login", owner)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")

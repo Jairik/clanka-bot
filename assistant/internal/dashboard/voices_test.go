@@ -289,6 +289,7 @@ func (f *voicesFixture) get(target string) *httptest.ResponseRecorder {
 func (f *voicesFixture) post(target string, values url.Values) *httptest.ResponseRecorder {
 	f.t.Helper()
 	req := httptest.NewRequest(http.MethodPost, target, strings.NewReader(values.Encode()))
+	req.Host = "127.0.0.1:8082"
 	req.RemoteAddr = "127.0.0.1:12345"
 	req.Header.Set("Tailscale-User-Login", owner)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -318,6 +319,7 @@ func (f *voicesFixture) upload(filename string, data []byte, replace bool) *http
 		f.t.Fatalf("close multipart: %v", err)
 	}
 	req := httptest.NewRequest(http.MethodPost, "/voices/upload", body)
+	req.Host = "127.0.0.1:8082"
 	req.RemoteAddr = "127.0.0.1:12345"
 	req.Header.Set("Tailscale-User-Login", owner)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
@@ -697,6 +699,7 @@ func TestVoicesBrowserPreviewIsAuthenticatedWAVAndKeepsTheActiveVoice(t *testing
 
 	// Range support keeps the audio element's scrubbing working.
 	rangeReq := httptest.NewRequest(http.MethodGet, "/voices/audio/alba", nil)
+	rangeReq.Host = "127.0.0.1:8082"
 	rangeReq.RemoteAddr = "127.0.0.1:12345"
 	rangeReq.Header.Set("Tailscale-User-Login", owner)
 	rangeReq.Header.Set("Range", "bytes=0-3")

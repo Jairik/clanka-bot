@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/httpguard"
 	"github.com/Jairik/clanka-bot/assistant/internal/latency"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
@@ -90,18 +91,21 @@ func NewHandler(p *pipeline.Pipeline, logger *slog.Logger, debugEnabled bool, op
 	if logger == nil {
 		logger = slog.Default()
 	}
-	s := &server{pipeline: p, logger: logger, debugEnabled: debugEnabled, debugAllowed: defaultDebugAllowlist}
+	s := &server{pipeline: p, logger: logger, debugEnabled: debugEnabled, debugAllowed: defaultDebugAllowlist, hosts: httpguard.Hosts{}}
 	for _, opt := range opts {
 		opt(s)
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.healthz)
-	mux.HandleFunc("/debug/transcript", s.debugTranscript)
-	mux.HandleFunc("/debug/announce", s.debugAnnounce)
+	// The debug entries and the mounted API share one browser guard: loopback
+	// Host only, same-origin Fetch Metadata, and a JSON Content-Type on a
+	// mutation body. The source-address check stays in the handlers below.
+	mux.HandleFunc("/debug/transcript", s.guarded(s.debugTranscript))
+	mux.HandleFunc("/debug/announce", s.guarded(s.debugAnnounce))
 	if debugEnabled && s.api != nil {
-		// Settings, Tool and secret writes are local-only: the same source
-		// check as the debug entry wraps the whole /api/ subtree.
-		mux.Handle("/api/", s.localOnly(http.StripPrefix("/api", s.api)))
+		// Settings, Tool and secret writes are local-only: the same guard and
+		// source check as the debug entry wrap the whole /api/ subtree.
+		mux.Handle("/api/", s.guardedHandler(s.localOnly(http.StripPrefix("/api", s.api))))
 	}
 	return mux
 }
@@ -115,6 +119,10 @@ type server struct {
 	announcer    Announcer
 	observer     latency.Observer
 	debugAllowed func(net.IP) bool
+	// hosts is the debug listener's Host allowlist. It is loopback-only: the
+	// listener is documented for curl on the Pi host, and Docker publishes it
+	// on 127.0.0.1.
+	hosts httpguard.Hosts
 }
 
 func (s *server) healthz(w http.ResponseWriter, r *http.Request) {
@@ -210,6 +218,53 @@ func (s *server) debugTranscript(w http.ResponseWriter, r *http.Request) {
 		RequestID: reply.RequestID,
 		Spoken:    spoken,
 	})
+}
+
+// guarded applies the debug listener's browser checks to a mutating or
+// reading entry: OPTIONS is answered without side effects, the Host must be
+// loopback (a rebinding page cannot borrow 127.0.0.1), browser metadata must
+// be same-origin, and a JSON body must say so. A non-browser client with no
+// Origin is accepted so the documented curl smoke test keeps working; the Host
+// and source checks still gate it.
+func (s *server) guarded(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.debugGuard(w, r) {
+			return
+		}
+		next(w, r)
+	}
+}
+
+func (s *server) guardedHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.debugGuard(w, r) {
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// debugGuard returns false after writing a rejection. It performs no state
+// change for OPTIONS, which is a browser preflight probe.
+func (s *server) debugGuard(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Allow", "OPTIONS")
+		w.WriteHeader(http.StatusNoContent)
+		return false
+	}
+	if !s.hosts.Allows(r) {
+		s.reject(w, tool.NewRequestID(), "unexpected host", http.StatusForbidden)
+		return false
+	}
+	if !httpguard.SameOriginOrLocal(r) {
+		s.reject(w, tool.NewRequestID(), "cross-origin request rejected", http.StatusForbidden)
+		return false
+	}
+	if httpguard.NeedsJSONBody(r.Method) && !httpguard.IsJSON(r) {
+		s.reject(w, tool.NewRequestID(), "content type must be application/json", http.StatusUnsupportedMediaType)
+		return false
+	}
+	return true
 }
 
 // localOnly wraps the API subtree in the same source check as the debug entry.

@@ -112,6 +112,10 @@ type Manager struct {
 	// already speaking or waiting in the Announcement queue.
 	active    map[string]context.CancelFunc
 	cancelled map[string]bool
+	// activeMessages keeps each fired Reminder's message. The pending row is
+	// gone before playback, so a query cancel ("cancel the oven reminder") needs
+	// this metadata to match a message that is speaking or queued.
+	activeMessages map[string]string
 }
 
 // NewManager builds an empty manager.
@@ -123,16 +127,17 @@ func NewManager(opts Options) *Manager {
 		opts.Logger = slog.Default()
 	}
 	return &Manager{
-		now:       opts.Now,
-		logger:    opts.Logger,
-		zone:      opts.Zone,
-		speaker:   opts.Speaker,
-		queue:     opts.Queue,
-		cues:      opts.Cues,
-		quiet:     opts.Quiet,
-		entries:   make(map[string]*entry),
-		active:    make(map[string]context.CancelFunc),
-		cancelled: make(map[string]bool),
+		now:            opts.Now,
+		logger:         opts.Logger,
+		zone:           opts.Zone,
+		speaker:        opts.Speaker,
+		queue:          opts.Queue,
+		cues:           opts.Cues,
+		quiet:          opts.Quiet,
+		entries:        make(map[string]*entry),
+		active:         make(map[string]context.CancelFunc),
+		activeMessages: make(map[string]string),
+		cancelled:      make(map[string]bool),
 	}
 }
 
@@ -285,12 +290,14 @@ func (m *Manager) fire(id string) {
 		return
 	}
 	m.active[r.ID] = activeCancel
+	m.activeMessages[r.ID] = r.Message
 	m.mu.Unlock()
 	release := func() {
 		activeCancel()
 		m.mu.Lock()
 		delete(m.active, r.ID)
 		delete(m.cancelled, r.ID)
+		delete(m.activeMessages, r.ID)
 		m.mu.Unlock()
 	}
 	play := func(queueCtx context.Context) error {
@@ -430,9 +437,10 @@ func (m *Manager) Cancel(id string) (int, error) {
 		return cancelled, err
 	}
 	if id != "" {
-		if cancel := m.active[id]; cancel != nil {
+		if cancel := m.active[id]; cancel != nil && !m.cancelled[id] {
 			// A fired Reminder has no pending row; mark the active playback so
-			// its history row records stopped/cancel, then stop it.
+			// its history row records stopped/cancel, then stop it. The flag
+			// dedupes a second cancel before the queue item releases.
 			m.cancelled[id] = true
 			cancel()
 			cancelled++
@@ -454,7 +462,25 @@ func (m *Manager) CancelQuery(query string) (int, error) {
 			ids = append(ids, key)
 		}
 	}
-	return m.cancelLocked(ids, "query")
+	cancelled, err := m.cancelLocked(ids, "query")
+	if err != nil {
+		return cancelled, err
+	}
+	// A fired Reminder has no pending row. Match its retained message and stop
+	// the playback or queued item too; an empty query means "cancel every
+	// reminder", which must include the one already speaking.
+	for id, message := range m.activeMessages {
+		if query != "" && !strings.Contains(strings.ToLower(message), query) {
+			continue
+		}
+		if cancel := m.active[id]; cancel != nil && !m.cancelled[id] {
+			m.cancelled[id] = true
+			cancel()
+			cancelled++
+			m.logger.Info("reminder playback cancelled", "reminder_id", id)
+		}
+	}
+	return cancelled, nil
 }
 
 // cancelLocked removes the persisted rows then the live entries. The caller

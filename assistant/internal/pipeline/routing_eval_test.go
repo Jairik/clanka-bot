@@ -248,6 +248,36 @@ func TestRoutingEvalFixtureShape(t *testing.T) {
 	}
 }
 
+// TestShippedControlPhrasesAreRoutable checks the shipped table against the
+// real registry without the embed service: a phrase may name a real Fast-path
+// Tool or a Focus intent, never a confirm or AgentOnly Tool.
+func TestShippedControlPhrasesAreRoutable(t *testing.T) {
+	cfg := loadRoutingConfig(t)
+	reg, _, _, _ := evalRegistry(t)
+	for phrase, target := range cfg.ControlPhrases {
+		if focus.IsIntentTarget(target) {
+			if _, ok := focus.ParseIntent(target); !ok {
+				t.Errorf("control phrase %q names unknown intent %q", phrase, target)
+			}
+			continue
+		}
+		info, ok := reg.Info(target)
+		if !ok {
+			t.Errorf("control phrase %q names unknown Tool %q", phrase, target)
+			continue
+		}
+		if info.AgentOnly {
+			t.Errorf("control phrase %q names AgentOnly Tool %q; a Control phrase is a Fast-path route", phrase, target)
+		}
+		if info.Permission == tool.PermissionConfirm {
+			t.Errorf("control phrase %q names confirm Tool %q", phrase, target)
+		}
+		if !info.HasSpeak {
+			t.Errorf("control phrase %q names %q without a Speak renderer", phrase, target)
+		}
+	}
+}
+
 // TestRoutingEvalBaselineShape keeps the recorded Map 1 baseline honest
 // without the embed service: it must describe a measurable, non-negative
 // result.

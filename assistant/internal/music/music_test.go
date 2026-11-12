@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/music"
 )
@@ -149,5 +150,104 @@ func TestPulseStreamsWithNoMusicIsNotAnError(t *testing.T) {
 	streams := music.NewPulseStreams(filepath.Join(dir, "pacat"), "")
 	if err := streams.SetPercent(t.Context(), 25); err != nil {
 		t.Fatalf("SetPercent with no streams: %v", err)
+	}
+}
+
+// orderStreams records every level and can hold the first call open, to prove
+// that volume changes land in the order the depth implies.
+type orderStreams struct {
+	mu       sync.Mutex
+	sets     []int
+	deadline []bool
+	gate     chan struct{} // the first call waits on it when non-nil
+	entered  chan struct{}
+	first    sync.Once
+}
+
+func (o *orderStreams) SetPercent(ctx context.Context, p int) error {
+	_, hasDeadline := ctx.Deadline()
+	o.first.Do(func() {
+		if o.gate != nil {
+			close(o.entered)
+			<-o.gate
+		}
+	})
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.sets = append(o.sets, p)
+	o.deadline = append(o.deadline, hasDeadline)
+	return nil
+}
+
+func TestRestoreAndNewDuckCannotLandOutOfOrder(t *testing.T) {
+	o := &orderStreams{gate: make(chan struct{}), entered: make(chan struct{})}
+	d := music.NewDucker(o, 20, nil)
+
+	var wg sync.WaitGroup
+	var restoreA func()
+	aReady := make(chan struct{})
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		restoreA, _ = d.Duck(t.Context())
+		close(aReady)
+	}()
+	<-o.entered // A's duck is in flight, held open
+	wg.Add(2)
+	go func() { defer wg.Done(); <-aReady; restoreA() }()
+	var restoreB func()
+	bDone := make(chan struct{})
+	go func() {
+		defer wg.Done()
+		restoreB, _ = d.Duck(t.Context())
+		close(bDone)
+	}()
+	time.Sleep(50 * time.Millisecond)
+	close(o.gate)
+	wg.Wait()
+	<-bDone
+
+	o.mu.Lock()
+	last := o.sets[len(o.sets)-1]
+	sets := append([]int(nil), o.sets...)
+	o.mu.Unlock()
+	if last != 20 {
+		t.Fatalf("sets = %v: B still holds a duck, so the last level must be 20", sets)
+	}
+	restoreB()
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.sets[len(o.sets)-1] != 100 {
+		t.Fatalf("sets = %v: the last release must restore", o.sets)
+	}
+}
+
+func TestDuckAndRestoreAreBoundedByATimeout(t *testing.T) {
+	o := &orderStreams{}
+	d := music.NewDucker(o, 20, nil)
+	restore, _ := d.Duck(t.Context()) // t.Context has no deadline
+	restore()
+	for i, has := range o.deadline {
+		if !has {
+			t.Fatalf("call %d (%v) had no deadline: a hung pactl would stall the caller", i, o.sets)
+		}
+	}
+	if len(o.deadline) != 2 {
+		t.Fatalf("sets = %v", o.sets)
+	}
+}
+
+func TestResetSetsFullVolume(t *testing.T) {
+	f := &fakeStreams{}
+	d := music.NewDucker(f, 20, nil)
+	if err := d.Reset(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.got(); !equal(got, []int{100}) {
+		t.Fatalf("sets = %v, want one reset to 100", got)
+	}
+	var nilDucker *music.Ducker
+	if err := nilDucker.Reset(t.Context()); err != nil {
+		t.Fatal(err)
 	}
 }

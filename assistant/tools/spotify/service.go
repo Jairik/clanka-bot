@@ -130,9 +130,9 @@ func (h holder) HandleIntent(ctx context.Context, intent focus.Intent) (string, 
 		err, text = h.s.player.Next(ctx), "Next track."
 	case focus.Stop:
 		err, text = h.s.player.Pause(ctx), "Stopped the music."
-		if err == nil {
-			h.s.dropFocus()
-		}
+		// Stop ends the music's claim however the pause went, so a failed
+		// pause cannot leave "stop" captured by a dead Focus.
+		h.s.dropFocus()
 	default:
 		return "", false
 	}

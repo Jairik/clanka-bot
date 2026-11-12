@@ -21,8 +21,9 @@ const (
 	// (Web API / Connect) is separate from the Pulse stream volume, so the
 	// stream always returns to full and the user's Spotify level stays theirs.
 	normalPercent = 100
-	// restoreTimeout bounds the restore when the caller's context is gone.
-	restoreTimeout = 3 * time.Second
+	// pactlTimeout bounds each Duck or restore, so a hung pactl cannot stall
+	// the wake path or a Ring.
+	pactlTimeout = time.Second
 )
 
 // Streams sets the Pulse volume of every music stream. The real implementation
@@ -33,13 +34,20 @@ type Streams interface {
 
 // Ducker is a refcounted local duck. It satisfies ring.Music and the voice
 // loop's Ducker seam, so one instance serves replies, Rings and the wake word.
+// A nil Ducker is a no-op, so a setup without music spawns no pactl at all.
 type Ducker struct {
 	streams Streams
 	percent int
 	logger  *slog.Logger
 
-	mu    sync.Mutex
+	mu    sync.Mutex // guards depth
 	depth int
+
+	// opMu serializes the pactl work. Each run applies the level the depth
+	// implies when it gets the lock, so a restore and a new duck can never
+	// land out of order. applied is the last level set; -1 means unknown.
+	opMu    sync.Mutex
+	applied int
 }
 
 // NewDucker builds a Ducker. A percent outside 0..99 uses DefaultDuckPercent.
@@ -50,7 +58,7 @@ func NewDucker(streams Streams, duckPercent int, logger *slog.Logger) *Ducker {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Ducker{streams: streams, percent: duckPercent, logger: logger}
+	return &Ducker{streams: streams, percent: duckPercent, logger: logger, applied: -1}
 }
 
 // Duck lowers the music and returns an idempotent restore. The restore is
@@ -62,31 +70,64 @@ func (d *Ducker) Duck(ctx context.Context) (func(), error) {
 	}
 	d.mu.Lock()
 	d.depth++
-	first := d.depth == 1
 	d.mu.Unlock()
 
-	var err error
-	if first {
-		err = d.streams.SetPercent(ctx, d.percent)
-	}
+	err := d.apply(ctx)
 	var once sync.Once
 	return func() { once.Do(d.release) }, err
+}
+
+// Reset sets the stream to full volume. The Assistant calls it once at startup
+// so a duck left behind by a crash (or remembered by Pulse's stream-restore)
+// does not persist. It is nil-safe.
+func (d *Ducker) Reset(ctx context.Context) error {
+	if d == nil || d.streams == nil {
+		return nil
+	}
+	d.opMu.Lock()
+	defer d.opMu.Unlock()
+	ctx, cancel := context.WithTimeout(ctx, pactlTimeout)
+	defer cancel()
+	if err := d.streams.SetPercent(ctx, normalPercent); err != nil {
+		return err
+	}
+	d.applied = normalPercent
+	return nil
 }
 
 // release drops one hold and restores when none remain.
 func (d *Ducker) release() {
 	d.mu.Lock()
 	d.depth--
-	last := d.depth == 0
 	d.mu.Unlock()
-	if !last {
-		return
-	}
 	// The holder's context may already be cancelled (a stopped Ring), and a
 	// stuck duck would leave the music quiet, so the restore has its own clock.
-	ctx, cancel := context.WithTimeout(context.Background(), restoreTimeout)
-	defer cancel()
-	if err := d.streams.SetPercent(ctx, normalPercent); err != nil {
+	if err := d.apply(context.Background()); err != nil {
 		d.logger.Warn("music restore", "error", err.Error())
 	}
+}
+
+// apply sets the level implied by the current depth, once it holds the pactl
+// lock. A level already applied is skipped; a failure forgets it, so the next
+// call retries.
+func (d *Ducker) apply(ctx context.Context) error {
+	d.opMu.Lock()
+	defer d.opMu.Unlock()
+	d.mu.Lock()
+	want := normalPercent
+	if d.depth > 0 {
+		want = d.percent
+	}
+	d.mu.Unlock()
+	if want == d.applied {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, pactlTimeout)
+	defer cancel()
+	if err := d.streams.SetPercent(ctx, want); err != nil {
+		d.applied = -1 // a partial failure leaves the real level unknown
+		return err
+	}
+	d.applied = want
+	return nil
 }

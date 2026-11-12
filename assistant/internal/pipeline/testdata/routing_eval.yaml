@@ -898,8 +898,9 @@ positives:
     - which persona am I talking to
   # Spotify playback (#72) and playlists/library (#73). Music plays on the Pi,
   # so these are Fast path Tools. "my <name> playlist" is play_playlist's (the
-  # user's own library); "the playlist <name>" and artist/album/song requests
-  # stay spotify.play's public search.
+  # user's own library, including "the playlist <name>", which is the
+  # playlistNamedRe phrasing in tools/spotify/library.go); artist, album and
+  # song requests are spotify.play's public search.
   spotify.play:
     - play Radiohead
     - play some Radiohead
@@ -910,7 +911,6 @@ positives:
     - play some jazz music
     - put on some jazz
     - play music by Taylor Swift
-    - play the playlist Chill Vibes
     - play the artist Daft Punk
     - resume the music
     - play some music
@@ -1040,6 +1040,7 @@ positives:
     - put my coding playlist on
     - play my throwback playlist shuffled
     - play my lo-fi playlist
+    - play the playlist Chill Vibes
   spotify.shuffle:
     - shuffle the music
     - turn shuffle on
@@ -1124,6 +1125,7 @@ positives:
     - add Fast Car to the queue
     - queue up Sweet Child O Mine
     - add Blackbird to the queue
+    - queue up another Radiohead song
   spotify.like:
     - like this song
     - save this song to my liked songs
@@ -1361,9 +1363,10 @@ negatives:
   - what are my github notifications
   - check my github notifications
   # Spotify neighbours that must not reach the Fast path (#72). Knowledge
-  # questions about music, and music actions that still have no Tool. "like
-  # this song", "go back to the previous song" and "repeat this song" moved to
-  # the #73 positives when those Tools landed.
+  # questions about music, and music actions that still have no Tool (adding to
+  # a playlist, for one). "like this song", "go back to the previous song",
+  # "repeat this song", shuffle and queue requests moved to the #73 positives
+  # when those Tools landed.
   - who sang Bohemian Rhapsody
   - what is the best Radiohead album
   - recommend some songs like Radiohead
@@ -1374,8 +1377,6 @@ negatives:
   - skip to the end of the article
   - when is my next meeting
   - add this song to my playlist
-  - shuffle my liked songs
-  - queue up another Radiohead song
   - play the video on my phone
   - pause my gym membership
 

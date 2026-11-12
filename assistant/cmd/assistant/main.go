@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -24,8 +25,12 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	"github.com/Jairik/clanka-bot/assistant/internal/reply"
+	"github.com/Jairik/clanka-bot/assistant/internal/settings"
+	"github.com/Jairik/clanka-bot/assistant/internal/settingsapi"
 	"github.com/Jairik/clanka-bot/assistant/internal/speech"
+	"github.com/Jairik/clanka-bot/assistant/internal/store"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
+	"github.com/Jairik/clanka-bot/assistant/internal/toolpolicy"
 	"github.com/Jairik/clanka-bot/assistant/internal/voice"
 	"github.com/Jairik/clanka-bot/assistant/internal/wyoming"
 	"github.com/Jairik/clanka-bot/assistant/tools"
@@ -58,6 +63,20 @@ func run() error {
 	// location watch.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// The one database (ADR-0003) opens before any Tool module registers so
+	// every writer shares the same handle. Compose mounts its volume here;
+	// migrations run now and keep the file across restarts and rebuilds.
+	storePath := filepath.Join(cfg.Data.Dir, "assistant.db")
+	st, err := store.Open(ctx, storePath)
+	if err != nil {
+		return fmt.Errorf("open store: %w", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			logger.Error("store close", "error", err.Error())
+		}
+	}()
 
 	// Resolve the place once before serving so the first request has it; Watch
 	// keeps it fresh every 24h. The prompt reads the service per request.
@@ -116,6 +135,7 @@ func run() error {
 		Logger:        logger,
 		Location:      locSvc.Current,
 		Audio:         sink,
+		Store:         st,
 		Announcements: announcements,
 	}
 	if speechSpeaker != nil {
@@ -125,6 +145,28 @@ func run() error {
 	if err := moduleSet.RegisterAll(registry, deps, cfg.Tools.Sections); err != nil {
 		return fmt.Errorf("register tools: %w", err)
 	}
+
+	// Tool enable/disable and Permission overrides are the first settings to
+	// use the three layers. The policy is installed before semantic routing
+	// builds its example vectors, so a disabled Tool is never offered.
+	toolDefs, err := toolpolicy.Definitions(registry, toolpolicy.Config{
+		Disabled:    cfg.Tools.Disabled,
+		Permissions: cfg.Tools.Permissions,
+	})
+	if err != nil {
+		return err
+	}
+	settingsSvc, err := settings.New(ctx, st, toolDefs...)
+	if err != nil {
+		return fmt.Errorf("settings: %w", err)
+	}
+	toolPolicy, err := toolpolicy.New(settingsSvc, registry)
+	if err != nil {
+		return fmt.Errorf("tool settings: %w", err)
+	}
+	// The settings API has no authentication of its own. It is mounted on the
+	// localhost debug listener and, from #47, on the authenticated Dashboard.
+	settingsHandler := settingsapi.New(settingsSvc, toolPolicy, logger)
 
 	provider, err := cfg.Agent.ActiveProvider()
 	if err != nil {
@@ -225,6 +267,10 @@ func run() error {
 			// behaviour is demonstrable without a Reminder.
 			opts = append(opts, api.WithAnnouncements(announcements))
 		}
+		// Settings and Tool-override writes live on the localhost debug
+		// listener and on the authenticated Dashboard. The health listener
+		// never mounts this handler.
+		opts = append(opts, api.WithSettings(settingsHandler))
 		servers = append(servers, &http.Server{
 			Addr:              cfg.Debug.Addr,
 			Handler:           api.NewHandler(p, logger, true, opts...),
@@ -243,6 +289,7 @@ func run() error {
 			Services:      dashboard.ComposeServiceChecks(cfg),
 			Modules:       moduleSet,
 			Location:      locSvc,
+			API:           settingsHandler,
 		})
 		if err != nil {
 			return err
@@ -264,6 +311,9 @@ func run() error {
 		"http_addr", cfg.HTTP.Addr,
 		"debug_enabled", cfg.Debug.Enabled,
 		"debug_addr", cfg.Debug.Addr,
+		"data_dir", cfg.Data.Dir,
+		"store", st.Path(),
+		"settings", len(settingsSvc.List()),
 		"speech", cfg.TTS.Addr != "",
 		"tts_addr", cfg.TTS.Addr,
 		"pulse_sink", cfg.Playback.Sink,

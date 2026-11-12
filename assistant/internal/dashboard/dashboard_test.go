@@ -401,6 +401,35 @@ func TestDashboardAuthRunsBeforeTheMutationGuard(t *testing.T) {
 	}
 }
 
+func TestDashboardMountsTheAPIBehindAuthAndSameOrigin(t *testing.T) {
+	api := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.WriteString(w, "api "+r.Method+" "+r.URL.Path)
+	})
+	handler := newHandler(t, dashboard.Options{API: api})
+
+	rec := serve(handler, request(http.MethodGet, "/api/settings", owner))
+	if rec.Code != http.StatusOK || rec.Body.String() != "api GET /settings" {
+		t.Fatalf("authenticated GET = %d %q", rec.Code, rec.Body.String())
+	}
+
+	rec = serve(handler, request(http.MethodGet, "/api/settings", ""))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("unauthenticated API status = %d, want 403", rec.Code)
+	}
+
+	req := request(http.MethodPut, "/api/settings/timezone", owner)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	rec = serve(handler, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("same-origin PUT = %d", rec.Code)
+	}
+
+	rec = serve(handler, request(http.MethodPut, "/api/settings/timezone", owner))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("cross-origin PUT = %d, want 403", rec.Code)
+	}
+}
+
 func TestComposeServiceChecksCoverTheFiveServices(t *testing.T) {
 	links := dashboard.ComposeServiceChecks(config.Default())
 	names := make([]string, 0, len(links))

@@ -51,6 +51,10 @@ type Options struct {
 	Services      []ServiceCheck
 	Modules       Modules
 	Location      Location
+	// API is an optional unauthenticated handler mounted under /api/ behind
+	// the Dashboard identity and same-origin checks. #40's settings handler is
+	// mounted here; secrets and uploads can use the same seam.
+	API http.Handler
 	// ProxyAllowed overrides the trusted source-address check. Production uses
 	// the default (loopback plus the container's default gateway); tests inject
 	// their own address policy.
@@ -120,6 +124,11 @@ func New(opts Options) (*Handler, error) {
 	// htmx is vendored under static/, so the UI works on a tailnet without
 	// internet access.
 	h.mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))))
+	if opts.API != nil {
+		// The API handler has no auth of its own; identity is enforced by
+		// ServeHTTP and SameOrigin guards its mutating methods.
+		h.mux.Handle("/api/", http.StripPrefix("/api", h.sameOrigin(opts.API)))
+	}
 	h.Handle("/health", h.healthPage)
 	h.Handle("/health/panel", h.healthPanel)
 	h.Handle("/", h.index)
@@ -136,12 +145,18 @@ func (h *Handler) Handle(pattern string, handler http.HandlerFunc) {
 // browser could have made from another origin; pair it with a same-site cookie
 // when one is added later.
 func (h *Handler) Mutating(pattern string, handler http.HandlerFunc) {
-	h.mux.HandleFunc(pattern, func(w http.ResponseWriter, r *http.Request) {
+	h.mux.Handle(pattern, h.sameOrigin(http.HandlerFunc(handler)))
+}
+
+// sameOrigin wraps a handler whose methods may change state. It is the one
+// CSRF policy for every write route, including the mounted API.
+func (h *Handler) sameOrigin(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !SameOrigin(r) {
 			http.Error(w, "cross-origin request rejected", http.StatusForbidden)
 			return
 		}
-		handler(w, r)
+		next.ServeHTTP(w, r)
 	})
 }
 

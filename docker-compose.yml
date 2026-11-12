@@ -51,6 +51,8 @@ services:
       ASSISTANT_DASHBOARD_OWNER: ${ASSISTANT_DASHBOARD_OWNER:-}
       ASSISTANT_EMBED_URL: "http://embed:8085"
       ASSISTANT_TTS_ADDR: "tts:10200"
+      # ADR-0003: the one SQLite database lives on the assistant-data volume.
+      ASSISTANT_DATA_DIR: "/app/data"
       ASSISTANT_PULSE_SINK: ${ASSISTANT_PULSE_SINK:-}
       # Voice input: one named Pulse source and the two Wyoming services.
       ASSISTANT_PULSE_SOURCE: ${ASSISTANT_PULSE_SOURCE:-}
@@ -67,6 +69,9 @@ services:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       TZ: ${TZ:-UTC}
     volumes:
+      # The one SQLite database (ADR-0003). Only assistant mounts this volume;
+      # restarting or rebuilding a service keeps it.
+      - assistant-data:/app/data
       # Host PipeWire through its PulseAudio-compatible socket and cookie.
       - ${XDG_RUNTIME_DIR:-/run/user/1000}/pulse:/run/pulse:ro
       - ${HOME}/.config/pulse:/pulse-cookie:ro
@@ -162,3 +167,8 @@ services:
       timeout: 5s
       retries: 12
       start_period: 180s
+
+volumes:
+  # Named so the database survives `docker compose down`, rebuilds and deploys.
+  # Only the assistant service mounts it (ADR-0003).
+  assistant-data:

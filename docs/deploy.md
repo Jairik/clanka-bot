@@ -196,6 +196,11 @@ curl -s -H 'Tailscale-User-Login: you@example.com' http://127.0.0.1:8082/health 
 The second command is only a local smoke test; from another device use the
 HTTPS `*.ts.net` URL, which carries the real identity.
 
+The Dashboard also mounts the settings/Tool-override API under `/api/`
+(`/api/settings`, `/api/tools`) behind the same identity check. Mutating API
+requests must be same-origin; the debug listener keeps its own localhost-only
+mount of the same handler.
+
 The Health page shows the five current Compose services (`embed`, `assistant`,
 `wakeword`, `stt`, `tts`), the resolved location and each Tool module that
 declares a health check. `embed` is checked over HTTP `/healthz`; the three
@@ -241,6 +246,10 @@ container health field.
 - [ ] `make check`
 - [ ] `make deploy` (or `scripts/deploy.sh`)
 - [ ] Verify: `docker compose ps`, `curl -s localhost:8080/healthz`
+- [ ] The `assistant-data` volume holds the SQLite database (ADR-0003). It
+      survives container restarts and image rebuilds, and only `assistant`
+      mounts it. `docker compose down -v` deletes it: back it up first if the
+      settings matter.
 - [ ] Reboot once and confirm the stack comes back without a login.
 
 ## Image tags and rollback

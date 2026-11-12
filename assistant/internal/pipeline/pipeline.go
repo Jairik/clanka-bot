@@ -5,6 +5,7 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -262,7 +263,7 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 		record.reason = ""
 		reply.Path = tool.PathControlPhrase
 		reply.Tool = name
-		reply.Text, record.failure = p.callTool(ctx, req, transcript, name, tool.PathControlPhrase, nil)
+		reply.Text, record.failure, reply.Pending = p.callTool(ctx, req, transcript, name, tool.PathControlPhrase, nil)
 		return reply
 	}
 
@@ -279,7 +280,7 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 			record.reason = ""
 			reply.Path = tool.PathFast
 			reply.Tool = match.Tool
-			reply.Text, record.failure = p.callTool(ctx, req, transcript, match.Tool, tool.PathFast, match.Args)
+			reply.Text, record.failure, reply.Pending = p.callTool(ctx, req, transcript, match.Tool, tool.PathFast, match.Args)
 			return reply
 		}
 	}
@@ -326,22 +327,33 @@ func (p *Pipeline) callAgent(ctx context.Context, req tool.Request, transcript s
 	reply.Tool = strings.Join(names, ",")
 }
 
-func (p *Pipeline) callTool(ctx context.Context, req tool.Request, transcript, name string, path tool.Path, args json.RawMessage) (string, string) {
+func (p *Pipeline) callTool(ctx context.Context, req tool.Request, transcript, name string, path tool.Path, args json.RawMessage) (string, string, *tool.PendingConfirmation) {
 	toolStarted := time.Now()
 	defer func() { latency.AddStage(ctx, latency.StageToolExecute, time.Since(toolStarted)) }()
 
 	req.Path = path
 	result, err := p.registry.Execute(tool.WithRequest(ctx, req), name, args)
 	if err != nil {
-		return tool.FailureMessage(err), err.Error()
+		// A live Permission override can raise a Fast path Tool to confirm.
+		// Arm the same one-turn Confirmation the Agent path uses, so the next
+		// "yes" runs it instead of the user hearing a generic failure.
+		var required *tool.ConfirmationRequiredError
+		if errors.As(err, &required) {
+			pending, proposeErr := p.registry.Propose(name, args)
+			if proposeErr == nil {
+				return pending.Summary, "", &pending
+			}
+			err = proposeErr
+		}
+		return tool.FailureMessage(err), err.Error(), nil
 	}
 	spoken, ok := p.registry.Speak(name, result)
 	if !ok {
 		err := fmt.Errorf("tool %q has no Speak renderer", name)
-		return tool.DefaultFailureMessage, err.Error()
+		return tool.DefaultFailureMessage, err.Error(), nil
 	}
 	p.recordToolTurn(transcript, spoken, name, result)
-	return spoken, ""
+	return spoken, "", nil
 }
 
 // recordToolTurn keeps a successful Fast path turn in the shared history,

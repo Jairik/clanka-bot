@@ -4,3 +4,6 @@ __pycache__/
 .pytest_cache/
 *.pyc
 scripts/prototype-run/.run/
+
+# Local SQLite database when running the assistant outside Compose.
+assistant/data/

@@ -149,6 +149,37 @@ Agent path. See [docs/routing-eval.md](docs/routing-eval.md) to run the
 evaluation, tune threshold and margin, or promote a request-log misroute into
 the fixture.
 
+### Settings and Tool overrides
+
+All persistent state lives in one SQLite database, opened only by the
+`assistant` process ([ADR-0003](docs/adr/0003-one-sqlite-store-owned-by-assistant.md)).
+Compose keeps it on the `assistant-data` volume, so restarts and rebuilds keep
+the data; the file is created mode 0600 and migrations run at startup.
+
+Every setting resolves as **stored override → `config.yaml` → code default**;
+`DELETE` removes the override and the lower layer applies again. The first
+overridable settings are each Tool's `enabled` flag and Permission level. A
+stored Permission may only tighten (`read` → `act` → `confirm`), never loosen,
+and Local-only is code-declared and cannot be overridden.
+
+The JSON API is mounted under `/api/` on the localhost debug listener, never on
+the public health listener. The future authenticated Dashboard (#47) mounts the
+same handler behind Tailscale identity.
+
+```sh
+# List every effective value and the layer it came from.
+curl -s localhost:8081/api/settings
+
+# Disable a Tool, raise its Permission, or both at once.
+curl -s -X PUT localhost:8081/api/tools/weather.current \
+  -H 'Content-Type: application/json' -d '{"enabled":false}'
+curl -s -X PUT localhost:8081/api/tools/weather.current \
+  -H 'Content-Type: application/json' -d '{"permission":"confirm"}'
+
+# Reset both: config.yaml, then the code declaration, applies again.
+curl -s -X DELETE localhost:8081/api/tools/weather.current
+```
+
 ### Audio
 
 Per [ADR-0001](docs/adr/0001-middleware-owns-all-audio-io.md), only the

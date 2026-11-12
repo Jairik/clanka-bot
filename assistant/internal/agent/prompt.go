@@ -71,14 +71,15 @@ func turnContent(turn Turn) string {
 	return turn.Reply + "\n" + string(compact)
 }
 
-// Tools offers every Tool except Local-only ones. Local-only Tools are never
-// shown to the model, so it cannot call them.
+// Tools offers every enabled Tool except Local-only ones. Local-only Tools
+// are never shown to the model, so it cannot call them; a stored disable
+// override removes a Tool from the next request's list.
 func (b *PromptBuilder) Tools(reg *tool.Registry) []openai.ChatCompletionToolUnionParam {
 	names := reg.Names()
 	tools := make([]openai.ChatCompletionToolUnionParam, 0, len(names))
 	for _, name := range names {
 		info, ok := reg.Info(name)
-		if !ok || info.LocalOnly {
+		if !ok || info.LocalOnly || !info.Enabled {
 			continue
 		}
 		var parameters shared.FunctionParameters

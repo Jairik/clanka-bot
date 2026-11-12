@@ -241,6 +241,80 @@ func TestLoadAppliesEnvironmentOverrides(t *testing.T) {
 	}
 }
 
+func TestLoadReadsDataAndToolOverrideSettings(t *testing.T) {
+	path := writeConfig(t, `
+data:
+  dir: "/var/lib/assistant"
+tools:
+  disabled: ["weather.current", "timer.list"]
+  permissions:
+    "timer.set": confirm
+  weather:
+    timeout: 500ms
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Data.Dir != "/var/lib/assistant" {
+		t.Errorf("Data.Dir = %q", cfg.Data.Dir)
+	}
+	if len(cfg.Tools.Disabled) != 2 || cfg.Tools.Disabled[0] != "weather.current" {
+		t.Errorf("Tools.Disabled = %v", cfg.Tools.Disabled)
+	}
+	if got := cfg.Tools.Permissions["timer.set"]; got != "confirm" {
+		t.Errorf("Tools.Permissions[timer.set] = %q", got)
+	}
+	if _, ok := cfg.Tools.Sections["weather"]; !ok {
+		t.Error("Tools.Sections lost the weather module section")
+	}
+	for _, leaked := range []string{"disabled", "permissions"} {
+		if _, ok := cfg.Tools.Sections[leaked]; ok {
+			t.Errorf("Tools.Sections captured the %q setting as a module", leaked)
+		}
+	}
+}
+
+func TestLoadDefaultsTheDataDir(t *testing.T) {
+	cfg, err := config.Load(writeConfig(t, "{}\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Data.Dir != "data" {
+		t.Errorf("Data.Dir = %q, want the code default data", cfg.Data.Dir)
+	}
+}
+
+func TestLoadAppliesDataDirEnvironmentOverride(t *testing.T) {
+	t.Setenv("ASSISTANT_DATA_DIR", "/srv/assistant")
+	cfg, err := config.Load(writeConfig(t, "{}\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Data.Dir != "/srv/assistant" {
+		t.Errorf("Data.Dir = %q", cfg.Data.Dir)
+	}
+}
+
+func TestLoadRejectsInvalidToolOverrideSettings(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"empty data dir", "data:\n  dir: \"  \"\n"},
+		{"empty disabled name", "tools:\n  disabled: [\"\"]\n"},
+		{"unknown permission", "tools:\n  permissions:\n    weather.current: admin\n"},
+		{"empty permission tool", "tools:\n  permissions:\n    \"\": act\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := config.Load(writeConfig(t, tt.body)); err == nil {
+				t.Fatal("Load succeeded, want error")
+			}
+		})
+	}
+}
+
 func TestLoadRejectsInvalidSettings(t *testing.T) {
 	tests := []struct {
 		name string

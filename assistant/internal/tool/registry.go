@@ -23,6 +23,35 @@ const (
 	PermissionConfirm Permission = "confirm"
 )
 
+// Valid reports whether p is one of the three Permission levels.
+func (p Permission) Valid() bool {
+	switch p {
+	case PermissionRead, PermissionAct, PermissionConfirm:
+		return true
+	default:
+		return false
+	}
+}
+
+// AtLeast reports whether p is at least as strict as min. Permission
+// overrides may only tighten: read -> act -> confirm.
+func (p Permission) AtLeast(min Permission) bool {
+	return permissionRank(p) >= permissionRank(min)
+}
+
+func permissionRank(p Permission) int {
+	switch p {
+	case PermissionRead:
+		return 0
+	case PermissionAct:
+		return 1
+	case PermissionConfirm:
+		return 2
+	default:
+		return -1
+	}
+}
+
 // LocalOnly is the required privacy declaration for a Tool. The zero value is
 // invalid so registration fails until the author makes an explicit choice.
 type LocalOnly uint8
@@ -52,19 +81,36 @@ type Tool[In, Out any] struct {
 	Summary func(In) string
 }
 
-// Info is the type-erased view of a registered Tool.
+// Info is the type-erased view of a registered Tool. Permission and Enabled
+// are the effective values when the registry has a live Policy; otherwise
+// they are the code declarations.
 type Info struct {
 	Name         string
 	WireName     string
 	Description  string
 	Permission   Permission
 	LocalOnly    bool
+	Enabled      bool
 	Timeout      time.Duration
 	InputSchema  json.RawMessage
 	OutputSchema json.RawMessage
 	Examples     []string
 	HasSpeak     bool
 	HasExtract   bool
+}
+
+// ToolSettings is a Tool's live availability: whether a stored override has
+// disabled it, and the effective (never loosened) Permission.
+type ToolSettings struct {
+	Enabled    bool
+	Permission Permission
+}
+
+// Policy is the live settings seam the registry consults on every call, so a
+// stored override applies to the next request without a restart. The declared
+// Permission is passed so an implementation can enforce tighten-only.
+type Policy interface {
+	Effective(name string, declared Permission) ToolSettings
 }
 
 type entry struct {
@@ -81,8 +127,9 @@ type entry struct {
 type Registry struct {
 	defaultTimeout time.Duration
 
-	mu    sync.RWMutex
-	tools map[string]*entry
+	mu     sync.RWMutex
+	tools  map[string]*entry
+	policy Policy
 
 	// pending is the one confirm call waiting for a spoken yes. Confirmation
 	// enforcement lives here so no caller, including the model, can run a
@@ -98,6 +145,14 @@ func NewRegistry(defaultTimeout time.Duration) *Registry {
 		defaultTimeout: defaultTimeout,
 		tools:          make(map[string]*entry),
 	}
+}
+
+// SetPolicy installs the live Tool override policy. nil clears it, which
+// restores every code-declared value. It is safe to call while serving.
+func (r *Registry) SetPolicy(p Policy) {
+	r.mu.Lock()
+	r.policy = p
+	r.mu.Unlock()
 }
 
 // Add registers one typed Tool. It is a free function because Go methods
@@ -159,6 +214,7 @@ func Add[In, Out any](r *Registry, t Tool[In, Out]) error {
 			Description:  t.Description,
 			Permission:   t.Permission,
 			LocalOnly:    t.LocalOnly == LocalOnlyYes,
+			Enabled:      true,
 			Timeout:      timeout,
 			InputSchema:  inJSON,
 			OutputSchema: outJSON,
@@ -234,10 +290,14 @@ func (r *Registry) Execute(ctx context.Context, name string, args json.RawMessag
 	if !ok {
 		return nil, fmt.Errorf("tool: unknown tool %q", name)
 	}
+	info := r.effective(e)
+	if !info.Enabled {
+		return nil, &DisabledError{Tool: name}
+	}
 	if err := validateArgs(e.schema, args); err != nil {
 		return nil, fmt.Errorf("tool %q: %w", name, err)
 	}
-	if e.info.Permission == PermissionConfirm {
+	if info.Permission == PermissionConfirm {
 		return nil, &ConfirmationRequiredError{Pending: PendingConfirmation{
 			Tool:    e.info.Name,
 			Args:    append(json.RawMessage(nil), args...),
@@ -245,6 +305,21 @@ func (r *Registry) Execute(ctx context.Context, name string, args json.RawMessag
 		}}
 	}
 	return r.run(ctx, e, args)
+}
+
+// effective returns a Tool's metadata with the live policy applied.
+func (r *Registry) effective(e *entry) Info {
+	info := e.info
+	r.mu.RLock()
+	policy := r.policy
+	r.mu.RUnlock()
+	if policy == nil {
+		return info
+	}
+	setting := policy.Effective(e.info.Name, e.info.Permission)
+	info.Enabled = setting.Enabled
+	info.Permission = setting.Permission
+	return info
 }
 
 // lookup returns a registered entry.
@@ -296,13 +371,11 @@ func (r *Registry) Extract(name, text string) (json.RawMessage, bool) {
 
 // Info returns a registered Tool's metadata.
 func (r *Registry) Info(name string) (Info, bool) {
-	r.mu.RLock()
-	e, ok := r.tools[name]
-	r.mu.RUnlock()
+	e, ok := r.lookup(name)
 	if !ok {
 		return Info{}, false
 	}
-	info := e.info
+	info := r.effective(e)
 	info.Examples = append([]string(nil), e.info.Examples...)
 	return info, true
 }
@@ -344,6 +417,10 @@ func FailureMessage(err error) string {
 	var toolErr *ToolError
 	if errors.As(err, &toolErr) && toolErr.Say != "" {
 		return toolErr.Say
+	}
+	var disabled *DisabledError
+	if errors.As(err, &disabled) {
+		return DisabledMessage
 	}
 	return DefaultFailureMessage
 }

@@ -45,6 +45,15 @@ func WithDebugAllowlist(allowed func(net.IP) bool) Option {
 	return func(s *server) { s.debugAllowed = allowed }
 }
 
+// WithSettings mounts the settings and Tool-override API under /api/ on the
+// debug handler. It is ignored when the debug entry is disabled, so the public
+// health listener can never serve settings writes. The mounted handler has no
+// authentication of its own; the debug source allowlist guards it here, and
+// #47 will mount the same handler behind Tailscale identity.
+func WithSettings(handler http.Handler) Option {
+	return func(s *server) { s.settings = handler }
+}
+
 // NewHandler builds the HTTP surface: GET /healthz, plus POST
 // /debug/transcript when the debug entry is enabled.
 func NewHandler(p *pipeline.Pipeline, logger *slog.Logger, debugEnabled bool, opts ...Option) http.Handler {
@@ -58,6 +67,11 @@ func NewHandler(p *pipeline.Pipeline, logger *slog.Logger, debugEnabled bool, op
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.healthz)
 	mux.HandleFunc("/debug/transcript", s.debugTranscript)
+	if debugEnabled && s.settings != nil {
+		// Settings writes are local-only: the same source check as the debug
+		// entry wraps the whole /api/ subtree.
+		mux.Handle("/api/", s.localOnly(http.StripPrefix("/api", s.settings)))
+	}
 	return mux
 }
 
@@ -66,6 +80,7 @@ type server struct {
 	logger       *slog.Logger
 	debugEnabled bool
 	responder    Responder
+	settings     http.Handler
 	debugAllowed func(net.IP) bool
 }
 
@@ -167,6 +182,18 @@ func (s *server) debugTranscript(w http.ResponseWriter, r *http.Request) {
 		Path:      string(reply.Path),
 		RequestID: reply.RequestID,
 		Spoken:    spoken,
+	})
+}
+
+// localOnly wraps the settings subtree in the same source check as the debug
+// entry. The settings handler performs no authentication itself.
+func (s *server) localOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.debugSourceAllowed(r.RemoteAddr) {
+			s.reject(w, tool.NewRequestID(), "settings entry is local only", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 

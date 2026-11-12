@@ -252,8 +252,13 @@ func (r *SemanticRouter) resolveArgs(name, transcript string) (json.RawMessage, 
 	return args, "ok", true
 }
 
-// fastPathEligible enforces issue #10's Fast path rules.
+// fastPathEligible enforces issue #10's Fast path rules, with live overrides:
+// a disabled Tool, or one whose effective Permission needs a Confirmation, is
+// not offered to the Fast path.
 func fastPathEligible(info tool.Info) bool {
+	if !info.Enabled {
+		return false
+	}
 	if len(info.Examples) == 0 || !info.HasSpeak {
 		return false
 	}

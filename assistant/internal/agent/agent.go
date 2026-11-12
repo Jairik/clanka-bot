@@ -233,14 +233,14 @@ func withoutIndex(calls []CallRef, skip int) []CallRef {
 	return out
 }
 
-// resolve maps a wire name to a registered, non-Local-only Tool.
+// resolve maps a wire name to a registered, enabled, non-Local-only Tool.
 func (a *Agent) resolve(call CallRef) (tool.Info, bool) {
 	name, err := tool.CanonicalName(call.Name)
 	if err != nil {
 		return tool.Info{}, false
 	}
 	info, ok := a.registry.Info(name)
-	if !ok || info.LocalOnly {
+	if !ok || info.LocalOnly || !info.Enabled {
 		return tool.Info{}, false
 	}
 	return info, true

@@ -4,7 +4,7 @@ SHELL := /bin/bash
 GIT_SHA ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
 export GIT_SHA
 
-.PHONY: build up down logs deploy rollback build-arm64 test check latency-report
+.PHONY: build up down logs deploy rollback build-arm64 test check routing-eval latency-report
 
 build: ## Build every service image for this host.
 	docker compose build
@@ -28,13 +28,23 @@ rollback: ## Reuse an earlier commit's images: make rollback SHA=<commit>
 build-arm64: ## Build all images for the Pi under QEMU (not for latency work).
 	DOCKER_DEFAULT_PLATFORM=linux/arm64 docker compose build
 
-test: ## Run the assistant and deployment test suites.
+test: ## Run the assistant, deployment and mic-check test suites.
 	cd assistant && go test ./...
 	bash scripts/tests/deploy_test.sh
 	bash scripts/tests/check_compose_test.sh
+	python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
 
 check: ## Check compose and Dockerfile deployment conventions.
 	bash scripts/check-compose.sh
+
+routing-eval: ## Real-MiniLM routing check; enforces the 0.95 per-Tool floor.
+	@test -n "$(ROUTING_EVAL_EMBED_URL)" || { \
+		echo "usage: make routing-eval ROUTING_EVAL_EMBED_URL=http://127.0.0.1:18085" >&2; \
+		echo "start the real embed service first; see docs/routing-eval.md" >&2; \
+		exit 2; \
+	}
+	cd assistant && ROUTING_EVAL_EMBED_URL=$(ROUTING_EVAL_EMBED_URL) \
+		go test ./internal/pipeline -run TestRoutingEvalAgainstMiniLM -count=1 -v
 
 latency-report: ## Summarize per-stage Response latency from the running stack.
 	bash scripts/latency-report.sh

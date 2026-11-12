@@ -583,3 +583,124 @@ func offersTool(t *testing.T, body map[string]any, wireName string) bool {
 	}
 	return false
 }
+
+// TestInvalidStreamedArgumentsNeverRunATool is the fail-closed regression for
+// malformed model JSON: a truncated act call must become a Tool error, never a
+// zero-value act such as "volume up" or "cancel every timer".
+func TestInvalidStreamedArgumentsNeverRunATool(t *testing.T) {
+	cases := []struct {
+		name string
+		args string
+	}{
+		{"truncated JSON", `{"delta":`},
+		{"wrong type", `{"delta":"loud"}`},
+		{"unknown field", `{"other":1}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			runs := 0
+			registry := newRegistry(t)
+			addTool(t, registry, tool.Tool[struct {
+				Delta int `json:"delta"`
+			}, struct{}]{
+				Name: "test.act", Description: "Change something.", Permission: tool.PermissionAct, LocalOnly: tool.LocalOnlyNo,
+				Handler: func(context.Context, struct {
+					Delta int `json:"delta"`
+				}) (struct{}, error) {
+					runs++
+					return struct{}{}, nil
+				},
+			})
+			fake := newFakeProvider(t,
+				toolCallReply("", fakeCall{ID: "call-1", Name: "test__act", Args: tc.args}),
+				textReply("I could not do that."),
+			)
+			a := newTestAgent(t, testSettings(fake.start().URL), registry, nil)
+
+			result := a.Run(context.Background(), tool.Request{ID: "req-invalid"}, "do the thing", nil)
+			if runs != 0 {
+				t.Fatalf("act handler ran %d times, want 0", runs)
+			}
+			if result.Text != "I could not do that." {
+				t.Fatalf("reply = %q, want the model's follow-up", result.Text)
+			}
+			if fake.requestCount() != 2 {
+				t.Fatalf("provider calls = %d, want 2", fake.requestCount())
+			}
+			second := bodyString(t, fake.request(t, 1).Body)
+			if !strings.Contains(second, "invalid") && !strings.Contains(second, "arguments") {
+				t.Fatalf("second request carries no Tool error: %s", second)
+			}
+		})
+	}
+}
+
+// TestBargeInCancellationIsNotAProviderFailure covers the F5/#29 defect: a
+// cancelled turn used to log "agent request failed", return Unavailable and set
+// agent_error on an otherwise cancelled request.
+func TestBargeInCancellationIsNotAProviderFailure(t *testing.T) {
+	var logs strings.Builder
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	fake := newFakeProvider(t, textReply("too late"))
+	fake.delay = 2 * time.Second
+	a := newTestAgent(t, testSettings(fake.start().URL), nil, logger)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(100*time.Millisecond, cancel)
+	result := a.Run(ctx, tool.Request{ID: "req-cancel"}, "tell me a long story", nil)
+
+	if !result.Cancelled {
+		t.Fatal("result.Cancelled = false")
+	}
+	if result.Unavailable || result.TimedOut {
+		t.Fatalf("cancellation was classified as a provider failure: %+v", result)
+	}
+	if result.Text != "" {
+		t.Fatalf("reply = %q, want no spoken reply on cancellation", result.Text)
+	}
+	if strings.Contains(logs.String(), "agent request failed") {
+		t.Fatalf("cancellation was logged as a provider failure: %s", logs.String())
+	}
+}
+
+// TestConfirmProposalRunsSiblingCalls covers #20's one-step contract: a confirm
+// call waits for the spoken yes, but sibling reads/acts in the same model step
+// still run, and exactly one pending confirmation is armed.
+func TestConfirmProposalRunsSiblingCalls(t *testing.T) {
+	registry := newRegistry(t)
+	reads, acts, confirms := 0, 0, 0
+	addTool(t, registry, tool.Tool[struct{}, struct{}]{
+		Name: "test.read", Description: "Read.", Permission: tool.PermissionRead, LocalOnly: tool.LocalOnlyNo,
+		Handler: func(context.Context, struct{}) (struct{}, error) { reads++; return struct{}{}, nil },
+	})
+	addTool(t, registry, tool.Tool[struct{}, struct{}]{
+		Name: "test.act", Description: "Act.", Permission: tool.PermissionAct, LocalOnly: tool.LocalOnlyNo,
+		Handler: func(context.Context, struct{}) (struct{}, error) { acts++; return struct{}{}, nil },
+	})
+	addTool(t, registry, tool.Tool[struct{}, struct{}]{
+		Name: "mail.send", Description: "Send.", Permission: tool.PermissionConfirm, LocalOnly: tool.LocalOnlyNo,
+		Summary: func(struct{}) string { return "Send it?" },
+		Handler: func(context.Context, struct{}) (struct{}, error) { confirms++; return struct{}{}, nil },
+	})
+
+	fake := newFakeProvider(t, toolCallReply("",
+		fakeCall{ID: "1", Name: "test__read", Args: "{}"},
+		fakeCall{ID: "2", Name: "test__act", Args: "{}"},
+		fakeCall{ID: "3", Name: "mail__send", Args: "{}"},
+	))
+	a := newTestAgent(t, testSettings(fake.start().URL), registry, nil)
+
+	result := a.Run(context.Background(), tool.Request{ID: "req-confirm"}, "read, act, then send", nil)
+	if reads != 1 || acts != 1 {
+		t.Fatalf("sibling calls = read:%d act:%d, want 1 each", reads, acts)
+	}
+	if confirms != 0 {
+		t.Fatalf("confirm handler ran %d times before the spoken yes", confirms)
+	}
+	if result.Pending == nil || result.Pending.Tool != "mail.send" || result.Text != "Send it?" {
+		t.Fatalf("result = %+v, want the mail.send question", result)
+	}
+	if fake.requestCount() != 1 {
+		t.Fatalf("provider calls = %d, want the turn to stop after the confirm", fake.requestCount())
+	}
+}

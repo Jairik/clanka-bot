@@ -121,8 +121,9 @@ and `top_tools[0]=time.now 0.689`; a prefix-routed turn has an empty reason.
 The test double received "Agent. What time is it?" unchanged. A comma
 transcript ("Agent, what is it?") matches and is stripped, so the same
 mechanism passed and failed within this run depending on punctuation. The
-prefix is supposed to guarantee the Agent path; today it only looks right when
-the Fast path independently misses.
+prefix is supposed to guarantee the Agent path; at the time it only looked
+right when the Fast path independently missed. **Fixed in the final fix pass
+above**; the rerun takes `agent_path/time.now` with the prefix stripped.
 
 ### F2 — `timer.set` cannot reach the Fast path with a trailing period (#34)
 
@@ -131,15 +132,18 @@ margin 0.122 < 0.23; "…ten seconds." scored 0.736 with margin 0.063. Without
 the full stop the first scores 1.000 with margin 0.359. Moonshine adds a full
 stop to every transcript, so no timer phrasing clears the margin in this
 voice path. The two observed transcripts are now in the routing fixture; the
-real-MiniLM evaluation reproduces them as misses while every Tool keeps
+real-MiniLM evaluation reproduced them as misses while every Tool kept
 precision 1.0000 ([`prototype-run/routing-eval.txt`](prototype-run/routing-eval.txt)).
+**Fixed in the final fix pass above**; both now take the Fast path.
 
 ### F3 — `weather.current` timed out on Open-Meteo (#35)
 
 The weather Control phrase ran the Tool for 5654 ms and failed at 6462 ms
 (`context deadline exceeded` for the forecast call); the Berlin request in the
 same run succeeded in 896 ms. This is the network-bound Tool, not routing, and
-it exceeds the Fast path p95 on its own.
+it exceeds the Fast path p95 on its own. **Bounded and given a truthful failure
+message in the final fix pass above**; upstream availability is still not
+controlled.
 
 ### F4 — idle webcam-mic noise is above the endpointer threshold (#36)
 
@@ -150,9 +154,10 @@ is above the threshold, even the quietest one
 ([`prototype-run/mic-noise-samples.txt`](prototype-run/mic-noise-samples.txt)).
 A human wake on this setting would open an utterance on noise and only stop at
 `max_utterance` (15 s). This blocks the human acceptance run until the gain or
-threshold is fixed.
+threshold is fixed. **The final fix pass adds a measurement tool and checklist
+above; the human gain choice is still outstanding.**
 
-### F5 — a Barge-in cancellation is logged as `agent_error=unavailable`
+### F5 — a Barge-in cancellation is logged as `agent_error=unavailable` (#37)
 
 Request `a4fd88e351050afcac033a8c3f0e1adb` is a real Barge-in
 (`outcome=cancelled`, `error: speech: context canceled`, 2219 ms) but also
@@ -161,10 +166,9 @@ carries `agent_error=unavailable`, and the Agent logs
 ([`prototype-run/assistant-evidence.log`](prototype-run/assistant-evidence.log)).
 `agent.failure` treats any non-timeout stream error as unavailable, including
 `context.Canceled`, so an interruption is indistinguishable from a provider
-failure in the log. One-line fix for the single final fix agent: return a
-cancellation result for `context.Canceled`/`DeadlineExceeded` in
-`agent.failure` and cover it with a test. Not filed as a separate issue
-because the scenario itself passed.
+failure in the log. Filed as #37 and fixed in the final fix pass below: a
+cancelled request now returns a cancellation result, logs no provider error and
+does not set `agent_error` or `MarkFailed`.
 
 ## Routing fixture and the real-MiniLM evaluation
 
@@ -227,6 +231,109 @@ lower `timer.set` recall from 0.40 to 0.364 rather than being deleted.
    budget, question the model choice before anything else (#12).
 4. Repeat the provider-failure test with a deliberately bad key; the spoken
    Unavailable message and `agent_error=unavailable` should match this run.
+
+## Final fix pass (2026-11-11)
+
+This section is **new evidence** from the final fix branch; the run above is
+kept as the historical original. The branch is `jj/implement-spec-step-7-fixes`,
+based on integration `5fa9036`, with the review fixes and #33–#36 applied.
+
+### What changed, in one line each
+
+- **Tool arguments fail closed.** Malformed/streamed-truncated JSON and
+  schema-invalid arguments return a Tool error before the handler; a required
+  field is enforced, unknown fields are rejected, and empty arguments still
+  mean the legitimate no-argument form. Regression tests prove an act handler
+  never runs on invalid input.
+- **Barge-in cancellation is not a provider failure** (#37). `outcome=cancelled`
+  no longer carries `agent_error` and no longer logs `agent request failed`;
+  the deliberate provider-failure scenario still does.
+- **A confirm proposal runs sibling calls.** Reads/acts in the same model step
+  run before the one pending confirmation is armed; the confirm handler still
+  waits for a spoken yes.
+- **The 1.5 s Filler is gated on reply audio, not text.** A reply whose text
+  arrives at 1.4 s but whose first PCM arrives at 2.5 s gets one Filler at about
+  1.5 s; audio that starts before the deadline suppresses it. A serial sink
+  keeps the Filler and reply from overlapping.
+- **Response latency ends after the first PCM write**, not before it. The log
+  and docs now say the timestamp is the sink accepting the chunk; pacat's
+  buffer and the host audio stack add unmeasured physical latency.
+- **Chime echo frames are dropped.** Frames captured while the wake chime plays
+  no longer open a question after `chimeDone`; the fixed 500 ms window and the
+  user's post-chime audio are preserved.
+- **Rollback removes orphans** (`--remove-orphans` on both deploy paths) and the
+  health wait follows the checked-out service set.
+- **The debug entry is localhost-only in practice**, not just by host
+  publication: loopback and the container's default gateway are accepted, a
+  sibling container is refused with 403.
+- **The embed image is offline at startup** (`HF_HUB_OFFLINE=1`,
+  `TRANSFORMERS_OFFLINE=1`) like stt/tts.
+- **#33/#34:** one shared normaliser; trailing STT punctuation no longer
+  changes the prefix or the embedding. The two observed timer transcripts now
+  take the Fast path.
+- **#35:** weather has a 1.5 s call timeout and a 2 s total budget, a truthful
+  failure message, and a small in-process TTL cache. A cold upstream timeout
+  still exceeds the 2 s p95; it is now bounded and honest, not a 6.4 s turn.
+- **#36:** added a read-only `scripts/mic-noise-check.sh` measurement tool and
+  `docs/mic-calibration.md`; the fixed 500 ms window and -38 dBFS default are
+  unchanged, and the stale -45 dBFS comment is corrected. The human-mic run is
+  still outstanding.
+
+### Full 20-scenario rerun (synthesized loopback)
+
+Command: `python3 scripts/prototype-run/prototype_run.py --skip-mic --tag s7full`
+(no `--publish`; the evidence was copied to
+[`prototype-run/after-fixes/`](prototype-run/after-fixes/)). This is still
+synthesized Pocket TTS loopback and a scripted fake provider, not a human or a
+live model; the mic probe was skipped.
+
+**19 pass, 1 fail.** The only failure is `weather-control`, which hit a real
+Open-Meteo timeout at the new 2 s Tool bound (`tool_execute_ms=2000`,
+`response_ms=3395`, spoken failure). `weather-city` passed in 1083 ms in the
+same run. This is upstream variability, not a routing or pipeline regression;
+the old run failed the same scenario at 6.4 s. The fixed evidence directory has
+the request lines and logs.
+
+Other fixed rows in that run:
+
+| Scenario | Observed | Result |
+| --- | --- | --- |
+| `timer-set-words` | `fast_path/timer.set/ok`, margin 0.346 | PASS (was `below_margin` at 0.122) |
+| `timer-set-seconds-miss` | `fast_path/timer.set/ok`, margin 0.304 | PASS (was `below_margin` at 0.063) |
+| `agent-tool` | `agent_path/time.now/ok`, transcript `Agent, what time is it?` | PASS (prefix stripped; was a semantic fall-through) |
+| `barge-in` | `agent_path/-/cancelled` then `control_phrase/time.now/ok` | PASS; cancelled request has **no** `agent_error` and no `agent request failed` line |
+
+### Other verification (this pass)
+
+- `go test ./...`, `go vet ./...`, `go test -race ./...`: all packages pass.
+- `make test`: Go suite + 54/54 deploy black-box tests + 3/3 mic-check offline
+  tests. `make check`: 5 services, 0 warnings.
+- Python harness: 32/32 tests. STT/TTS: 18/18 tests in a temporary venv (the
+  host Python lacks the `wyoming`/`numpy` runtime deps; the tests fake the
+  models).
+- `make routing-eval ROUTING_EVAL_EMBED_URL=http://127.0.0.1:18085` against the
+  real MiniLM image: **PASS**, every Tool precision 1.0000 against the 0.95
+  floor. `timer.set` TP rose from 8 to 10 and recall from 0.40 to 0.4545; total
+  precision 1.0000, recall 0.5926. Output:
+  [`prototype-run/routing-eval-after-fixes.txt`](prototype-run/routing-eval-after-fixes.txt).
+- Live weather (`go test -tags weatherlive`): Berlin answered in 0.90 s. A
+  separate harness request timed out at the 2 s bound, so this does not claim
+  control of upstream availability.
+- Real Compose debug topology: host loopback via the published port **200**,
+  loopback inside the container **200**, sibling container **403**.
+
+### Remaining gaps
+
+- **No human spoke.** The rerun is still synthesized loopback audio. The
+  human-spoken #29 acceptance run remains outstanding, and the dev-box webcam
+  still needs the gain/threshold correction in `docs/mic-calibration.md`.
+- **No live OpenRouter key.** The Agent path is the scripted fake provider; its
+  latency is instrumentation, not model latency. The key request timed out and
+  was not retried.
+- **Weather is network-bound.** A cold `weather-control` can still exceed the
+  Fast path p95 when Open-Meteo is slow; it now fails bounded and truthfully at
+  the 2 s Tool budget, with a brief cache for repeats.
+- **Pi hardware** remains out of scope for this pass.
 
 ## Reproduce
 

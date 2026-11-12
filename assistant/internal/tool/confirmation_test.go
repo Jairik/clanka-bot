@@ -184,12 +184,28 @@ func TestConfirmSummaryFallsBackToTheDescription(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 
-	_, err := reg.Execute(context.Background(), "mail.send", nil)
+	_, err := reg.Execute(context.Background(), "mail.send", json.RawMessage(`{"to":"doctor"}`))
 	var required *tool.ConfirmationRequiredError
 	if !errors.As(err, &required) {
 		t.Fatalf("error = %v, want *ConfirmationRequiredError", err)
 	}
 	if got, want := required.Pending.Summary, "Send an email?"; got != want {
 		t.Errorf("summary = %q, want %q", got, want)
+	}
+}
+
+func TestProposeRejectsInvalidArgumentsWithoutArming(t *testing.T) {
+	reg := tool.NewRegistry(time.Second)
+	runs := 0
+	if err := tool.Add(reg, sendTool(&runs)); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	for _, args := range []string{`{"to":`, `{}`, `{"to":42}`} {
+		if _, err := reg.Propose("mail.send", json.RawMessage(args)); err == nil {
+			t.Fatalf("Propose(%s) succeeded, want an argument error", args)
+		}
+		if _, ok := reg.Pending(); ok {
+			t.Fatalf("Propose(%s) armed a pending call", args)
+		}
 	}
 }

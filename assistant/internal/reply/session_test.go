@@ -67,7 +67,12 @@ func newFakeSpeaker() *fakeSpeaker {
 	return &fakeSpeaker{saidCh: make(chan string, 8)}
 }
 
-func (f *fakeSpeaker) SayText(_ context.Context, text string) error {
+func (f *fakeSpeaker) SayText(ctx context.Context, text string) error {
+	// Model the real speaker: the request's sound slot is claimed just before
+	// the first PCM is submitted, not when text is handed to TTS.
+	if hook := speech.FirstAudioHook(ctx); hook != nil {
+		hook()
+	}
 	f.mu.Lock()
 	f.said = append(f.said, text)
 	f.mu.Unlock()

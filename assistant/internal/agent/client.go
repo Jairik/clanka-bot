@@ -158,10 +158,15 @@ func (p *provider) stream(ctx context.Context, messages []openai.ChatCompletionM
 			continue
 		}
 		args := json.RawMessage(part.args.String())
+		argsError := ""
 		if !json.Valid(args) {
-			args = json.RawMessage(`{}`)
+			// Never run a handler on a truncated/aborted stream. Keep the
+			// Tool-call protocol JSON-valid (null), but mark the call so the
+			// loop returns a Tool error instead of an act with zero values.
+			args = json.RawMessage("null")
+			argsError = "arguments were not valid JSON"
 		}
-		out.Calls = append(out.Calls, CallRef{ID: part.id, Name: part.name, Args: args})
+		out.Calls = append(out.Calls, CallRef{ID: part.id, Name: part.name, Args: args, ArgsError: argsError})
 	}
 	return out, nil
 }

@@ -79,6 +79,10 @@ func run() error {
 	// One sink serves reply playback, the wake chime, timer alerts and the
 	// audio Tools, so audio.stop can cancel whatever the assistant is playing.
 	sink := audio.NewPulseSink(cfg.Playback.Binary, cfg.Playback.Sink)
+	// One serial sink keeps reply audio, Fillers and timer alerts from
+	// overlapping on the single speaker. The wake chime uses the raw sink:
+	// it plays before any reply is chosen.
+	playSink := speech.NewSerialSink(sink)
 
 	// Speech is optional: without a TTS address the debug entry stays text-only.
 	// The Filler is synthesized once here, from the config read at startup, so a
@@ -89,7 +93,7 @@ func run() error {
 		client := wyoming.NewClient(cfg.TTS.Addr, wyoming.WithTimeout(cfg.TTS.Timeout.Duration()))
 		checkTTSService(logger, client, cfg.TTS.Addr)
 		wantVoice := wyoming.Voice{Name: cfg.TTS.Voice}
-		speechSpeaker = speech.New(client, sink, wantVoice, logger)
+		speechSpeaker = speech.New(client, playSink, wantVoice, logger)
 		filler = loadAgentFiller(logger, client, wantVoice, cfg.Agent.Filler, cfg.TTS.Timeout.Duration())
 	}
 
@@ -164,7 +168,7 @@ func run() error {
 	if speechSpeaker != nil {
 		speaker = speechSpeaker
 	}
-	session := reply.New(p, speaker, sink, filler)
+	session := reply.New(p, speaker, playSink, filler)
 
 	// The debug entry is only spoken when a TTS service is configured.
 	var responder api.Responder
@@ -241,7 +245,7 @@ func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingD
 	wakeClient := wyoming.NewClient(cfg.Wakeword.Addr, wyoming.WithTimeout(cfg.Wakeword.Timeout.Duration()))
 	sttClient := wyoming.NewClient(cfg.STT.Addr, wyoming.WithTimeout(cfg.STT.Timeout.Duration()))
 
-	config := voice.Config{
+	voiceCfg := voice.Config{
 		FrameBytes: frameBytes,
 		Endpoint: voice.EndpointConfig{
 			Rate:          captureFormat.Rate,
@@ -253,7 +257,7 @@ func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingD
 		ChimeFormat: audio.Format{Rate: captureFormat.Rate, Width: 2, Channels: 1},
 	}
 	if cfg.Wakeword.Chime.Enabled {
-		config.Chime = audio.Chime(captureFormat.Rate)
+		voiceCfg.Chime = audio.Chime(captureFormat.Rate)
 	}
 
 	logger.Info("voice input enabled",
@@ -265,7 +269,7 @@ func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingD
 		"endpoint_silence", cfg.STT.Endpoint.Silence.Duration().String(),
 	)
 
-	return voice.New(config, voice.Deps{
+	return voice.New(voiceCfg, voice.Deps{
 		Source:    audio.NewPulseSource(cfg.Capture.Binary, cfg.Capture.Source, captureFormat),
 		Wake:      voice.NewWyomingWake(wakeClient, names, wireFormat),
 		STT:       voice.NewWyomingSTT(sttClient, wyoming.TranscribeOptions{Name: cfg.STT.Model, Language: cfg.STT.Language}, wireFormat),

@@ -43,7 +43,10 @@ const (
 	// event, Agent path only.
 	StageAgentFirstToken Stage = "agent_first_token"
 	// StageTTSFirstAudio is the first reply text handed to TTS to the first
-	// PCM sample written to the sink.
+	// PCM chunk successfully submitted to the sink's stdin. It is not the
+	// instant the DAC emits sound: pacat buffers (--latency-msec=100) and the
+	// host adds its own latency, so physical onset is later by an amount this
+	// plumbing cannot measure.
 	StageTTSFirstAudio Stage = "tts_first_audio"
 )
 
@@ -276,14 +279,7 @@ func (t *Timeline) Checkpoint(name string) (time.Duration, bool) {
 func (t *Timeline) Response() (time.Duration, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.lastVoice.IsZero() || t.replyAudio.IsZero() {
-		return 0, false
-	}
-	d := t.replyAudio.Sub(t.lastVoice)
-	if d < 0 {
-		return 0, false
-	}
-	return d, true
+	return t.responseLocked()
 }
 
 // HasReplyAudio reports whether the reply actually started playing.

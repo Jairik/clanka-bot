@@ -262,7 +262,7 @@ test_deploys_current_branch() {
 	assert_status 0 "clean deploy succeeds"
 	assert_out_contains "deploy reports healthy services" "healthy"
 	assert_out_contains "deploy pulls before building" "Already up to date"
-	assert_calls_contains "deploy builds the stack" "docker compose up -d --build"
+	assert_calls_contains "deploy builds the stack" "docker compose up -d --build --remove-orphans"
 	assert_env_contains "images are tagged with the short SHA" "GIT_SHA=$sha"
 	if [[ "$(git -C "$repo" rev-parse --abbrev-ref HEAD)" == "main" ]]; then pass; else fail "deploy leaves the tracked branch checked out"; fi
 }
@@ -278,6 +278,27 @@ test_waits_for_every_service() {
 	assert_status 0 "multi-service deploy succeeds"
 	assert_out_contains "deploy waits for all services" "all 2 service"
 	assert_calls_contains "deploy checks the second service" "docker compose ps -q tts"
+}
+
+test_rollback_removes_orphans_from_a_newer_service_set() {
+	local repo first short
+	repo=$(new_repo)
+	first=$(git -C "$repo" rev-parse HEAD)
+	echo two >"$repo/second.txt"
+	git -C "$repo" add -A
+	git -C "$repo" commit -qm second
+	short=$(git -C "$repo" rev-parse --short "$first")
+	new_scenario
+	# The host still has the newer three-service set; the rollback commit
+	# defines only assistant. compose ps can still see the old containers.
+	set_services assistant
+	printf 'assistant\ntts\nembed\n' >"$SCENARIO/containers"
+	printf 'clanka/assistant:%s\n' "$short" >"$SCENARIO/images"
+	run_deploy "$repo" "$first"
+	assert_status 0 "rollback with orphan containers succeeds"
+	assert_calls_contains "rollback removes newer services" "docker compose up -d --no-build --remove-orphans"
+	assert_out_contains "rollback waits only for its own service set" "all 1 service"
+	assert_calls_contains "rollback still checks its service" "docker compose ps -q assistant"
 }
 
 test_reports_timeout_with_diagnostics() {
@@ -320,7 +341,7 @@ test_rollback_reuses_images_without_build() {
 	run_deploy "$repo" "$first"
 	assert_status 0 "rollback succeeds"
 	assert_out_contains "rollback says it reuses images" "reusing"
-	assert_calls_contains "rollback brings the stack up without building" "docker compose up -d --no-build"
+	assert_calls_contains "rollback brings the stack up without building" "docker compose up -d --no-build --remove-orphans"
 	assert_calls_not_contains "rollback never builds" "--build"
 	assert_env_contains "rollback tags with the rollback SHA" "GIT_SHA=$short"
 	if [[ "$(git -C "$repo" rev-parse HEAD)" == "$first" ]]; then pass; else fail "rollback checks out the requested commit"; fi
@@ -421,6 +442,7 @@ run_test test_help
 run_test test_refuses_dirty_worktree
 run_test test_deploys_current_branch
 run_test test_waits_for_every_service
+run_test test_rollback_removes_orphans_from_a_newer_service_set
 run_test test_reports_timeout_with_diagnostics
 run_test test_reports_unhealthy_service
 run_test test_rollback_reuses_images_without_build

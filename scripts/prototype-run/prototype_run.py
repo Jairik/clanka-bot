@@ -204,33 +204,31 @@ def find_fake_request(records, last_user_contains):
     return None
 
 
-def has_prior_user_turn(record, text):
-    """True when the request carries an earlier user message containing text."""
+def _has_message(record, role, text, exclude_last=False):
+    """True when the request carries a message of the role containing text."""
     needle = text.lower()
     messages = (record or {}).get("messages") or []
-    for message in messages[:-1]:
-        if message.get("role") == "user" and needle in str(message.get("content", "")).lower():
-            return True
-    return False
+    if exclude_last:
+        messages = messages[:-1]
+    return any(
+        message.get("role") == role and needle in str(message.get("content", "")).lower()
+        for message in messages
+    )
+
+
+def has_prior_user_turn(record, text):
+    """True when the request carries an earlier user message containing text."""
+    return _has_message(record, "user", text, exclude_last=True)
 
 
 def has_prior_assistant_reply(record, text):
     """True when the request carries an earlier assistant message containing text."""
-    needle = text.lower()
-    messages = (record or {}).get("messages") or []
-    for message in messages[:-1]:
-        if message.get("role") == "assistant" and needle in str(message.get("content", "")).lower():
-            return True
-    return False
+    return _has_message(record, "assistant", text, exclude_last=True)
 
 
 def has_tool_result(record, contains):
     """True when the request carries a Tool result message containing text."""
-    needle = contains.lower()
-    for message in (record or {}).get("messages") or []:
-        if message.get("role") == "tool" and needle in str(message.get("content", "")).lower():
-            return True
-    return False
+    return _has_message(record, "tool", contains)
 
 
 def prefix_removed(text):

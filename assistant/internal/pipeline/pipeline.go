@@ -12,6 +12,7 @@ import (
 
 	"github.com/Jairik/clanka-bot/assistant/internal/agent"
 	"github.com/Jairik/clanka-bot/assistant/internal/latency"
+	"github.com/Jairik/clanka-bot/assistant/internal/phrase"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 )
 
@@ -177,11 +178,6 @@ func (p *Pipeline) Handle(ctx context.Context, req tool.Request, transcript stri
 	return p.HandleEvents(ctx, req, transcript, Events{})
 }
 
-// HandleStream is Handle with a delta hook, kept for the plain streaming case.
-func (p *Pipeline) HandleStream(ctx context.Context, req tool.Request, transcript string, onDelta func(string)) Reply {
-	return p.HandleEvents(ctx, req, transcript, Events{Delta: onDelta})
-}
-
 // HandleEvents is Handle with routing and generation callbacks for one
 // request. The callbacks are ignored on the Fast path.
 func (p *Pipeline) HandleEvents(ctx context.Context, req tool.Request, transcript string, events Events) Reply {
@@ -288,7 +284,7 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 		}
 	}
 
-	// 5. Agent path, or the placeholder until it lands.
+	// 5. Agent path, or the placeholder when no Agent runner is wired.
 	if p.agent != nil {
 		markRouting()
 		p.callAgent(ctx, req, transcript, events, &reply)
@@ -313,6 +309,9 @@ func (p *Pipeline) callAgent(ctx context.Context, req tool.Request, transcript s
 	// A spoken Unavailable message is still a reply, but the model call
 	// failed; the raw request line must say so rather than look like success.
 	switch {
+	case result.Cancelled:
+		// Barge-in or shutdown: the reply session classifies the request as
+		// cancelled. Never label it a provider failure.
 	case result.TimedOut:
 		latency.SetAttr(ctx, "agent_error", "timeout")
 		latency.MarkFailed(ctx)
@@ -412,7 +411,5 @@ func (p *Pipeline) finish(ctx context.Context, started time.Time, req tool.Reque
 // NormalizePhrase trims, lowercases, collapses whitespace and drops trailing
 // sentence punctuation so the Control phrase table matches typed transcripts.
 func NormalizePhrase(text string) string {
-	text = strings.ToLower(strings.TrimSpace(text))
-	text = strings.TrimRight(text, "?.!")
-	return strings.Join(strings.Fields(text), " ")
+	return phrase.Normalize(text)
 }

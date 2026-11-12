@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/audio"
@@ -95,13 +96,21 @@ type Deps struct {
 	Logger  *slog.Logger
 }
 
+// micFrame is one captured PCM block stamped with its capture time. The stamp
+// lets the session drop audio captured while the wake chime was still playing:
+// those frames are the chime echoing back through the mic, not the question.
+type micFrame struct {
+	pcm []byte
+	at  time.Time
+}
+
 // Loop is the microphone state machine. Run is called once; it is safe for the
 // capture goroutine and the session code to share the frame channel.
 type Loop struct {
 	cfg  Config
 	deps Deps
 
-	frames chan []byte
+	frames chan micFrame
 }
 
 // New validates the config and returns a loop.
@@ -128,7 +137,7 @@ func (l *Loop) Run(ctx context.Context) error {
 	defer cancel()
 
 	// Buffered so the capture goroutine is not blocked while a model finalises.
-	l.frames = make(chan []byte, 8)
+	l.frames = make(chan micFrame, 8)
 	// The supervisor restarts a failed source (for example Pulse not ready yet)
 	// so a bad start does not disable voice until the container restarts.
 	go l.capture(ctx, l.frames)
@@ -190,8 +199,8 @@ func (l *Loop) waitForWake(ctx context.Context) (bool, error) {
 		select {
 		case <-ctx.Done():
 			return false, ctx.Err()
-		case frame := <-l.frames:
-			if err := wake.Write(frame); err != nil {
+		case fr := <-l.frames:
+			if err := wake.Write(fr.pcm); err != nil {
 				return false, err
 			}
 		case detection, ok := <-detections:
@@ -218,12 +227,14 @@ func (l *Loop) session(ctx context.Context) (bool, error) {
 	// Endpointing waits for it to finish: the chime comes back through the mic
 	// and must not count as the start of the question.
 	chimeDone := make(chan struct{})
+	var chimeEnded atomic.Value // time.Time, stored before chimeDone closes
 	if len(l.cfg.Chime) > 0 {
 		go func() {
 			defer close(chimeDone)
 			if err := l.deps.Player.Play(sessCtx, l.cfg.Chime, l.cfg.ChimeFormat); err != nil && sessCtx.Err() == nil {
 				l.deps.Logger.Warn("voice: chime", "error", err.Error())
 			}
+			chimeEnded.Store(time.Now())
 		}()
 	} else {
 		close(chimeDone)
@@ -240,20 +251,33 @@ func (l *Loop) session(ctx context.Context) (bool, error) {
 		return false, err
 	}
 
+	// Frames captured while the chime played are the chime echoing through the
+	// mic. Drop them, including any still buffered when it ends, instead of
+	// endpointing them after chimeDone and opening a 15 s utterance on the tail
+	// (#18/S6). Frames captured after the chime ends are the user.
+	chimeOver := len(l.cfg.Chime) == 0
+	var chimeEnd time.Time
 	for ended := false; !ended; {
 		select {
 		case <-ctx.Done():
 			return false, ctx.Err()
-		case frame := <-l.frames:
-			if err := stt.Write(frame); err != nil {
+		case fr := <-l.frames:
+			if !chimeOver {
+				select {
+				case <-chimeDone:
+					chimeOver = true
+					chimeEnd, _ = chimeEnded.Load().(time.Time)
+				default:
+					continue // still chiming: discard the echo
+				}
+			}
+			if !chimeEnd.IsZero() && fr.at.Before(chimeEnd) {
+				continue // captured during the chime, delivered after it
+			}
+			if err := stt.Write(fr.pcm); err != nil {
 				return false, err
 			}
-			select {
-			case <-chimeDone:
-				ended = endpointer.Add(frame)
-			default:
-				// Still chiming; keep the audio but do not endpoint on it.
-			}
+			ended = endpointer.Add(fr.pcm)
 		}
 	}
 	// One timeline spans endpointing, STT, routing, the Agent path and
@@ -319,11 +343,11 @@ func (l *Loop) session(ctx context.Context) (bool, error) {
 				return false, err
 			}
 			return false, nil
-		case frame := <-l.frames:
+		case fr := <-l.frames:
 			if watch == nil {
 				continue // no way to interrupt; drain the capture
 			}
-			if err := watch.Write(frame); err != nil {
+			if err := watch.Write(fr.pcm); err != nil {
 				l.deps.Logger.Warn("voice: barge-in watch", "error", err.Error())
 				watch, detections = nil, nil
 			}
@@ -372,7 +396,7 @@ func (l *Loop) dropPending() {
 
 // capture supervises the microphone: it retries a failed source with a short
 // backoff and only stops when the loop's context is cancelled.
-func (l *Loop) capture(ctx context.Context, frames chan<- []byte) {
+func (l *Loop) capture(ctx context.Context, frames chan<- micFrame) {
 	for {
 		err := l.captureOnce(ctx, frames)
 		if ctx.Err() != nil {
@@ -388,24 +412,24 @@ func (l *Loop) capture(ctx context.Context, frames chan<- []byte) {
 // captureOnce reads fixed-size frames from the source and publishes them.
 // Frames are dropped rather than blocking when a model is finalising: recent
 // audio is what matters, and a stalled capture would back up the Pulse stream.
-func (l *Loop) captureOnce(ctx context.Context, frames chan<- []byte) error {
+func (l *Loop) captureOnce(ctx context.Context, frames chan<- micFrame) error {
 	reader, err := l.deps.Source.Open(ctx)
 	if err != nil {
 		return err
 	}
 	defer reader.Close()
 
-	frame := make([]byte, l.cfg.FrameBytes)
+	pcm := make([]byte, l.cfg.FrameBytes)
 	for {
-		if _, err := io.ReadFull(reader, frame); err != nil {
+		if _, err := io.ReadFull(reader, pcm); err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
 			return fmt.Errorf("voice: capture: %w", err)
 		}
 		select {
-		case frames <- frame:
-			frame = make([]byte, l.cfg.FrameBytes)
+		case frames <- micFrame{pcm: pcm, at: time.Now()}:
+			pcm = make([]byte, l.cfg.FrameBytes)
 		default:
 			// Consumer is busy; drop this frame.
 		}

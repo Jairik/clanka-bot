@@ -1,6 +1,6 @@
 // Package audio plays PCM on a named PulseAudio (or PipeWire) sink by piping
-// raw samples into pacat. Only the assistant container mounts the Pulse socket.
-// Mic capture (wake word and STT) will add a Source beside this Sink.
+// raw samples into pacat, and captures the mic from a named source. Only the
+// assistant container mounts the Pulse socket (ADR-0001).
 package audio
 
 import (
@@ -57,7 +57,8 @@ func pactlFor(pacat string) string {
 }
 
 // Open starts pacat and returns a writer for raw PCM. Closing the writer waits
-// until the audio has drained. Audio controls (volume, mute) belong here later.
+// until the audio has drained. Volume and stop are handled by SetVolume,
+// AdjustVolume and Stop below.
 func (s *PulseSink) Open(ctx context.Context, format Format) (io.WriteCloser, error) {
 	sampleFormat, err := sampleFormat(format.Width)
 	if err != nil {

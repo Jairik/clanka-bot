@@ -105,6 +105,10 @@ type CallRef struct {
 	ID   string
 	Name string // wire name, as sent by the model
 	Args json.RawMessage
+	// ArgsError is set when the streamed arguments were not valid JSON. The
+	// call is reported to the model as a Tool error and never reaches a
+	// handler; Args itself is the JSON-valid placeholder null.
+	ArgsError string
 }
 
 // AssistantToolCalls renders the model's tool-call turn back into the request.

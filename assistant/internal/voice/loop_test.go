@@ -648,3 +648,42 @@ func TestLoopStagesCorrelateUnderOneRequestID(t *testing.T) {
 			timeline.ID(), seenEndpoint, seenTranscript, logs.String())
 	}
 }
+
+func TestLoopDropsBufferedChimeEchoFrames(t *testing.T) {
+	// Loud frames are captured while the chime plays and sit in the frame
+	// buffer. Once chimeDone fires they must be dropped, not endpointed, or the
+	// chime tail opens a false utterance (#18/S6).
+	source := &scriptSource{frames: append(repeat(loudFrame(), 8), repeat(silentFrame(), 100)...)}
+	wake := &fakeWake{afterWords: 3}
+	stt := &fakeSTT{text: "hello"}
+	player := &fakePlayer{block: 500 * time.Millisecond}
+	responder := &fakeResponder{calls: make(chan string, 1)}
+
+	loop := newLoop(t, voice.Config{
+		FrameBytes: frameBytes,
+		Endpoint: voice.EndpointConfig{
+			Rate:          16000,
+			Silence:       30 * time.Millisecond,
+			ThresholdDBFS: -38,
+			// No cap: the scripted source runs much faster than real time, and
+			// a cap would end the turn even without speech.
+			MaxUtterance: 0,
+		},
+		Chime:       []byte{1, 2, 3, 4},
+		ChimeFormat: audio.Format{Rate: 16000, Width: 2, Channels: 1},
+	}, voice.Deps{Source: source, Wake: wake, STT: stt, Player: player, Responder: responder})
+	cancel, _ := runLoop(t, loop)
+
+	select {
+	case got := <-responder.calls:
+		t.Fatalf("responded %q on buffered chime echo, want no utterance", got)
+	case <-time.After(1200 * time.Millisecond):
+	}
+	cancel()
+
+	for _, frame := range stt.received() {
+		if !isSilent(frame) {
+			t.Fatal("a chime echo frame reached STT; only post-chime audio should")
+		}
+	}
+}

@@ -46,6 +46,11 @@ func (r *Registry) Propose(name string, args json.RawMessage) (PendingConfirmati
 	if e.info.Permission != PermissionConfirm {
 		return PendingConfirmation{}, fmt.Errorf("tool %q: permission %q needs no confirmation", name, e.info.Permission)
 	}
+	// Arm nothing when the model's arguments do not satisfy the Tool's schema:
+	// a malformed confirm call must not become a runnable pending call.
+	if err := validateArgs(e.schema, args); err != nil {
+		return PendingConfirmation{}, fmt.Errorf("tool %q: %w", name, err)
+	}
 	pending := PendingConfirmation{
 		Tool:    e.info.Name,
 		Args:    append(json.RawMessage(nil), args...),

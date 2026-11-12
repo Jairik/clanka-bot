@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -68,6 +69,7 @@ type Info struct {
 
 type entry struct {
 	info    Info
+	schema  *jsonschema.Resolved
 	run     func(ctx context.Context, args json.RawMessage) (any, error)
 	speak   func(result any) (string, bool)
 	extract func(text string) (json.RawMessage, bool)
@@ -97,9 +99,6 @@ func NewRegistry(defaultTimeout time.Duration) *Registry {
 		tools:          make(map[string]*entry),
 	}
 }
-
-// DefaultTimeout returns the timeout used by Tools that declare none.
-func (r *Registry) DefaultTimeout() time.Duration { return r.defaultTimeout }
 
 // Add registers one typed Tool. It is a free function because Go methods
 // cannot introduce type parameters.
@@ -141,6 +140,13 @@ func Add[In, Out any](r *Registry, t Tool[In, Out]) error {
 	if err != nil {
 		return fmt.Errorf("tool %q: marshal output schema: %w", t.Name, err)
 	}
+	// Resolve once at registration, then validate every call at the public
+	// entry points. A malformed or schema-invalid model argument must fail
+	// before the handler, not run an act Tool with zero values.
+	resolved, err := inSchema.Resolve(nil)
+	if err != nil {
+		return fmt.Errorf("tool %q: resolve input schema: %w", t.Name, err)
+	}
 
 	timeout := t.Timeout
 	if timeout == 0 {
@@ -160,7 +166,11 @@ func Add[In, Out any](r *Registry, t Tool[In, Out]) error {
 			HasSpeak:     t.Speak != nil,
 			HasExtract:   t.Extract != nil,
 		},
+		schema: resolved,
 		run: func(ctx context.Context, args json.RawMessage) (any, error) {
+			if err := validateArgs(resolved, args); err != nil {
+				return nil, fmt.Errorf("tool %q: %w", t.Name, err)
+			}
 			var in In
 			if len(args) > 0 {
 				if err := json.Unmarshal(args, &in); err != nil {
@@ -223,6 +233,9 @@ func (r *Registry) Execute(ctx context.Context, name string, args json.RawMessag
 	e, ok := r.lookup(name)
 	if !ok {
 		return nil, fmt.Errorf("tool: unknown tool %q", name)
+	}
+	if err := validateArgs(e.schema, args); err != nil {
+		return nil, fmt.Errorf("tool %q: %w", name, err)
 	}
 	if e.info.Permission == PermissionConfirm {
 		return nil, &ConfirmationRequiredError{Pending: PendingConfirmation{
@@ -304,6 +317,26 @@ func (r *Registry) Names() []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// validateArgs enforces the Tool's generated input schema before its handler
+// runs. Empty arguments are the legitimate "no arguments" form (an omitted
+// object), not invalid JSON; a required field still fails. Unknown fields are
+// rejected by the generated schema's additionalProperties: false.
+func validateArgs(schema *jsonschema.Resolved, args json.RawMessage) error {
+	var value any = map[string]any{}
+	if len(bytes.TrimSpace(args)) > 0 {
+		if err := json.Unmarshal(args, &value); err != nil {
+			return fmt.Errorf("invalid JSON arguments: %w", err)
+		}
+	}
+	if schema == nil {
+		return errors.New("invalid arguments: input schema is not resolved")
+	}
+	if err := schema.Validate(value); err != nil {
+		return fmt.Errorf("invalid arguments: %w", err)
+	}
+	return nil
 }
 
 // FailureMessage returns the only text an error may show the user.

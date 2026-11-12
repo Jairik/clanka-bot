@@ -3,6 +3,15 @@
 Date: 2026-11-11. Branch: `jj/request-stage-latency-observability` with the
 #27 changes merged with integration `4e018b3` (#25 barge-in and the Filler).
 
+> **Semantics update from the final fix pass:** these historical numbers end
+> Response latency when the first TTS chunk is *received*, before it is written
+> to pacat. The shipped code now marks the end just after the first PCM chunk is
+> **successfully submitted** to the sink, and documents that the physical DAC
+> onset is still later by pacat's `--latency-msec=100` buffer plus host audio
+> latency. Do not compare these 801/971 ms figures directly with a post-fix run;
+> the post-fix semantics are later by the write plus buffer, and the physical
+> sample is later still. Re-run `make latency-report` to get post-fix numbers.
+
 | | |
 | --- | --- |
 | Box | Intel i7-8700, 12 threads, Arch Linux, kernel 7.2.15, Docker 29.9.3 |

@@ -2,6 +2,7 @@ package tool_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -23,7 +24,7 @@ func TestPerToolTimeoutCancelsHandler(t *testing.T) {
 	}
 
 	started := time.Now()
-	_, err := reg.Execute(context.Background(), "test.echo", nil)
+	_, err := reg.Execute(context.Background(), "test.echo", json.RawMessage(`{"text":"hi"}`))
 	if err == nil {
 		t.Fatal("Execute succeeded, want timeout error")
 	}
@@ -45,7 +46,7 @@ func TestRegistryDefaultTimeoutApplies(t *testing.T) {
 	if err := tool.Add(reg, tl); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if _, err := reg.Execute(context.Background(), "test.echo", nil); !errors.Is(err, context.DeadlineExceeded) {
+	if _, err := reg.Execute(context.Background(), "test.echo", json.RawMessage(`{"text":"hi"}`)); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("error = %v, want deadline exceeded", err)
 	}
 }
@@ -61,7 +62,7 @@ func TestTimeoutReportedEvenWhenHandlerIgnoresContext(t *testing.T) {
 	if err := tool.Add(reg, tl); err != nil {
 		t.Fatalf("Add: %v", err)
 	}
-	if _, err := reg.Execute(context.Background(), "test.echo", nil); !errors.Is(err, context.DeadlineExceeded) {
+	if _, err := reg.Execute(context.Background(), "test.echo", json.RawMessage(`{"text":"hi"}`)); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("error = %v, want deadline exceeded", err)
 	}
 }
@@ -76,7 +77,7 @@ func TestToolErrorIsSpokenAsIs(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 
-	_, err := reg.Execute(context.Background(), "test.echo", nil)
+	_, err := reg.Execute(context.Background(), "test.echo", json.RawMessage(`{"text":"hi"}`))
 	if err == nil {
 		t.Fatal("Execute succeeded, want error")
 	}
@@ -95,7 +96,7 @@ func TestInternalErrorSurfacesOnlyGenericFailure(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 
-	_, err := reg.Execute(context.Background(), "test.echo", nil)
+	_, err := reg.Execute(context.Background(), "test.echo", json.RawMessage(`{"text":"hi"}`))
 	if err == nil {
 		t.Fatal("Execute succeeded, want error")
 	}
@@ -131,7 +132,7 @@ func TestRequestContextReachesHandler(t *testing.T) {
 
 	want := tool.Request{ID: "req-1", Path: tool.PathControlPhrase, Device: tool.DevicePi}
 	ctx := tool.WithRequest(context.Background(), want)
-	if _, err := reg.Execute(ctx, "test.echo", nil); err != nil {
+	if _, err := reg.Execute(ctx, "test.echo", json.RawMessage(`{"text":"hi"}`)); err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
 	if got != want {

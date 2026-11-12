@@ -92,8 +92,9 @@ diagnose() {
 	done
 }
 
-# Wait for every service in the compose file, not a hard-coded list, so the
-# stack can grow to the five planned services without touching this script.
+# Wait for every service in the checked-out compose file, not a hard-coded
+# list. --remove-orphans above removes containers from a newer compose set, so
+# a rollback leaves the host running only the services that commit defines.
 wait_for_health() {
 	local services count start deadline svc cid status
 	local -a service_list failing pending
@@ -193,7 +194,7 @@ main() {
 		done <<<"$(docker compose config --images)"
 		((missing == 0)) || exit 1
 
-		if ! docker compose up -d --no-build; then
+		if ! docker compose up -d --no-build --remove-orphans; then
 			printf -- '--- docker compose ps ---\n' >&2
 			docker compose ps >&2 || true
 			die "docker compose up failed"
@@ -206,7 +207,7 @@ main() {
 		sha="$(git rev-parse --short HEAD)"
 		export GIT_SHA="$sha"
 		log "building and starting clanka/<service>:$sha"
-		if ! docker compose up -d --build; then
+		if ! docker compose up -d --build --remove-orphans; then
 			printf -- '--- docker compose ps ---\n' >&2
 			docker compose ps >&2 || true
 			die "docker compose up failed"

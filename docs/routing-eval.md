@@ -8,8 +8,8 @@ misroute from the request log.
 ## What is checked in
 
 - `assistant/internal/pipeline/testdata/routing_eval.yaml` — the labelled
-  oracle. It has at least 20 positives for each of the twenty Fast path Tools
-  (414 total), 86 plain negatives, and 12 compound requests.
+  oracle. It has at least 20 positives for each of the twenty-three Fast path Tools
+  (477 total), 89 plain negatives, and 16 compound requests.
 - `assistant/internal/pipeline/testdata/routing_baseline.yaml` — the recorded
   Map 1 totals the real-MiniLM evaluation must not fall below.
 - `assistant/internal/pipeline/routing_eval_test.go` —
@@ -131,7 +131,7 @@ above the 0.95 precision floor. Run against
 | Tool | Positives | TP | Control TP | Semantic TP | FP | FN | Precision | Recall |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | `time.now` | 20 | 13 | 5 | 8 | 0 | 7 | 1.00 | 0.65 |
-| `date.today` | 20 | 18 | 0 | 18 | 0 | 2 | 1.00 | 0.90 |
+| `date.today` | 20 | 17 | 0 | 17 | 0 | 3 | 1.00 | 0.85 |
 | `weather.current` | 20 | 11 | 4 | 7 | 0 | 9 | 1.00 | 0.55 |
 | `audio.volume_set` | 20 | 12 | 1 | 11 | 0 | 8 | 1.00 | 0.60 |
 | `audio.stop` | 20 | 9 | 0 | 9 | 0 | 11 | 1.00 | 0.45 |
@@ -139,6 +139,9 @@ above the 0.95 precision floor. Run against
 | `timer.cancel` | 20 | 14 | 0 | 14 | 0 | 6 | 1.00 | 0.70 |
 | `timer.remaining` | 20 | 9 | 0 | 9 | 0 | 11 | 1.00 | 0.45 |
 | `timer.list` | 20 | 12 | 0 | 12 | 0 | 8 | 1.00 | 0.60 |
+| `alarm.set` | 22 | 13 | 0 | 13 | 0 | 9 | 1.00 | 0.5909 |
+| `alarm.list` | 21 | 13 | 0 | 13 | 0 | 8 | 1.00 | 0.6190 |
+| `alarm.cancel` | 20 | 11 | 0 | 11 | 0 | 9 | 1.00 | 0.5500 |
 | `voice.set` | 20 | 20 | 0 | 20 | 0 | 0 | 1.00 | 1.00 |
 | `voice.list` | 20 | 6 | 4 | 2 | 0 | 14 | 1.00 | 0.30 |
 | `voice.current` | 20 | 8 | 3 | 5 | 0 | 12 | 1.00 | 0.40 |
@@ -150,11 +153,10 @@ above the 0.95 precision floor. Run against
 | `reminder.set` | 24 | 13 | 0 | 13 | 0 | 11 | 1.00 | 0.5417 |
 | `reminder.list` | 22 | 12 | 0 | 12 | 0 | 10 | 1.00 | 0.5455 |
 | `reminder.cancel` | 22 | 12 | 0 | 12 | 0 | 10 | 1.00 | 0.5455 |
-| **Total** | **414** | **272** | **23** | **249** | **0** | **142** | **1.00** | **0.6570** |
+| **Total** | **477** | **308** | **23** | **285** | **0** | **169** | **1.00** | **0.6457** |
 
-These numbers are from the #54 Reminder tree after merging the #61 Quiet hours
-service and include the earlier #34, #44, #51, #55, #61 and #63 corpus
-additions. Precision is 1.00 with no negative or compound misroute, and every
+These numbers are from the merged #53 Alarm and #54 Reminder tree and include
+the earlier #34, #44, #51, #55, #61 and #63 corpus additions. Precision is 1.00 with no negative or compound misroute, and every
 Tool clears the 0.95 floor. Reminder recall is conservative because the
 set/list/cancel Examples are kept lexically distinct so no pair sits inside the
 0.23 margin: "list my reminders" and "delete my reminder" are ~0.22 apart from
@@ -165,9 +167,9 @@ Local-only, so a list variant that lacks a strong phrasing is better served by
 the Scheduled alerts page (#58) than guessed. The voice and quiet recall notes
 below are unchanged.
 
-Plain negatives: **0 of 86** reached the Fast path, including the new
+Plain negatives: **0 of 89** reached the Fast path, including the new
 reminder-shaped non-requests (no time, no message, a statement about another
-device, or a knowledge question). Compounds: **0 of 12** reached the Fast path.
+device, or a knowledge question). Compounds: **0 of 16** reached the Fast path.
 Every Tool is exercised by the semantic router at least five times, so no Tool
 clears the floor only because the Control phrase table happened to cover its
 positives. The timer and list confusions are the main reason recall is

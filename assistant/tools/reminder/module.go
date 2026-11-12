@@ -1,6 +1,8 @@
 package reminder
 
 import (
+	"context"
+
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 )
 
@@ -8,9 +10,10 @@ import (
 // settings: the Cue and quiet.volume are live settings shared with the sound
 // and Quiet-hours services.
 type Module struct {
-	// manager is created during Register and stopped through the optional
-	// tool.Closer hook at shutdown.
+	// manager is created during Register; Start recovers persisted Reminders
+	// after main has bound the live settings, Cues, Zone and Quiet seams.
 	manager *Manager
+	deps    tool.Deps
 }
 
 // NewModule builds the reminder module.
@@ -23,11 +26,9 @@ func (*Module) Name() string { return "reminder" }
 // Register.
 func (m *Module) Manager() *Manager { return m.manager }
 
-// Register adds every Reminder Tool. Recovery happens here, before serving, so
-// an overdue Reminder recovered at startup is already scheduled. The module
-// reads no settings at registration: the live timezone, Cue, Quiet volume and
-// speaker are all read when a Reminder is set or fires, so #53 can move module
-// startup without changing this package.
+// Register adds every Reminder Tool. Persisted Reminders are recovered by
+// Start, not here, so the first recovered alert already sees the effective
+// Cue, Quiet volume and timezone. The module reads no settings at Register.
 func (m *Module) Register(r *tool.Registry, deps tool.Deps) error {
 	manager := NewManager(Options{
 		Now:     deps.Clock,
@@ -38,15 +39,24 @@ func (m *Module) Register(r *tool.Registry, deps tool.Deps) error {
 		Cues:    deps.Cues,
 		Quiet:   deps.Quiet,
 	})
-	if err := manager.AttachStore(deps.Store); err != nil {
-		return err
-	}
+	m.deps = deps
 	m.manager = manager
 	return Register(r, manager)
 }
 
-// Close stops the live Reminder manager. It is the optional lifecycle hook
-// main calls at shutdown; a module that never registered is inert.
+// Start recovers the Reminders left by the previous process. It runs through
+// the module-list Startable hook after main has bound the live settings, Cues,
+// Zone and Quiet hours, so an overdue Reminder recovered at startup already
+// uses the stored configuration instead of the code defaults.
+func (m *Module) Start(context.Context) error {
+	if m.manager == nil {
+		return nil
+	}
+	return m.manager.AttachStore(m.deps.Store)
+}
+
+// Close stops the live Reminder manager. It is the optional Closer hook main
+// calls at shutdown; a module that never registered is inert.
 func (m *Module) Close() {
 	if m.manager != nil {
 		m.manager.Close()

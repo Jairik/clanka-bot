@@ -135,14 +135,14 @@ func (s *Store) Recover(ctx context.Context, at time.Time) ([]Event, error) {
 	return s.recover(ctx, "", at)
 }
 
-// RecoverKind resolves only one kind's open events. The scheduler modules each
-// recover their own table, so a Timer startup cannot close a Reminder that is
-// waiting for the speaker and report it as a missed Timer.
+// RecoverKind is Recover scoped to one alert kind. The Timer, Alarm and
+// Reminder schedulers each own their pending rows, so one kind must not close
+// or report another kind's open event.
 func (s *Store) RecoverKind(ctx context.Context, kind string, at time.Time) ([]Event, error) {
 	return s.recover(ctx, kind, at)
 }
 
-// recover closes the open events, optionally filtered to one kind.
+// recover is the shared implementation; an empty kind means every kind.
 func (s *Store) recover(ctx context.Context, kind string, at time.Time) ([]Event, error) {
 	if s == nil || s.db == nil {
 		return nil, nil

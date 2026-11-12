@@ -66,7 +66,7 @@ func seedReminder(t *testing.T, st *store.Store, message string, kind reminder.K
 }
 
 // TestRemindersAndEveryOtherTableShareOneDatabase pins the merged ledger:
-// version 7 is reserved for Alarms (#53) and version 8 is Reminders.
+// version 7 is Alarms (#53) and version 8 is Reminders.
 func TestRemindersAndEveryOtherTableShareOneDatabase(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "data", "assistant.db")
 	st := openReminderStore(t, path)
@@ -88,7 +88,7 @@ func TestRemindersAndEveryOtherTableShareOneDatabase(t *testing.T) {
 	}
 	want := map[int]string{
 		1: "settings", 2: "secrets", 3: "timers", 4: "sounds",
-		5: "alert_events", 6: "voices", 8: "reminders",
+		5: "alert_events", 6: "voices", 7: "alarms", 8: "reminders",
 	}
 	if len(applied) != len(want) {
 		t.Fatalf("fresh migrations = %v, want %v", applied, want)

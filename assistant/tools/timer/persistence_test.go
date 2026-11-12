@@ -152,8 +152,8 @@ func TestSecretsAndTimersPreserveEachOtherAcrossReopen(t *testing.T) {
 	}
 	wantVersions := map[int]string{
 		1: "settings", 2: "secrets", 3: "timers", 4: "sounds",
-		5: "alert_events", 6: "voices",
-		// 7 is reserved for the Alarm table (#53); 8 is Reminders (#54).
+		5: "alert_events", 6: "voices", 7: "alarms",
+		// 8 is Reminders (#54); the ledger is contiguous.
 		8: "reminders",
 	}
 	applied := migrations(firstStore)

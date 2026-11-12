@@ -120,35 +120,61 @@ func TestRecoverClosesOnlyOpenEvents(t *testing.T) {
 	}
 }
 
-// TestRecoverKindLeavesAnotherSchedulerAlone proves the per-kind recovery seam:
-// a Timer startup must not close a Reminder that is waiting for the speaker.
-func TestRecoverKindLeavesAnotherSchedulerAlone(t *testing.T) {
+// TestRecoverKindLeavesOtherKindsOpen proves the Timer and Alarm schedulers
+// each close only their own open rows; the other kind's row stays for its own
+// manager to recover.
+func TestRecoverKindLeavesOtherKindsOpen(t *testing.T) {
 	ctx := context.Background()
 	history, st := openHistory(t)
 	at := time.UnixMilli(1_700_000_100_000)
-	timer := insertEvent(t, st.DB(), history, alertstore.Event{
-		Kind: "timer", SourceID: "timer", FiresAt: at, FiredAt: at, State: alertstore.StateFired,
+	timerID := insertEvent(t, st.DB(), history, alertstore.Event{
+		Kind: "timer", SourceID: "timer", Label: "timer", FiresAt: at, FiredAt: at, State: alertstore.StateFired,
 	})
-	reminder := insertEvent(t, st.DB(), history, alertstore.Event{
-		Kind: "reminder", SourceID: "reminder", FiresAt: at, FiredAt: at, State: alertstore.StateFired,
+	alarmID := insertEvent(t, st.DB(), history, alertstore.Event{
+		Kind: "alarm", SourceID: "alarm", Label: "alarm", FiresAt: at, FiredAt: at, State: alertstore.StateRinging,
 	})
-
-	recovered, err := history.RecoverKind(ctx, "timer", at.Add(time.Minute))
+	recovered, err := history.RecoverKind(ctx, "alarm", at.Add(time.Minute))
 	if err != nil {
 		t.Fatalf("RecoverKind: %v", err)
 	}
-	if len(recovered) != 1 || recovered[0].Kind != "timer" || recovered[0].ID != timer {
-		t.Fatalf("recovered = %+v, want only the timer row", recovered)
+	if len(recovered) != 1 || recovered[0].ID != alarmID || recovered[0].Kind != "alarm" {
+		t.Fatalf("recovered = %+v, want only the alarm row", recovered)
 	}
-	state := eventState(t, history, reminder)
-	if state != alertstore.StateFired {
-		t.Fatalf("reminder state = %q, want it still open", state)
+	events, err := history.List(ctx, 10)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	states := map[int64]alertstore.State{}
+	for _, event := range events {
+		states[event.ID] = event.State
+	}
+	if states[timerID] != alertstore.StateFired {
+		t.Fatalf("timer state = %q, want it left open", states[timerID])
+	}
+	if states[alarmID] != alertstore.StateMissed {
+		t.Fatalf("alarm state = %q, want missed", states[alarmID])
+	}
+}
+
+// TestRecoverKindKeepsAReminderOpen proves the third scheduler gets the same
+// isolation: a Timer startup must not close a Reminder waiting for the queue.
+func TestRecoverKindKeepsAReminderOpen(t *testing.T) {
+	ctx := context.Background()
+	history, st := openHistory(t)
+	at := time.UnixMilli(1_700_000_100_000)
+	reminderID := insertEvent(t, st.DB(), history, alertstore.Event{
+		Kind: "reminder", SourceID: "reminder", FiresAt: at, FiredAt: at, State: alertstore.StateFired,
+	})
+	if _, err := history.RecoverKind(ctx, "timer", at.Add(time.Minute)); err != nil {
+		t.Fatalf("RecoverKind timer: %v", err)
+	}
+	if state := eventState(t, history, reminderID); state != alertstore.StateFired {
+		t.Fatalf("reminder state = %q, want it left open", state)
 	}
 	if _, err := history.RecoverKind(ctx, "reminder", at.Add(2*time.Minute)); err != nil {
 		t.Fatalf("RecoverKind reminder: %v", err)
 	}
-	state = eventState(t, history, reminder)
-	if state != alertstore.StateMissed {
+	if state := eventState(t, history, reminderID); state != alertstore.StateMissed {
 		t.Fatalf("reminder after its own recovery = %q, want missed", state)
 	}
 }

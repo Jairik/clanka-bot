@@ -12,11 +12,12 @@ import (
 )
 
 // evalFocusCapabilities mirrors the production holder declarations. A ringing
-// alert handles stop and cancel; the current reply handles stop; music handles
-// the transport controls. A holder that does not declare an intent must be
+// alert handles stop, cancel and snooze (snooze acts as stop on a Timer and
+// re-rings an Alarm); the current reply handles stop; music handles the
+// transport controls. A holder that does not declare an intent must be
 // skipped, not offered it.
 var evalFocusCapabilities = map[string][]focus.Intent{
-	"ring":  {focus.Stop, focus.Cancel},
+	"ring":  {focus.Stop, focus.Cancel, focus.Snooze},
 	"reply": {focus.Stop},
 	"music": {focus.Stop, focus.Pause, focus.Resume, focus.Next},
 }

@@ -76,8 +76,9 @@ func TestSearchReturnsShortBoundedResults(t *testing.T) {
 			{"title":%q,"url":"https://example.test/long","content":%q},
 			{"title":"relative","url":"/local","content":"skip this"},
 			{"title":"script","url":"javascript:alert(1)","content":"skip this too"},
-			{"title":"missing url","content":"no link"}
-		]}`, longTitle, longSnippet)
+			{"title":"missing url","content":"no link"},
+			{"title":"oversize url","url":"https://example.test/%s","content":"skip this as well"}
+		]}`, longTitle, longSnippet, strings.Repeat("u", 600))
 	}))
 	defer server.Close()
 

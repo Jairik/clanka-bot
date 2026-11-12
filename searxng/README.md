@@ -43,7 +43,10 @@ docker compose exec web-search wget -qO- \
 
 The `X-Forwarded-For nor X-Real-IP header is set!` line is expected: this is a
 direct internal caller, not a reverse-proxied public instance. It is logged
-once per process and does not reject the request.
+once per process and does not reject the request. The startup warning that
+`/etc/searxng` is not owned by `searxng:searxng` is also expected with a
+read-only host mount: Compose runs the container as the image's UID 977 and the
+host directory keeps the checkout's owner. SearXNG only needs to read it.
 
 ## Sources
 

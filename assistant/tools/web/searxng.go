@@ -112,9 +112,14 @@ func (s *searxng) Search(ctx context.Context, query string, maxResults int) ([]R
 		if !usableURL(link) {
 			continue
 		}
+		// A link longer than the bound is more likely generated or
+		// pathological than useful; never hand the model a truncated URL.
+		if len([]rune(link)) > maxURLRunes {
+			continue
+		}
 		results = append(results, Result{
 			Title:   truncate(title, maxTitleRunes),
-			URL:     truncate(link, maxURLRunes),
+			URL:     link,
 			Snippet: truncate(collapse(item.Content), maxSnippetRunes),
 		})
 		if len(results) == maxResults {

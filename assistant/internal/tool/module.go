@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/announce"
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
 	"gopkg.in/yaml.v3"
@@ -20,13 +21,16 @@ type Deps struct {
 	Logger *slog.Logger
 	// Location returns the last known place; nil means the place is unknown.
 	Location func() (location.Location, bool)
-	// Speaker speaks unprompted and alert text; nil drops it.
+	// Speaker speaks alert text and other direct speech; nil drops it.
 	Speaker Speaker
 	// Audio drives the speaker volume and playback; nil makes the audio Tools unavailable.
 	Audio AudioControls
 	// Store is the assistant's one SQLite database (ADR-0003); nil means a
 	// module cannot persist state.
 	Store *store.Store
+	// Announcements queues speech the user did not just ask for. A ringing
+	// Timer or Alarm is not an Announcement; nil drops it.
+	Announcements *announce.Queue
 }
 
 // Speaker is the speech seam a module uses for alert speech.

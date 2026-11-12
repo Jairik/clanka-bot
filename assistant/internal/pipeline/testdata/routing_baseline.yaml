@@ -1,0 +1,12 @@
+# Map 1 routing baseline, recorded from docs/routing-eval.md and
+# docs/prototype-run/routing-eval-after-fixes.txt on 2026-11-11. The
+# real-MiniLM evaluation fails when overall precision or recall drops below
+# these counts, or when a negative or compound reaches the Fast path.
+#
+# Displayed values: precision 1.0000, recall 0.5926 (96/162), negatives 0/48,
+# compounds 0/8.
+tp: 96
+fp: 0
+positives: 162
+negative_misroutes: 0
+compound_misroutes: 0

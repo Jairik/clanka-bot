@@ -126,6 +126,20 @@ phrases `stop`, `pause`, `cancel` and `louder` are matched exactly, so they
 answer without waiting on the embed service (`cancel` cancels the timer and
 `louder` steps the volume up).
 
+Speech the Assistant starts without being asked (a Reminder, a finished Hermes
+job) goes through one Announcement queue. It waits for the current reply to
+finish and for any pending Confirmation to resolve, then speaks one line at a
+time. Queue one from the debug entry; posting it while a reply or a Confirmation
+question is in progress is what makes it wait:
+
+```sh
+curl -s -X POST localhost:8081/debug/announce \
+  -H 'Content-Type: application/json' -d '{"text":"Dinner is ready."}'
+```
+
+Quiet hours will hold and release the same queue; nothing is spoken while a
+hold is on.
+
 Routing precision is measured against a labelled corpus with the real MiniLM
 model; the floor is 0.95 for every Tool, and ambiguous phrasing goes to the
 Agent path. See [docs/routing-eval.md](docs/routing-eval.md) to run the

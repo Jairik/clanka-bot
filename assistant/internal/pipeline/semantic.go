@@ -98,7 +98,7 @@ func (r *SemanticRouter) Build(ctx context.Context) error {
 	var refs []ref
 	for _, name := range r.registry.Names() {
 		info, ok := r.registry.Info(name)
-		if !ok || !fastPathEligible(info) {
+		if !ok || !FastPathEligible(info) {
 			continue
 		}
 		for _, text := range info.Examples {
@@ -239,7 +239,7 @@ func (r *SemanticRouter) Match(ctx context.Context, transcript string) SemanticR
 // resolveArgs applies Extract, or passes no arguments for no-argument Tools.
 func (r *SemanticRouter) resolveArgs(name, transcript string) (json.RawMessage, string, bool) {
 	info, ok := r.registry.Info(name)
-	if !ok || !fastPathEligible(info) {
+	if !ok || !FastPathEligible(info) {
 		return nil, "none", false
 	}
 	if !info.HasExtract {
@@ -252,10 +252,10 @@ func (r *SemanticRouter) resolveArgs(name, transcript string) (json.RawMessage, 
 	return args, "ok", true
 }
 
-// fastPathEligible enforces issue #10's Fast path rules, with live overrides:
-// a disabled Tool, or one whose effective Permission needs a Confirmation, is
-// not offered to the Fast path.
-func fastPathEligible(info tool.Info) bool {
+// FastPathEligible reports whether the semantic router may send an utterance
+// to this Tool: enabled, read/act Permission, a Speak renderer and either
+// Extract or no required input fields. The conformance suite uses the same rule.
+func FastPathEligible(info tool.Info) bool {
 	if !info.Enabled {
 		return false
 	}

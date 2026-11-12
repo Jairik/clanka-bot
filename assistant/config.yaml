@@ -5,7 +5,8 @@ http:
   addr: ":8080"
 
 debug:
-  # Localhost-only typed-transcript entry used to exercise the pipeline.
+  # Localhost-only typed-transcript and Announcement entries used to exercise
+  # the pipeline.
   enabled: true
   # Loopback by default. Compose overrides this to ":8081" because the
   # published port is already bound to 127.0.0.1 on the host.

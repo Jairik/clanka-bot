@@ -27,6 +27,12 @@ type Responder interface {
 	Ask(ctx context.Context, req tool.Request, transcript string) (pipeline.Reply, error)
 }
 
+// Announcer queues unprompted speech for the debug entry. announce.Queue
+// satisfies it.
+type Announcer interface {
+	Enqueue(text string) bool
+}
+
 // Option configures the HTTP surface.
 type Option func(*server)
 
@@ -35,6 +41,13 @@ type Option func(*server)
 // dev runs behave.
 func WithResponder(responder Responder) Option {
 	return func(s *server) { s.responder = responder }
+}
+
+// WithAnnouncements lets the debug entry queue an Announcement, so the
+// between-turns behaviour can be demoed without waiting for a Reminder. Without
+// it the endpoint reports that speech is not configured.
+func WithAnnouncements(announcer Announcer) Option {
+	return func(s *server) { s.announcer = announcer }
 }
 
 // WithDebugAllowlist replaces the source-address check. It exists for tests
@@ -67,6 +80,7 @@ func NewHandler(p *pipeline.Pipeline, logger *slog.Logger, debugEnabled bool, op
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.healthz)
 	mux.HandleFunc("/debug/transcript", s.debugTranscript)
+	mux.HandleFunc("/debug/announce", s.debugAnnounce)
 	if debugEnabled && s.settings != nil {
 		// Settings writes are local-only: the same source check as the debug
 		// entry wraps the whole /api/ subtree.
@@ -81,6 +95,7 @@ type server struct {
 	debugEnabled bool
 	responder    Responder
 	settings     http.Handler
+	announcer    Announcer
 	debugAllowed func(net.IP) bool
 }
 
@@ -128,13 +143,7 @@ func (s *server) debugTranscript(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Request-ID", requestID)
 
 	var body transcriptRequest
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxTranscriptBytes))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&body); err != nil {
-		s.reject(w, requestID, "invalid JSON body", http.StatusBadRequest)
-		return
-	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+	if !decodeJSON(w, r, &body) {
 		s.reject(w, requestID, "invalid JSON body", http.StatusBadRequest)
 		return
 	}
@@ -195,6 +204,59 @@ func (s *server) localOnly(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+type announceRequest struct {
+	Text string `json:"text"`
+}
+
+// debugAnnounce queues unprompted speech on the shared Announcement queue. It
+// shares the transcript entry's debug gate: disabled means absent, and only the
+// host loopback or its bridge gateway may post.
+func (s *server) debugAnnounce(w http.ResponseWriter, r *http.Request) {
+	if !s.debugEnabled {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.debugSourceAllowed(r.RemoteAddr) {
+		s.reject(w, tool.NewRequestID(), "debug entry is local only", http.StatusForbidden)
+		return
+	}
+	if s.announcer == nil {
+		s.reject(w, tool.NewRequestID(), "speech is not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	var body announceRequest
+	if !decodeJSON(w, r, &body) {
+		s.reject(w, tool.NewRequestID(), "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	text := strings.TrimSpace(body.Text)
+	if text == "" {
+		s.reject(w, tool.NewRequestID(), "text is required", http.StatusBadRequest)
+		return
+	}
+	if !s.announcer.Enqueue(text) {
+		s.reject(w, tool.NewRequestID(), "announcements are unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]bool{"queued": true})
+}
+
+// decodeJSON reads one bounded JSON object and rejects trailing data.
+func decodeJSON(w http.ResponseWriter, r *http.Request, value any) bool {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxTranscriptBytes))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(value); err != nil {
+		return false
+	}
+	return errors.Is(decoder.Decode(&struct{}{}), io.EOF)
 }
 
 func (s *server) debugSourceAllowed(remoteAddr string) bool {

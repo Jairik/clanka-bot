@@ -13,7 +13,10 @@ package that owns related Tools, their `tools.<module>` config, and an optional
 health check; several Tools can share one module.
 
 If `assistant/tools/<module>` already exists, add the Tool to that module by
-hand; the scaffold only creates a new module and rejects existing names.
+hand; the scaffold only creates a new module and rejects existing names. To
+exercise the generator before hand-adapting its contract, run it in a
+throwaway copy of the tree and copy the shape you need; never leave the
+generated placeholder module or its `tools.go` line in production.
 
 Completion: you have a canonical name and a module that does not exist yet.
 

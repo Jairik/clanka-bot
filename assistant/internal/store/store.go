@@ -32,7 +32,9 @@ type migration struct {
 }
 
 // migrations is the schema history. Version 1 is the settings overrides table
-// shared by the Dashboard, voice Tools and the tool policy.
+// shared by the Dashboard, voice Tools and the tool policy. Version 2 holds the
+// Scheduled alerts (Timer rows today; Alarm and Reminder rows reuse the shape),
+// so they survive a restart (ADR-0003).
 var migrations = []migration{
 	{
 		version: 1,
@@ -43,6 +45,20 @@ var migrations = []migration{
 				value      TEXT NOT NULL,
 				updated_at TEXT NOT NULL
 			)`,
+		},
+	},
+	{
+		version: 2,
+		name:    "timers",
+		statements: []string{
+			`CREATE TABLE timers (
+				id          INTEGER PRIMARY KEY AUTOINCREMENT,
+				label       TEXT NOT NULL DEFAULT '',
+				duration_ms INTEGER NOT NULL,
+				fires_at    INTEGER NOT NULL,
+				created_at  INTEGER NOT NULL
+			)`,
+			`CREATE INDEX timers_fires_at ON timers (fires_at)`,
 		},
 	},
 }

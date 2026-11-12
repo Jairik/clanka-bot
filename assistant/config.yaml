@@ -18,6 +18,12 @@ data:
   # sets ASSISTANT_DATA_DIR; local runs default to ./data.
   dir: "data"
 
+# The IANA timezone clock-time Alarms and Reminders are interpreted in. This is
+# the config layer of the live `timezone` setting; a Dashboard or voice override
+# wins. Empty uses the TZ environment variable, then UTC, and UTC logs a startup
+# warning. The location service's IP lookup never supplies this value.
+timezone: ""
+
 tools:
   # Applied to Tools that do not declare their own timeout.
   default_timeout: 2s

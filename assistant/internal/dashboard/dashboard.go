@@ -392,11 +392,17 @@ func allowGet(w http.ResponseWriter, r *http.Request) bool {
 	return false
 }
 
+// contentSecurityPolicy is the Dashboard policy with the given form-action
+// sources. Every page uses 'self' except the Spotify page (see spotifyPage).
+func contentSecurityPolicy(formAction string) string {
+	return "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action " + formAction
+}
+
 func setSecurityHeaders(w http.ResponseWriter) {
 	// There is no inline script or style, so the page needs no unsafe CSP
 	// exceptions. Nothing is cached because every page is identity-scoped.
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action 'self'")
+	w.Header().Set("Content-Security-Policy", contentSecurityPolicy("'self'"))
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "DENY")

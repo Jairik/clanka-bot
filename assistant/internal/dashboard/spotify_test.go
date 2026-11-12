@@ -389,3 +389,21 @@ func TestHealthShowsSpotifyPairingAndWebAPIAuthSeparately(t *testing.T) {
 		}
 	}
 }
+
+// The Connect form's 303 lands on accounts.spotify.com, and browsers enforce
+// form-action on that redirect, so the Spotify page must allow exactly that
+// origin while every other page keeps form-action 'self'.
+func TestSpotifyPageCSPAllowsOnlySpotifyAccountsAsFormTarget(t *testing.T) {
+	f := newSpotifyFixture(t)
+	csp := f.get("/spotify").Header().Get("Content-Security-Policy")
+	if !strings.Contains(csp, "form-action 'self' https://accounts.spotify.com") {
+		t.Errorf("spotify page CSP = %q", csp)
+	}
+	if !strings.Contains(csp, "frame-ancestors 'none'") || !strings.Contains(csp, "script-src 'self';") {
+		t.Errorf("spotify page CSP lost the base policy: %q", csp)
+	}
+	other := f.get("/health").Header().Get("Content-Security-Policy")
+	if !strings.HasSuffix(other, "form-action 'self'") {
+		t.Errorf("other pages must keep form-action 'self', got %q", other)
+	}
+}

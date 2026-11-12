@@ -39,6 +39,10 @@ type migration struct {
 // restart (ADR-0003). Version 4 indexes the Sound library: built-in sounds and
 // WAV files in sounds/ with their name, duration and first-added time. Cue role
 // assignments are ordinary settings rows, so they share this database too.
+// Version 5 indexes custom Pocket TTS voice states in voices/: the file, its
+// size/mtime for replacement detection, the model revision it was validated
+// against, staleness, the last validation error and the optional consent note.
+// The active voice and rate are ordinary settings rows.
 var migrations = []migration{
 	{
 		version: 1,
@@ -89,6 +93,27 @@ var migrations = []migration{
 				builtin     INTEGER NOT NULL DEFAULT 0,
 				duration_ms INTEGER NOT NULL,
 				added_at    TEXT NOT NULL
+			)`,
+		},
+	},
+	{
+		version: 5,
+		name:    "voices",
+		statements: []string{
+			// file is relative to the voices library. added_at and mod_time are
+			// Unix nanoseconds; validated_at is RFC3339. stale is set when TTS
+			// starts on a different model revision than the one recorded here.
+			`CREATE TABLE voices (
+				name               TEXT PRIMARY KEY,
+				file               TEXT NOT NULL,
+				size               INTEGER NOT NULL,
+				mod_time           INTEGER NOT NULL,
+				added_at           INTEGER NOT NULL,
+				validated_revision TEXT NOT NULL DEFAULT '',
+				validated_at       TEXT NOT NULL DEFAULT '',
+				stale              INTEGER NOT NULL DEFAULT 0,
+				last_error         TEXT NOT NULL DEFAULT '',
+				note               TEXT NOT NULL DEFAULT ''
 			)`,
 		},
 	},

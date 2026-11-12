@@ -156,9 +156,15 @@ services:
       TTS_LANGUAGE: ${TTS_LANGUAGE:-english}
       TTS_VOICES: ${TTS_VOICES:-${TTS_VOICE:-alba}}
       TTS_VOICE: ${TTS_VOICE:-alba}
+      # Custom pre-exported Pocket TTS voice states. The assistant writes them
+      # to the data volume; tts only reads this folder.
+      TTS_VOICE_DIR: "/voices"
       TZ: ${TZ:-UTC}
     # No Pulse mount and no weights volume: model services do computation only
-    # (ADR-0001) and the image already carries the weights.
+    # (ADR-0001) and the image already carries the weights. The voices folder is
+    # the one read-only data-volume mount, for copied .safetensors states.
+    volumes:
+      - assistant-data:/voices:ro
     expose:
       - "10200"
     healthcheck:
@@ -171,5 +177,6 @@ services:
 
 volumes:
   # Named so the database survives `docker compose down`, rebuilds and deploys.
-  # Only the assistant service mounts it (ADR-0003).
+  # The assistant mounts it read-write; tts mounts it read-only at /voices for
+  # custom voice states (ADR-0003's one exception, needed by the voice library).
   assistant-data:

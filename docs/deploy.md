@@ -204,12 +204,13 @@ The Dashboard also mounts the settings/Tool-override API under `/api/`
 requests must be same-origin; the debug listener keeps its own localhost-only
 mount of the same handler. The **Tools and settings** page at `/settings`
 edits the same service: Tool enabled/Permission, the wording lists, and any
-other setting the service exposes (including a future sound setting, which
-appears without a page change). Wording settings
+other setting the service exposes (including the sound and voice settings,
+which appear without a page change). Wording settings
 (`tools.<name>.control_phrases`, `tools.<name>.examples`,
-`agent.request_prefixes`, `agent.filler`, `agent.unavailable_message`) and the
-model name (`agent.model`) are marked `live` and apply to the next request or
-in the background. Connection-level settings (`http.addr`, `debug.addr`,
+`agent.request_prefixes`, `agent.filler`, `agent.unavailable_message`), the
+model name (`agent.model`), `voice.name` and `voice.rate` are marked `live` and
+apply to the next request or in the background (a voice/rate change also
+re-synthesizes the cached Agent Filler). Connection-level settings (`http.addr`, `debug.addr`,
 `dashboard.addr`, `tts.addr`, `wakeword.addr`, `stt.addr`, `embed.url`,
 `capture.source`, `playback.sink`) are marked `restart_required`: the override
 is stored, but only the next process start reads it, and the page says so. See
@@ -260,12 +261,22 @@ container health field.
 - [ ] `make check`
 - [ ] `make deploy` (or `scripts/deploy.sh`)
 - [ ] Verify: `docker compose ps`, `curl -s localhost:8080/healthz`
-- [ ] The `assistant-data` volume holds the SQLite database (ADR-0003) and the
-      `sounds/` sound library. It survives container restarts and image rebuilds,
-      and only `assistant` mounts it. It holds settings overrides and
-      unencrypted secrets (API keys, tokens) in a file mode 0600; treat a backup
-      like the secrets it contains. `docker compose down -v` deletes it: back it
-      up first if the settings, sounds or secrets matter.
+- [ ] The `assistant-data` volume holds the SQLite database (ADR-0003), the
+      `sounds/` sound library and the `voices/` custom voice states. It survives
+      container restarts and image rebuilds. `assistant` mounts it read-write;
+      `tts` mounts the same volume read-only at `/voices` for voice states. It
+      holds settings overrides and unencrypted secrets (API keys, tokens) in a
+      file mode 0600; treat a backup like the secrets it contains.
+      `docker compose down -v` deletes it: back it up first if the settings,
+      sounds, voices or secrets matter.
+- [ ] Custom voices: copy pre-exported Pocket TTS `.safetensors` files into the
+      volume's `voices/` folder (for the default compose file,
+      `/var/lib/docker/volumes/clanka-bot_assistant-data/_data/voices` or through
+      a container with the volume mounted). Only `.safetensors` is accepted, at
+      most 32 MB; `.pt`/`.pth` pickle files are refused. Restart `assistant`
+      (or use the #64 upload page later) to rescan: each new file gets a header
+      check and a real model smoke test, and the revision it passed against is
+      recorded. The active voice warm-loads; others load on first use.
 - [ ] Reboot once and confirm the stack comes back without a login.
 
 ## Image tags and rollback

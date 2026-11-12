@@ -76,6 +76,10 @@ type fixture struct {
 }
 
 func newFixture(t *testing.T, initial *speech.Filler, synth wording.FillerSynth) *fixture {
+	return newFixtureWith(t, initial, synth, nil)
+}
+
+func newFixtureWith(t *testing.T, initial *speech.Filler, synth wording.FillerSynth, extra []settings.Definition, opts ...wording.Option) *fixture {
 	t.Helper()
 	ctx := context.Background()
 	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "data", "assistant.db"))
@@ -92,12 +96,13 @@ func newFixture(t *testing.T, initial *speech.Filler, synth wording.FillerSynth)
 	if err != nil {
 		t.Fatalf("wording.Build: %v", err)
 	}
-	svc, err := settings.New(ctx, st, setup.Definitions...)
+	defs := append(append([]settings.Definition(nil), setup.Definitions...), extra...)
+	svc, err := settings.New(ctx, st, defs...)
 	if err != nil {
 		t.Fatalf("settings.New: %v", err)
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	mgr, err := wording.NewManager(svc, setup, initial, synth, logger)
+	mgr, err := wording.NewManager(svc, setup, initial, synth, logger, opts...)
 	if err != nil {
 		t.Fatalf("wording.NewManager: %v", err)
 	}
@@ -639,5 +644,69 @@ func TestManagerCloseIsIdempotentAndWaitReportsClosed(t *testing.T) {
 	}
 	if err := f.manager.Wait(ctx); !errors.Is(err, wording.ErrClosed) {
 		t.Fatalf("Wait after Close = %v, want ErrClosed", err)
+	}
+}
+
+// TestFillerReSynthesizesWhenTheVoiceOrRateChanges proves the one settings
+// observer and worker also invalidate the cached cue for a voice/rate change.
+// Without this, "use the jarvis voice" would leave the old voice cached forever.
+func TestFillerReSynthesizesWhenTheVoiceOrRateChanges(t *testing.T) {
+	var mu sync.Mutex
+	var signatures []string
+	current := "alba@1.00"
+
+	synth := func(_ context.Context, text string) (*speech.Filler, error) {
+		mu.Lock()
+		signature := current
+		signatures = append(signatures, signature)
+		mu.Unlock()
+		return &speech.Filler{Text: text, PCM: []byte(signature)}, nil
+	}
+	extra := []settings.Definition{
+		settings.String("voice.name", "alba"),
+		settings.Float("voice.rate", 1.0),
+	}
+	signature := func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return current
+	}
+	initial := &speech.Filler{Text: "One moment.", PCM: []byte("alba@1.00")}
+	f := newFixtureWith(t, initial, synth, extra,
+		wording.WithFillerKeys("voice.name", "voice.rate"),
+		wording.WithFillerSignature(signature))
+	ctx := context.Background()
+	f.manager.Start(ctx, nil)
+
+	mu.Lock()
+	current = "jarvis@1.00"
+	mu.Unlock()
+	if _, err := f.settings.Set(ctx, "voice.name", "jarvis"); err != nil {
+		t.Fatalf("Set voice: %v", err)
+	}
+	if err := f.manager.Wait(ctx); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if got := string(f.manager.Filler().PCM); got != "jarvis@1.00" {
+		t.Fatalf("filler after voice change = %q", got)
+	}
+
+	mu.Lock()
+	current = "jarvis@1.20"
+	mu.Unlock()
+	if _, err := f.settings.Set(ctx, "voice.rate", 1.2); err != nil {
+		t.Fatalf("Set rate: %v", err)
+	}
+	if err := f.manager.Wait(ctx); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if got := string(f.manager.Filler().PCM); got != "jarvis@1.20" {
+		t.Fatalf("filler after rate change = %q", got)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(signatures) != 2 {
+		t.Fatalf("synthesis calls = %d, want one per signature change", len(signatures))
 	}
 }

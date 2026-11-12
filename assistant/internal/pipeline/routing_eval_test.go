@@ -24,6 +24,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/tools/audiocontrol"
 	"github.com/Jairik/clanka-bot/assistant/tools/clock"
 	"github.com/Jairik/clanka-bot/assistant/tools/timer"
+	"github.com/Jairik/clanka-bot/assistant/tools/voice"
 	"github.com/Jairik/clanka-bot/assistant/tools/weather"
 	"gopkg.in/yaml.v3"
 )
@@ -39,6 +40,10 @@ var routingEvalTools = []string{
 	timer.CancelName,
 	timer.RemainingName,
 	timer.ListName,
+	voice.SetName,
+	voice.ListName,
+	voice.CurrentName,
+	voice.RateName,
 }
 
 const (
@@ -267,6 +272,12 @@ func evalRegistry(t *testing.T) (*tool.Registry, *timer.Manager) {
 	manager := timer.NewManager(func() time.Time { return fixed }, nil, nil)
 	if err := timer.Register(reg, manager); err != nil {
 		t.Fatalf("register timer: %v", err)
+	}
+	// The voice Tools fail their handlers without a library, but routing only
+	// needs their metadata and Extract; a nil service is deliberate here so the
+	// eval owns no database or voice files.
+	if err := voice.NewModule().Register(reg, tool.Deps{}); err != nil {
+		t.Fatalf("register voice: %v", err)
 	}
 	return reg, manager
 }

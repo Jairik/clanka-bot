@@ -286,6 +286,24 @@ func requireNonBlank(value any) error {
 // boundary; tests use a fake.
 type FillerSynth func(ctx context.Context, text string) (*speech.Filler, error)
 
+// Option configures the live wording worker without changing the constructor's
+// shape for existing callers.
+type Option func(*Manager)
+
+// WithFillerSignature makes the cached Filler depend on more than its text.
+// main passes a voice+rate signature, so selecting a different voice or rate
+// re-synthesizes the cue instead of leaving the old voice cached forever.
+func WithFillerSignature(signature func() string) Option {
+	return func(m *Manager) { m.fillerSignature = signature }
+}
+
+// WithFillerKeys names the settings keys that can invalidate the cached Filler
+// beyond the Filler text itself. The settings observer is still the single one
+// owned by this manager; this only widens what wakes its worker.
+func WithFillerKeys(keys ...string) Option {
+	return func(m *Manager) { m.fillerKeys = append([]string(nil), keys...) }
+}
+
 // ErrClosed reports a Manager that has been stopped.
 var ErrClosed = errors.New("wording: manager is closed")
 
@@ -300,11 +318,15 @@ type Manager struct {
 	synth        FillerSynth
 	logger       *slog.Logger
 
-	// fillerMu guards the immutable cached Filler and the text bookkeeping.
-	fillerMu  sync.RWMutex
-	filler    *speech.Filler
-	fillerTxt string
-	attempted string // last text whose synthesis failed
+	// fillerMu guards the immutable cached Filler and the cache-key
+	// bookkeeping. The key is the text plus the optional voice/rate signature.
+	fillerMu     sync.RWMutex
+	filler       *speech.Filler
+	fillerKey    string
+	attemptedKey string // last key whose synthesis failed
+
+	fillerSignature func() string
+	fillerKeys      []string
 
 	// builtMu guards the Examples snapshot the worker last installed.
 	builtMu sync.Mutex
@@ -330,7 +352,7 @@ type Manager struct {
 
 // NewManager builds the live wording source. initial is the Filler cached at
 // startup, if any; synth may be nil when TTS is not configured.
-func NewManager(svc *settings.Service, setup Setup, initial *speech.Filler, synth FillerSynth, logger *slog.Logger) (*Manager, error) {
+func NewManager(svc *settings.Service, setup Setup, initial *speech.Filler, synth FillerSynth, logger *slog.Logger, opts ...Option) (*Manager, error) {
 	if svc == nil {
 		return nil, fmt.Errorf("wording: settings service is required")
 	}
@@ -349,10 +371,24 @@ func NewManager(svc *settings.Service, setup Setup, initial *speech.Filler, synt
 		barrier:      make(chan chan struct{}),
 		done:         make(chan struct{}),
 	}
+	for _, opt := range opts {
+		opt(m)
+	}
 	if initial != nil {
-		m.fillerTxt = strings.TrimSpace(initial.Text)
+		m.fillerKey = m.keyFor(initial.Text)
 	}
 	return m, nil
+}
+
+// keyFor builds the cache key from the phrase and, when configured, the live
+// voice/rate signature. A voice change therefore invalidates the cached audio
+// even though the Filler text is unchanged.
+func (m *Manager) keyFor(text string) string {
+	key := strings.TrimSpace(text)
+	if m.fillerSignature != nil {
+		key += "\x00" + m.fillerSignature()
+	}
+	return key
 }
 
 // Start installs the settings observer and runs the background worker. router
@@ -421,6 +457,11 @@ func (m *Manager) relevant(keys []string) bool {
 	for _, key := range keys {
 		if key == FillerKey {
 			return true
+		}
+		for _, extra := range m.fillerKeys {
+			if key == extra {
+				return true
+			}
 		}
 		// A Tool's Examples feed the router, and its enabled/Permission state
 		// changes which Tools are eligible. Rebuilding on either is cheap and
@@ -664,34 +705,35 @@ func (m *Manager) syncFiller(ctx context.Context) {
 	if text == "" || m.synth == nil {
 		return
 	}
+	key := m.keyFor(text)
 	m.fillerMu.RLock()
-	cached, cachedText, attempted := m.filler, m.fillerTxt, m.attempted
+	cached, cachedKey, attemptedKey := m.filler, m.fillerKey, m.attemptedKey
 	m.fillerMu.RUnlock()
-	if cached != nil && cachedText == text {
+	if cached != nil && cachedKey == key {
 		return
 	}
-	if attempted == text {
+	if attemptedKey == key {
 		return
 	}
 	filler, err := m.synth(ctx, text)
 	if err != nil {
 		m.logger.Warn("wording: filler re-synthesis failed, keeping old audio", "error", err.Error())
 		m.fillerMu.Lock()
-		m.attempted = text
+		m.attemptedKey = key
 		m.fillerMu.Unlock()
 		return
 	}
 	if filler == nil || len(filler.PCM) == 0 {
 		m.logger.Warn("wording: filler synthesis returned no audio, keeping old audio")
 		m.fillerMu.Lock()
-		m.attempted = text
+		m.attemptedKey = key
 		m.fillerMu.Unlock()
 		return
 	}
 	m.fillerMu.Lock()
 	m.filler = filler
-	m.fillerTxt = filler.Text
-	m.attempted = ""
+	m.fillerKey = key
+	m.attemptedKey = ""
 	m.fillerMu.Unlock()
 	m.logger.Info("wording: filler re-synthesized", "text", filler.Text, "audio_bytes", len(filler.PCM))
 }

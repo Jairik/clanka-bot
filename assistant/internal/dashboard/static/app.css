@@ -212,3 +212,10 @@ footer {
   .who { margin-left: 0; width: 100%; }
   th, td { padding: .5rem .35rem; }
 }
+
+/* Sounds page: the library table scrolls on a phone, and the audio control
+   stays wide enough to scrub without stretching the row. */
+.table-wrap { overflow-x: auto; }
+caption { text-align: left; padding-bottom: .6rem; }
+.library audio { width: min(16rem, 45vw); min-width: 10rem; }
+.library td:last-child, .library th:last-child { text-align: right; }

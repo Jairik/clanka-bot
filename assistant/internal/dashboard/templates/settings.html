@@ -156,8 +156,8 @@
     <span class="muted">Source:</span> <span class="pill pill-source-{{.Source}}">{{.SourceLabel}}</span>
     {{if .Restart}}<span class="pill pill-restart">Restart required</span>{{end}}
   </p>
-  <form class="inline-form" method="post" action="/settings/values/{{.Key}}"
-        hx-post="/settings/values/{{.Key}}" hx-target="#settings-content" hx-swap="outerHTML">
+  <form class="inline-form" method="post" action="{{.SaveAction}}"
+        hx-post="{{.SaveAction}}" hx-target="{{.Target}}" hx-swap="outerHTML">
     <label for="field-{{.Anchor}}">{{.Label}}</label>
     {{if eq .FormKind "lines"}}
     <textarea id="field-{{.Anchor}}" name="value" rows="4" spellcheck="false">{{.Edit}}</textarea>
@@ -179,8 +179,8 @@
     <div class="actions"><button class="button" type="submit">Save</button></div>
   </form>
   {{if .Override}}
-  <form class="inline-form" method="post" action="/settings/values/{{.Key}}/reset"
-        hx-post="/settings/values/{{.Key}}/reset" hx-target="#settings-content" hx-swap="outerHTML">
+  <form class="inline-form" method="post" action="{{.ResetAction}}"
+        hx-post="{{.ResetAction}}" hx-target="{{.Target}}" hx-swap="outerHTML">
     <button class="button button-quiet" type="submit">Reset to {{.LowerLabel}}</button>
   </form>
   {{else}}

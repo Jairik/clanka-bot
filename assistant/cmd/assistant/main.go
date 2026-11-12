@@ -179,25 +179,37 @@ func run() error {
 	// take the one speaker; the reply's next sentence waits for the Ring.
 	speechGate := playback.NewGate()
 
-	// One Announcement queue owns unprompted speech: it waits for the current
-	// reply and any pending Confirmation, then plays one line at a time. It is
-	// absent when TTS is not configured, so nothing can queue speech.
-	var announcements *announce.Queue
-	if speechSpeaker != nil {
-		// Announcements use the same speech gate as replies: a Ring waits for
-		// the current line and an Announcement waits for an active Ring.
-		announcements = announce.New(playback.NewGatedSpeaker(speechSpeaker, speechGate), logger, announce.WithBlocked(func() bool {
-			_, pending := registry.Pending()
-			return pending
-		}))
-		defer announcements.Close()
-	}
-
 	// One Focus registry routes the shared Control phrases to a ringing alert,
 	// the current reply or music, in that fixed order. It is shared by the
 	// pipeline (routing), the reply session (the current reply) and the Tool
 	// modules that can hold Focus.
 	focusRegistry := focus.New()
+
+	// One Announcement queue owns unprompted speech and Dashboard previews: it
+	// waits for the current reply, a pending Confirmation and a ringing alert,
+	// then plays one item at a time. With a Dashboard but no TTS it still runs
+	// for Pi previews (WithPlayback); text announcements remain unavailable.
+	var announcements *announce.Queue
+	if speechSpeaker != nil || cfg.Dashboard.Enabled() {
+		var speaker announce.Speaker
+		queueOpts := []announce.Option{
+			announce.WithBlocked(func() bool {
+				_, pending := registry.Pending()
+				return pending || focusRegistry.Held(focus.Ring)
+			}),
+			// A Ring preempts a long Pi preview instead of waiting behind it.
+			announce.WithPreempt(func() bool { return focusRegistry.Held(focus.Ring) }),
+		}
+		if speechSpeaker != nil {
+			// Announcements use the same speech gate as replies: a Ring waits
+			// for the current line and a line waits for an active Ring.
+			speaker = playback.NewGatedSpeaker(speechSpeaker, speechGate)
+		} else {
+			queueOpts = append(queueOpts, announce.WithPlayback())
+		}
+		announcements = announce.New(speaker, logger, queueOpts...)
+		defer announcements.Close()
+	}
 
 	// The Ring engine exists before Tool modules register, so an overdue Timer
 	// that fires during recovery already Rings instead of using the old spoken
@@ -539,6 +551,12 @@ func run() error {
 	// owner is configured. Its source and identity checks live in the handler,
 	// so this listener is never an unauthenticated surface.
 	if cfg.Dashboard.Enabled() {
+		// Keep the typed nil out of the interface so the Sounds page can fall
+		// back to synchronous playback on a text-only setup.
+		var previewQueue dashboard.PreviewQueue
+		if announcements != nil {
+			previewQueue = announcements
+		}
 		dashboardHandler, err := dashboard.New(dashboard.Options{
 			Owner:         cfg.Dashboard.Owner,
 			Logger:        logger,
@@ -548,6 +566,8 @@ func run() error {
 			Location:      locSvc,
 			Settings:      settingsSvc,
 			ToolPolicy:    toolPolicy,
+			Sounds:        cues,
+			PreviewQueue:  previewQueue,
 			API:           apiHandler,
 		})
 		if err != nil {

@@ -119,6 +119,15 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("sound library: %w", err)
 	}
+	// The config-layer Cue defaults also serve startup recovery, before the
+	// live settings service exists, so a recovered Timer rings its sound.
+	cueConfig := sound.Config{
+		Wake:      baseCfg.Sounds.Wake,
+		TimerRing: baseCfg.Sounds.TimerRing,
+		AlarmRing: baseCfg.Sounds.AlarmRing,
+		Reminder:  baseCfg.Sounds.Reminder,
+		Error:     baseCfg.Sounds.Error,
+	}
 
 	// The provider entry names the secret key and is needed before Tool
 	// registration so the secrets service knows every writable name.
@@ -230,6 +239,10 @@ func run() error {
 			if kind == ring.Alarm {
 				role = sound.RoleAlarmRing
 			}
+			if settingsSvc == nil {
+				// Startup recovery rings before the live settings service exists.
+				return cues.DefaultClip(cueConfig, role)
+			}
 			return cues.Clip(role)
 		},
 		Play: func(ctx context.Context, clip sound.Clip) error {
@@ -298,13 +311,7 @@ func run() error {
 	defs = append(defs, namematch.Definition(baseCfg.NameMatch.Threshold))
 	// Sound role assignments are live settings too, so the Dashboard write and
 	// the running Cue resolution share the same service.
-	defs = append(defs, cues.Definitions(sound.Config{
-		Wake:      baseCfg.Sounds.Wake,
-		TimerRing: baseCfg.Sounds.TimerRing,
-		AlarmRing: baseCfg.Sounds.AlarmRing,
-		Reminder:  baseCfg.Sounds.Reminder,
-		Error:     baseCfg.Sounds.Error,
-	})...)
+	defs = append(defs, cues.Definitions(cueConfig)...)
 	// Ring behaviour is per kind: Timer and Alarm share the engine but keep
 	// independent live max_ring, volume, ramp, gap and speak_label settings.
 	defs = append(defs, ring.Definitions()...)

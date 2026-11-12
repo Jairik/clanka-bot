@@ -8,8 +8,8 @@ misroute from the request log.
 ## What is checked in
 
 - `assistant/internal/pipeline/testdata/routing_eval.yaml` — the labelled
-  oracle. It has at least 20 positives for each Fast path Tool, 144 plain
-  negatives, and 28 compound requests (exact counts in the results table).
+  oracle. It has at least 20 positives for each Fast path Tool, 154 plain
+  negatives, and 30 compound requests (exact counts in the results table).
 - `assistant/internal/pipeline/testdata/routing_baseline.yaml` — the recorded
   Map 1 totals the real-MiniLM evaluation must not fall below.
 - `assistant/internal/pipeline/routing_eval_test.go` —
@@ -142,15 +142,16 @@ above the 0.95 precision floor. Run against
 | `time.in_city` | 21 | 9 | 0 | 9 | 0 | 12 | 1.00 | 0.4286 |
 | `date.countdown` | 22 | 22 | 0 | 22 | 0 | 0 | 1.00 | 1.00 |
 | `weather.current` | 20 | 11 | 4 | 7 | 0 | 9 | 1.00 | 0.55 |
-| `audio.volume_set` | 20 | 12 | 1 | 11 | 0 | 8 | 1.00 | 0.60 |
+| `audio.volume_set` | 20 | 9 | 1 | 8 | 0 | 11 | 1.00 | 0.45 |
 | `audio.stop` | 20 | 8 | 0 | 8 | 0 | 12 | 1.00 | 0.40 |
 | `timer.set` | 26 | 11 | 0 | 11 | 0 | 15 | 1.00 | 0.4231 |
 | `timer.cancel` | 20 | 14 | 0 | 14 | 0 | 6 | 1.00 | 0.70 |
 | `timer.remaining` | 20 | 9 | 0 | 9 | 0 | 11 | 1.00 | 0.45 |
 | `timer.list` | 20 | 12 | 0 | 12 | 0 | 8 | 1.00 | 0.60 |
-| `alarm.set` | 22 | 13 | 0 | 13 | 0 | 9 | 1.00 | 0.5909 |
+| `alarm.set` | 30 | 13 | 0 | 13 | 0 | 17 | 1.00 | 0.4333 |
 | `alarm.list` | 21 | 13 | 0 | 13 | 0 | 8 | 1.00 | 0.6190 |
-| `alarm.cancel` | 20 | 11 | 0 | 11 | 0 | 9 | 1.00 | 0.5500 |
+| `alarm.cancel` | 20 | 8 | 0 | 8 | 0 | 12 | 1.00 | 0.4000 |
+| `alarm.update` | 23 | 23 | 0 | 23 | 0 | 0 | 1.00 | 1.00 |
 | `voice.set` | 20 | 20 | 0 | 20 | 0 | 0 | 1.00 | 1.00 |
 | `voice.list` | 20 | 6 | 4 | 2 | 0 | 14 | 1.00 | 0.30 |
 | `voice.current` | 20 | 8 | 3 | 5 | 0 | 12 | 1.00 | 0.40 |
@@ -171,12 +172,15 @@ above the 0.95 precision floor. Run against
 | `assistant.repeat` | 20 | 14 | 0 | 14 | 0 | 6 | 1.00 | 0.70 |
 | `assistant.help` | 20 | 15 | 0 | 15 | 0 | 5 | 1.00 | 0.75 |
 | `system.status` | 20 | 10 | 0 | 10 | 0 | 10 | 1.00 | 0.50 |
-| **Total** | **713** | **497** | **23** | **474** | **0** | **216** | **1.00** | **0.6971** |
+| **Total** | **744** | **514** | **23** | **491** | **0** | **230** | **1.00** | **0.6909** |
 
-These numbers are from the merged #53 Alarm, #54 Reminder, #59 quick-wins, #62
-Notifications and #60 utility Tools tree and include the earlier #34, #44, #51,
-#55, #61 and #63 corpus additions. Precision is 1.00 with no negative or
-compound misroute, and every Tool clears the 0.95 floor. The #59 Tools add 60
+These numbers are from the merged #53 Alarm, #54 Reminder, #57 per-Alarm
+overrides, #59 quick-wins, #62 Notifications and #60 utility Tools tree and
+include the earlier #34, #44, #51, #55, #61 and #63 corpus additions. Precision
+is 1.00 with no negative or compound misroute, and every Tool clears the 0.95
+floor. `alarm.update` adds 23 positives at 1.00 recall; `alarm.set` carries the
+per-Alarm override phrasings (30 positives) and keeps precision 1.00, with its
+ambiguous variants falling to the Agent path. The #59 Tools add 60
 positives and three negative/compound groups; `assistant.repeat` and
 `assistant.help` are Local-only, so their recall only exercises the semantic
 router and never the Agent path. `notify.phone`'s positives include
@@ -195,10 +199,10 @@ is low because the city token dominates the embedding: known phrasings route,
 and an unlisted city reaches the same Tool through the Agent path, which then
 uses the local city table rather than a guess.
 
-Plain negatives: **0 of 144** reached the Fast path, including the utility
+Plain negatives: **0 of 154** reached the Fast path, including the utility
 non-requests such as an unsupported event, a currency conversion, a bare
 "roll out the red carpet" and an open-ended pick, plus the reminder-, phone-,
-repeat- and web-lookup-shaped non-requests. Compounds: **0 of 28** reached the Fast path,
+repeat- and web-lookup-shaped non-requests. Compounds: **0 of 30** reached the Fast path,
 including mixed utility requests such as calculating a percentage and
 converting miles. Every Tool is exercised by the semantic
 router at least twice, so no Tool clears the floor only because the Control

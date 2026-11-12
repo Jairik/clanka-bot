@@ -93,11 +93,11 @@ embed:
   timeout: 150ms
 
 # Semantic Fast path tuning from the #26 routing evaluation. The corpus is
-# internal/pipeline/testdata/routing_eval.yaml (713 positives, at least 20 per
-# Tool, 144 negatives and 28 compounds) run against
+# internal/pipeline/testdata/routing_eval.yaml (744 positives, at least 20 per
+# Tool, 154 negatives and 30 compounds) run against
 # sentence-transformers/all-MiniLM-L6-v2. At these values every Tool has
 # precision 1.00 against the confirmed 0.95 per-Tool floor, overall recall is
-# 0.6971, and no negative or compound reaches the Fast path. Recall is
+# 0.6909, and no negative or compound reaches the Fast path. Recall is
 # deliberately conservative: ambiguous phrasing goes to the Agent path instead
 # of risking a wrong Tool call. See docs/routing-eval.md.
 semantic:

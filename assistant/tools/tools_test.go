@@ -20,6 +20,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/tools/clock"
 	"github.com/Jairik/clanka-bot/assistant/tools/timer"
 	"github.com/Jairik/clanka-bot/assistant/tools/weather"
+	"github.com/Jairik/clanka-bot/assistant/tools/web"
 	"gopkg.in/yaml.v3"
 )
 
@@ -179,6 +180,44 @@ tools:
 	}
 	if out.City != "Berlin" || out.TemperatureC != 8.4 {
 		t.Fatalf("weather.Out = %+v, want the configured fake upstream's Berlin reading", out)
+	}
+}
+
+func TestWebModuleReadsItsConfigSection(t *testing.T) {
+	var searchPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		searchPath = r.URL.Path
+		fmt.Fprint(w, `{"results":[{"title":"Configured hit","url":"https://example.test/one","content":"from the configured backend"}]}`)
+	}))
+	t.Cleanup(server.Close)
+
+	reg := register(t, tool.Deps{}, sections(t, fmt.Sprintf(`
+tools:
+  web:
+    backend: searxng
+    base_url: %q
+    timeout: 1s
+    results: 3
+    max_results: 6
+`, server.URL)))
+
+	result, err := reg.Execute(context.Background(), web.Name, json.RawMessage(`{"query":"configured"}`))
+	if err != nil {
+		t.Fatalf("Execute %s: %v", web.Name, err)
+	}
+	out, ok := result.(web.Out)
+	if !ok {
+		t.Fatalf("result is %T, want web.Out", result)
+	}
+	if searchPath != "/search" {
+		t.Fatalf("search path = %q, want /search", searchPath)
+	}
+	if len(out.Results) != 1 || out.Results[0].Title != "Configured hit" {
+		t.Fatalf("web.Out = %+v, want the configured fake backend's hit", out)
+	}
+	info, ok := reg.Info(web.Name)
+	if !ok || !info.AgentOnly || info.LocalOnly {
+		t.Fatalf("web.search metadata = %+v, want AgentOnly and not Local-only", info)
 	}
 }
 

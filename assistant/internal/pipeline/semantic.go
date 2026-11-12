@@ -335,9 +335,16 @@ func FastPathEligible(info tool.Info) bool {
 }
 
 // CanUseFastPath is FastPathEligible without the current Examples and enabled
-// state. It answers whether a Tool could ever be routed by meaning, so the
-// wording settings know which Tools can carry overridable Examples.
+// state. It answers whether a Tool could ever be routed by meaning: never for
+// an AgentOnly or Local-only-style exclusion, and otherwise only with a Speak
+// renderer, read/act Permission and either Extract or no required arguments.
+// The wording settings use it to know which Tools can carry overridable
+// Examples.
 func CanUseFastPath(info tool.Info) bool {
+	// AgentOnly is an explicit exclusion even if a future edit adds the hooks.
+	if info.AgentOnly {
+		return false
+	}
 	if !info.HasSpeak {
 		return false
 	}

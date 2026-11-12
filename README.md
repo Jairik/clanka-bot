@@ -5,7 +5,8 @@ My lovely always-on voice assistant for stuff written in go. Kind of like a lobo
 ## Run the prototype
 
 The prototype is the `assistant` Go service in Docker, with a `wakeword`
-(openWakeWord), an `stt` (Moonshine Voice) and a `tts` (Pocket TTS) service.
+(openWakeWord), an `stt` (Moonshine Voice), a `tts` (Pocket TTS) service and an
+internal `web-search` (SearXNG) service for Agent-path lookups.
 `assistant` owns the microphone and speaker, and also exposes a health endpoint
 and a localhost-only debug entry that accepts a typed transcript (entering the
 pipeline just after STT).
@@ -62,6 +63,28 @@ next turn without a restart. Without any key the Agent path answers with the
 configured Unavailable message and the Fast path keeps working. Every provider
 request forces OpenRouter's `provider.zdr` and
 `provider.data_collection: "deny"` in code.
+
+### Web search
+
+The Agent can call `web.search` when an answer needs current information, for
+example "who won the match last night". The Tool asks the local `web-search`
+(SearXNG) service for five results by default (up to ten) and gives the model
+only each result's title, URL and a short snippet; the answer is grounded in
+those results instead of a guess. It is an Agent-only Tool: open-ended lookups must not claim a
+semantic Fast path route, so no Example can send one there.
+
+The `web-search` container is internal-only: Compose publishes no host port,
+runs no valkey and mounts no database. It runs two Granian workers with the
+limiter off, keeps three fast engines (DuckDuckGo, Brave, Bing) and a 1.5 s
+engine timeout in `searxng/config/settings.yml`, and enables SearXNG's JSON
+output for the Tool. The image is pinned to
+`docker.io/searxng/searxng:2026.11.12-de722ab1b`. `tools.web.backend` selects
+the Provider implementation; only `searxng` exists and an unknown value fails
+startup. If SearXNG is down, times out, returns invalid JSON or an oversize
+body, the Tool fails cleanly and the Agent can say it couldn't search. Results
+are bounded (query, count, title, URL and snippet) and the HTTP client keeps
+connections alive between calls. See [`searxng/README.md`](searxng/README.md)
+for the pinned image, worker/server choice and a manual smoke test.
 
 Agent path replies are spoken as they are generated: the first chunk is flushed
 at a clause boundary or after about twelve words, then each sentence is sent to

@@ -53,7 +53,8 @@ Replace it with the real operation:
 
 - `In` and `Out`: the typed contract. Keep `In` empty if the Tool takes no
   arguments; an empty `In` is what keeps it eligible for the Fast path. A Tool
-  with arguments needs `Extract` to be Fast-path eligible.
+  with arguments needs `Extract` to be Fast-path eligible, or an
+  `AgentOnly: true` declaration (see below).
 - `Handler`: the side effect. Return a `tool.ToolError{...}` with a `Say` line
   only when the user needs to hear the failure.
 - `Config` and `DefaultConfig`: the `tools.<module>` section. Decode over the
@@ -165,6 +166,40 @@ directly. A setting override can only tighten this level, never loosen it.
 
 Completion: the level matches the real side effect, not the scaffold default.
 
+### If the Tool belongs only on the Agent path
+
+Some Tools make no sense as a voice Fast path route: an open-ended web search
+or an article fetch has required arguments and a result the model must read in
+context. Declare that deliberately instead of leaving the starter hooks half
+removed:
+
+```go
+return tool.Tool[In, Out]{
+    Name:        Name,
+    Description: "Search the web for current information …",
+    Permission:  tool.PermissionRead,
+    LocalOnly:   tool.LocalOnlyNo,
+    AgentOnly:   true, // the semantic router must never offer this Tool
+    Handler:     handler,
+}
+```
+
+`AgentOnly` rejects `Examples` and `Extract` at registration, because those
+exist to route a Tool the Fast path must not take. `Speak` stays optional: a
+Tool that otherwise renders a result (for example a confirmed action) may keep
+it. The Tool is still offered to the Agent path as long as it is not Local-only.
+Its conformance check then skips Example routing and instead asserts the
+metadata is not Fast-path eligible. Registration also rejects
+`LocalOnlyYes` + `AgentOnly`: the Fast path excludes the first and the Agent
+path excludes the second, so no caller could ever reach the Tool.
+
+An Agent-only Tool gets an explicit Agent integration test, not a routing
+positive: script the provider to call the Tool and assert the result reached
+the follow-up model request. Add a plain `negatives:` utterance close to the
+Tool's wording, so the eval proves some other Fast path Tool does not capture
+it. Never add a positive, a fake embedding or a dataset entry that pretends the
+Fast path returns it. `web.search` in `tools/web` is the reference.
+
 ## 5. Choose Local-only
 
 `LocalOnlyYes` means the result must never leave the Pi: the Agent path cannot
@@ -179,7 +214,9 @@ Completion: the declaration matches where the Tool's results may travel.
 
 `Examples` are the utterances a user would actually say. Every Example must
 route to this Tool alone on the semantic Fast path, or conformance fails. Write
-three to eight varied, natural phrasings and replace the starter placeholders:
+three to eight varied, natural phrasings and replace the starter placeholders.
+An Agent-only Tool skips this step and takes the negative-case path above
+instead; do not add Examples it would never legitimately route.
 
 - Put the Tool's distinctive words in each one. Generic wording ties with a
   neighbouring Tool and lands below the margin.
@@ -189,7 +226,7 @@ three to eight varied, natural phrasings and replace the starter placeholders:
   not trigger it belongs in the eval's `negatives` list.
 
 Then update the routing eval; **this is part of the definition of done for a
-Tool**:
+Tool**. A Fast path Tool needs all three edits:
 
 1. Add the canonical name to `routingEvalTools` in
    `assistant/internal/pipeline/routing_eval_test.go`.
@@ -197,6 +234,10 @@ Tool**:
    `assistant/internal/pipeline/testdata/routing_eval.yaml`.
 3. Add the negative cases to `negatives:` (and compounds to `compounds:` when
    the request asks for more than one thing).
+
+An Agent-only Tool does neither 1 nor 2: adding it to `routingEvalTools` would
+make the router index check lie, and its positives would be Fast path misroutes.
+Add only the negatives that prove the wording falls through.
 
 These three edits keep the fixture honest: the real eval asserts that the router
 indexed exactly `routingEvalTools`, enforces 0.95 precision per Tool, and gates
@@ -233,11 +274,13 @@ make check
 ```
 
 The first command checks registration, config defaults, Permission, Local-only,
-`Speak` and `ConformanceSamples`; the second also embeds every Example against
-the real model and fails a misroute. `ConformanceSamples` must return one
-representative successful `Out` per Speak Tool, keyed by canonical name; update
-it whenever `Out` changes. The suite registers the production module list, so a
-broken sibling module also fails this test; that is intentional.
+`Speak` and `ConformanceSamples`, and requires each Tool to be either Fast-path
+complete or explicitly `AgentOnly`; the second also embeds every Fast-path
+Example against the real model and fails a misroute. `ConformanceSamples` must
+return one representative successful `Out` per Speak Tool, keyed by canonical
+name; update it whenever `Out` changes. The suite registers the production
+module list, so a broken sibling module also fails this test; that is
+intentional.
 
 ## 8. Update the glossary if a new term appeared
 
@@ -252,10 +295,15 @@ synonym for an existing term.
       `Handler`, `Speak` and config are the final contract.
 - [ ] Permission and Local-only are deliberate, not scaffold defaults by
       accident.
-- [ ] `Examples` route to this Tool, and the negative cases are written down.
+- [ ] The Tool is deliberately Fast-path eligible or declared `AgentOnly`;
+      conformance fails a Tool that is neither.
+- [ ] `Examples` route to this Tool, and the negative cases are written down
+      (Agent-only Tools add negative cases and an Agent integration test
+      instead).
 - [ ] `routingEvalTools`, the 20+ positives and the negatives are updated, and
       the real-MiniLM routing eval passes at the 0.95 per-Tool floor without
-      lowering the baseline.
+      lowering the baseline (Fast path Tools; Agent-only Tools keep their
+      negatives and the indexed count unchanged).
 - [ ] The module conformance test passes offline and with
       `ROUTING_EVAL_EMBED_URL` set.
 - [ ] `go vet ./...`, `go test ./...` and `make check` pass.

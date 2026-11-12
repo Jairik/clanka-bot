@@ -46,6 +46,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/tools/units"
 	"github.com/Jairik/clanka-bot/assistant/tools/voice"
 	"github.com/Jairik/clanka-bot/assistant/tools/weather"
+	"github.com/Jairik/clanka-bot/assistant/tools/web"
 	"gopkg.in/yaml.v3"
 )
 
@@ -475,6 +476,12 @@ func evalRegistry(t *testing.T) (*tool.Registry, *timer.Manager, *alarm.Manager,
 	personaModule.Bind(personaService)
 	if err := personaModule.Register(reg, tool.Deps{Voices: personaVoices}); err != nil {
 		t.Fatalf("register persona: %v", err)
+	}
+	// web.search is AgentOnly and must never be indexed by the semantic
+	// router; registering it proves the ToolCount check below is scoped to the
+	// Fast path rather than to every Agent-visible Tool.
+	if err := web.NewModule().Register(reg, tool.Deps{}); err != nil {
+		t.Fatalf("register web: %v", err)
 	}
 	return reg, manager, alarmManager, reminderModule.Manager()
 }

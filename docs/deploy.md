@@ -36,7 +36,7 @@ make build-arm64 # optional QEMU arm64 build of every image (not for latency)
    in `docker-compose.yml` to be healthy. On failure it exits non-zero, prints
    `docker compose ps` and the logs of the failing service(s).
 6. Because the service list comes from Compose, the script keeps working as the
-   stack grows from `assistant` alone to all five services.
+   stack grows from `assistant` alone to all six services.
 
 **With a commit — rollback without rebuilding**
 
@@ -262,13 +262,13 @@ invents one. Outbound HTTPS to the configured ntfy server must be reachable
 from the Pi. See the README's **Notifications** section for the security
 caveat and the self-hosted token steps.
 
-The Health page shows the five current Compose services (`embed`, `assistant`,
-`wakeword`, `stt`, `tts`), the resolved location and each Tool module that
-declares a health check. `embed` is checked over HTTP `/healthz`; the three
-Wyoming services are checked with `describe`; `assistant` is the process serving
-the page. One refresh is bounded by `dashboard.health_timeout` (3 s), and checks
-that overrun are shown as timed out. These are endpoint checks, not Docker's
-container health field.
+The Health page shows the six current Compose services (`embed`, `assistant`,
+`wakeword`, `stt`, `tts`, `web-search`), the resolved location and each Tool
+module that declares a health check. `embed` and `web-search` are checked over
+HTTP `/healthz`; the three Wyoming services are checked with `describe`;
+`assistant` is the process serving the page. One refresh is bounded by
+`dashboard.health_timeout` (3 s), and checks that overrun are shown as timed
+out. These are endpoint checks, not Docker's container health field.
 
 ### Audio and the Echo Dot
 
@@ -312,6 +312,15 @@ container health field.
       survives container restarts and image rebuilds. `assistant` is its only
       mounter. It holds settings overrides and unencrypted secrets (API keys,
       tokens) in a file mode 0600; treat a backup like the secrets it contains.
+- [ ] The `web-search` (SearXNG) service is internal-only: Compose publishes no
+      host port for it, runs no valkey and keeps no data volume. It reads
+      `searxng/config/settings.yml` (JSON output, limiter off, three engines,
+      1.5 s engine timeout) and is pinned to the official 2026.11.12 image. Set
+      `SEARXNG_SECRET` in `.env` only if the host rotates internal application
+      secrets; the default is a non-authenticating internal value. Troubleshoot
+      with `docker compose logs web-search` and
+      `docker compose exec web-search wget -qO- http://127.0.0.1:8080/healthz`.
+      See `searxng/README.md` for the pinned image and the settings rationale.
 - [ ] The separate `assistant-voices` volume holds custom voice states at
       `/app/data/voices` in `assistant`; `tts` mounts only that volume,
       read-only, at `/voices`. Only the voices subtree is exposed, never the
@@ -342,9 +351,11 @@ internet at deploy time except base images that Docker has not cached yet.
 
 Every service is built locally from its build context, even when it wraps an
 upstream image (the official openWakeWord image is the base of
-`clanka/wakeword`, not used as a separately tagged upstream image). That is what
-gives every service the SHA tag that rollback needs. `make check` also enforces
-the image tag, build context, restart policy and local-only health check.
+`clanka/wakeword`, and the pinned official SearXNG image is the base of
+`clanka/web-search`, not used as a separately tagged upstream image). That is
+what gives every service the SHA tag that rollback needs. `make check` also
+enforces the image tag, build context, restart policy and local-only health
+check.
 
 ML images (`wakeword`, `stt`, `tts`, `embed`) must download or copy model
 weights in an early layer **before any `COPY` of application code**, so editing
@@ -359,13 +370,15 @@ recognises `snapshot_download`, `hf_hub_download`, `from_pretrained`,
 `SentenceTransformer(...)`, `RUN python prefetch.py`, `/models` and the
 download CLIs.
 
-Verified across the five-service stack: `make check` reports OK, `make build-arm64`
-builds `assistant`, `embed`, `tts`, `wakeword` and `stt` as `arm64`, and each
-image starts healthy with `--network none`. A code-only `stt` rebuild logs
-`RUN python prefetch.py` as **CACHED** and rebuilds only the app-code `COPY`;
-the same holds for `tts` (prefetch layer cached) and `embed`
-(`SentenceTransformer(...)` layer cached), and `wakeword` only reruns its
-`healthcheck.py` `COPY` because its models come from the base image.
+Verified across the six-service stack: `make check` reports OK, `make build-arm64`
+builds `assistant`, `embed`, `tts`, `wakeword`, `stt` and the `web-search`
+wrapper as `arm64`, and each image starts healthy with `--network none`. A
+code-only `stt` rebuild logs `RUN python prefetch.py` as **CACHED** and rebuilds
+only the app-code `COPY`; the same holds for `tts` (prefetch layer cached) and
+`embed` (`SentenceTransformer(...)` layer cached), and `wakeword` only reruns
+its `healthcheck.py` `COPY` because its models come from the base image.
+`web-search` wraps the pinned upstream SearXNG image and carries no weights
+layer of its own.
 
 ## arm64 builds on the dev box (optional)
 

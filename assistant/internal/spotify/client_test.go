@@ -3,6 +3,7 @@ package spotify_test
 import (
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"sync/atomic"
@@ -100,5 +101,29 @@ func TestClientPutAccepts204(t *testing.T) {
 	}
 	if len(body) != 0 {
 		t.Fatalf("204 body = %q", body)
+	}
+}
+
+func TestClientDoesNotFollowRedirectsToAnotherOrigin(t *testing.T) {
+	f := newAuthFixture(t)
+	f.beginAndComplete(t)
+	var targetHits atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		targetHits.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+	f.fake.mu.Lock()
+	f.fake.api = func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/stolen", http.StatusTemporaryRedirect)
+	}
+	f.fake.mu.Unlock()
+	_, err := f.auth.Client().Get(f.ctx, "/me/player", nil)
+	var apiErr *spotify.APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusTemporaryRedirect {
+		t.Fatalf("Get error = %v, want a bounded 307 APIError", err)
+	}
+	if targetHits.Load() != 0 {
+		t.Fatal("the redirect target received the bearer token")
 	}
 }

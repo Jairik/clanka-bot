@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -68,6 +69,7 @@ type fakeOAuth struct {
 	rotate         bool
 	failCode       string
 	failStatus     int
+	tokenRedirect  string
 	blockRefresh   chan struct{}
 	startedRefresh chan struct{}
 	api            http.HandlerFunc
@@ -95,6 +97,13 @@ func (f *fakeOAuth) handle(w http.ResponseWriter, r *http.Request) {
 	}
 	if r.URL.Path != "/token" {
 		http.NotFound(w, r)
+		return
+	}
+	f.mu.Lock()
+	redirect := f.tokenRedirect
+	f.mu.Unlock()
+	if redirect != "" {
+		http.Redirect(w, r, redirect, http.StatusTemporaryRedirect)
 		return
 	}
 	if err := r.ParseForm(); err != nil {
@@ -602,5 +611,27 @@ func TestCanceledRefreshIsNotReportedAsASpotifyFailure(t *testing.T) {
 	}
 	if status := f.auth.Status(); status.State != spotify.WebAPIConnected {
 		t.Fatalf("status = %+v, want the last successful state", status)
+	}
+}
+
+func TestTokenRefreshDoesNotFollowRedirects(t *testing.T) {
+	f := newAuthFixture(t)
+	f.beginAndComplete(t)
+	var targetHits atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		targetHits.Add(1)
+	}))
+	defer target.Close()
+	f.fake.mu.Lock()
+	f.fake.tokenRedirect = target.URL + "/token"
+	f.fake.mu.Unlock()
+	if _, err := f.auth.Refresh(f.ctx); err == nil {
+		t.Fatal("Refresh followed a token-endpoint redirect")
+	}
+	if targetHits.Load() != 0 {
+		t.Fatal("the redirect target received the refresh token")
+	}
+	if strings.Contains(f.logs.String(), "refresh-1") {
+		t.Fatal("the token failure log leaked the refresh token")
 	}
 }

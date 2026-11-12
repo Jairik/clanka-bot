@@ -201,7 +201,11 @@ func NewAuth(opts Options) *Auth {
 	}
 	client := opts.HTTP
 	if client == nil {
-		client = &http.Client{Timeout: cfg.Timeout.Duration()}
+		client = &http.Client{
+			Timeout: cfg.Timeout.Duration(),
+			// Spotify needs no redirects; refusing one keeps the refresh token and bearer on the fixed origin.
+			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+		}
 	}
 	now := opts.Now
 	if now == nil {

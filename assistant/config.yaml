@@ -228,9 +228,11 @@ wakeword:
   # Wyoming openWakeWord service. An empty address disables voice input and
   # leaves the typed debug entry working.
   addr: "wakeword:10400"
-  # openWakeWord model name, e.g. okay_nabu, hey_jarvis, hey_rhasspy.
+  # openWakeWord model name. "clanker" is the detector trained for this house
+  # and baked into the wakeword image; okay_nabu, hey_jarvis and hey_rhasspy
+  # still ship upstream. An unknown name falls back to okay_nabu in the service.
   # Empty accepts any model the service has loaded.
-  model: "okay_nabu"
+  model: "clanker"
   timeout: 10s
   chime:
     # Master switch for the wake Cue. The sound itself is sounds.wake (default:

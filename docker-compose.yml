@@ -61,7 +61,7 @@ services:
       # Voice input: one named Pulse source and the two Wyoming services.
       ASSISTANT_PULSE_SOURCE: ${ASSISTANT_PULSE_SOURCE:-}
       ASSISTANT_WAKEWORD_ADDR: "wakeword:10400"
-      ASSISTANT_WAKEWORD_MODEL: ${WAKEWORD_MODEL:-okay_nabu}
+      ASSISTANT_WAKEWORD_MODEL: ${WAKEWORD_MODEL:-clanker}
       ASSISTANT_STT_ADDR: "stt:10300"
       ASSISTANT_STT_MODEL: ${STT_MODEL:-small-streaming}
       ASSISTANT_STT_LANGUAGE: ${STT_LANGUAGE:-en}
@@ -133,9 +133,13 @@ services:
       context: ./wakeword
     image: clanka/wakeword:${GIT_SHA:-dev}
     restart: unless-stopped
-    # Preload one model to keep CPU low; it must match the assistant's
-    # wakeword.model. Upstream ships okay_nabu, hey_jarvis and others.
-    command: ["--preload-model", "${WAKEWORD_MODEL:-okay_nabu}", "--threshold", "${WAKEWORD_THRESHOLD:-0.5}"]
+    # The image bakes the locally trained "clanker" detector and serves it from
+    # /usr/src/custom_models next to the upstream built-ins (okay_nabu,
+    # hey_jarvis, ...), so WAKEWORD_MODEL can name either. The name must match
+    # the assistant's wakeword.model; an unknown name silently falls back to
+    # okay_nabu in the service. Models load on the first Detect, so startup does
+    # not pay for one nobody asks for.
+    command: ["--custom-model-dir", "/usr/src/custom_models", "--threshold", "${WAKEWORD_THRESHOLD:-0.5}"]
     expose:
       - "10400"
     healthcheck:

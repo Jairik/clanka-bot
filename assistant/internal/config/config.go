@@ -300,7 +300,7 @@ func Default() Config {
 	cfg.Capture.Width = 2
 	cfg.Capture.Channels = 1
 	cfg.Capture.FrameMS = 32
-	cfg.Wakeword.Model = "okay_nabu"
+	cfg.Wakeword.Model = "clanker"
 	cfg.Wakeword.Timeout = Duration(10 * time.Second)
 	cfg.Wakeword.Chime.Enabled = true
 	cfg.STT.Model = "small-streaming"

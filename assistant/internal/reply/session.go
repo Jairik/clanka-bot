@@ -70,6 +70,10 @@ type Session struct {
 	cues          CueSource
 	focus         *focus.Registry
 	gate          *playback.Gate
+	// volumeSource returns the software speech gain percent for one turn. It
+	// is read once at turn start so a Quiet hours change applies to the next
+	// request, never mid-sentence.
+	volumeSource func() int
 }
 
 // Option configures a Session.
@@ -115,6 +119,14 @@ func WithSpeechGate(gate *playback.Gate) Option {
 // to New is the fallback when no source is set.
 func WithFillerSource(source FillerSource) Option {
 	return func(s *Session) { s.fillerSource = source }
+}
+
+// WithVolumeSource makes each reply turn read the software speech gain once,
+// before its first sound. main passes Quiet hours' Gain, so replies, Fillers and
+// the error Cue all use quiet.volume while the window is active. The media
+// volume is not changed.
+func WithVolumeSource(source func() int) Option {
+	return func(s *Session) { s.volumeSource = source }
 }
 
 // New builds a session. A nil speaker leaves replies text-only.
@@ -163,6 +175,12 @@ func (s *Session) ask(ctx context.Context, req tool.Request, transcript string, 
 	// the original model stream and playback without touching the stop request.
 	turnCtx, cancelTurn := context.WithCancel(ctx)
 	defer cancelTurn()
+	// Quiet hours reads its gain once per turn, before any Filler, Cue or reply
+	// PCM. A window change mid-turn cannot jump the volume of the current
+	// sentence. With no source the context is unchanged.
+	if s.volumeSource != nil {
+		turnCtx = speech.WithGain(turnCtx, s.volumeSource())
+	}
 	claimFocus, releaseFocus := s.focusClaim(turnCtx, cancelTurn)
 	defer releaseFocus()
 

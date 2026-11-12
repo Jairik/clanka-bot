@@ -36,6 +36,7 @@ type settingsView struct {
 	Tools       []settingsToolView
 	Agent       []settingView
 	ToolWording []toolWordingView
+	Quiet       []settingView
 	Live        []settingView
 	Restart     []settingView
 }
@@ -352,6 +353,10 @@ func (h *Handler) buildSettingsView(flash, errorText string, edit *editState) se
 			continue
 		}
 		setting := newSettingView(value, edit)
+		if strings.HasPrefix(value.Key, "quiet.") {
+			view.Quiet = append(view.Quiet, setting)
+			continue
+		}
 		if value.Kind == settings.RestartRequired {
 			view.Restart = append(view.Restart, setting)
 		} else {

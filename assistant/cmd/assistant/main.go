@@ -28,6 +28,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/namematch"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	"github.com/Jairik/clanka-bot/assistant/internal/playback"
+	"github.com/Jairik/clanka-bot/assistant/internal/quiet"
 	"github.com/Jairik/clanka-bot/assistant/internal/reply"
 	"github.com/Jairik/clanka-bot/assistant/internal/ring"
 	"github.com/Jairik/clanka-bot/assistant/internal/secrets"
@@ -129,6 +130,28 @@ func run() error {
 		Error:     baseCfg.Sounds.Error,
 	}
 
+	// Startup recovery needs the live Ring behaviour and Quiet volume before
+	// Tool modules register: a Timer overdue from the previous run must not
+	// blast the code-default volume. This small reader sees the saved
+	// overrides; the full settings service below replaces it for the running
+	// process. It is read-only, so two views of the same DB cannot diverge.
+	zone := tz.New(os.Getenv("TZ"), logger)
+	recoveryDefs := append(ring.Definitions(), quiet.Definitions(baseCfg.Quiet)...)
+	recoveryDefs = append(recoveryDefs, tz.Definition(baseCfg.Timezone))
+	recoverySettings, err := settings.New(ctx, st, recoveryDefs...)
+	if err != nil {
+		return fmt.Errorf("recovery settings: %w", err)
+	}
+	zone.Bind(recoverySettings)
+	// Quiet hours is created before the Ring engine so recovery Rings already
+	// read the saved quiet.volume. Bind later swaps in the full service.
+	quietSvc := quiet.New(quiet.Options{
+		Reader:   recoverySettings,
+		Now:      time.Now,
+		Location: zone.Location,
+		Logger:   logger,
+	})
+
 	// The provider entry names the secret key and is needed before Tool
 	// registration so the secrets service knows every writable name.
 	provider, err := cfg.Agent.ActiveProvider()
@@ -208,6 +231,9 @@ func run() error {
 			}),
 			// A Ring preempts a long Pi preview instead of waiting behind it.
 			announce.WithPreempt(func() bool { return focusRegistry.Held(focus.Ring) }),
+			// Quiet hours holds text announcements, then releases them as one
+			// summary. Audio previews keep their own slots.
+			announce.WithHoldSummary(),
 		}
 		if speechSpeaker != nil {
 			// Announcements use the same speech gate as replies: a Ring waits
@@ -229,11 +255,15 @@ func run() error {
 		Focus:    focusRegistry,
 		Boundary: speechGate,
 		Settings: func(kind ring.Kind) ring.Settings {
-			if settingsSvc == nil {
-				return ring.Defaults(kind)
+			var reader ring.Reader = recoverySettings
+			if settingsSvc != nil {
+				reader = settingsSvc
 			}
-			return ring.ReadSettings(settingsSvc, kind)
+			return quietSvc.RingSettings(kind, ring.ReadSettings(reader, kind))
 		},
+		// Timer labels follow quiet.volume; an Alarm label stays at normal
+		// volume, including a Ring recovered during startup.
+		SpeechGain: quietSvc.RingSpeechGain,
 		Clip: func(kind ring.Kind) (sound.Clip, bool) {
 			role := sound.RoleTimerRing
 			if kind == ring.Alarm {
@@ -259,7 +289,7 @@ func run() error {
 	// section and falls back to code defaults. The timezone seam exists before
 	// modules register (they capture Deps), but it only becomes live once the
 	// settings service below is created and bound.
-	zone := tz.New(os.Getenv("TZ"), logger)
+	//
 	// One matcher serves sound, voice and playlist names. Its threshold is
 	// bound to the settings service below, after the definitions are built;
 	// until then it uses the config value as its fallback.
@@ -278,6 +308,7 @@ func run() error {
 		Cues:          cues,
 		Ring:          ringEngine,
 		Names:         names,
+		Quiet:         quietSvc,
 	}
 	if speechSpeaker != nil {
 		deps.Speaker = speechSpeaker
@@ -315,6 +346,9 @@ func run() error {
 	// Ring behaviour is per kind: Timer and Alarm share the engine but keep
 	// independent live max_ring, volume, ramp, gap and speak_label settings.
 	defs = append(defs, ring.Definitions()...)
+	// Quiet hours shares the one settings service with the Dashboard and voice
+	// Tools; the startup reader above is replaced by this full service.
+	defs = append(defs, quiet.Definitions(baseCfg.Quiet)...)
 	// The model name is a live setting like the wording. Its default comes
 	// from the active provider's code default when that provider is built in;
 	// otherwise the configured model is both the default and the config layer.
@@ -330,6 +364,21 @@ func run() error {
 	// Bind after the service exists so the timezone is live overridable: the
 	// Dashboard's settings handler and any voice Tool write the same service.
 	zone.Bind(settingsSvc)
+	// Quiet hours now reads and writes the one live service: a Dashboard edit
+	// or a voice Tool write is visible to the next Status read.
+	quietSvc.Bind(settingsSvc)
+	quietSvc.BindWriter(settingsSvc)
+	// One small worker applies the current Quiet status to the Announcement
+	// queue. It reevaluates at the next window boundary or after one second, so
+	// a Dashboard edit applies promptly without a request or a second settings
+	// observer.
+	var quietQueue quiet.HoldQueue
+	if announcements != nil {
+		quietQueue = announcements
+	}
+	quietController := quiet.NewController(quietSvc, quietQueue, logger)
+	quietController.Start(ctx)
+	defer quietController.Close()
 	// The matcher reads this per lookup, so a Dashboard change applies without
 	// a restart and without a second settings observer.
 	nameThreshold.Bind(settingsSvc)
@@ -489,6 +538,10 @@ func run() error {
 	// The Filler is read once per turn from the live source, so a re-synthesized
 	// phrase is heard from the next request onward.
 	sessionOpts = append(sessionOpts, reply.WithFillerSource(wordingMgr))
+	// Replies, Fillers and the error Cue use the absolute quiet volume while
+	// the Quiet window is active. The gain is software-only; the media sink
+	// volume is never changed and nothing needs restoring.
+	sessionOpts = append(sessionOpts, reply.WithVolumeSource(quietSvc.Gain))
 	// A speaking reply holds Focus, so a shared "stop" cancels its model stream
 	// and playback rather than the stop request itself.
 	sessionOpts = append(sessionOpts, reply.WithFocus(focusRegistry))

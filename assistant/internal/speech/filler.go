@@ -69,6 +69,9 @@ func (f *Filler) Play(ctx context.Context, sink Sink) error {
 	if err != nil {
 		return err
 	}
+	// A Filler plays on the same turn context as the reply, so the same quiet
+	// gain applies to its cached PCM.
+	writer = newGainWriter(writer, f.Format, GainFrom(ctx))
 	if _, err := writer.Write(f.PCM); err != nil {
 		_ = writer.Close()
 		return fmt.Errorf("speech: play filler: %w", err)

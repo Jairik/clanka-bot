@@ -72,12 +72,13 @@ embed:
   timeout: 150ms
 
 # Semantic Fast path tuning from the #26 routing evaluation. The corpus is
-# internal/pipeline/testdata/routing_eval.yaml (160 positives, 20 per Tool, 48
-# negatives and 8 compounds) run against sentence-transformers/all-MiniLM-L6-v2.
-# At these values every Tool had precision 1.00 against the confirmed 0.95
-# per-Tool floor, overall recall was 0.59, and no negative or compound reached
-# the Fast path. Recall is deliberately low: ambiguous phrasing goes to the
-# Agent path instead of risking a wrong Tool call. See docs/routing-eval.md.
+# internal/pipeline/testdata/routing_eval.yaml (266 positives, at least 20 per
+# Tool, 64 negatives and 10 compounds) run against
+# sentence-transformers/all-MiniLM-L6-v2. At these values every Tool has
+# precision 1.00 against the confirmed 0.95 per-Tool floor, overall recall is
+# 0.70, and no negative or compound reaches the Fast path. Recall is
+# deliberately conservative: ambiguous phrasing goes to the Agent path instead
+# of risking a wrong Tool call. See docs/routing-eval.md.
 semantic:
   threshold: 0.71
   margin: 0.23
@@ -186,6 +187,21 @@ location:
     region: ""
     timezone: ""
 
+# Quiet hours: one daily window plus a timed do-not-disturb and the "I'm awake"
+# bypass. The Dashboard Settings page and the quiet.set/off/dnd/awake voice Tools
+# write the same stored overrides; a stored value wins over this layer. The
+# window is evaluated in the effective timezone, and an end earlier than the
+# start crosses midnight. Inside it, Announcements are held and released as one
+# summary, Notifications are muted, and replies, Fillers, Timers and Reminders
+# use quiet.volume. Alarms are exempt and Ring normally. Volume is applied in
+# software to the PCM, so the host media volume is never changed.
+quiet:
+  enabled: false
+  start: "22:30"
+  end: "07:00"
+  # Absolute percent, independent of the media volume.
+  volume: 35
+
 # Exact-match Control phrases, entered just after STT. These are the config.yaml
 # layer of the live wording settings; a stored override applies on the next
 # request. A value names one Tool ("audio.stop") or one shared Focus intent from
@@ -213,6 +229,13 @@ control_phrases:
   "what is the weather like": weather.current
   "what's the weather": weather.current
   "how's the weather": weather.current
+  # Quiet hours short answers are exact phrases so a single ambiguous word is
+  # not left to embedding. The longer window and duration requests use the
+  # quiet.* Tools' Examples on the semantic Fast path.
+  "turn off quiet hours": quiet.off
+  "quiet hours off": quiet.off
+  "i'm awake": quiet.awake
+  "i am awake": quiet.awake
 
 # The Agent path: one OpenAI-compatible provider, no failover.
 agent:

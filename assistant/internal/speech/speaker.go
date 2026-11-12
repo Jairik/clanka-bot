@@ -71,6 +71,10 @@ func (s *Speaker) Say(ctx context.Context, text string) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	// Quiet hours applies its absolute volume in software here, so the media
+	// sink volume is never touched and needs no restore. The wrapper buffers a
+	// split PCM16 sample at a chunk boundary.
+	writer = newGainWriter(writer, format, GainFrom(ctx))
 
 	// The request's one sound slot is claimed immediately before the first
 	// PCM submission. A Filler racing this hook loses and stays silent; a

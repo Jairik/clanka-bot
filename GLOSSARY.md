@@ -99,7 +99,10 @@ Speech the Assistant starts without the user having just asked, such as a Remind
 _Avoid_: Unprompted speech, proactive message
 
 **Quiet hours**:
-A window during which the Assistant holds Announcements, mutes Notifications and speaks quietly, while Alarms still Ring. It can follow a daily schedule or be started and ended by voice.
+A window during which the Assistant holds Announcements, mutes Notifications and speaks quietly,
+while Alarms still Ring. It can follow a daily schedule in the effective
+timezone, a timed do-not-disturb period, or an "I'm awake" bypass that ends only
+the current window. Held Announcements are released as one summary.
 _Avoid_: Do not disturb, DND, night mode, sleep mode
 
 ### Scheduled alerts

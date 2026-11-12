@@ -13,6 +13,7 @@ import (
 
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/sound"
+	"github.com/Jairik/clanka-bot/assistant/internal/speech"
 )
 
 // MaxRamp bounds a configured ramp so a very long ramp cannot outlive the Ring.
@@ -103,6 +104,11 @@ type Deps struct {
 	Music Music
 	// Speaker speaks the label and the no-sound fallback.
 	Speaker Speaker
+	// SpeechGain returns the software speech gain percent for this kind. It is
+	// read at Ring start; nil means 100. Quiet hours passes the quiet volume
+	// for a Timer and 100 for an Alarm, so an Alarm label stays at normal
+	// volume even during startup recovery.
+	SpeechGain func(Kind) int
 	// Settings reads the live per-kind Ring settings at each Ring start.
 	Settings func(Kind) Settings
 	// Clip resolves the live per-kind Cue sound. False means none assigned.
@@ -120,15 +126,16 @@ type Deps struct {
 // first (or the current reply sentence) and only then claims Focus, so every
 // Ring stays controllable and no older sound is orphaned by a newer claim.
 type Engine struct {
-	focus    *focus.Registry
-	boundary Boundary
-	music    Music
-	speaker  Speaker
-	settings func(Kind) Settings
-	clip     func(Kind) (sound.Clip, bool)
-	play     func(context.Context, sound.Clip) error
-	clock    Clock
-	logger   *slog.Logger
+	focus      *focus.Registry
+	boundary   Boundary
+	music      Music
+	speaker    Speaker
+	settings   func(Kind) Settings
+	speechGain func(Kind) int
+	clip       func(Kind) (sound.Clip, bool)
+	play       func(context.Context, sound.Clip) error
+	clock      Clock
+	logger     *slog.Logger
 
 	// slot is the one-speaker lock. A buffered channel gives waiting Rings a
 	// stable order and lets their parent context cancel the wait.
@@ -145,16 +152,17 @@ func New(deps Deps) *Engine {
 		deps.Logger = slog.Default()
 	}
 	return &Engine{
-		focus:    deps.Focus,
-		boundary: deps.Boundary,
-		music:    deps.Music,
-		speaker:  deps.Speaker,
-		settings: deps.Settings,
-		clip:     deps.Clip,
-		play:     deps.Play,
-		clock:    deps.Clock,
-		logger:   deps.Logger,
-		slot:     make(chan struct{}, 1),
+		focus:      deps.Focus,
+		boundary:   deps.Boundary,
+		music:      deps.Music,
+		speaker:    deps.Speaker,
+		settings:   deps.Settings,
+		speechGain: deps.SpeechGain,
+		clip:       deps.Clip,
+		play:       deps.Play,
+		clock:      deps.Clock,
+		logger:     deps.Logger,
+		slot:       make(chan struct{}, 1),
 	}
 }
 
@@ -228,6 +236,7 @@ func (e *Engine) Ring(parent context.Context, req Request) Result {
 		if shouldSpeakLabel(settings.SpeakLabel, firstPass) {
 			if text := labelText(req); text != "" && e.speaker != nil {
 				sayCtx, cancelSay := boundedContext(ctx, deadline)
+				sayCtx = speech.WithGain(sayCtx, e.speechGainFor(req.Kind))
 				err := e.speaker.SayText(sayCtx, text)
 				cancelSay()
 				if err != nil {
@@ -298,6 +307,7 @@ func (e *Engine) speakFallback(ctx, parent context.Context, req Request, holder 
 	}
 	deadline := e.clock.Now().Add(settings.MaxRing)
 	sayCtx, cancel := boundedContext(ctx, deadline)
+	sayCtx = speech.WithGain(sayCtx, e.speechGainFor(req.Kind))
 	err := e.speaker.SayText(sayCtx, text)
 	cancel()
 	if err != nil {
@@ -375,6 +385,21 @@ func (e *Engine) duck(ctx context.Context, kind Kind) func() {
 		e.logger.Warn("ring music duck", "kind", kind, "error", err.Error())
 	}
 	return restore
+}
+
+// speechGainFor clamps the optional label gain. A nil seam means normal volume.
+func (e *Engine) speechGainFor(kind Kind) int {
+	if e.speechGain == nil {
+		return 100
+	}
+	gain := e.speechGain(kind)
+	if gain < 0 {
+		return 0
+	}
+	if gain > 100 {
+		return 100
+	}
+	return gain
 }
 
 // claimFocus takes Ring priority, or returns a nil-safe no-op claim when no

@@ -515,8 +515,8 @@ func TestNotifyMissedSendsOneHighPriorityNotification(t *testing.T) {
 	if !strings.Contains(payload.Message, "pasta") || !strings.Contains(payload.Message, "5m0s") {
 		t.Fatalf("message = %q", payload.Message)
 	}
-	if payload.Priority != "high" {
-		t.Fatalf("priority = %q, want high", payload.Priority)
+	if payload.Priority == nil || *payload.Priority != 4 {
+		t.Fatalf("priority = %v, want numeric 4 (high)", payload.Priority)
 	}
 	if len(payload.Tags) != 1 || payload.Tags[0] != "warning" {
 		t.Fatalf("tags = %v", payload.Tags)
@@ -611,5 +611,24 @@ func TestDefinitionsNeverExposeSecretNames(t *testing.T) {
 		if !seen[key] {
 			t.Fatalf("missing setting %q", key)
 		}
+	}
+}
+
+func TestPriorityUsesTheNumericJSONForm(t *testing.T) {
+	cases := map[string]int{"min": 1, "low": 2, "default": 3, "high": 4, "max": 5, "urgent": 5, "5": 5}
+	for raw, want := range cases {
+		got, err := priorityValue(raw)
+		if err != nil || got == nil || *got != want {
+			t.Fatalf("priorityValue(%q) = %v, %v; want %d", raw, got, err, want)
+		}
+	}
+	if got, err := priorityValue(""); err != nil || got != nil {
+		t.Fatalf("empty priority = %v, %v; want omitted", got, err)
+	}
+	if _, err := priorityValue("loud"); err == nil {
+		t.Fatal("priorityValue accepted an unknown name")
+	}
+	if _, err := priorityValue("6"); err == nil {
+		t.Fatal("priorityValue accepted out-of-range number 6")
 	}
 }

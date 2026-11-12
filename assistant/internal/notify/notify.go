@@ -23,6 +23,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -172,7 +173,9 @@ type Notification struct {
 	Title string
 	// Message is the plain-text body.
 	Message string
-	// Priority is an ntfy priority such as "default", "high" or "max".
+	// Priority is an ntfy priority name ("min", "low", "default", "high",
+	// "max"/"urgent") or the number 1-5. JSON publishing requires the numeric
+	// form; Send maps the name before encoding.
 	Priority string
 	// Tags are ntfy tags or emoji short codes.
 	Tags []string
@@ -303,6 +306,10 @@ func (s *Service) Send(ctx context.Context, n Notification) error {
 	if err != nil {
 		return err
 	}
+	priority, err := priorityValue(n.Priority)
+	if err != nil {
+		return err
+	}
 	topic, err := s.Topic(ctx)
 	if err != nil {
 		return err
@@ -311,7 +318,7 @@ func (s *Service) Send(ctx context.Context, n Notification) error {
 		Topic:    topic,
 		Message:  n.Message,
 		Title:    strings.TrimSpace(n.Title),
-		Priority: strings.TrimSpace(n.Priority),
+		Priority: priority,
 		Tags:     n.Tags,
 	}
 	body, err := json.Marshal(payload)
@@ -453,13 +460,43 @@ func (s *Service) token() (string, bool) {
 }
 
 // publishRequest is the ntfy JSON publish body. The topic is in the body so a
-// topic can never be mangled by path escaping.
+// topic can never be mangled by path escaping, and the priority is numeric
+// because ntfy's JSON API accepts 1-5, not the header names.
 type publishRequest struct {
 	Topic    string   `json:"topic"`
 	Message  string   `json:"message"`
 	Title    string   `json:"title,omitempty"`
-	Priority string   `json:"priority,omitempty"`
+	Priority *int     `json:"priority,omitempty"`
 	Tags     []string `json:"tags,omitempty"`
+}
+
+// priorityValue maps a Notification priority name to the numeric form the JSON
+// API requires. An empty value uses ntfy's default.
+func priorityValue(raw string) (*int, error) {
+	text := strings.ToLower(strings.TrimSpace(raw))
+	if text == "" {
+		return nil, nil
+	}
+	value := 0
+	switch text {
+	case "min":
+		value = 1
+	case "low":
+		value = 2
+	case "default":
+		value = 3
+	case "high":
+		value = 4
+	case "max", "urgent":
+		value = 5
+	default:
+		parsed, err := strconv.Atoi(text)
+		if err != nil || parsed < 1 || parsed > 5 {
+			return nil, errors.New("notify: priority must be min, low, default, high, max or 1-5")
+		}
+		value = parsed
+	}
+	return &value, nil
 }
 
 // missedNotification renders one missed Timer or Alarm. Only the label and

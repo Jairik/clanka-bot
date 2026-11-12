@@ -78,6 +78,14 @@ _Avoid_: Error message, brain-offline line
 The one lookup that resolves a spoken library name — a sound, a voice or a Spotify playlist — first by exact or normalised spelling and then by embedding similarity above a threshold. It returns one name or no match, never a forced guess.
 _Avoid_: Fuzzy search, autocomplete
 
+**Calendar countdown**:
+The number of whole calendar days from today to a fixed date such as Christmas, counted in local dates in the effective timezone. A DST change does not add or remove a day. It is not a Timer.
+_Avoid_: Timer, elapsed time
+
+**City time**:
+The current local time in a named city, resolved from a shipped city-to-IANA table with embedded tzdata and no network lookup.
+_Avoid_: World clock, timezone guess
+
 ### Devices
 
 **Satellite**:

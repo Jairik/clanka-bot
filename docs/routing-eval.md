@@ -8,8 +8,8 @@ misroute from the request log.
 ## What is checked in
 
 - `assistant/internal/pipeline/testdata/routing_eval.yaml` — the labelled
-  oracle. It has at least 20 positives for each Fast path Tool, 99 plain
-  negatives, and 17 compound requests (exact counts in the results table).
+  oracle. It has at least 20 positives for each Fast path Tool, 119 plain
+  negatives, and 25 compound requests (exact counts in the results table).
 - `assistant/internal/pipeline/testdata/routing_baseline.yaml` — the recorded
   Map 1 totals the real-MiniLM evaluation must not fall below.
 - `assistant/internal/pipeline/routing_eval_test.go` —
@@ -130,8 +130,10 @@ above the 0.95 precision floor. Run against
 
 | Tool | Positives | TP | Control TP | Semantic TP | FP | FN | Precision | Recall |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `time.now` | 20 | 13 | 5 | 8 | 0 | 7 | 1.00 | 0.65 |
+| `time.now` | 20 | 12 | 5 | 7 | 0 | 8 | 1.00 | 0.60 |
 | `date.today` | 20 | 17 | 0 | 17 | 0 | 3 | 1.00 | 0.85 |
+| `time.in_city` | 21 | 9 | 0 | 9 | 0 | 12 | 1.00 | 0.4286 |
+| `date.countdown` | 22 | 22 | 0 | 22 | 0 | 0 | 1.00 | 1.00 |
 | `weather.current` | 20 | 11 | 4 | 7 | 0 | 9 | 1.00 | 0.55 |
 | `audio.volume_set` | 20 | 12 | 1 | 11 | 0 | 8 | 1.00 | 0.60 |
 | `audio.stop` | 20 | 9 | 0 | 9 | 0 | 11 | 1.00 | 0.45 |
@@ -154,10 +156,16 @@ above the 0.95 precision floor. Run against
 | `reminder.set` | 24 | 13 | 0 | 13 | 0 | 11 | 1.00 | 0.5417 |
 | `reminder.list` | 22 | 12 | 0 | 12 | 0 | 10 | 1.00 | 0.5455 |
 | `reminder.cancel` | 22 | 12 | 0 | 12 | 0 | 10 | 1.00 | 0.5455 |
-| **Total** | **499** | **330** | **23** | **307** | **0** | **169** | **1.00** | **0.6613** |
+| `calc.evaluate` | 22 | 17 | 0 | 17 | 0 | 5 | 1.00 | 0.7727 |
+| `units.convert` | 24 | 22 | 0 | 22 | 0 | 2 | 1.00 | 0.9167 |
+| `random.flip` | 21 | 21 | 0 | 21 | 0 | 0 | 1.00 | 1.00 |
+| `random.roll` | 22 | 22 | 0 | 22 | 0 | 0 | 1.00 | 1.00 |
+| `random.pick` | 22 | 17 | 0 | 17 | 0 | 5 | 1.00 | 0.7727 |
+| **Total** | **653** | **459** | **23** | **436** | **0** | **194** | **1.00** | **0.7029** |
 
-These numbers are from the merged #53 Alarm, #54 Reminder and #62 Notifications
-tree and include the earlier #34, #44, #51, #55, #61 and #63 corpus additions.
+These numbers are from the merged #53 Alarm, #54 Reminder, #62 Notifications and
+#60 utility Tools tree and include the earlier #34, #44, #51, #55, #61 and #63
+corpus additions.
 Precision is 1.00 with no negative or compound misroute, and every Tool clears
 the 0.95 floor. `notify.phone`'s positives include demonstrative "send that to
 my phone" wording and explicit-message forms; its phone-shaped negatives and
@@ -169,11 +177,16 @@ Reminder Tool, which is just under the shipped 0.23 margin. Those variants fall
 to the Agent path rather than risk a wrong Reminder action; the Agent can call
 `reminder.set`/`reminder.cancel`, while `reminder.list` is Local-only, so a list
 variant that lacks a strong phrasing is better served by the Scheduled alerts
-page (#58) than guessed. The voice and quiet recall notes below apply.
+page (#58) than guessed. The voice, quiet and city-time recall notes below apply. `time.in_city` recall
+is low because the city token dominates the embedding: known phrasings route,
+and an unlisted city reaches the same Tool through the Agent path, which then
+uses the local city table rather than a guess.
 
-Plain negatives: **0 of 99** reached the Fast path, including the new
-reminder-shaped non-requests and phone-shaped device questions. Compounds:
-**0 of 17** reached the Fast path. Every Tool is exercised by the semantic
+Plain negatives: **0 of 119** reached the Fast path, including the utility
+non-requests such as an unsupported event, a currency conversion, a bare
+"roll out the red carpet" and an open-ended pick. Compounds: **0 of 25**
+reached the Fast path, including mixed utility requests such as calculating a
+percentage and converting miles. Every Tool is exercised by the semantic
 router at least twice, so no Tool clears the floor only because the Control
 phrase table happened to cover its positives. The timer and list confusions are
 the main reason recall is conservative; those requests go to the Agent path

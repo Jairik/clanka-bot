@@ -12,10 +12,16 @@ func NewModule() *Module { return &Module{} }
 // Name is the module name and config section suffix.
 func (*Module) Name() string { return "clock" }
 
-// Register adds time.now and date.today.
+// Register adds time.now, date.today, time.in_city and date.countdown.
 func (*Module) Register(r *tool.Registry, deps tool.Deps) error {
 	if err := Register(r, deps.Clock); err != nil {
 		return err
 	}
-	return RegisterDate(r, deps.Clock)
+	if err := RegisterDate(r, deps.Clock); err != nil {
+		return err
+	}
+	if err := RegisterCity(r, deps.Clock); err != nil {
+		return err
+	}
+	return RegisterCountdown(r, deps.Clock, deps.Zone)
 }

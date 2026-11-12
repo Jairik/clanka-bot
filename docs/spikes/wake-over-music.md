@@ -154,10 +154,10 @@ contains the hostname and user name.
 
 ### 2.4 Assistant and librespot wiring
 
-Only `assistant` mounts the Pulse socket (ADR-0001). No new mount is needed for
-the virtual nodes; they are ordinary Pulse names on that socket. The container
-already gets `PULSE_SERVER=unix:/run/pulse/native` and the host pulse directory
-read-only (`docker-compose.yml`).
+Only `assistant` and `librespot` mount the Pulse socket (ADR-0001/0004). No
+new mount is needed for the virtual nodes; they are ordinary Pulse names on
+that socket. Both containers already get `PULSE_SERVER=unix:/run/pulse/native`
+and the host pulse directory read-only (`docker-compose.yml`).
 
 For AEC-on cells, set the restart-required connection settings:
 
@@ -167,16 +167,22 @@ ASSISTANT_PULSE_SINK=aec_music_sink
 ASSISTANT_PULSE_SOURCE=aec_mic_source
 ```
 
-Then restart `assistant` (`docker compose up -d assistant`, or the normal
-`scripts/deploy.sh`). For AEC-off cells, point both back at the real sink/mic.
-Changing the default sink alone is not enough: the assistant names its devices.
+Then restart `assistant` and `librespot` (`docker compose up -d assistant
+librespot`, or the normal `scripts/deploy.sh`). For AEC-off cells, point both
+back at the real sink/mic. Changing the default sink alone is not enough: both
+containers name their devices.
 
-For AEC to have a reference, **librespot's output must go to the same virtual
-sink**, not straight to the Echo Dot. Spotify playback lands in #71/#72; until
-that exists, a manual music source routed to `aec_music_sink` is a stand-in for
-the *plumbing check only*, not for a measured cell. A music source that bypasses
-the virtual sink invalidates the AEC-on cells: the mic hears music the canceller
-never saw.
+Compose maps `LIBRESPOT_SINK` from `ASSISTANT_PULSE_SINK`, so the Connect
+receiver follows the same virtual sink as the assistant's speech. That is the
+ADR-0004 property the AEC run needs: both music and speech enter the reference.
+If `LIBRESPOT_SINK` is ever set independently, keep it equal to
+`ASSISTANT_PULSE_SINK` or the AEC-on cells are invalid. The Web API playback
+Tools and ducking are #72; they do not change this audio path.
+
+If the three volumes are set with librespot's `SPOTIFY_INITIAL_VOLUME` or the
+Spotify Connect volume, record that value **and** `pactl get-sink-volume
+aec_music_sink`; they are separate stages, and the measured grid must say which
+one produced the level.
 
 ## 3. Measurement protocol
 
@@ -359,7 +365,7 @@ this repo should hard-code a default cap before those counts exist.
 | Real sink | `alsa_output.pci-0000_00_1f.3.analog-stereo` | `<echo-dot-sink>` |
 | Real source | `alsa_input.usb-046d_0825_EC865510-02.mono-fallback` | `<usb-mic-source>` |
 | Virtual sink/source | `aec_music_sink` / `aec_mic_source` | same |
-| Assistant audio mount | `${XDG_RUNTIME_DIR}/pulse:/run/pulse:ro`, cookie read-only | same |
+| Audio socket mounts | `assistant` + `librespot`: `${XDG_RUNTIME_DIR}/pulse:/run/pulse:ro`, cookie read-only | same |
 | Container env | `PULSE_SERVER=unix:/run/pulse/native` | same |
 | Assistant image | `<GIT_SHA at deploy>` | `<GIT_SHA at deploy>` |
 

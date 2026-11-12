@@ -155,6 +155,41 @@ func TestTurnStartedCancelsAPlayingPreview(t *testing.T) {
 	}
 }
 
+func TestPreemptCancelsAPlayingPreview(t *testing.T) {
+	var mu sync.Mutex
+	preempt := false
+	queue := announce.New(newRecordingSpeaker(), testLogger(), announce.WithPreempt(func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return preempt
+	}))
+	defer queue.Close()
+
+	started := make(chan struct{})
+	canceled := make(chan struct{})
+	if !queue.EnqueuePlay(func(ctx context.Context) error {
+		close(started)
+		<-ctx.Done()
+		close(canceled)
+		return ctx.Err()
+	}) {
+		t.Fatal("EnqueuePlay rejected an audio item")
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("preview did not start")
+	}
+	mu.Lock()
+	preempt = true
+	mu.Unlock()
+	select {
+	case <-canceled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("preview was not cancelled by the higher-priority Ring")
+	}
+}
+
 func TestNilSpeakerWithPlaybackRunsAudioOnly(t *testing.T) {
 	queue := announce.New(nil, testLogger(), announce.WithPlayback())
 	defer queue.Close()

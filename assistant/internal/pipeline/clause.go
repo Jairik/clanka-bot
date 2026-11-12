@@ -32,16 +32,19 @@ func (p *Pipeline) secondCommandClause(text string, phrases, intents map[string]
 	if len(joiners) == 0 {
 		return false
 	}
-	matches := wordRE.FindAllStringIndex(strings.ToLower(text), -1)
+	// Slice the lowercased text too: wordRE only matches ASCII letters, but a
+	// non-ASCII character before the match can change byte length when lowered.
+	lower := strings.ToLower(text)
+	matches := wordRE.FindAllStringIndex(lower, -1)
 	for i, span := range matches {
 		// A joiner needs a clause before it and words after it.
 		if i < 2 || i == len(matches)-1 {
 			continue
 		}
-		if !joiners[strings.ToLower(text[span[0]:span[1]])] {
+		if !joiners[lower[span[0]:span[1]]] {
 			continue
 		}
-		suffix := text[span[1]:]
+		suffix := lower[span[1]:]
 		normalized := phrase.Normalize(suffix)
 		if normalized == "" {
 			continue

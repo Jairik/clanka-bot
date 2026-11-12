@@ -261,10 +261,10 @@ is low because the city token dominates the embedding: known phrasings route,
 and an unlisted city reaches the same Tool through the Agent path, which then
 uses the local city table rather than a guess.
 
-Plain negatives: **0 of 178** reached the Fast path, including the utility
+Plain negatives: **0 of 199** reached the Fast path, including the utility
 non-requests such as an unsupported event, a currency conversion, a bare
 "roll out the red carpet" and an open-ended pick, plus the reminder-, phone-,
-repeat-, web-lookup-, page-read- and GitHub-shaped non-requests. Compounds: **0 of 34** reached the Fast path,
+repeat-, web-lookup-, page-read- and GitHub- and music-shaped non-requests. Compounds: **0 of 37** reached the Fast path,
 including mixed utility requests such as calculating a percentage and
 converting miles. Every Tool is exercised by the semantic
 router at least twice, so no Tool clears the floor only because the Control

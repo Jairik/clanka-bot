@@ -174,11 +174,22 @@ func (p *Player) Resume(ctx context.Context) error {
 }
 
 // ignoreRestriction treats Spotify's 403 "Restriction violated" (pause while
-// paused, play while playing) as the state the user asked for. A 403 for a
-// missing Premium account is a real failure and stays one.
+// paused, play while playing) as the state the user asked for. Only the
+// documented ALREADY_PAUSED / ALREADY_PLAYING reasons or the "Restriction
+// violated" message count; any other 403 (Premium required, a missing OAuth
+// scope) is a real failure and stays one.
 func ignoreRestriction(err error) error {
-	status, reason := APIStatus(err)
-	if status == http.StatusForbidden && reason != "PREMIUM_REQUIRED" {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusForbidden {
+		return err
+	}
+	switch apiErr.Reason {
+	case "ALREADY_PAUSED", "ALREADY_PLAYING":
+		return nil
+	case "PREMIUM_REQUIRED":
+		return err
+	}
+	if apiErr.Restricted {
 		return nil
 	}
 	return err

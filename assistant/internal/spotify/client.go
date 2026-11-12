@@ -127,9 +127,12 @@ func (c *Client) doAndRead(ctx context.Context, method, path string, query url.V
 
 // APIError is a non-2xx Web API response. Reason is Spotify's machine code
 // such as NO_ACTIVE_DEVICE; the message and body are deliberately discarded.
+// Restricted records only whether the message was Spotify's player
+// "Restriction violated" (for example pause while already paused).
 type APIError struct {
 	StatusCode int
 	Reason     string
+	Restricted bool
 }
 
 // Error renders the status and safe reason only.
@@ -144,10 +147,15 @@ func (e *APIError) Error() string {
 func newAPIError(status int, raw []byte) *APIError {
 	var envelope struct {
 		Error struct {
-			Status int    `json:"status"`
-			Reason string `json:"reason"`
+			Status  int    `json:"status"`
+			Reason  string `json:"reason"`
+			Message string `json:"message"`
 		} `json:"error"`
 	}
 	_ = json.Unmarshal(raw, &envelope)
-	return &APIError{StatusCode: status, Reason: envelope.Error.Reason}
+	return &APIError{
+		StatusCode: status,
+		Reason:     envelope.Error.Reason,
+		Restricted: strings.Contains(strings.ToLower(envelope.Error.Message), "restriction violated"),
+	}
 }

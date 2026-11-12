@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -58,7 +59,12 @@ func newWebAPI(t *testing.T) *webAPI {
 		default:
 			if f.status != 0 && strings.Contains(r.URL.Path, f.failOn) {
 				w.WriteHeader(f.status)
-				_, _ = w.Write([]byte(`{"error":{"reason":"` + f.reason + `"}}`))
+				msg := ""
+				if f.status == http.StatusForbidden && f.reason == "UNKNOWN" {
+					// Spotify's real pause-on-paused / play-on-playing answer.
+					msg = "Player command failed: Restriction violated"
+				}
+				_, _ = w.Write([]byte(`{"error":{"status":` + strconv.Itoa(f.status) + `,"message":"` + msg + `","reason":"` + f.reason + `"}}`))
 				return
 			}
 			w.WriteHeader(http.StatusNoContent)
@@ -112,11 +118,16 @@ func (d directAPI) do(ctx context.Context, method, path string, q url.Values, bo
 		// 404 NO_ACTIVE_DEVICE, 403 restrictions and 5xx stay distinct.
 		var envelope struct {
 			Error struct {
-				Reason string `json:"reason"`
+				Reason  string `json:"reason"`
+				Message string `json:"message"`
 			} `json:"error"`
 		}
 		_ = json.Unmarshal(raw, &envelope)
-		return nil, &spotify.APIError{StatusCode: resp.StatusCode, Reason: envelope.Error.Reason}
+		return nil, &spotify.APIError{
+			StatusCode: resp.StatusCode,
+			Reason:     envelope.Error.Reason,
+			Restricted: strings.Contains(strings.ToLower(envelope.Error.Message), "restriction violated"),
+		}
 	}
 	return raw, nil
 }
@@ -465,6 +476,21 @@ func TestTransientFailureKeepsFocusAndSpeaksTheFailure(t *testing.T) {
 	}
 	if !r.focus.Held(focus.Music) {
 		t.Fatal("a transient failure dropped Music Focus")
+	}
+}
+
+func TestAMissingScope403IsAFailureNotAlreadyPaused(t *testing.T) {
+	r := newRig(t, 0)
+	claimMusic(t, r)
+	// A grant without user-modify-playback-state: 403, no reason, no
+	// restriction message. It must not be reported as "Paused."
+	r.api.failControl("/pause", http.StatusForbidden, "")
+	text, ok := r.focus.HandleIntent(t.Context(), focus.Pause)
+	if !ok || text == "Paused." {
+		t.Fatalf("pause = %q, %v; a missing scope must not look like success", text, ok)
+	}
+	if !r.focus.Held(focus.Music) {
+		t.Fatal("a failed pause dropped Music Focus")
 	}
 }
 

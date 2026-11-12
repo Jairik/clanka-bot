@@ -2,9 +2,10 @@ package alarm
 
 import (
 	"fmt"
-	"sort"
 	"strings"
 	"time"
+
+	"github.com/Jairik/clanka-bot/assistant/internal/tz"
 )
 
 // Schedule is how an Alarm repeats. Once is the default; the others are the
@@ -246,46 +247,10 @@ func nextOnce(now time.Time, hour, minute int, loc *time.Location, tomorrow bool
 	return candidate
 }
 
-// resolveWall turns a local wall-clock time into an instant. A normal time and
-// a fall-back overlap resolve to the first occurrence. A spring-forward gap
-// has no such instant; the post-transition reading is used, so a 02:30 Alarm
-// fires at 03:30 when the clock jumps over 02:30. Both rules are deterministic
-// and covered by tests.
+// resolveWall is the shared wall-clock resolver in internal/tz. Keeping this
+// wrapper makes the Alarm scheduler and its tests use one rule with Reminder.
 func resolveWall(year int, month time.Month, day, hour, minute int, loc *time.Location) time.Time {
-	// The nominal wall time as if it were UTC; subtracting a zone offset gives
-	// the real instant without time.Date's unspecified overlap choice.
-	nominal := time.Date(year, month, day, hour, minute, 0, 0, time.UTC)
-	offsets := make(map[int]bool)
-	for _, probe := range []time.Duration{
-		-48 * time.Hour, -24 * time.Hour, -12 * time.Hour,
-		12 * time.Hour, 24 * time.Hour, 48 * time.Hour,
-	} {
-		_, offset := nominal.Add(probe).In(loc).Zone()
-		offsets[offset] = true
-	}
-	var candidates []time.Time
-	for offset := range offsets {
-		instant := nominal.Add(-time.Duration(offset) * time.Second)
-		local := instant.In(loc)
-		if local.Year() == year && local.Month() == month && local.Day() == day &&
-			local.Hour() == hour && local.Minute() == minute {
-			candidates = append(candidates, instant)
-		}
-	}
-	if len(candidates) > 0 {
-		sort.Slice(candidates, func(i, j int) bool { return candidates[i].Before(candidates[j]) })
-		return candidates[0]
-	}
-	// Gap: no instant carries the requested wall time. Use the later reading,
-	// which is the post-transition offset, so the Alarm fires after the jump.
-	var latest time.Time
-	for offset := range offsets {
-		instant := nominal.Add(-time.Duration(offset) * time.Second)
-		if instant.After(latest) {
-			latest = instant
-		}
-	}
-	return latest
+	return tz.ResolveWall(year, month, day, hour, minute, loc)
 }
 
 // formatClock renders a 12-hour spoken clock time, for example "7:00 am".

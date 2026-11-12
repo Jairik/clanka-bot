@@ -520,6 +520,22 @@ func (s *Service) clipFor(role Role, value string) (Clip, bool) {
 	return clip, true
 }
 
+// PlayClip plays one already-resolved Clip through the bound sink. It lets a
+// caller scale a Cue for Quiet hours first (#54) without exposing the sink. A
+// nil sink or an empty clip is a quiet no-op.
+func (s *Service) PlayClip(ctx context.Context, clip Clip) error {
+	if s == nil || len(clip.PCM) == 0 {
+		return nil
+	}
+	s.mu.RLock()
+	sink := s.sink
+	s.mu.RUnlock()
+	if sink == nil {
+		return nil
+	}
+	return clip.Play(ctx, sink)
+}
+
 // Play resolves one role and plays it through the bound sink. A none
 // assignment or a text-only setup is a quiet no-op.
 func (s *Service) Play(ctx context.Context, role Role) error {

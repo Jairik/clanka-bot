@@ -51,7 +51,9 @@ type migration struct {
 // with next_fires_at = 0 until the Ring outcome is known, so a snooze survives
 // a restart; a repeating Alarm advances next_fires_at in the same transaction
 // that opens its history row. sound, volume and ramp_ms are reserved for #57's
-// per-Alarm overrides and stay NULL/empty until then.
+// per-Alarm overrides and stay NULL/empty until then. Version 8 holds Reminders:
+// a message and the duration or clock time it is due. The versions stay
+// contiguous in either merge order.
 var migrations = []migration{
 	{
 		version: 1,
@@ -172,6 +174,24 @@ var migrations = []migration{
 				ramp_ms       INTEGER
 			)`,
 			`CREATE INDEX alarms_next_fires_at ON alarms (next_fires_at)`,
+		},
+	},
+	{
+		version: 8,
+		name:    "reminders",
+		statements: []string{
+			// message is the thing to say once when the Reminder is due. kind is
+			// duration or clock; duration_ms is zero for a clock time. The row is
+			// deleted in the same transaction that opens its alert history row.
+			`CREATE TABLE reminders (
+				id          INTEGER PRIMARY KEY AUTOINCREMENT,
+				message     TEXT NOT NULL,
+				kind        TEXT NOT NULL DEFAULT 'duration',
+				duration_ms INTEGER NOT NULL DEFAULT 0,
+				fires_at    INTEGER NOT NULL,
+				created_at  INTEGER NOT NULL
+			)`,
+			`CREATE INDEX reminders_fires_at ON reminders (fires_at)`,
 		},
 	},
 }

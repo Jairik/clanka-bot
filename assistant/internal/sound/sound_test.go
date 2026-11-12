@@ -368,6 +368,23 @@ func TestReminderAndRingCueSeamsResolveAndPlay(t *testing.T) {
 	}
 }
 
+// TestPlayClipPlaysAnAlreadyResolvedCue covers the #54 seam: the Reminder
+// scales a Cue for Quiet hours first and then plays that exact clip.
+func TestPlayClipPlaysAnAlreadyResolvedCue(t *testing.T) {
+	f := newFixture(t, sound.Config{})
+	clip, ok := f.sounds.Clip(sound.RoleReminder)
+	if !ok || len(clip.PCM) == 0 {
+		t.Fatal("reminder Cue did not resolve")
+	}
+	if err := f.sounds.PlayClip(context.Background(), clip); err != nil {
+		t.Fatalf("PlayClip: %v", err)
+	}
+	writes, formats := f.sink.snapshot()
+	if len(writes) != 1 || !bytes.Equal(writes[0], clip.PCM) || formats[0] != clip.Format {
+		t.Fatalf("PlayClip wrote %d chunks with format %+v, want the supplied clip", len(writes), formats)
+	}
+}
+
 func TestLiveAssignmentChangesTheNextClip(t *testing.T) {
 	f := newFixture(t, sound.Config{})
 	writeLibraryWAV(t, f.sounds.LibraryDir(), "birds.wav", 400*time.Millisecond)

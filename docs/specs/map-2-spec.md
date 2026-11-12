@@ -81,7 +81,7 @@ Status: **grilled, ready for `/to-tickets`** (2026-11-11). Built from [map-2-bri
 - Configurable **by voice and in the Dashboard**, live: "set quiet hours from 10:30 to 7", "turn off quiet hours", "do not disturb for two hours", "I'm awake". The voice Tools are `act` and write the same stored override as the Dashboard.
 
 ### Notifications
-- ntfy is the only push channel in Map 2, landing in phase 2. It defaults to ntfy.sh with a random topic and token, and the URL is a setting. Topic and token go in the secrets table.
+- ntfy is the only push channel in Map 2, landing in phase 2. It defaults to ntfy.sh with a random topic, and the URL is a setting. The topic is generated once on first use and kept in the secrets table. A token is optional: ntfy only accepts tokens its server issues, so a self-hosted ntfy with access control takes a server-issued token through the Secrets page (or `.env`) and the Assistant never invents one. On public ntfy.sh the random topic is obscurity, not access control.
 
 ### Tier 2 (Agent path)
 - SearXNG `web.search` + `web.fetch`, as in the brief. Kiwix, a "deep think" model switch and memory beyond the 10-turn history are out of Map 2.

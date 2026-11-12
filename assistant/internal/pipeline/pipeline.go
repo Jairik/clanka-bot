@@ -197,8 +197,14 @@ func New(reg *tool.Registry, phrases map[string]string, logger *slog.Logger, opt
 			if _, ok := focus.ParseIntent(target); !ok {
 				return nil, fmt.Errorf("pipeline: control phrase %q points at unknown intent %q", phrase, target)
 			}
+			if prev, exists := normalized[key]; exists && prev != target {
+				return nil, fmt.Errorf("pipeline: control phrase %q maps to both %q and %q", phrase, prev, target)
+			}
 			intents[key] = target
 			continue
+		}
+		if prev, exists := intents[key]; exists && prev != target {
+			return nil, fmt.Errorf("pipeline: control phrase %q maps to both %q and %q", phrase, prev, target)
 		}
 		info, ok := reg.Info(target)
 		if !ok {

@@ -156,6 +156,9 @@ func TestUnknownIntentIsRejected(t *testing.T) {
 		{map[string]string{"stop": "stopp"}, "unknown intent"},
 		{map[string]string{"stop": ""}, "no target"},
 		{map[string]string{"stop": "pause the music"}, "unknown intent"},
+		// Two spellings that normalize to one phrase cannot split between a
+		// Tool and an intent; the table is ambiguous.
+		{map[string]string{"Stop": "stop", "stop": audiocontrol.StopName}, "maps to both"},
 	}
 	for _, tc := range cases {
 		_, err := pipeline.New(tool.NewRegistry(time.Second), tc.phrases, logger)

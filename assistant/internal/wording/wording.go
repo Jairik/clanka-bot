@@ -147,22 +147,10 @@ func Build(reg *tool.Registry, cfg Config) (Setup, error) {
 		owners[key] = owner
 		phrasesByTool[target] = append(phrasesByTool[target], text)
 	}
-	for name, list := range phrasesByTool {
-		sort.Strings(list)
-		// Two spellings that normalize to the same phrase are one Control
-		// phrase; keep the first in sorted order so the config layer is valid.
-		unique := list[:0]
-		seen := make(map[string]bool, len(list))
-		for _, text := range list {
-			key := phrase.Normalize(text)
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-			unique = append(unique, text)
-		}
-		phrasesByTool[name] = unique
-	}
+	// Two spellings that normalize to the same phrase are one Control phrase;
+	// keep the first in sorted order so the config layer is valid.
+	dedupePhrases(phrasesByTool)
+	dedupePhrases(phrasesByIntent)
 
 	setup := Setup{ControlTools: []string{}, ExampleTools: []string{}}
 	for _, name := range names {
@@ -226,9 +214,28 @@ func Build(reg *tool.Registry, cfg Config) (Setup, error) {
 	return setup, nil
 }
 
+// dedupePhrases sorts each group and drops phrases that normalize to one key,
+// so the config layer never contains a duplicate the validator would reject.
+func dedupePhrases[K comparable](groups map[K][]string) {
+	for key, list := range groups {
+		sort.Strings(list)
+		unique := list[:0]
+		seen := make(map[string]bool, len(list))
+		for _, text := range list {
+			normalized := phrase.Normalize(text)
+			if seen[normalized] {
+				continue
+			}
+			seen[normalized] = true
+			unique = append(unique, text)
+		}
+		groups[key] = unique
+	}
+}
+
 // controlPhraseValidator rejects blank entries and duplicates within one
-// Tool's list. A phrase claimed by two Tools is dropped at request time rather
-// than routing to an arbitrary owner.
+// list. A phrase claimed by two owners is dropped at request time rather than
+// routing to an arbitrary owner.
 func controlPhraseValidator(value any) error {
 	list, ok := value.([]string)
 	if !ok {

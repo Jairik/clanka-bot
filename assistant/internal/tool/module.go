@@ -9,6 +9,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/announce"
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
+	"github.com/Jairik/clanka-bot/assistant/internal/namematch"
 	"github.com/Jairik/clanka-bot/assistant/internal/sound"
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
 	"github.com/Jairik/clanka-bot/assistant/internal/tz"
@@ -49,6 +50,10 @@ type Deps struct {
 	// Reminder Cue before announcing and #52 loops a Ring Cue; #55 wires the
 	// seam but neither consumer exists yet. Nil means no Cue sound.
 	Cues *sound.Service
+	// Names is the one shared matcher for spoken library names: sounds,
+	// voices and Spotify playlists. It reads the live threshold per lookup and
+	// never forces a guess; nil means a module cannot resolve spoken names.
+	Names *namematch.Matcher
 }
 
 // SecretResolver is the shared seam a module uses to read a declared secret.

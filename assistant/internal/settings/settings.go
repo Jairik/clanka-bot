@@ -54,6 +54,7 @@ const (
 	kindBool valueKind = iota + 1
 	kindString
 	kindInt
+	kindFloat
 	kindStrings
 	kindDuration
 )
@@ -113,6 +114,12 @@ func String(key string, def string, opts ...Option) Definition {
 // Int defines an integer setting.
 func Int(key string, def int, opts ...Option) Definition {
 	return newDefinition(key, kindInt, def, opts)
+}
+
+// Float defines a numeric setting such as a similarity threshold. Values cross
+// the API as JSON numbers.
+func Float(key string, def float64, opts ...Option) Definition {
+	return newDefinition(key, kindFloat, def, opts)
 }
 
 // Strings defines a list-of-strings setting.
@@ -355,6 +362,13 @@ func (s *Service) Duration(key string) time.Duration {
 	return duration
 }
 
+// Float returns the effective number, or 0 for an unknown or mistyped key.
+func (s *Service) Float(key string) float64 {
+	value, _ := s.Get(key)
+	number, _ := value.Value.(float64)
+	return number
+}
+
 // Strings returns a copy of the effective list, or nil for an unknown or
 // mistyped key.
 func (s *Service) Strings(key string) []string {
@@ -595,6 +609,12 @@ func (k valueKind) decode(raw json.RawMessage) (any, error) {
 			return nil, fmt.Errorf("want an integer: %w", err)
 		}
 		return value, nil
+	case kindFloat:
+		var value float64
+		if err := json.Unmarshal(trimmed, &value); err != nil {
+			return nil, fmt.Errorf("want a number: %w", err)
+		}
+		return value, nil
 	case kindStrings:
 		var value []string
 		if err := json.Unmarshal(trimmed, &value); err != nil {
@@ -635,6 +655,12 @@ func (k valueKind) encode(value any) (json.RawMessage, error) {
 		typed, ok := value.(int)
 		if !ok {
 			return nil, fmt.Errorf("want an integer, got %T", value)
+		}
+		return json.Marshal(typed)
+	case kindFloat:
+		typed, ok := value.(float64)
+		if !ok {
+			return nil, fmt.Errorf("want a number, got %T", value)
 		}
 		return json.Marshal(typed)
 	case kindStrings:

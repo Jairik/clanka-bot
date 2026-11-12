@@ -259,6 +259,34 @@ intents, or a Tool and an intent; possible only through separate overrides),
 the phrase is dropped from the Control phrase table so it falls through to the
 semantic or Agent path instead of choosing an owner at random.
 
+#### Name matching
+
+Sounds, voices and Spotify playlists resolve spoken names through one shared
+matcher (`internal/namematch`). Exact and normalised names win first and make
+no embed request. Normalisation lowercases, drops punctuation and a leading
+`the`/`a`/`an`/`my` and a trailing `sound`/`voice`/`playlist`, so
+`The Lo-Fi Beats Playlist` is the same name as `lo fi beats`. Anything else is
+compared with MiniLM embedding similarity against every candidate; the best
+name at or above the threshold wins, and everything else is no match. A name is
+never forced: empty input, an embed failure, malformed vectors, a score below
+the threshold, two names that normalise to the same words and an exact score
+tie all return no match. A caller then keeps its existing value and, where the
+Tool promises it, says aloud that the name did not match.
+
+`name_match.threshold` is the live similarity floor, default `0.60`, with the
+same override → `config.yaml` → code default layers as every other setting. It
+is read per lookup, so a Dashboard change applies without a restart; it
+deliberately installs no second settings observer. At `0.60` the real MiniLM
+model scores "the bird sound" → `birds` at about 0.85 and unrelated requests
+below 0.45.
+
+```sh
+# Tighten the name matcher, then return to config.yaml.
+curl -s -X PUT localhost:8081/api/settings/name_match.threshold \
+  -H 'Content-Type: application/json' -d '{"value":0.65}'
+curl -s -X DELETE localhost:8081/api/settings/name_match.threshold
+```
+
 ### Secrets
 
 Secrets are write-only. A stored value wins over the `.env` bootstrap with the

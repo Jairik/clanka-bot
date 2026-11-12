@@ -99,6 +99,11 @@ type Config struct {
 		Margin    float64  `yaml:"margin"`
 		Joiners   []string `yaml:"joiners"`
 	} `yaml:"semantic"`
+	// NameMatch tunes the shared spoken-name matcher. Threshold is the config
+	// layer of the live name_match.threshold setting.
+	NameMatch struct {
+		Threshold float64 `yaml:"threshold"`
+	} `yaml:"name_match"`
 	Location Location `yaml:"location"`
 	Agent    Agent    `yaml:"agent"`
 }
@@ -213,6 +218,7 @@ func Default() Config {
 	cfg.Semantic.Threshold = 0.70
 	cfg.Semantic.Margin = 0.08
 	cfg.Semantic.Joiners = []string{"and", "then", "also"}
+	cfg.NameMatch.Threshold = 0.60
 	cfg.TTS.Voice = "alba"
 	cfg.TTS.Timeout = Duration(30 * time.Second)
 	cfg.Playback.Binary = "pacat"
@@ -415,6 +421,9 @@ func (c Config) Validate() error {
 	}
 	if c.Semantic.Margin < 0 || c.Semantic.Margin >= 1 {
 		return fmt.Errorf("config: semantic.margin must be in [0, 1)")
+	}
+	if c.NameMatch.Threshold <= 0 || c.NameMatch.Threshold > 1 {
+		return fmt.Errorf("config: name_match.threshold must be in (0, 1]")
 	}
 	if c.TTS.Addr != "" {
 		if c.TTS.Timeout.Duration() <= 0 {

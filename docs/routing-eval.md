@@ -58,8 +58,10 @@ func TestModuleConformance(t *testing.T) { conformance.Run(t, NewModule()) }
 `Run` registers the production module list with the module under test and
 checks that it registers cleanly, that config defaults validate, that every
 Tool declares a valid Permission and Local-only flag, and that each Speak
-renderer returns non-empty text for a representative output from the module's
-`ConformanceSamples`. It then embeds every Example with the real MiniLM service
+renderer returns non-empty text for a representative output. A module with
+Speak renderers implements the small `conformance.Sampler` interface
+(`ConformanceSamples() map[string]any`) with one successful output per
+canonical Tool name. It then embeds every Example with the real MiniLM service
 and fails if an Example does not route to its own Tool. The routing part skips
 when `ROUTING_EVAL_EMBED_URL` is unset, so the normal offline suite still
 passes; CI sets it.

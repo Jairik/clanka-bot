@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/api"
+	"github.com/Jairik/clanka-bot/assistant/internal/latency"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/tools/clock"
@@ -257,5 +258,32 @@ func TestWithAPIMountsComposedHandlersBehindTheDebugGate(t *testing.T) {
 	health.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/secrets", nil))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("API route on the health listener = %d, want 404", rec.Code)
+	}
+}
+
+// TestDebugTranscriptFeedsTheActivityObserver proves the localhost typed entry
+// uses the same completion seam as voice and the Dashboard; its reply and Tool
+// call are available to the one Activity store without a second log parser.
+func TestDebugTranscriptFeedsTheActivityObserver(t *testing.T) {
+	var completed []latency.Completed
+	handler, _ := newTestServerWith(t, api.WithObserver(func(c latency.Completed) {
+		completed = append(completed, c)
+	}))
+	rec := postTranscript(t, handler, `{"text":"what time is it"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if len(completed) != 1 {
+		t.Fatalf("observer calls = %d, want 1", len(completed))
+	}
+	got := completed[0]
+	if got.Source != latency.SourceDebug || got.Path != "control_phrase" || got.Tool != "time.now" {
+		t.Fatalf("completed = %+v", got)
+	}
+	if got.Outcome != latency.OutcomeNoAudio || got.HasResponse {
+		t.Fatalf("typed entry claimed audio or a Response latency: %+v", got)
+	}
+	if got.Detail == nil || got.Detail.Reply == "" || len(got.Detail.Calls) != 1 {
+		t.Fatalf("display detail = %+v", got.Detail)
 	}
 }

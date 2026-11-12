@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/activity"
 	"github.com/Jairik/clanka-bot/assistant/internal/persona"
 	"github.com/Jairik/clanka-bot/assistant/internal/secrets"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
@@ -92,6 +93,13 @@ type Options struct {
 	// because Connect pairing and Web API auth are different grants.
 	Spotify        *spotify.Auth
 	SpotifyPairing *spotify.PairingReader
+	// Activity is the bounded recent-request store fed by the one latency
+	// completion event. The page is read-only when it is nil.
+	Activity *activity.Store
+	// Typed answers a Dashboard typed request through the normal pipeline,
+	// without speaking: main passes a reply.Session created with no speaker.
+	// When nil the Activity page still lists requests but hides the box.
+	Typed TypedResponder
 	// ProxyAllowed overrides the trusted source-address check. Production uses
 	// the default (loopback plus the container's default gateway); tests inject
 	// their own address policy.
@@ -120,9 +128,15 @@ type Handler struct {
 	personas       *persona.Service
 	spotify        *spotify.Auth
 	spotifyPairing *spotify.PairingReader
-	proxyAllowed   func(net.IP) bool
-	templates      *template.Template
-	mux            *http.ServeMux
+	activity       *activity.Store
+	typed          TypedResponder
+	// askLock serialises every typed request with a one-slot semaphore. The
+	// voice loop is already single-turn; this gives the Dashboard the same
+	// one-request-at-a-time behaviour and one pending Confirmation at a time.
+	askLock      chan struct{}
+	proxyAllowed func(net.IP) bool
+	templates    *template.Template
+	mux          *http.ServeMux
 }
 
 //go:embed templates/*.html static/*
@@ -183,6 +197,9 @@ func New(opts Options) (*Handler, error) {
 		personas:       opts.Personas,
 		spotify:        opts.Spotify,
 		spotifyPairing: opts.SpotifyPairing,
+		activity:       opts.Activity,
+		typed:          opts.Typed,
+		askLock:        make(chan struct{}, 1),
 		proxyAllowed:   opts.ProxyAllowed,
 		templates:      templates,
 		mux:            http.NewServeMux(),
@@ -197,6 +214,12 @@ func New(opts Options) (*Handler, error) {
 	}
 	h.Handle("/health", h.healthPage)
 	h.Handle("/health/panel", h.healthPanel)
+	// The Activity page lists the bounded recent-request store and hosts the
+	// typed-request box. The page and its refresh are identity-gated; the one
+	// write goes through Mutating for identity and same-origin.
+	h.Handle("/activity", h.activityPage)
+	h.Handle("/activity/recent", h.activityRecent)
+	h.Mutating("POST /activity/ask", h.activityAsk)
 	// Every Settings mutation goes through Mutating, so it inherits the
 	// Dashboard identity and the same-origin guard.
 	h.Handle("/settings", h.settingsPage)

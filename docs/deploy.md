@@ -216,6 +216,16 @@ re-synthesizes the cached Agent Filler). Connection-level settings (`http.addr`,
 is stored, but only the next process start reads it, and the page says so. See
 the README for the curl examples.
 
+The **Activity** page at `/activity` lists recent requests from a bounded
+in-memory ring fed by the same completion that writes the structured `request`
+log line. It shows the chosen route, measured stage timings, Tool calls and
+outcome; Response latency appears only when reply audio actually started. Its
+typed box runs the normal pipeline text-only (no Pi speech), including a pending
+Confirmation answered with `yes`/`no`, and shows the reply in the page. Local-only
+Tool results are visible on this authenticated page and nowhere else: the ring
+is not persisted and is never part of a model prompt, Notification or the public
+health listener.
+
 The **Voices** page at `/voices` lists built-in and custom Pocket TTS states,
 uploads a `.safetensors` state (at most 32 MB; `.pt`/`.pth` are refused),
 previews one in the browser, chooses the active voice and speech rate, and

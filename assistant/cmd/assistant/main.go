@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/activity"
 	"github.com/Jairik/clanka-bot/assistant/internal/agent"
 	"github.com/Jairik/clanka-bot/assistant/internal/announce"
 	"github.com/Jairik/clanka-bot/assistant/internal/api"
@@ -26,6 +27,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/embed"
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/lastreply"
+	"github.com/Jairik/clanka-bot/assistant/internal/latency"
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
 	"github.com/Jairik/clanka-bot/assistant/internal/namematch"
 	"github.com/Jairik/clanka-bot/assistant/internal/notify"
@@ -85,6 +87,11 @@ func run() error {
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
+
+	// One bounded, in-memory Activity ring is fed by the same latency
+	// completion that writes the structured request log. It is display-only:
+	// the Dashboard is its only reader, and Local-only results never leave it.
+	activityStore := activity.New(activity.DefaultLimit)
 
 	// One signal context covers the HTTP listeners, the voice loop and the
 	// location watch.
@@ -751,6 +758,16 @@ func run() error {
 	sessionOpts = append(sessionOpts, reply.WithSpeechGate(speechGate))
 	session := reply.New(p, speaker, playSink, filler, sessionOpts...)
 
+	// The Dashboard typed box uses the same pipeline and reply Session code
+	// with no speaker: it shows the reply in the page and never starts Pi
+	// audio. Turn gating still applies, so unprompted speech does not talk
+	// into a typed turn.
+	typedOpts := []reply.Option{reply.WithLogger(logger)}
+	if announcements != nil {
+		typedOpts = append(typedOpts, reply.WithAnnouncements(announcements))
+	}
+	typedSession := reply.New(p, nil, nil, nil, typedOpts...)
+
 	// The debug entry is only spoken when a TTS service is configured.
 	var responder api.Responder
 	if speechSpeaker != nil {
@@ -770,7 +787,7 @@ func run() error {
 			}
 			return clip.PCM, clip.Format, true
 		}
-		loop, err := newVoiceLoop(cfg, session, p, sink, announcements, wakeCue, logger)
+		loop, err := newVoiceLoop(cfg, session, p, sink, announcements, wakeCue, activityStore.Observe, logger)
 		if err != nil {
 			return err
 		}
@@ -801,6 +818,8 @@ func run() error {
 		// debug listener and on the authenticated Dashboard. The health
 		// listener never mounts this handler.
 		opts = append(opts, api.WithAPI(apiHandler))
+		// Localhost typed requests appear in the same bounded Activity list.
+		opts = append(opts, api.WithObserver(activityStore.Observe))
 		servers = append(servers, &http.Server{
 			Addr:              cfg.Debug.Addr,
 			Handler:           api.NewHandler(p, logger, true, opts...),
@@ -844,7 +863,11 @@ func run() error {
 				Path:       cfg.Spotify.PairingStatusFile,
 				StaleAfter: cfg.Spotify.StaleAfter.Duration(),
 			},
-			API: apiHandler,
+			// One recent-request ring and the text-only session; both share
+			// the pipeline, registry and settings of the voice path.
+			Activity: activityStore,
+			Typed:    typedSession,
+			API:      apiHandler,
 		})
 		if err != nil {
 			return err
@@ -873,6 +896,7 @@ func run() error {
 		"voices", len(voiceSvc.List()),
 		"personas", len(personaSvc.List()),
 		"persona", personaSvc.Personality().Name,
+		"activity_limit", activity.DefaultLimit,
 		"voice", settingsSvc.String(voicelib.KeyName),
 		"voice_rate", settingsSvc.Float(voicelib.KeyRate),
 		"voice_revision", voiceSvc.Revision(),
@@ -902,7 +926,7 @@ func run() error {
 // STT, the live wake Cue, and the shared reply Session. The pipeline is the
 // Barge-in seam that drops a waiting Confirmation, and the Announcement queue
 // stops unprompted speech as soon as a wake word starts a turn.
-func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingDropper, sink audio.Sink, announcements *announce.Queue, wakeCue func() ([]byte, audio.Format, bool), logger *slog.Logger) (*voice.Loop, error) {
+func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingDropper, sink audio.Sink, announcements *announce.Queue, wakeCue func() ([]byte, audio.Format, bool), observer latency.Observer, logger *slog.Logger) (*voice.Loop, error) {
 	captureFormat := audio.Format{Rate: cfg.Capture.Rate, Width: cfg.Capture.Width, Channels: cfg.Capture.Channels}
 	frameBytes := cfg.Capture.Rate * cfg.Capture.Width * cfg.Capture.Channels * cfg.Capture.FrameMS / 1000
 	if frameBytes <= 0 {
@@ -945,6 +969,7 @@ func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingD
 		Responder: voice.NewPipelineResponder(session, tool.DevicePi),
 		Dropper:   pending,
 		WakeCue:   wakeCue,
+		Observer:  observer,
 		Logger:    logger,
 	}
 	// Leave the seam absent rather than storing a typed nil: a text-only setup

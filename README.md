@@ -201,6 +201,15 @@ described under Sound library and Cue roles below. Its Ring section renders the
 per-kind Timer and Alarm definitions from the settings service, so a new key
 appears there without a page change.
 
+The **Secrets** page at `/secrets` lists every secret a Tool module or the
+Agent provider declares, with whether it is set, its last four characters
+(hidden for short values), the update time and the active source (`.env` or
+stored). Each row offers Replace and, for a stored value, Clear. The forms are
+write-only: no value is prefilled, echoed after a rejected submission or
+returned anywhere. Clearing a stored value exposes the `.env` bootstrap
+immediately and the page says which source is active. A new module declaration
+appears without a page change.
+
 ```sh
 # List every effective value and the layer it came from.
 curl -s localhost:8081/api/settings
@@ -294,7 +303,9 @@ same name, and only metadata comes back: whether it is set, the last four
 characters (only for values of at least 12 characters), the update date and the
 active source (`store` or `env`). Values never appear in the settings API,
 logs or error responses. The database file is mode 0600, but it is unencrypted:
-back it up accordingly.
+back it up accordingly. The authenticated Dashboard's `/secrets` page renders
+the same metadata for every declared name with replace and clear forms; it
+never reveals or prefills a value.
 
 ```sh
 # Store or rotate the OpenRouter key. The value is never returned.

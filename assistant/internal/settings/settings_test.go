@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -277,3 +278,87 @@ var errTestInvalid = &testError{}
 type testError struct{}
 
 func (*testError) Error() string { return "test: invalid value" }
+
+func TestObserverReportsCommittedChangesOnly(t *testing.T) {
+	svc, _, _ := openSettings(t,
+		settings.String("agent.filler", "One moment."),
+		settings.Strings("agent.request_prefixes", []string{"ask the agent"}),
+	)
+	ctx := context.Background()
+
+	var mu sync.Mutex
+	var batches [][]string
+	svc.SetObserver(func(keys []string) {
+		mu.Lock()
+		batches = append(batches, append([]string(nil), keys...))
+		mu.Unlock()
+	})
+
+	// Every successful write reports its keys; batching keeps the pair atomic.
+	if _, err := svc.Set(ctx, "agent.filler", "Hold on."); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if err := svc.SetMany(ctx, map[string]any{
+		"agent.filler":           "Just a second.",
+		"agent.request_prefixes": []string{"ask the agent", "agent"},
+	}); err != nil {
+		t.Fatalf("SetMany: %v", err)
+	}
+	if _, err := svc.Reset(ctx, "agent.filler"); err != nil {
+		t.Fatalf("Reset: %v", err)
+	}
+	if err := svc.ResetMany(ctx, "agent.request_prefixes", "agent.filler"); err != nil {
+		t.Fatalf("ResetMany: %v", err)
+	}
+
+	mu.Lock()
+	got := batches
+	mu.Unlock()
+	want := [][]string{
+		{"agent.filler"},
+		{"agent.filler", "agent.request_prefixes"},
+		{"agent.filler"},
+		{"agent.filler", "agent.request_prefixes"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("observer batches = %v, want %v", got, want)
+	}
+
+	// A failed type check leaves the snapshot and the observer untouched.
+	before := len(got)
+	if _, err := svc.Set(ctx, "agent.filler", 42); err == nil {
+		t.Fatal("Set accepted a non-string value")
+	}
+	mu.Lock()
+	after := len(batches)
+	mu.Unlock()
+	if after != before {
+		t.Fatalf("observer saw %d batches after a rejected write, want %d", after, before)
+	}
+}
+
+func TestEmptyStringListStaysAnEmptyList(t *testing.T) {
+	svc, _, _ := openSettings(t, settings.Strings("wording.list", []string{}))
+	value, ok := svc.Get("wording.list")
+	if !ok {
+		t.Fatal("wording.list is not defined")
+	}
+	if list, ok := value.Value.([]string); !ok || list == nil || len(list) != 0 {
+		t.Fatalf("default = %#v, want a non-nil empty list", value.Value)
+	}
+
+	if _, err := svc.Set(context.Background(), "wording.list", []string{}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	value, _ = svc.Get("wording.list")
+	if list, ok := value.Value.([]string); !ok || list == nil || len(list) != 0 {
+		t.Fatalf("after Set = %#v, want a non-nil empty list", value.Value)
+	}
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	if !strings.Contains(string(raw), `"value":[]`) {
+		t.Fatalf("JSON = %s, want an empty array", raw)
+	}
+}

@@ -457,6 +457,32 @@ func (s *Service) Clip(role Role) (Clip, bool) {
 	return s.clipFor(role, settingsSvc.String(Key(role)))
 }
 
+// ClipName resolves one indexed library sound by name for a per-Alert Ring
+// override (#57). It deliberately accepts only a library name, never a path:
+// voice and Dashboard overrides store a name from the shared matcher. The same
+// role cap as a role assignment is applied, so a file replaced by a longer one
+// is refused rather than trimmed.
+func (s *Service) ClipName(role Role, name string) (Clip, bool) {
+	if s == nil || !Valid(role) {
+		return Clip{}, false
+	}
+	entry, ok := s.Find(name)
+	if !ok {
+		return Clip{}, false
+	}
+	clip, err := s.load(entry)
+	if err != nil {
+		s.logger.Warn("per-alert sound unreadable", "role", string(role), "sound", entry.Name, "error", err.Error())
+		return Clip{}, false
+	}
+	if clip.Duration > Cap(role) {
+		s.logger.Warn("per-alert sound over cap",
+			"role", string(role), "sound", entry.Name, "duration", clip.Duration.String(), "cap", Cap(role).String())
+		return Clip{}, false
+	}
+	return clip, true
+}
+
 // DefaultClip resolves a role's config-layer value before the live settings
 // service exists, so a Timer recovered at startup still rings its sound.
 func (s *Service) DefaultClip(cfg Config, role Role) (Clip, bool) {

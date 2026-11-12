@@ -119,6 +119,10 @@ _Avoid_: Countdown
 A Scheduled alert set for a clock time, possibly repeating on chosen days, that rings until stopped or snoozed.
 _Avoid_: Wake-up, timer
 
+**Alarm override**:
+A per-Alarm choice of Ring sound, volume or ramp that replaces the kind defaults for that Alarm only. `alarm.set` accepts it, `alarm.update` changes it, and the Dashboard Scheduled alerts page writes the same row; an empty value falls back to `sounds.alarm_ring` and `ring.alarm.*`.
+_Avoid_: Custom alarm, alarm theme
+
 **Snooze**:
 The request to silence a ringing Alarm and ring it again after `ring.alarm.snooze` (default 9 minutes). On a Timer it acts as stop.
 _Avoid_: Nap, delay

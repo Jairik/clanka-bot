@@ -62,15 +62,16 @@ func WithDebugAllowlist(allowed func(net.IP) bool) Option {
 // debug handler. It is ignored when the debug entry is disabled, so the public
 // health listener can never serve settings writes. The mounted handler has no
 // authentication of its own; the debug source allowlist guards it here, and
-// #47 will mount the same handler behind Tailscale identity.
+// the authenticated Dashboard mounts the same handler behind Tailscale
+// identity.
 func WithSettings(handler http.Handler) Option {
 	return WithAPI(handler)
 }
 
 // WithAPI mounts any composable API handler under /api/ on the debug handler.
 // main passes one mux that serves the settings, Tool-override and secrets
-// subtrees together; #47 mounts the same handler behind Tailscale identity.
-// The handler is absent when the debug entry is disabled, so the public health
+// subtrees together; the authenticated Dashboard mounts the same handler. The
+// handler is absent when the debug entry is disabled, so the public health
 // listener can never serve it.
 func WithAPI(handler http.Handler) Option {
 	return func(s *server) { s.api = handler }

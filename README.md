@@ -71,9 +71,12 @@ cached, so it plays the moment a request is routed to the Agent path; an empty
 Filler is a startup error. The same cached phrase covers a slow Fast path Tool:
 if nothing has been said 1.5 seconds after you stop talking, it plays once. A
 request never plays it twice, and it never talks over an answer.
-Both published ports are bound to the host loopback only. The debug listener
-binds all interfaces inside the container (see `docker-compose.yml`), so the
-host port mapping is what keeps it local.
+All three published ports are bound to the host loopback only. The debug and
+Dashboard listeners bind all interfaces inside the container (see
+`docker-compose.yml`), so the host port mapping and their source-address checks
+are what keep them local. The Dashboard is disabled until
+`ASSISTANT_DASHBOARD_OWNER` is set and is meant to be reached through
+`tailscale serve`; see `docs/deploy.md`.
 
 ### Voice
 
@@ -163,9 +166,9 @@ stored Permission may only tighten (`read` → `act` → `confirm`), never loose
 and Local-only is code-declared and cannot be overridden.
 
 The JSON API is mounted under `/api/` on the localhost debug listener, never on
-the public health listener. The future authenticated Dashboard (#47) mounts the
-same handler behind Tailscale identity. Settings, Tool overrides and Secrets
-share that handler.
+the public health listener. The authenticated Dashboard mounts the same handler
+behind Tailscale identity. Settings, Tool overrides and Secrets share that
+handler.
 
 ```sh
 # List every effective value and the layer it came from.
@@ -199,8 +202,8 @@ curl -s -X PUT localhost:8081/api/secrets/OPENROUTER_API_KEY \
 curl -s -X DELETE localhost:8081/api/secrets/OPENROUTER_API_KEY
 ```
 
-The secrets route is part of the same localhost-only `/api/` handler as
-settings; the authenticated Dashboard mounts it behind Tailscale identity.
+The secrets route is part of the same `/api/` handler as settings; it is mounted
+only on the localhost debug listener and behind the authenticated Dashboard.
 
 ### Audio
 

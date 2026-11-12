@@ -131,9 +131,6 @@ func productionModules(module tool.Module) []tool.Module {
 	return append(modules, module)
 }
 
-// metadataProblems checks the declarations and renderers of the module's Tools.
-// Registration already rejects an unset Local-only flag or an unknown
-// Permission; those failures arrive through the module's register problem.
 // secretProblems checks a module's required-secret declarations. The seam is
 // optional, but a declaration that is set must be usable as both a store key
 // and an environment variable name.
@@ -162,6 +159,9 @@ func secretProblems(module tool.Module) []string {
 	return problems
 }
 
+// metadataProblems checks the declarations and renderers of the module's Tools.
+// Registration already rejects an unset Local-only flag or an unknown
+// Permission; those failures arrive through the module's register problem.
 func metadataProblems(module tool.Module, registry *tool.Registry, names []string) []string {
 	var problems []string
 

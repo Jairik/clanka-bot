@@ -132,7 +132,8 @@ func TestBadRequiredSecretsFails(t *testing.T) {
 	wantProblem(t, problems, `RequiredSecrets repeats "SHARED_KEY"`)
 }
 
-// TestMisroutedExampleFails proves an Example that does not reach its own Tool// on the real semantic Fast path fails clearly. It duplicates time.now's first
+// TestMisroutedExampleFails proves an Example that does not reach its own Tool
+// on the real semantic Fast path fails clearly. It duplicates time.now's first
 // Example, so both Tools score 1.0 and the margin rejects the tie.
 func TestMisroutedExampleFails(t *testing.T) {
 	endpoint := strings.TrimSpace(os.Getenv(EmbedURLEnv))

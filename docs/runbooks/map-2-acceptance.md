@@ -22,6 +22,10 @@ Run the sections in order. Later sections assume the earlier ones passed.
 
 ## Common prerequisites
 
+- The one-time setup (Dashboard identity, `tailscale serve`, GitHub tokens, ntfy
+  topic, Spotify app, OpenRouter key, deploy, Spotify sign-in) is scripted:
+  run `scripts/map-2-setup-wizard.sh` from the root of a clean `integration/map-2`
+  checkout. It writes only `.env` and is safe to re-run.
 - The stack is deployed per [docs/deploy.md](../deploy.md) (`make deploy`), and
   `docker compose ps` shows every service as running or healthy.
 - You have the Pi's Tailscale name and your Tailscale login (`tailscale status --json`).

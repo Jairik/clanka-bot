@@ -7,6 +7,7 @@ import (
 
 	"github.com/Jairik/clanka-bot/assistant/internal/announce"
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
+	"github.com/Jairik/clanka-bot/assistant/internal/store"
 	"gopkg.in/yaml.v3"
 )
 
@@ -24,6 +25,9 @@ type Deps struct {
 	Speaker Speaker
 	// Audio drives the speaker volume and playback; nil makes the audio Tools unavailable.
 	Audio AudioControls
+	// Store is the assistant's one SQLite database (ADR-0003); nil means a
+	// module cannot persist state.
+	Store *store.Store
 	// Announcements queues speech the user did not just ask for. A ringing
 	// Timer or Alarm is not an Announcement; nil drops it.
 	Announcements *announce.Queue

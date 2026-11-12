@@ -21,8 +21,19 @@ type Config struct {
 		Enabled bool   `yaml:"enabled"`
 		Addr    string `yaml:"addr"`
 	} `yaml:"debug"`
+	Data struct {
+		// Dir holds the one SQLite database (ADR-0003). Compose mounts the
+		// named volume here; local runs use ./data.
+		Dir string `yaml:"dir"`
+	} `yaml:"data"`
 	Tools struct {
 		DefaultTimeout Duration `yaml:"default_timeout"`
+		// Disabled is the config layer for a Tool's enabled setting. Names are
+		// canonical Tool names such as weather.current.
+		Disabled []string `yaml:"disabled"`
+		// Permissions is the config layer for Tool Permission levels. An entry
+		// may only tighten the code-declared level.
+		Permissions map[string]string `yaml:"permissions"`
 		// Sections holds each Tool module's tools.<name> block verbatim; the
 		// module decodes its own typed config over its code defaults.
 		Sections map[string]yaml.Node `yaml:",inline"`
@@ -152,6 +163,7 @@ func Default() Config {
 	cfg.HTTP.Addr = ":8080"
 	cfg.Debug.Enabled = true
 	cfg.Debug.Addr = "127.0.0.1:8081"
+	cfg.Data.Dir = "data"
 	cfg.Tools.DefaultTimeout = Duration(2 * time.Second)
 	cfg.Embed.URL = "http://embed:8085"
 	cfg.Embed.Model = "sentence-transformers/all-MiniLM-L6-v2"
@@ -243,6 +255,9 @@ func applyEnv(cfg *Config) error {
 		}
 		cfg.Debug.Enabled = enabled
 	}
+	if v := os.Getenv("ASSISTANT_DATA_DIR"); v != "" {
+		cfg.Data.Dir = v
+	}
 	if v := os.Getenv("ASSISTANT_EMBED_URL"); v != "" {
 		cfg.Embed.URL = v
 	}
@@ -300,8 +315,26 @@ func (c Config) validate() error {
 	if c.Debug.Enabled && c.Debug.Addr == "" {
 		return fmt.Errorf("config: debug.addr is required when the debug entry is enabled")
 	}
+	if strings.TrimSpace(c.Data.Dir) == "" {
+		return fmt.Errorf("config: data.dir is required")
+	}
 	if c.Tools.DefaultTimeout.Duration() <= 0 {
 		return fmt.Errorf("config: tools.default_timeout must be positive")
+	}
+	for _, name := range c.Tools.Disabled {
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("config: tools.disabled must not contain an empty Tool name")
+		}
+	}
+	for name, level := range c.Tools.Permissions {
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("config: tools.permissions must not contain an empty Tool name")
+		}
+		switch level {
+		case "read", "act", "confirm":
+		default:
+			return fmt.Errorf("config: tools.permissions.%s must be read, act or confirm, got %q", name, level)
+		}
 	}
 	if c.Embed.URL == "" {
 		return fmt.Errorf("config: embed.url is required")

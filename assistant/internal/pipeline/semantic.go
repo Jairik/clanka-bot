@@ -253,9 +253,12 @@ func (r *SemanticRouter) resolveArgs(name, transcript string) (json.RawMessage, 
 }
 
 // FastPathEligible reports whether the semantic router may send an utterance
-// to this Tool: read/act Permission, a Speak renderer and either Extract or no
-// required input fields. The conformance suite uses the same rule.
+// to this Tool: enabled, read/act Permission, a Speak renderer and either
+// Extract or no required input fields. The conformance suite uses the same rule.
 func FastPathEligible(info tool.Info) bool {
+	if !info.Enabled {
+		return false
+	}
 	if len(info.Examples) == 0 || !info.HasSpeak {
 		return false
 	}

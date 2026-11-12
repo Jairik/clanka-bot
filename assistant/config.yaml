@@ -12,9 +12,21 @@ debug:
   # published port is already bound to 127.0.0.1 on the host.
   addr: "127.0.0.1:8081"
 
+data:
+  # The one SQLite database (ADR-0003): settings overrides today, secrets and
+  # alerts later. Compose mounts the assistant-data volume at /app/data and
+  # sets ASSISTANT_DATA_DIR; local runs default to ./data.
+  dir: "data"
+
 tools:
   # Applied to Tools that do not declare their own timeout.
   default_timeout: 2s
+  # Config layer for Tool overrides. A stored override wins over these, and
+  # these win over the code defaults; DELETE /api/tools/<name> returns here.
+  # Permissions may only tighten the code-declared level; unknown names fail
+  # startup.
+  disabled: []
+  permissions: {}
   # Each Tool module reads its own tools.<name> block; an omitted key or block
   # uses the code defaults shown here.
   weather:

@@ -2,8 +2,9 @@
 // non-speech sound played for one role: wake detection, a Timer or Alarm Ring,
 // a Reminder lead-in or the Unavailable message. The library combines the
 // built-in chime that ships in the image with WAV files dropped into the data
-// volume's sounds/ folder; role assignments are ordinary live settings, so a
-// Dashboard or voice write applies on the next play (ADR-0001).
+// volume's sounds/ folder, including uploads canonicalised by the Dashboard;
+// role assignments are ordinary live settings, so a Dashboard or voice write
+// applies on the next play (ADR-0001).
 package sound
 
 import (
@@ -171,6 +172,9 @@ type Service struct {
 	settings *settings.Service
 	sink     Sink
 	cache    map[string]cachedClip
+
+	// importMu serialises uploads so name selection and publish cannot race.
+	importMu sync.Mutex
 }
 
 // cachedClip keeps one decoded file until its mtime or size changes.
@@ -360,6 +364,65 @@ func (s *Service) LibraryDir() string {
 		return ""
 	}
 	return s.libraryDir
+}
+
+// Find returns an indexed library entry by name, without accepting paths. The
+// Dashboard's browser and Pi previews use this narrower lookup so an HTTP name
+// can never reach an arbitrary file in the data volume.
+func (s *Service) Find(name string) (Sound, bool) {
+	if s == nil {
+		return Sound{}, false
+	}
+	trimmed := strings.TrimSpace(name)
+	if trimmed == "" || looksLikePath(trimmed) {
+		return Sound{}, false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if strings.EqualFold(trimmed, BuiltinChime) {
+		return s.chime, true
+	}
+	for indexedName, entry := range s.sounds {
+		if strings.EqualFold(indexedName, trimmed) {
+			return entry, true
+		}
+	}
+	return Sound{}, false
+}
+
+// Audio returns one library sound as a canonical WAV for browser playback.
+// The built-in chime has no file, so it is encoded from the in-memory PCM.
+func (s *Service) Audio(name string) ([]byte, Sound, error) {
+	entry, ok := s.Find(name)
+	if !ok {
+		return nil, Sound{}, fmt.Errorf("sound: %q is not in the sound library", name)
+	}
+	clip, err := s.load(entry)
+	if err != nil {
+		return nil, Sound{}, fmt.Errorf("sound: read %q: %w", entry.Name, err)
+	}
+	return audio.EncodeWAV(clip.PCM, clip.Format), entry, nil
+}
+
+// PlayName plays one library sound once through the bound sink. It is the Pi
+// preview seam: the caller normally queues it, so it cannot cut a reply. No
+// role cap applies because a preview is not an assignment.
+func (s *Service) PlayName(ctx context.Context, name string) error {
+	entry, ok := s.Find(name)
+	if !ok {
+		return fmt.Errorf("sound: %q is not in the sound library", name)
+	}
+	clip, err := s.load(entry)
+	if err != nil {
+		return fmt.Errorf("sound: read %q: %w", entry.Name, err)
+	}
+	s.mu.RLock()
+	sink := s.sink
+	s.mu.RUnlock()
+	if sink == nil {
+		return nil
+	}
+	return clip.Play(ctx, sink)
 }
 
 // Clip resolves a role through the live setting and returns playback-ready

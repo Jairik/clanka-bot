@@ -196,6 +196,11 @@ future sound setting) appear automatically, and connection settings carry a
 Restart required badge. The forms work without JavaScript and use htmx for the
 same-page fragment update when it is available.
 
+The **Sounds** page at `/sounds` is the upload/library/role/preview surface
+described under Sound library and Cue roles below. Its Ring section renders the
+per-kind Timer and Alarm definitions from the settings service, so a new key
+appears there without a page change.
+
 ```sh
 # List every effective value and the layer it came from.
 curl -s localhost:8081/api/settings
@@ -293,15 +298,31 @@ Non-secret settings live in [`assistant/config.yaml`](assistant/config.yaml).
 A **Cue** is a non-speech sound with a fixed role: `wake`, `timer_ring`,
 `alarm_ring`, `reminder` (before the Reminder is spoken) and `error` (before the
 Unavailable message). The built-in `chime` is synthesised in Go and ships in the
-image; the current wake sound is still its default. Any `.wav` file dropped into
-`data/sounds/` is indexed at startup with its name, duration and first-added
-date, using pure-Go decoding (ADR-0001, no ffmpeg).
+image. Any `.wav` file dropped into `data/sounds/` is indexed at startup with
+its name, duration and first-added date, using pure-Go decoding (ADR-0001, no
+ffmpeg).
+
+The Dashboard **Sounds** page (`/sounds`) uploads `.wav` or `.mp3` files up to
+10 MB. The assistant decodes them in Go (MP3 via `hajimehoshi/go-mp3` v0.3.4,
+Apache-2.0, pinned in `go.mod`; no runtime ffmpeg), downmixes
+to mono, resamples to the speaker/capture format, normalises loudness and stores
+one canonical PCM16 WAV in `data/sounds/`. A failed or undecodable upload leaves
+no file or index row. Uploads are not length-capped: the role caps below apply
+when a sound is assigned, so one long recording can still serve a 60 s Ring.
 
 Each role is a live setting named `sounds.<role>`:
 `GET /api/settings` lists them and `PUT` changes one. A value is a library name
 such as `birds`, a path under the data volume such as `sounds/birds.wav`, a
 built-in name, or `none` to stay silent. `config.yaml` may set the same values
-for a headless setup; a stored override wins.
+for a headless setup; a stored override wins. The Sounds page shows the library,
+assigns roles and edits the per-kind Timer/Alarm Ring settings that the Ring
+modules define.
+
+A browser preview streams the canonical WAV from `GET /sounds/audio/<name>`
+(authenticated, `audio/wav`, Range supported). **Play on Pi** queues the sound
+through the same Announcement queue as unprompted speech: it waits for the
+current reply, a pending Confirmation and a ringing alert, and a new turn
+cancels it so a reply is never cut.
 
 ```sh
 # Assign a dropped file to the error Cue, then reset to config.yaml.
@@ -312,10 +333,9 @@ curl -s -X DELETE localhost:8081/api/settings/sounds.error
 
 Length caps are enforced when a sound is assigned and never trim the file:
 `wake` 1.0 s, `reminder`/`error` 3 s, Rings 60 s. A longer sound is rejected
-with the cap in the error. This ticket wires the wake and error Cues; Timers and
-Alarms still use the spoken alert, and Reminders do not exist yet. The sound
-seam for those consumers is `tool.Deps.Cues`; upload, MP3 decoding and the
-Dashboard Sounds page belong to #56.
+with the cap in the error. The wake and error Cues are wired; Timers, Alarms and
+Reminders consume the same library through `tool.Deps.Cues` as the Ring and
+Reminder tickets land.
 
 ### Latency
 

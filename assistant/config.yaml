@@ -155,6 +155,9 @@ playback:
 # voice write stores the same live setting and wins over this layer. Length
 # caps are checked on assignment and a longer sound is rejected, never trimmed:
 # wake 1.0 s, reminder/error 3 s, timer_ring/alarm_ring 60 s.
+# Cue role assignments. A value is a built-in name, a library sound uploaded
+# from the Dashboard, a WAV path under the data volume, or none. The Dashboard
+# Sounds page also uploads canonical WAVs into data/sounds/.
 sounds:
   wake: chime
   timer_ring: chime

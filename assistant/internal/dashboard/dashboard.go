@@ -16,6 +16,7 @@ import (
 
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
+	"github.com/Jairik/clanka-bot/assistant/internal/sound"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/internal/toolpolicy"
 	"github.com/Jairik/clanka-bot/assistant/tools"
@@ -63,6 +64,11 @@ type Options struct {
 	// either is nil.
 	Settings   *settings.Service
 	ToolPolicy *toolpolicy.Policy
+	// Sounds backs the Sounds page: the library, uploads and previews use the
+	// same service the Cue roles read. PreviewQueue schedules a Pi preview
+	// between turns; without one the handler plays synchronously.
+	Sounds       *sound.Service
+	PreviewQueue PreviewQueue
 	// ProxyAllowed overrides the trusted source-address check. Production uses
 	// the default (loopback plus the container's default gateway); tests inject
 	// their own address policy.
@@ -82,6 +88,8 @@ type Handler struct {
 	location      Location
 	settings      *settings.Service
 	tools         *toolpolicy.Policy
+	sounds        *sound.Service
+	previews      PreviewQueue
 	proxyAllowed  func(net.IP) bool
 	now           func() time.Time
 	templates     *template.Template
@@ -128,6 +136,8 @@ func New(opts Options) (*Handler, error) {
 		location:      opts.Location,
 		settings:      opts.Settings,
 		tools:         opts.ToolPolicy,
+		sounds:        opts.Sounds,
+		previews:      opts.PreviewQueue,
 		proxyAllowed:  opts.ProxyAllowed,
 		now:           now,
 		templates:     templates,
@@ -146,6 +156,16 @@ func New(opts Options) (*Handler, error) {
 	// Every Settings mutation goes through Mutating, so it inherits the
 	// Dashboard identity and the same-origin guard.
 	h.Handle("/settings", h.settingsPage)
+	// The Sounds page owns uploads, role assignment, Ring settings and the two
+	// previews. Every write goes through Mutating for identity and same-origin.
+	h.Handle("/sounds", h.soundsPage)
+	h.Handle("/sounds/audio/{name}", h.soundsAudio)
+	h.Mutating("POST /sounds/upload", h.soundsUpload)
+	h.Mutating("POST /sounds/roles/{role}", h.soundsRoleSave)
+	h.Mutating("POST /sounds/roles/{role}/reset", h.soundsRoleReset)
+	h.Mutating("POST /sounds/values/{key}", h.soundsValueSave)
+	h.Mutating("POST /sounds/values/{key}/reset", h.soundsValueReset)
+	h.Mutating("POST /sounds/preview/{name}", h.soundsPreview)
 	h.Mutating("POST /settings/tools/{name}", h.settingsToolSave)
 	h.Mutating("POST /settings/tools/{name}/reset", h.settingsToolReset)
 	h.Mutating("POST /settings/values/{key}", h.settingsValueSave)

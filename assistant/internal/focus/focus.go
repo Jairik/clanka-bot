@@ -113,6 +113,18 @@ func (r *Registry) Claim(p Priority, holder Holder) *Claim {
 	return &Claim{registry: r, priority: p, token: r.seq}
 }
 
+// Held reports whether anything currently holds Focus at priority p. The
+// Announcement queue uses it to wait while a Ring is audible; it reads the
+// slot only and never calls a holder.
+func (r *Registry) Held(p Priority) bool {
+	if r == nil || p < Ring || p > Music {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.holders[p].holder != nil
+}
+
 // HandleIntent offers intent to the holders in fixed priority order and
 // returns the first handled result plus its optional spoken text. It reports
 // false when nothing holds Focus or no holder declares the intent.

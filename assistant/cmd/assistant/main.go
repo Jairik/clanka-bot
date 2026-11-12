@@ -42,6 +42,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/tz"
 	"github.com/Jairik/clanka-bot/assistant/internal/voice"
 	"github.com/Jairik/clanka-bot/assistant/internal/voicelib"
+	"github.com/Jairik/clanka-bot/assistant/internal/voicesample"
 	"github.com/Jairik/clanka-bot/assistant/internal/wording"
 	"github.com/Jairik/clanka-bot/assistant/internal/wyoming"
 	"github.com/Jairik/clanka-bot/assistant/tools"
@@ -384,8 +385,12 @@ func run() error {
 	voiceSvc.Bind(settingsSvc)
 	voiceCtx, cancelVoice := context.WithTimeout(ctx, 5*time.Minute)
 	var voiceProbe voicelib.Probe
+	var voicePreview dashboard.VoicePreview
 	if ttsClient != nil {
 		voiceProbe = voicelib.NewTTSProbe(ttsClient, cfg.TTS.Timeout.Duration())
+		// The browser preview synthesizes one bounded phrase and never opens
+		// the audio sink or changes the persistent active voice.
+		voicePreview = voicesample.New(ttsClient, cfg.TTS.Timeout.Duration())
 	}
 	if err := voiceSvc.Rescan(voiceCtx, voiceProbe); err != nil {
 		// A library problem must not stop speech: the built-in default still
@@ -674,6 +679,9 @@ func run() error {
 			Secrets:       secretsSvc,
 			Sounds:        cues,
 			PreviewQueue:  previewQueue,
+			Voices:        voiceSvc,
+			VoiceProbe:    voiceProbe,
+			VoicePreview:  voicePreview,
 			API:           apiHandler,
 		})
 		if err != nil {

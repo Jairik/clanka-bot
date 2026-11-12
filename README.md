@@ -193,15 +193,36 @@ files are never baked into an image or committed. `voice.dir` may name another
 volume path, and `voice.tts_dir` is the same folder's path inside `tts`.
 
 Only `.safetensors` is accepted: `.pt`, `.pth` and other pickle-backed torch
-files are refused and never opened. A copied file is at most 32 MB and is
-checked in two stages on the next library rescan:
+files are refused and never opened. A file is at most 32 MB and is checked in
+two stages, whether it arrives through the Dashboard or a manual copy:
 
 1. A pure-Go header check: six `self_attn/cache` `F32 [2,1,N,16,64]` tensors
    with `1 <= N <= 400`, six `F32`-paired `I64 [1]` `offset` tensors, and the
    optional six `pad` tensors (12 or 18 entries), with contiguous in-file data
-   offsets. This is the same check #64 reuses before accepting an upload.
+   offsets. This is a header parse only; a pickle payload never runs.
 2. A real TTS model smoke test (`voice-validate`) that loads the state and
    generates audio. The model revision it passed against is recorded.
+
+The Dashboard's **Voices** page at `/voices` uploads a state without shell
+access. The upload is copied to a hidden staging file on the voices volume, the
+header is checked before any model call, and TTS validates that staging file
+with `cache=false` so the temporary path is never kept in the model-process
+cache. Only then is the file renamed into place; the final path's cache entry is
+evicted first, the library rescans, and the recorded revision makes the voice
+selectable. A failure—bad extension, oversize body, malformed header, model
+rejection or a rescan error—leaves no file and no index row, and restores the
+previous export when replacing. Replacement needs the explicit **Replace** tick
+and is atomic; an existing file is never overwritten silently.
+
+The page lists every built-in and custom entry with its status (`Built-in`,
+`Ready`, `Stale`, `Unvalidated`), validation revision and dates. A stale entry
+says to re-export it on the desktop and disables selection and preview until it
+passes again. Each custom entry also has an optional source/consent note: it is
+stored and shown escaped, but recorded only, never enforced. The browser
+preview is an authenticated GET that synthesizes one fixed short phrase at the
+current rate and returns WAV; it never opens the Pi speaker and never changes
+`voice.name`. Selection and the rate form write the same live settings the
+voice Tools use, so the cached Agent Filler is re-synthesized in the background.
 
 `voice.set`, `voice.list`, `voice.current` and `voice.rate` are Local-only
 Tools; `voice.set` resolves the spoken name through the shared name matcher.

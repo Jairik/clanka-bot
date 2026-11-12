@@ -216,6 +216,15 @@ re-synthesizes the cached Agent Filler). Connection-level settings (`http.addr`,
 is stored, but only the next process start reads it, and the page says so. See
 the README for the curl examples.
 
+The **Voices** page at `/voices` lists built-in and custom Pocket TTS states,
+uploads a `.safetensors` state (at most 32 MB; `.pt`/`.pth` are refused),
+previews one in the browser, chooses the active voice and speech rate, and
+records an optional source/consent note. An upload is staged and header-checked
+before TTS is called, then smoke-tested and published atomically; a rejected
+file leaves the library unchanged. Previews synthesize one short phrase to WAV
+and never play on the Pi speaker or change the active voice. See the README for
+the validation and rollback sequence.
+
 The **Secrets** page at `/secrets` lists every declared secret (Tool modules
 and the active Agent provider) with `set`, `last4`, update time and source
 (`.env` or stored). Replace and Clear post to the same authenticated Dashboard;
@@ -278,14 +287,17 @@ container health field.
       database or secrets. Back it up with `assistant-data`.
       `docker compose down -v` deletes both: back them up first if the
       settings, sounds, voices or secrets matter.
-- [ ] Custom voices: copy pre-exported Pocket TTS `.safetensors` files into the
-      voices volume, for example
-      `docker compose cp ./jarvis.safetensors assistant:/app/data/voices/`.
-      Only `.safetensors` is accepted, at most 32 MB; `.pt`/`.pth` pickle files
-      are refused. Restart `assistant` (or use the #64 upload page later) to
-      rescan: each new file gets a header check and a real model smoke test, and
-      the revision it passed against is recorded. The active voice warm-loads;
-      others load on first use.
+- [ ] Custom voices: upload pre-exported Pocket TTS `.safetensors` states on
+      the Dashboard's `/voices` page, or copy them into the voices volume for
+      example `docker compose cp ./jarvis.safetensors
+      assistant:/app/data/voices/` and restart `assistant`. Only
+      `.safetensors` is accepted, at most 32 MB; `.pt`/`.pth` pickle files are
+      refused. The Dashboard path stages the file, runs the header check before
+      any model call, smoke-tests it, records the revision it passed against,
+      and publishes it atomically; it also flags a stale state for re-export and
+      records the optional consent note. A manual copy is picked up by a
+      restart, which runs the same checks during the library rescan. The active
+      voice warm-loads; others load on first use.
 - [ ] Reboot once and confirm the stack comes back without a login.
 
 ## Image tags and rollback

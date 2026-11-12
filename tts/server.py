@@ -125,11 +125,19 @@ class _Session:
             return True
 
         if event.type == "voice-validate":
-            await self.validate_voice(str(event.data.get("path", "")))
+            # cache=False is used by uploads: the state is validated from a
+            # temporary path and must not stay in the process cache after the
+            # file is renamed.
+            cache = event.data.get("cache", True) is not False
+            await self.validate_voice(str(event.data.get("path", "")), cache)
             return True
 
         if event.type == "voice-warm":
             await self.warm_voice(str(event.data.get("voice", "")))
+            return True
+
+        if event.type == "voice-forget":
+            await self.forget_voice(str(event.data.get("voice", "")))
             return True
 
         if Synthesize.is_type(event.type):
@@ -245,7 +253,7 @@ class _Session:
             await self.write(AudioStop().event())
             self.sent_audio = True
 
-    async def validate_voice(self, path: str) -> None:
+    async def validate_voice(self, path: str, cache: bool = True) -> None:
         """Load a copied state and run a real model smoke test.
 
         The model is not thread-safe, so this shares the synthesis lock. The
@@ -253,11 +261,23 @@ class _Session:
         """
         async with self.server.lock:
             try:
-                revision = await asyncio.to_thread(self.server.engine.validate_voice, path)
+                revision = await asyncio.to_thread(
+                    self.server.engine.validate_voice, path, cache
+                )
                 payload = {"ok": True, "revision": revision, "error": ""}
             except Exception as exc:
                 payload = {"ok": False, "revision": "", "error": str(exc)}
         await self.write(Event(type="voice-validated", data=payload))
+
+    async def forget_voice(self, voice: str) -> None:
+        """Drop one cached state before a replacement is validated."""
+        async with self.server.lock:
+            try:
+                await asyncio.to_thread(self.server.engine.forget_voice, voice)
+                payload = {"ok": True, "error": ""}
+            except Exception as exc:
+                payload = {"ok": False, "error": str(exc)}
+        await self.write(Event(type="voice-forgotten", data=payload))
 
     async def warm_voice(self, voice: str) -> None:
         async with self.server.lock:

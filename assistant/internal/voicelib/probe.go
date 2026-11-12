@@ -48,6 +48,28 @@ func (p *TTSProbe) Validate(ctx context.Context, remotePath string) (string, err
 	return p.Client.ValidateVoice(ctx, remotePath)
 }
 
+// ValidateEphemeral proves a staging file generates audio without adding the
+// temporary path to the TTS process cache. Uploads call this before the final
+// rename, so validation never leaves a dead path cached forever.
+func (p *TTSProbe) ValidateEphemeral(ctx context.Context, remotePath string) (string, error) {
+	if p == nil || p.Client == nil {
+		return "", nil
+	}
+	ctx, cancel := p.withTimeout(ctx)
+	defer cancel()
+	return p.Client.ValidateVoiceEphemeral(ctx, remotePath)
+}
+
+// Forget releases one cached state path before a replacement is validated.
+func (p *TTSProbe) Forget(ctx context.Context, remotePath string) error {
+	if p == nil || p.Client == nil {
+		return nil
+	}
+	ctx, cancel := p.withTimeout(ctx)
+	defer cancel()
+	return p.Client.ForgetVoice(ctx, remotePath)
+}
+
 // withTimeout adds a bound only when the caller has not set an earlier one.
 func (p *TTSProbe) withTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
 	if p.Timeout <= 0 {

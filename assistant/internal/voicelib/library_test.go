@@ -47,15 +47,21 @@ func bindSettings(t *testing.T, svc *voicelib.Service, st *store.Store) *setting
 	return settingsSvc
 }
 
-// fakeProbe records validations and returns a fixed revision.
+// fakeProbe records validations and returns a fixed revision. It implements
+// both upload extensions: ephemeral staging validation and cache eviction for
+// replacement.
 type fakeProbe struct {
-	revision    string
-	revisionErr error
-	validateErr error
+	revision     string
+	revisionErr  error
+	validateErr  error
+	ephemeralErr error
 
-	mu        sync.Mutex
-	validated []string
-	calls     map[string]int
+	mu             sync.Mutex
+	validated      []string
+	ephemeral      []string
+	forgotten      []string
+	validatedCache []bool
+	calls          map[string]int
 }
 
 func (p *fakeProbe) Revision(context.Context) (string, error) {
@@ -70,10 +76,34 @@ func (p *fakeProbe) Validate(_ context.Context, path string) (string, error) {
 	}
 	p.calls[path]++
 	p.validated = append(p.validated, path)
+	p.validatedCache = append(p.validatedCache, true)
 	if p.validateErr != nil {
 		return "", p.validateErr
 	}
 	return p.revision, nil
+}
+
+func (p *fakeProbe) ValidateEphemeral(_ context.Context, path string) (string, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.calls == nil {
+		p.calls = map[string]int{}
+	}
+	p.calls[path]++
+	p.validated = append(p.validated, path)
+	p.ephemeral = append(p.ephemeral, path)
+	p.validatedCache = append(p.validatedCache, false)
+	if p.ephemeralErr != nil {
+		return "", p.ephemeralErr
+	}
+	return p.revision, nil
+}
+
+func (p *fakeProbe) Forget(_ context.Context, path string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.forgotten = append(p.forgotten, path)
+	return nil
 }
 
 func TestInspectStateAcceptsRealExportShapeWithAndWithoutPads(t *testing.T) {
@@ -322,6 +352,60 @@ func TestRescanMarksUnchangedVoiceStaleOnNewRevision(t *testing.T) {
 	}
 	if voice, _ := svc.Get("jarvis"); voice.Stale || !voice.Ready() {
 		t.Fatalf("jarvis after rollback = %+v", voice)
+	}
+}
+
+func TestNewCleansCrashStagingFiles(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{".upload-123.safetensors", ".replace-456.bak"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("left by a crash"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	visible := filepath.Join(dir, "jarvis.safetensors")
+	if err := voicelibtest.WriteValid(visible, 2, true); err != nil {
+		t.Fatal(err)
+	}
+	openLibrary(t, dir)
+	for _, name := range []string{".upload-123.safetensors", ".replace-456.bak"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("staging file %q survived New: %v", name, err)
+		}
+	}
+	if _, err := os.Stat(visible); err != nil {
+		t.Fatalf("visible state was removed: %v", err)
+	}
+}
+
+func TestRescanSkipsHiddenStagingAndBackupFiles(t *testing.T) {
+	dir := t.TempDir()
+	if err := voicelibtest.WriteValid(filepath.Join(dir, "jarvis.safetensors"), 2, true); err != nil {
+		t.Fatal(err)
+	}
+	// An upload in flight and a replacement backup are both hidden; a scan
+	// must never index either as a selectable voice.
+	if err := voicelibtest.WriteValid(filepath.Join(dir, ".upload-123.safetensors"), 2, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := voicelibtest.WriteValid(filepath.Join(dir, ".replace-456.bak"), 2, true); err != nil {
+		t.Fatal(err)
+	}
+	svc, _ := openLibrary(t, dir)
+	probe := &fakeProbe{revision: "rev-1"}
+	if err := svc.Rescan(context.Background(), probe); err != nil {
+		t.Fatalf("Rescan: %v", err)
+	}
+	if _, ok := svc.Get(".upload-123"); ok {
+		t.Fatal("rescan indexed an upload staging file")
+	}
+	if _, ok := svc.Get(".replace-456"); ok {
+		t.Fatal("rescan indexed a replacement backup")
+	}
+	if voice, ok := svc.Get("jarvis"); !ok || !voice.Ready() {
+		t.Fatalf("jarvis = %+v, %v", voice, ok)
+	}
+	if len(probe.validated) != 1 {
+		t.Fatalf("validations = %v, want only jarvis", probe.validated)
 	}
 }
 

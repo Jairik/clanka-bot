@@ -106,6 +106,43 @@ func TestValidateVoiceReportsSuccessAndFailure(t *testing.T) {
 	})
 }
 
+func TestValidateVoiceEphemeralSendsTheNoCacheFlag(t *testing.T) {
+	addr := fakeServer(t, func(conn net.Conn) {
+		req := readWireEvent(t, bufio.NewReader(conn))
+		if req.Type != "voice-validate" {
+			t.Errorf("type = %q", req.Type)
+		}
+		data := dataMap(t, req)
+		if got := data["path"]; got != "/voices/.upload-1.safetensors" {
+			t.Errorf("path = %v", got)
+		}
+		if got := data["cache"]; got != false {
+			t.Errorf("cache = %v, want false", got)
+		}
+		writeWireEvent(t, conn, "voice-validated", map[string]any{"ok": true, "revision": "rev-1", "error": ""})
+	})
+	revision, err := wyoming.NewClient(addr).ValidateVoiceEphemeral(context.Background(), "/voices/.upload-1.safetensors")
+	if err != nil || revision != "rev-1" {
+		t.Fatalf("ValidateVoiceEphemeral = %q, %v", revision, err)
+	}
+}
+
+func TestForgetVoiceClearsOnePath(t *testing.T) {
+	addr := fakeServer(t, func(conn net.Conn) {
+		req := readWireEvent(t, bufio.NewReader(conn))
+		if req.Type != "voice-forget" {
+			t.Errorf("type = %q", req.Type)
+		}
+		if got := dataMap(t, req)["voice"]; got != "/voices/jarvis.safetensors" {
+			t.Errorf("voice = %v", got)
+		}
+		writeWireEvent(t, conn, "voice-forgotten", map[string]any{"ok": true, "error": ""})
+	})
+	if err := wyoming.NewClient(addr).ForgetVoice(context.Background(), "/voices/jarvis.safetensors"); err != nil {
+		t.Fatalf("ForgetVoice: %v", err)
+	}
+}
+
 func TestWarmVoiceReportsSuccess(t *testing.T) {
 	addr := fakeServer(t, func(conn net.Conn) {
 		r := bufio.NewReader(conn)

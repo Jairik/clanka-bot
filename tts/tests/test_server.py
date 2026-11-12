@@ -36,6 +36,8 @@ class FakeEngine:
         self.voices_used = []
         self.rates = []
         self.validated = []
+        self.validated_cache = []
+        self.forgotten = []
         self.warmed = []
 
     def state_for(self, voice):
@@ -51,13 +53,18 @@ class FakeEngine:
             else:
                 yield chunk
 
-    def validate_voice(self, path):
+    def validate_voice(self, path, cache=True):
         if not path.endswith(".safetensors"):
             raise ValueError("only .safetensors voice states are supported")
         if "broken" in path:
             raise RuntimeError("model could not load the state")
         self.validated.append(path)
+        self.validated_cache.append(cache)
         return self.revision
+
+    def forget_voice(self, voice):
+        self.forgotten.append(voice)
+        return voice
 
     def warm_voice(self, voice):
         self.warmed.append(voice)
@@ -257,6 +264,48 @@ def test_voice_validate_reports_success_and_failure_without_dropping_the_connect
 
     run(engine, body)
     assert engine.validated == ["/voices/jarvis.safetensors"]
+
+
+def test_voice_validate_can_skip_the_cache_for_a_staged_upload():
+    engine = FakeEngine()
+
+    async def body(port):
+        async with AsyncTcpClient("127.0.0.1", port, connect_timeout=2, read_timeout=2) as client:
+            from wyoming.event import Event
+
+            await client.write_event(
+                Event(
+                    type="voice-validate",
+                    data={"path": "/voices/.upload-123.safetensors", "cache": False},
+                )
+            )
+            event = await client.read_event()
+            assert event is not None
+            assert event.type == "voice-validated"
+            assert event.data["ok"] is True
+
+    run(engine, body)
+    assert engine.validated == ["/voices/.upload-123.safetensors"]
+    assert engine.validated_cache == [False]
+
+
+def test_voice_forget_clears_a_cached_state():
+    engine = FakeEngine()
+
+    async def body(port):
+        async with AsyncTcpClient("127.0.0.1", port, connect_timeout=2, read_timeout=2) as client:
+            from wyoming.event import Event
+
+            await client.write_event(
+                Event(type="voice-forget", data={"voice": "/voices/jarvis.safetensors"})
+            )
+            event = await client.read_event()
+            assert event is not None
+            assert event.type == "voice-forgotten"
+            assert event.data["ok"] is True
+
+    run(engine, body)
+    assert engine.forgotten == ["/voices/jarvis.safetensors"]
 
 
 def test_voice_warm_loads_the_selected_state():

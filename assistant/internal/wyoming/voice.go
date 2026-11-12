@@ -60,9 +60,21 @@ func (c *Client) VoiceInfo(ctx context.Context) (VoiceLibrary, error) {
 
 // ValidateVoice asks TTS to load one custom state (a path inside its read-only
 // voices mount) and run a real short synthesis. It returns the revision the
-// file passed against. A malformed file or a model load failure is an error,
-// so the library records the file as unvalidated rather than usable.
+// file passed against. The state stays cached for later synthesis; a rescan
+// uses this form.
 func (c *Client) ValidateVoice(ctx context.Context, path string) (string, error) {
+	return c.validateVoice(ctx, path, true)
+}
+
+// ValidateVoiceEphemeral runs the same smoke test without adding the state to
+// the TTS process cache. Uploads validate a hidden staging path and then rename
+// it; caching that temp path would keep a dead entry for the process lifetime.
+func (c *Client) ValidateVoiceEphemeral(ctx context.Context, path string) (string, error) {
+	return c.validateVoice(ctx, path, false)
+}
+
+// validateVoice sends the smoke-test request with the cache choice.
+func (c *Client) validateVoice(ctx context.Context, path string, cache bool) (string, error) {
 	if strings.TrimSpace(path) == "" {
 		return "", errors.New("wyoming: voice path is required")
 	}
@@ -71,7 +83,12 @@ func (c *Client) ValidateVoice(ctx context.Context, path string) (string, error)
 		return "", err
 	}
 	defer conn.Close()
-	if err := writeEvent(conn, c.timeout, "voice-validate", map[string]any{"path": path}, nil); err != nil {
+	data := map[string]any{"path": path}
+	if !cache {
+		// Older services ignore the extra field and default to caching.
+		data["cache"] = false
+	}
+	if err := writeEvent(conn, c.timeout, "voice-validate", data, nil); err != nil {
 		return "", err
 	}
 	ev, err := readEvent(conn, c.readTimeout)
@@ -93,6 +110,42 @@ func (c *Client) ValidateVoice(ctx context.Context, path string) (string, error)
 	}
 	revision, _ := ev.Data["revision"].(string)
 	return strings.TrimSpace(revision), nil
+}
+
+// ForgetVoice drops one cached voice state, named by a built-in name or a path
+// inside the TTS voices mount. Uploads call it before validating a replacement:
+// the cache is keyed by path, so without this a re-upload would validate the
+// old bytes still resident in the model process.
+func (c *Client) ForgetVoice(ctx context.Context, voice string) error {
+	if strings.TrimSpace(voice) == "" {
+		return errors.New("wyoming: voice is required")
+	}
+	conn, err := c.dial(ctx)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if err := writeEvent(conn, c.timeout, "voice-forget", map[string]any{"voice": voice}, nil); err != nil {
+		return err
+	}
+	ev, err := readEvent(conn, c.readTimeout)
+	if err != nil {
+		return fmt.Errorf("wyoming: voice forget: %w", err)
+	}
+	if ev.Type == "error" {
+		return errorEvent(ev)
+	}
+	if ev.Type != "voice-forgotten" {
+		return fmt.Errorf("wyoming: voice forget got %q, want voice-forgotten", ev.Type)
+	}
+	ok, _ := ev.Data["ok"].(bool)
+	if text, _ := ev.Data["error"].(string); !ok || strings.TrimSpace(text) != "" {
+		if strings.TrimSpace(text) == "" {
+			text = "voice cache was not cleared"
+		}
+		return &ServerError{Text: text, Code: "voice-forget-failed"}
+	}
+	return nil
 }
 
 // WarmVoice loads and caches one voice at TTS startup, so the first reply in

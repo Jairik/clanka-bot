@@ -136,6 +136,11 @@ type Service struct {
 	voices   map[string]Voice
 	revision string
 	settings *settings.Service
+
+	// importMu serialises upload staging, publish and rollback. The scan skips
+	// dot-prefixed staging files, but two same-name imports would still race
+	// their backup renames without this lock.
+	importMu sync.Mutex
 }
 
 // New opens the library and creates its folder. It does not scan or validate
@@ -160,6 +165,10 @@ func New(ctx context.Context, st *store.Store, cfg Config) (*Service, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	// A crash between staging and publish can leave hidden temp or backup
+	// files. No upload can be in flight before New returns, so remove them now;
+	// the scanner would ignore them, but they would otherwise stay forever.
+	cleanupStaging(absolute, logger)
 	ttsDir := strings.TrimSpace(cfg.TTSDir)
 	if ttsDir == "" {
 		ttsDir = "/voices"

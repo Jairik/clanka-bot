@@ -9,6 +9,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/announce"
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
+	"github.com/Jairik/clanka-bot/assistant/internal/namematch"
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
 	"github.com/Jairik/clanka-bot/assistant/internal/tz"
 	"gopkg.in/yaml.v3"
@@ -44,6 +45,10 @@ type Deps struct {
 	// Zone resolves the live timezone for clock-time Alarms and Reminders.
 	// Duration Timers do not need it; nil means UTC.
 	Zone *tz.Service
+	// Names is the one shared matcher for spoken library names: sounds,
+	// voices and Spotify playlists. It reads the live threshold per lookup and
+	// never forces a guess; nil means a module cannot resolve spoken names.
+	Names *namematch.Matcher
 }
 
 // SecretResolver is the shared seam a module uses to read a declared secret.

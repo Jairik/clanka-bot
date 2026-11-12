@@ -25,6 +25,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/embed"
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
+	"github.com/Jairik/clanka-bot/assistant/internal/namematch"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	"github.com/Jairik/clanka-bot/assistant/internal/reply"
 	"github.com/Jairik/clanka-bot/assistant/internal/secrets"
@@ -181,6 +182,12 @@ func run() error {
 	// modules register (they capture Deps), but it only becomes live once the
 	// settings service below is created and bound.
 	zone := tz.New(os.Getenv("TZ"), logger)
+	// One matcher serves sound, voice and playlist names. Its threshold is
+	// bound to the settings service below, after the definitions are built;
+	// until then it uses the config value as its fallback.
+	nameThreshold := namematch.NewThreshold(baseCfg.NameMatch.Threshold)
+	embedClient := embed.NewClient(cfg.Embed.URL, cfg.Embed.Model)
+	names := namematch.New(embedClient, namematch.Config{Threshold: nameThreshold.Get})
 	deps := tool.Deps{
 		Logger:        logger,
 		Location:      locSvc.Current,
@@ -190,6 +197,7 @@ func run() error {
 		Announcements: announcements,
 		Focus:         focusRegistry,
 		Zone:          zone,
+		Names:         names,
 	}
 	if speechSpeaker != nil {
 		deps.Speaker = speechSpeaker
@@ -220,6 +228,7 @@ func run() error {
 	defs := append(connections.Definitions(config.Default(), baseCfg), wordingSetup.Definitions...)
 	defs = append(defs, toolDefs...)
 	defs = append(defs, tz.Definition(baseCfg.Timezone))
+	defs = append(defs, namematch.Definition(baseCfg.NameMatch.Threshold))
 	// The model name is a live setting like the wording. Its default comes
 	// from the active provider's code default when that provider is built in;
 	// otherwise the configured model is both the default and the config layer.
@@ -235,6 +244,9 @@ func run() error {
 	// Bind after the service exists so the timezone is live overridable: the
 	// Dashboard's settings handler and any voice Tool write the same service.
 	zone.Bind(settingsSvc)
+	// The matcher reads this per lookup, so a Dashboard change applies without
+	// a restart and without a second settings observer.
+	nameThreshold.Bind(settingsSvc)
 	if zone.IsUTC() {
 		// UTC is a safe default, not a guess: warn once so a silent one-hour
 		// error in a clock-time Alarm is visible at startup.
@@ -324,7 +336,7 @@ func run() error {
 	// Compute Tool example vectors from the effective Examples (a stored
 	// override may already exist). A dead embed service only disables semantic
 	// matching, leaving Control phrases and the Agent path working.
-	semantic := pipeline.NewSemanticRouter(registry, embed.NewClient(cfg.Embed.URL, cfg.Embed.Model), pipeline.SemanticConfig{
+	semantic := pipeline.NewSemanticRouter(registry, embedClient, pipeline.SemanticConfig{
 		Threshold: cfg.Semantic.Threshold,
 		Margin:    cfg.Semantic.Margin,
 		Joiners:   cfg.Semantic.Joiners,

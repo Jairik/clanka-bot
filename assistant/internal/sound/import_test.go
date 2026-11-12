@@ -85,6 +85,15 @@ func TestImportCanonicalizesWAVAndIndexesDuration(t *testing.T) {
 	if got := libraryWAVs(t, f.sounds.LibraryDir()); len(got) != 1 || got[0] != "My-Birds.wav" {
 		t.Fatalf("library files = %v, want My-Birds.wav only", got)
 	}
+	entries, err := os.ReadDir(f.sounds.LibraryDir())
+	if err != nil {
+		t.Fatalf("ReadDir: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".") {
+			t.Fatalf("temp file %q left behind", entry.Name())
+		}
+	}
 	found, ok := f.sounds.Find("my-birds")
 	if !ok || found.Duration != entry.Duration {
 		t.Fatalf("Find = %+v, ok=%v", found, ok)

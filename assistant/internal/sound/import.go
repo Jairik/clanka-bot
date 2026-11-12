@@ -23,10 +23,10 @@ var reservedNames = []string{BuiltinChime, None}
 
 // Import validates and canonicalises one uploaded WAV or MP3 into the library.
 // The upload is bounded at 10 MB and streamed to a temporary file; the
-// canonical WAV is written beside the library and renamed into place only after
-// decoding succeeds. A failed import leaves neither a library file nor an index
-// row. Role length caps are deliberately not checked here: they apply when a
-// sound is assigned.
+// canonical WAV is written beside the library as a hidden temp and renamed into
+// place only after decoding succeeds. A failed import leaves neither a library
+// file nor an index row. Role length caps are deliberately not checked here:
+// they apply when a sound is assigned.
 func (s *Service) Import(ctx context.Context, src io.Reader, filename string) (Sound, error) {
 	if s == nil || s.db == nil {
 		return Sound{}, errors.New("sound: library is not open")
@@ -64,17 +64,34 @@ func (s *Service) Import(ctx context.Context, src io.Reader, filename string) (S
 		return Sound{}, fmt.Errorf("sound: close upload: %w", err)
 	}
 
-	// Pick a free name before decoding so the canonical file can be renamed
-	// into place without another upload taking it.
+	staged, err := os.CreateTemp(s.libraryDir, ".publish-*")
+	if err != nil {
+		return Sound{}, fmt.Errorf("sound: create publish spool: %w", err)
+	}
+	stagedPath := staged.Name()
+	defer os.Remove(stagedPath)
+	if err := staged.Close(); err != nil {
+		return Sound{}, fmt.Errorf("sound: close publish spool: %w", err)
+	}
+	// Canonicalize creates its output exclusively, so reserve only the name.
+	if err := os.Remove(stagedPath); err != nil {
+		return Sound{}, fmt.Errorf("sound: reset publish spool: %w", err)
+	}
+
+	if _, err := audio.Canonicalize(ctx, uploadPath, stagedPath, s.format); err != nil {
+		s.logger.Warn("sound upload rejected", "file", filepath.Base(filename), "error", err.Error())
+		return Sound{}, uploadFailure(filename, err)
+	}
+
+	// Pick the name after decoding so an external drop during a long decode
+	// keeps its file and this upload takes the next free name.
 	name := s.availableName(filename)
 	output := filepath.Join(s.libraryDir, name+".wav")
 	if !within(s.libraryDir, output) {
 		return Sound{}, fmt.Errorf("sound: refusing to publish outside %s", s.libraryDir)
 	}
-
-	if _, err := audio.Canonicalize(ctx, uploadPath, output, s.format); err != nil {
-		s.logger.Warn("sound upload rejected", "file", filepath.Base(filename), "error", err.Error())
-		return Sound{}, uploadFailure(filename, err)
+	if err := os.Rename(stagedPath, output); err != nil {
+		return Sound{}, fmt.Errorf("sound: publish %s: %w", name, err)
 	}
 
 	if err := s.Rescan(ctx); err != nil {

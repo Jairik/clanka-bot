@@ -766,11 +766,14 @@ func TestAlertsListsAndCancelsOneOffAlarmAndRingingTimer(t *testing.T) {
 		}
 		seen := map[string]string{}
 		for _, event := range events {
-			if event.SourceID == fired.ID || event.SourceID == timerItem.ID {
-				seen[event.SourceID] = string(event.State) + "/" + event.EndedBy
+			if event.Kind == "alarm" && event.SourceID == fired.ID {
+				seen["alarm/"+event.SourceID] = string(event.State) + "/" + event.EndedBy
+			}
+			if event.Kind == "timer" && event.SourceID == timerItem.ID {
+				seen["timer/"+event.SourceID] = string(event.State) + "/" + event.EndedBy
 			}
 		}
-		return seen[fired.ID] == "stopped/cancel" && seen[timerItem.ID] == "stopped/cancel"
+		return seen["alarm/"+fired.ID] == "stopped/cancel" && seen["timer/"+timerItem.ID] == "stopped/cancel"
 	})
 
 	rec = f.get("/alerts")

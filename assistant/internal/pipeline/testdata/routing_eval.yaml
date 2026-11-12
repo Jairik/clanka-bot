@@ -1092,6 +1092,14 @@ negatives:
   - open that link and read it to me
   - summarise the article I sent you
   - what does the article say about the election
+  # Agent-path GitHub requests: the GitHub Tools are AgentOnly, so a Fast path
+  # match here would be a real misroute to some other Tool.
+  - open an issue on clanka-bot about the timers
+  - create a github issue for the broken timer
+  - any pull requests waiting on me
+  - list pull requests that need my review
+  - what are my github notifications
+  - check my github notifications
 
 # Compound requests ask for more than one thing. They are kept separate so
 # the evaluation can report compound handling on its own.
@@ -1118,6 +1126,7 @@ compounds:
   - what can you do and set a timer
   - are you ok and what time is it
   - send that to my phone and set a timer for five minutes
+  - any pull requests waiting on me and what time is it
 # Focus cases: the same shared word must reach whatever holds Focus. Each case
 # names the holders present, the phrase's intent, and which holder wins. An
 # empty handled_by means no present holder declares the intent, so the utterance

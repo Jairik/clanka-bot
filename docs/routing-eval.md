@@ -9,8 +9,8 @@ misroute from the request log.
 
 - `assistant/internal/pipeline/testdata/routing_eval.yaml` — the labelled
   oracle. It has at least 20 positives for each Fast path Tool (exact counts in
-  the results table), 171 plain
-  negatives, and 30 compound requests (exact counts in the results table).
+  the results table), 177 plain
+  negatives, and 31 compound requests (exact counts in the results table).
 - `assistant/internal/pipeline/testdata/routing_baseline.yaml` — the recorded
   Map 1 totals the real-MiniLM evaluation must not fall below.
 - `assistant/internal/pipeline/routing_eval_test.go` —
@@ -178,16 +178,17 @@ above the 0.95 precision floor. Run against
 | `system.status` | 20 | 10 | 0 | 10 | 0 | 10 | 1.00 | 0.50 |
 | **Total** | **804** | **559** | **30** | **529** | **0** | **245** | **1.00** | **0.6953** |
 
-These numbers are from the merged tree after #66 and #67: the #57 per-Alarm
-overrides, #59 quick-wins, #60 utility Tools, #62 Notifications, #65 Persona,
-#53 Alarm and #54 Reminder additions. Precision is 1.00 with no negative or
-compound misroute, and every Tool clears the 0.95 floor. `alarm.update` adds 23
-positives at 1.00 recall; `alarm.set` carries the per-Alarm override phrasings
-(30 positives) and keeps precision 1.00, with its ambiguous variants falling to
-the Agent path. The #59 Tools add 60 positives and three negative/compound
-groups, and the Persona Tools add 60 positives and 11 plain negatives.
-`assistant.repeat` and `assistant.help` are Local-only, so their recall only
-exercises the semantic router and never the Agent path. `persona.switch`
+These numbers are from the merged tree after #66, #67 and #68: the #57
+per-Alarm overrides, #59 quick-wins, #60 utility Tools, #62 Notifications, #65
+Persona, #53 Alarm, #54 Reminder and the Agent-only web/GitHub Tools. Precision
+is 1.00 with no negative or compound misroute, and every Tool clears the 0.95
+floor. `alarm.update` adds 23 positives at 1.00 recall; `alarm.set` carries the
+per-Alarm override phrasings (30 positives) and keeps precision 1.00, with its
+ambiguous variants falling to the Agent path. The #59 Tools add 60 positives
+and three negative/compound groups, and the Persona Tools add 60 positives and
+11 plain negatives. `assistant.repeat` and `assistant.help` are Local-only, so
+their recall only exercises the semantic router and never the Agent path.
+`persona.switch`
 resolves all 20 positives, so "switch to the GLaDOS persona" reaches the Fast
 path; the list/current questions are lexically close to each other, so their
 short forms are exact Control phrases and the paraphrases fall to the Agent
@@ -207,18 +208,21 @@ is low because the city token dominates the embedding: known phrasings route,
 and an unlisted city reaches the same Tool through the Agent path, which then
 uses the local city table rather than a guess.
 
-Plain negatives: **0 of 171** reached the Fast path, including the utility
+Plain negatives: **0 of 177** reached the Fast path, including the utility
 non-requests such as an unsupported event, a currency conversion, a bare
 "roll out the red carpet" and an open-ended pick, plus the reminder-, phone-,
-repeat-, web-lookup- and page-read-shaped non-requests. Compounds: **0 of 30** reached the Fast path,
+repeat-, web-lookup-, page-read- and GitHub-shaped non-requests. Compounds: **0 of 31** reached the Fast path,
 including mixed utility requests such as calculating a percentage and
 converting miles. Every Tool is exercised by the semantic
 router at least twice, so no Tool clears the floor only because the Control
 phrase table happened to cover its positives. The twelve Agent-only web
-negatives cover open-ended lookups and page reads; `web.search` and `web.fetch`
-are Agent-only, so their coverage is negative direct routing plus the Agent
-integration tests in `internal/agent`, never a Fast path positive. The timer
-and list confusions are
+negatives cover open-ended lookups and page reads, and the six GitHub negatives
+cover issue writes, review-requested pull requests and notification reads.
+`web.search`, `web.fetch` and every `github.*` Tool are Agent-only, so their
+coverage is negative direct routing plus the Agent integration tests
+(`internal/agent` for web search/fetch and
+`internal/pipeline/github_confirmation_test.go` for the GitHub confirmation
+journey), never a Fast path positive. The timer and list confusions are
 the main reason recall is conservative; those requests go to the Agent path
 rather than risking a wrong timer action.
 

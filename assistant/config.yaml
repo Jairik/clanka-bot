@@ -91,6 +91,25 @@ tools:
       max_chars: 4000
       # Redirect chain bound; every hop is revalidated.
       max_redirects: 5
+  github:
+    # Agent-path GitHub Tools. The token is a write-only secret, never here.
+    # issue_create and pr_list work with a fine-grained PAT; notifications are
+    # the exception because GitHub's notifications API only accepts a classic
+    # token (see README.md "GitHub").
+    base_url: "https://api.github.com"
+    # One HTTP request, including reading the response body.
+    timeout: 4s
+    # The operator target when the model omits repo. No repository is
+    # hardcoded in the generic Tool logic; this is the only place the default
+    # lives. An empty value means the model must supply a repo every time.
+    default_repo: "Jairik/clanka-bot"
+    # issue_create refuses any repository not listed here before any HTTP
+    # write. An empty list refuses every issue write.
+    allowed_repos: ["Jairik/clanka-bot"]
+    # Default and maximum item counts for pr_list and notifications. The
+    # maximum is also a prompt-size bound.
+    results: 10
+    max_results: 20
   timer:
     alert_text: "Your timer is done."
   voice:
@@ -107,7 +126,7 @@ embed:
 
 # Semantic Fast path tuning from the #26 routing evaluation. The corpus is
 # internal/pipeline/testdata/routing_eval.yaml (804 positives, at least 20 per
-# Tool, 171 negatives and 30 compounds) run against
+# Tool, 177 negatives and 31 compounds) run against
 # sentence-transformers/all-MiniLM-L6-v2. At these values every Tool has
 # precision 1.00 against the confirmed 0.95 per-Tool floor, overall recall is
 # 0.6953, and no negative or compound reaches the Fast path. Recall is

@@ -633,6 +633,8 @@ func run() error {
 	// The error Cue plays before an Agent-path Unavailable message. Other
 	// consumers come from the same library via tool.Deps.Cues.
 	sessionOpts = append(sessionOpts, reply.WithCues(cues))
+	// The error Cue follows the same quiet gain as the Unavailable message.
+	sessionOpts = append(sessionOpts, reply.WithCueScale(quietSvc.Clip))
 	// The Filler is read once per turn from the live source, so a re-synthesized
 	// phrase is heard from the next request onward.
 	sessionOpts = append(sessionOpts, reply.WithFillerSource(wordingMgr))

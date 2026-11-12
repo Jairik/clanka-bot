@@ -74,6 +74,8 @@ type Session struct {
 	// is read once at turn start so a Quiet hours change applies to the next
 	// request, never mid-sentence.
 	volumeSource func() int
+	// cueScale applies the same quiet gain to a fixed-role Cue.
+	cueScale func(sound.Clip) sound.Clip
 }
 
 // Option configures a Session.
@@ -99,6 +101,13 @@ func WithAnnouncements(a Announcer) Option {
 // before an Unavailable message; the same seam serves later consumers.
 func WithCues(cues CueSource) Option {
 	return func(s *Session) { s.cues = cues }
+}
+
+// WithCueScale applies the quiet software gain to a fixed-role Cue before it
+// plays, so the Unavailable cue follows quiet.volume with the Unavailable
+// message. main passes Quiet hours' Clip; a nil scale leaves Cues unchanged.
+func WithCueScale(scale func(sound.Clip) sound.Clip) Option {
+	return func(s *Session) { s.cueScale = scale }
 }
 
 // WithFocus makes a reply turn take Focus while it speaks, so a shared "stop"
@@ -259,6 +268,9 @@ func (s *Session) ask(ctx context.Context, req tool.Request, transcript string, 
 		// player, so the two can never overlap or reverse order.
 		if text != "" && reply.Unavailable && s.cues != nil && s.sink != nil {
 			if clip, ok := s.cues.Clip(sound.RoleError); ok {
+				if s.cueScale != nil {
+					clip = s.cueScale(clip)
+				}
 				player.play(item{cue: &clip, sentenceEnd: true})
 			}
 		}

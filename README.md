@@ -184,7 +184,7 @@ curl -s -X POST localhost:8081/debug/announce \
 Quiet hours will hold and release the same queue; nothing is spoken while a
 hold is on.
 
-### Quiet hours
+#### Quiet hours
 
 Quiet hours is one daily window in the effective `timezone` (an end earlier
 than the start crosses midnight), a timed do-not-disturb period, and an

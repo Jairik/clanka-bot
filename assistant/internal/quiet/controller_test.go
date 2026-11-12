@@ -273,3 +273,22 @@ func TestConcurrentEnqueueWhileReleasing(t *testing.T) {
 		t.Fatalf("queue still holds %d items", queue.Len())
 	}
 }
+
+func TestTimedDNDHoldsAndReleasesOnItsOwn(t *testing.T) {
+	fixture := newFixture(t, quiet.Config{Enabled: false, Start: "22:30", End: "07:00", Volume: 35}, utc(2026, 11, 12, 12, 0), time.UTC)
+	if _, err := fixture.service.StartDND(context.Background(), 2*time.Hour); err != nil {
+		t.Fatalf("StartDND: %v", err)
+	}
+	rec := newRecorder()
+	queue := announce.New(rec, nil, announce.WithHoldSummary())
+	t.Cleanup(queue.Close)
+	controller := quiet.NewController(fixture.service, queue, nil).WithInterval(5 * time.Millisecond)
+	controller.Start(context.Background())
+	t.Cleanup(controller.Close)
+
+	queue.Enqueue("A held reminder.")
+	expectNoEvent(t, rec)
+
+	fixture.clock.Set(utc(2026, 11, 12, 14, 0))
+	expectEvent(t, rec, "say:A held reminder.")
+}

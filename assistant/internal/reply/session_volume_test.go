@@ -9,6 +9,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/audio"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	"github.com/Jairik/clanka-bot/assistant/internal/reply"
+	"github.com/Jairik/clanka-bot/assistant/internal/sound"
 	"github.com/Jairik/clanka-bot/assistant/internal/speech"
 )
 
@@ -112,5 +113,51 @@ func TestReplyVolumeSourceAppliesToTheFiller(t *testing.T) {
 	}
 	if speechGains, _ := speaker.values(); len(speechGains) == 0 || speechGains[0] != 40 {
 		t.Fatalf("reply gains = %v, want the reply at 40", speechGains)
+	}
+}
+
+// pcmSink records the PCM written to it, so a cue's software volume is visible.
+type pcmSink struct {
+	mu  sync.Mutex
+	pcm []byte
+}
+
+func (s *pcmSink) Open(context.Context, audio.Format) (io.WriteCloser, error) {
+	return &pcmWriter{sink: s}, nil
+}
+
+type pcmWriter struct{ sink *pcmSink }
+
+func (w *pcmWriter) Write(p []byte) (int, error) {
+	w.sink.mu.Lock()
+	w.sink.pcm = append(w.sink.pcm, p...)
+	w.sink.mu.Unlock()
+	return len(p), nil
+}
+
+func (w *pcmWriter) Close() error { return nil }
+
+func TestCueScaleAppliesTheQuietGainToTheUnavailableCue(t *testing.T) {
+	sink := &pcmSink{}
+	cues := &fakeCues{
+		clip: sound.Clip{PCM: []byte{0xe8, 0x03}, Format: audio.Format{Rate: 16000, Width: 2, Channels: 1}},
+		ok:   true,
+	}
+	session := reply.New(cueReply(), &gainSpeaker{}, sink, nil,
+		reply.WithCues(cues),
+		reply.WithCueScale(func(clip sound.Clip) sound.Clip {
+			// The same shape quiet.Service.Clip returns at 50%.
+			clip.PCM = []byte{0xf4, 0x01}
+			return clip
+		}),
+	)
+	if _, err := session.Ask(context.Background(), request(), "ask the agent"); err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	sink.mu.Lock()
+	got := append([]byte(nil), sink.pcm...)
+	sink.mu.Unlock()
+	if len(got) != 2 || got[0] != 0xf4 || got[1] != 0x01 {
+		t.Fatalf("cue PCM = %v, want the scaled clip", got)
 	}
 }

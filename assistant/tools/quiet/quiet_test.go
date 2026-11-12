@@ -10,6 +10,7 @@ import (
 	quietcore "github.com/Jairik/clanka-bot/assistant/internal/quiet"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
+	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/tools/quiet"
 )
 
@@ -237,6 +238,31 @@ func TestExtractOffDNDAwake(t *testing.T) {
 	for _, utterance := range []string{"turn off quiet hours", "set quiet hours from 10 to 7", "play some music"} {
 		if _, ok := awake.Extract(utterance); ok {
 			t.Errorf("awake Extract(%q) matched", utterance)
+		}
+	}
+}
+
+func TestEveryQuietToolIsActAndLocalOnly(t *testing.T) {
+	reg := tool.NewRegistry(2 * time.Second)
+	if err := quiet.NewModule().Register(reg, tool.Deps{}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	for _, name := range []string{quiet.SetName, quiet.OffName, quiet.DNDName, quiet.AwakeName} {
+		info, ok := reg.Info(name)
+		if !ok {
+			t.Fatalf("%s is not registered", name)
+		}
+		if info.Permission != tool.PermissionAct {
+			t.Errorf("%s Permission = %q, want act", name, info.Permission)
+		}
+		if !info.LocalOnly {
+			t.Errorf("%s is not LocalOnlyYes", name)
+		}
+		if !info.HasSpeak || !info.HasExtract {
+			t.Errorf("%s must Speak and Extract to stay on the Fast path", name)
+		}
+		if len(info.Examples) < 8 {
+			t.Errorf("%s has %d Examples, want a useful set", name, len(info.Examples))
 		}
 	}
 }

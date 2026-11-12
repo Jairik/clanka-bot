@@ -226,11 +226,13 @@ control_phrases:
   "time": time.now
   # Playback and timer controls are single words, which embed poorly, so they
   # are matched exactly instead. "louder" calls volume_set with no arguments,
-  # which means one step up. "stop", "pause" and "cancel" are shared intents:
-  # they reach a ringing alert, the current reply or music before any Tool.
+  # which means one step up. "stop", "pause", "cancel" and "snooze" are shared
+  # intents: they reach a ringing alert, the current reply or music before any
+  # Tool. Snooze on a Timer acts as stop; #53 gives an Alarm its real snooze.
   "stop": stop
   "pause": pause
   "cancel": cancel
+  "snooze": snooze
   "louder": audio.volume_set
   # The voice library questions are short and semantically close to each
   # other, so these fixed phrasings route exactly instead of relying on the

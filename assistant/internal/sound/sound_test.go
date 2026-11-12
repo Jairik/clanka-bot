@@ -368,6 +368,30 @@ func TestLiveAssignmentChangesTheNextClip(t *testing.T) {
 	}
 }
 
+func TestDefaultClipResolvesConfigBeforeBind(t *testing.T) {
+	f := newFixture(t, sound.Config{})
+	writeLibraryWAV(t, f.sounds.LibraryDir(), "birds.wav", 400*time.Millisecond)
+	if err := f.sounds.Rescan(context.Background()); err != nil {
+		t.Fatalf("Rescan: %v", err)
+	}
+
+	// An empty config value uses the built-in chime, exactly like the setting.
+	chime, ok := f.sounds.DefaultClip(sound.Config{}, sound.RoleTimerRing)
+	if !ok || !bytes.Equal(chime.PCM, audio.Chime(cueFormat.Rate)) {
+		t.Fatal("default Timer Ring did not resolve the built-in chime")
+	}
+	birds, ok := f.sounds.DefaultClip(sound.Config{AlarmRing: "birds"}, sound.RoleAlarmRing)
+	if !ok || birds.Duration != 400*time.Millisecond {
+		t.Fatalf("config Alarm Ring = %+v, %v", birds.Duration, ok)
+	}
+	if _, ok := f.sounds.DefaultClip(sound.Config{TimerRing: sound.None}, sound.RoleTimerRing); ok {
+		t.Fatal("an explicit none resolved a clip")
+	}
+	if _, ok := f.sounds.DefaultClip(sound.Config{TimerRing: "missing"}, sound.RoleTimerRing); ok {
+		t.Fatal("an unknown config sound resolved a clip")
+	}
+}
+
 func TestConfigLayerAcceptsBuiltinAndVolumePath(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(dir, "sounds"), 0o700); err != nil {

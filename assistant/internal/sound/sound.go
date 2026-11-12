@@ -454,7 +454,25 @@ func (s *Service) Clip(role Role) (Clip, bool) {
 	if settingsSvc == nil {
 		return Clip{}, false
 	}
-	entry, ok, err := s.Resolve(settingsSvc.String(Key(role)))
+	return s.clipFor(role, settingsSvc.String(Key(role)))
+}
+
+// DefaultClip resolves a role's config-layer value before the live settings
+// service exists, so a Timer recovered at startup still rings its sound.
+func (s *Service) DefaultClip(cfg Config, role Role) (Clip, bool) {
+	if s == nil || !Valid(role) {
+		return Clip{}, false
+	}
+	value := strings.TrimSpace(cfg.value(role))
+	if value == "" {
+		value = BuiltinChime
+	}
+	return s.clipFor(role, value)
+}
+
+// clipFor resolves one assignment and loads it under the role cap.
+func (s *Service) clipFor(role Role, value string) (Clip, bool) {
+	entry, ok, err := s.Resolve(value)
 	if err != nil {
 		s.logger.Warn("sound cue unavailable", "role", string(role), "error", err.Error())
 		return Clip{}, false

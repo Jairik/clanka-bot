@@ -36,6 +36,18 @@ func (s *Set) Modules() []tool.Module {
 	return append([]tool.Module(nil), s.modules...)
 }
 
+// Module returns the one wired module with name, or nil. main uses it to
+// attach a live seam that only exists after this package is constructed, such
+// as the Timer Ring engine.
+func (s *Set) Module(name string) tool.Module {
+	for _, module := range s.modules {
+		if module.Name() == name {
+			return module
+		}
+	}
+	return nil
+}
+
 // SecretNames reports every secret declared by the modules, in module order,
 // with duplicates collapsed. main adds the Agent provider's key name and hands
 // the list to the secrets service as the write-only allowlist.

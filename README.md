@@ -131,15 +131,42 @@ Timers are stored in the database and survive a restart. Give one a label
 ("set a pasta timer for 10 minutes") and ask for it later ("how long is left on
 the pasta timer"); `timer.list` is Local-only because labels can be private.
 On startup, a Timer up to two minutes overdue goes off immediately, while older
-ones are summarised in one Announcement. Timers speak an alert through the same
-TTS voice when they fire.
+ones are recorded missed and summarised in one Announcement. A Timer that fires
+**Rings**: it loops the assigned `timer_ring` Cue with a gap, speaks its label
+according to `ring.timer.speak_label`, and keeps ringing until `stop`/`snooze`
+or `ring.timer.max_ring` (default 5 min). `snooze` on a Timer acts as stop.
+Reaching max_ring records the alert as missed in `alert_events`; the
+`Manager.SetMissedHook` seam is where #62 will send the ntfy Notification.
 
-The Control phrases `stop`, `pause`, `cancel` and `louder` are matched exactly,
-so they answer without waiting on the embed service. `stop`, `pause` and
-`cancel` are shared Focus intents: they act on a ringing Timer alert first,
-then the current reply, then playing music. With nothing in Focus they fall
-through to the semantic Fast path, so `cancel` still reaches `timer.cancel` and
-`louder` still steps the volume up.
+A Ring waits for the current reply sentence to finish (not the whole reply),
+then takes the one speaker; the reply's next sentence waits for the Ring and
+resumes afterwards, so ringing never cancels an answer. Music will be ducked
+through the `ring.Music` seam when Spotify lands (#72), and the restore runs on
+stop, timeout and shutdown.
+
+Ring settings are live and per kind:
+
+| Setting | Timer default | Alarm default |
+| --- | --- | --- |
+| `ring.<kind>.max_ring` | 5m | 5m |
+| `ring.<kind>.volume` | 80% | 80% |
+| `ring.<kind>.ramp` | 0s | 30s |
+| `ring.<kind>.gap` | 1s | 1s |
+| `ring.<kind>.speak_label` | `start` | `start` |
+
+`volume` is absolute: it scales the Cue PCM and is independent of the media
+volume. The sound itself is the per-kind Cue role from the Sound library,
+`sounds.timer_ring` or `sounds.alarm_ring`; there is no second sound key. The
+same settings service the Dashboard writes through is read again at each Ring,
+so a change applies to the next fire. Alarms (#53) reuse the same engine and
+settings; Alarm snooze is deferred to that ticket.
+
+The Control phrases `stop`, `pause`, `cancel`, `snooze` and `louder` are matched
+exactly, so they answer without waiting on the embed service. `stop`, `pause`,
+`cancel` and `snooze` are shared Focus intents: they act on a ringing Timer
+first, then the current reply, then playing music. With nothing in Focus they
+fall through to the semantic Fast path, so `cancel` still reaches
+`timer.cancel` and `louder` still steps the volume up.
 
 Speech the Assistant starts without being asked (a Reminder, a finished Hermes
 job) goes through one Announcement queue. It waits for the current reply to
@@ -412,9 +439,12 @@ curl -s -X DELETE localhost:8081/api/settings/sounds.error
 
 Length caps are enforced when a sound is assigned and never trim the file:
 `wake` 1.0 s, `reminder`/`error` 3 s, Rings 60 s. A longer sound is rejected
-with the cap in the error. The wake and error Cues are wired; Timers, Alarms and
-Reminders consume the same library through `tool.Deps.Cues` as the Ring and
-Reminder tickets land.
+with the cap in the error. The wake and error Cues are wired, and a Timer Ring
+loops `sounds.timer_ring` through the Ring engine: it waits for the current
+reply sentence, ducks music, speaks the label and stops on "stop" or "snooze".
+An Alarm will use the same engine and `sounds.alarm_ring` (#53); a `none` or
+missing Ring sound falls back to the old single spoken line. Reminders do not
+exist yet.
 
 ### Latency
 

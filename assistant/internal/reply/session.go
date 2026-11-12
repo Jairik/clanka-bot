@@ -11,10 +11,12 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/latency"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
+	"github.com/Jairik/clanka-bot/assistant/internal/playback"
 	"github.com/Jairik/clanka-bot/assistant/internal/sound"
 	"github.com/Jairik/clanka-bot/assistant/internal/speech"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
@@ -67,6 +69,7 @@ type Session struct {
 	announcements Announcer
 	cues          CueSource
 	focus         *focus.Registry
+	gate          *playback.Gate
 }
 
 // Option configures a Session.
@@ -98,6 +101,13 @@ func WithCues(cues CueSource) Option {
 // cancels the original model stream and playback instead of the stop request.
 func WithFocus(registry *focus.Registry) Option {
 	return func(s *Session) { s.focus = registry }
+}
+
+// WithSpeechGate makes reply playback yield the one speaker to a Ring at the
+// current sentence boundary. The turn is not cancelled; its next sentence
+// waits until the Ring ends. A nil gate keeps the previous behaviour.
+func WithSpeechGate(gate *playback.Gate) Option {
+	return func(s *Session) { s.gate = gate }
 }
 
 // WithFillerSource makes the Filler live: it is read once per turn, after any
@@ -176,7 +186,7 @@ func (s *Session) ask(ctx context.Context, req tool.Request, transcript string, 
 		filler = s.fillerSource.Filler()
 	}
 
-	player := newPlayer(turnCtx, s.speaker, s.sink, func() { firstSound() })
+	player := newPlayer(turnCtx, s.speaker, s.sink, s.gate, func() { firstSound() })
 	chunker := speech.NewChunker()
 	var prefix string
 	streamed := 0
@@ -190,7 +200,7 @@ func (s *Session) ask(ctx context.Context, req tool.Request, transcript string, 
 			if filler == nil || s.sink == nil || !firstSound() {
 				return
 			}
-			player.play(item{filler: filler})
+			player.play(item{filler: filler, sentenceEnd: true})
 		},
 		// A dropped Confirmation's "Cancelled." is spoken before any answer. It
 		// deliberately does not claim Focus: this turn has not routed yet, so a
@@ -198,14 +208,14 @@ func (s *Session) ask(ctx context.Context, req tool.Request, transcript string, 
 		Prefix: func(text string) {
 			prefix = text
 			firstSound()
-			player.play(item{text: text})
+			player.play(item{text: text, sentenceEnd: sentenceEnd(text)})
 		},
 		Delta: func(delta string) {
 			claimFocus()
 			for _, chunk := range chunker.Write(delta) {
 				// Do not claim the sound slot here: the reply counts as heard
 				// when its first PCM reaches the sink, not when text arrives.
-				player.play(item{text: chunk})
+				player.play(item{text: chunk, sentenceEnd: sentenceEnd(chunk)})
 				streamed++
 			}
 		},
@@ -214,7 +224,8 @@ func (s *Session) ask(ctx context.Context, req tool.Request, transcript string, 
 	stopCue := s.cueSlowReply(player, filler, from, firstSound, claimedCh, claimFocus)
 	reply := s.pipeline.HandleEvents(turnCtx, req, transcript, events)
 	if rest := chunker.Flush(); rest != "" {
-		player.play(item{text: rest})
+		// The remaining text is the end of the reply even without punctuation.
+		player.play(item{text: rest, sentenceEnd: true})
 		streamed++
 	}
 	// The Fast path and Agent failures answer without deltas; speak their text.
@@ -230,12 +241,12 @@ func (s *Session) ask(ctx context.Context, req tool.Request, transcript string, 
 		// player, so the two can never overlap or reverse order.
 		if text != "" && reply.Unavailable && s.cues != nil && s.sink != nil {
 			if clip, ok := s.cues.Clip(sound.RoleError); ok {
-				player.play(item{cue: &clip})
+				player.play(item{cue: &clip, sentenceEnd: true})
 			}
 		}
 		if text != "" {
 			claimFocus()
-			player.play(item{text: text})
+			player.play(item{text: text, sentenceEnd: true})
 		}
 	}
 	err := player.finish()
@@ -383,6 +394,29 @@ type item struct {
 	text   string
 	filler *speech.Filler
 	cue    *sound.Clip
+	// sentenceEnd tells the Gate that this unit finishes the current sentence,
+	// so a waiting Ring may take the floor after it.
+	sentenceEnd bool
+}
+
+// sentenceEnd reports whether text finishes a spoken sentence, ignoring
+// trailing quotes and brackets. The chunker's first chunk can be a clause, so
+// this is what keeps a Ring from interrupting mid-sentence.
+func sentenceEnd(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	for trimmed != "" {
+		last, size := utf8.DecodeLastRuneInString(trimmed)
+		switch last {
+		case '"', '\'', ')', ']', '}':
+			trimmed = trimmed[:len(trimmed)-size]
+			continue
+		case '.', '!', '?', '\n':
+			return true
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 // player plays queued sounds in order on its own goroutine, so generation never
@@ -390,6 +424,7 @@ type item struct {
 type player struct {
 	speaker Speaker
 	sink    speech.Sink
+	gate    *playback.Gate
 	ctx     context.Context
 	cancel  context.CancelFunc
 	items   chan item
@@ -398,12 +433,13 @@ type player struct {
 	err     error
 }
 
-func newPlayer(ctx context.Context, speaker Speaker, sink speech.Sink, firstAudio func()) *player {
+func newPlayer(ctx context.Context, speaker Speaker, sink speech.Sink, gate *playback.Gate, firstAudio func()) *player {
 	playCtx, cancel := context.WithCancel(ctx)
 	playCtx = speech.WithFirstAudio(playCtx, firstAudio)
 	p := &player{
 		speaker: speaker,
 		sink:    sink,
+		gate:    gate,
 		ctx:     playCtx,
 		cancel:  cancel,
 		items:   make(chan item, 16),
@@ -414,10 +450,22 @@ func newPlayer(ctx context.Context, speaker Speaker, sink speech.Sink, firstAudi
 }
 
 func (p *player) run() {
-	defer close(p.done)
+	defer func() {
+		// A reply that ends without punctuation still ends its sentence; never
+		// leave a Ring waiting on a turn that is over.
+		p.gate.EndReplySpeech()
+		close(p.done)
+	}()
 	for next := range p.items {
 		if p.ctx.Err() != nil {
 			continue // Drain on cancellation or after a playback failure.
+		}
+		// A Ring waits for the current sentence and then owns the floor. This
+		// call blocks the next sentence, not the model stream behind it, and
+		// lets the rest of a sentence already under way finish first.
+		done, gateErr := p.gate.BeginReply(p.ctx)
+		if gateErr != nil {
+			continue
 		}
 		var err error
 		switch {
@@ -430,6 +478,7 @@ func (p *player) run() {
 			latency.Checkpoint(p.ctx, latency.CheckpointFirstChunk)
 			err = p.speaker.SayText(p.ctx, next.text)
 		}
+		done(next.sentenceEnd)
 		if err != nil {
 			p.mu.Lock()
 			if p.err == nil {

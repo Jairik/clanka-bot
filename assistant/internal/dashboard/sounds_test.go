@@ -21,6 +21,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/announce"
 	"github.com/Jairik/clanka-bot/assistant/internal/audio"
 	"github.com/Jairik/clanka-bot/assistant/internal/dashboard"
+	"github.com/Jairik/clanka-bot/assistant/internal/ring"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 	"github.com/Jairik/clanka-bot/assistant/internal/sound"
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
@@ -101,19 +102,9 @@ func newSoundsFixture(t *testing.T, previews dashboard.PreviewQueue) *soundsFixt
 		t.Fatalf("sound.New: %v", err)
 	}
 	defs := cues.Definitions(sound.Config{})
+	defs = append(defs, ring.Definitions()...)
 	defs = append(defs,
-		// #52 owns the real definitions; the page must render them dynamically.
-		settings.Duration("ring.timer.max_ring", 5*time.Minute, settings.WithDescription("Longest Timer Ring")),
-		settings.Int("ring.timer.volume", 80),
-		settings.Duration("ring.timer.ramp", 0),
-		settings.Duration("ring.timer.gap", time.Second),
-		settings.String("ring.timer.speak_label", "start"),
-		settings.Duration("ring.alarm.max_ring", 5*time.Minute),
-		settings.Duration("ring.alarm.snooze", 9*time.Minute),
-		settings.Int("ring.alarm.volume", 80),
-		settings.Duration("ring.alarm.ramp", 30*time.Second),
-		settings.Duration("ring.alarm.gap", time.Second),
-		settings.String("ring.alarm.speak_label", "start"),
+		// A future per-kind field must appear without a page edit.
 		settings.String("ring.timer.future_field", "shown without a page change"),
 		settings.String("unrelated.key", "not a ring setting"),
 	)
@@ -208,7 +199,8 @@ func TestSoundsPageListsLibraryRolesAndRingSettings(t *testing.T) {
 	for _, want := range []string{
 		"Sounds", "Upload a sound", "10 MB", "chime", "sounds.wake",
 		"sounds.timer_ring", "sounds.alarm_ring", "sounds.reminder", "sounds.error",
-		"Timer", "Alarm", "ring.timer.max_ring", "ring.alarm.snooze", "5m0s", "9m0s",
+		"Timer", "Alarm", "ring.timer.max_ring", "ring.alarm.ramp", "5m0s", "30s",
+		"ring.timer.volume", "ring.alarm.volume",
 		"ring.timer.future_field", "shown without a page change",
 		"Browser preview", "Play on Pi",
 	} {
@@ -379,16 +371,46 @@ func TestSoundsRingSettingsEditAndReset(t *testing.T) {
 		t.Fatalf("max_ring after reset = %s, want the 5m default", got)
 	}
 
+	// The real #52 definitions save and reset through the same typed forms.
+	rec = f.post("/sounds/values/ring.timer.volume", url.Values{"value": {"45"}})
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("volume save status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if got := f.settings.Int("ring.timer.volume"); got != 45 {
+		t.Fatalf("timer volume = %d, want 45", got)
+	}
+	rec = f.post("/sounds/values/ring.timer.volume/reset", url.Values{})
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("volume reset status = %d", rec.Code)
+	}
+	if got := f.settings.Int("ring.timer.volume"); got != 80 {
+		t.Fatalf("timer volume after reset = %d, want 80", got)
+	}
+	rec = f.post("/sounds/values/ring.alarm.ramp", url.Values{"value": {"1m0s"}})
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("alarm ramp save status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if got := f.settings.Duration("ring.alarm.ramp"); got != time.Minute {
+		t.Fatalf("alarm ramp = %s, want 1m", got)
+	}
+	rec = f.post("/sounds/values/ring.alarm.ramp/reset", url.Values{})
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("alarm ramp reset status = %d", rec.Code)
+	}
+	if got := f.settings.Duration("ring.alarm.ramp"); got != 30*time.Second {
+		t.Fatalf("alarm ramp after reset = %s, want the 30s default", got)
+	}
+
 	// An invalid Ring value is rejected by the ordinary typed form conversion.
-	rec = f.post("/sounds/values/ring.alarm.snooze", url.Values{"value": {"soon"}})
+	rec = f.post("/sounds/values/ring.alarm.ramp", url.Values{"value": {"soon"}})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("invalid duration status = %d", rec.Code)
 	}
 	if body := rec.Body.String(); !strings.Contains(body, "duration") {
 		t.Fatalf("invalid duration body = %s", body)
 	}
-	if got := f.settings.Duration("ring.alarm.snooze"); got != 9*time.Minute {
-		t.Fatalf("invalid save changed snooze to %s", got)
+	if got := f.settings.Duration("ring.alarm.ramp"); got != 30*time.Second {
+		t.Fatalf("invalid save changed the alarm ramp to %s", got)
 	}
 
 	// A non-Ring key is not editable from the Sounds page.

@@ -33,6 +33,13 @@ func WithBlocked(blocked func() bool) Option {
 	return func(q *Queue) { q.blocked = blocked }
 }
 
+// WithPreempt cancels a playing audio preview when preempt reports true, so a
+// higher-priority Ring never waits behind a long unprompted sound. Spoken
+// announcements are not preempted; a Ring waits for that line instead.
+func WithPreempt(preempt func() bool) Option {
+	return func(q *Queue) { q.preempt = preempt }
+}
+
 // WithPlayback starts the worker even when no speaker is configured, so a
 // text-only Dashboard can still queue a sound preview on the Pi. Text
 // announcements remain unavailable without a speaker.
@@ -55,6 +62,8 @@ type Queue struct {
 	speaker Speaker
 	logger  *slog.Logger
 	blocked func() bool
+	// preempt cancels a playing audio preview when a Ring needs the speaker.
+	preempt func() bool
 	// audio keeps the worker alive without a speaker so a Dashboard can queue
 	// a Pi preview on a text-only setup (WithPlayback).
 	audio bool
@@ -296,7 +305,7 @@ func (q *Queue) playItem(next item) {
 
 	var err error
 	if next.play != nil {
-		err = next.play(ctx)
+		err = q.runPlayback(ctx, next.play)
 	} else if q.speaker == nil {
 		err = errors.New("announce: no speaker configured")
 	} else {
@@ -320,6 +329,38 @@ func (q *Queue) playItem(next item) {
 		q.logger.Info("unprompted item interrupted", "audio", next.play != nil)
 	default:
 		q.logger.Error("unprompted item", "audio", next.play != nil, "error", err.Error())
+	}
+}
+
+// runPlayback runs one audio item and cancels it when a Ring preempts, so a
+// long preview cannot hold the one speaker or delay an alert.
+func (q *Queue) runPlayback(ctx context.Context, play func(context.Context) error) error {
+	if q.preempt == nil {
+		return play(ctx)
+	}
+	done := make(chan error, 1)
+	go func() { done <- play(ctx) }()
+	ticker := time.NewTicker(blockedRecheck)
+	defer ticker.Stop()
+	for {
+		select {
+		case err := <-done:
+			return err
+		case <-ticker.C:
+			if q.preempt() {
+				q.cancelCurrent()
+			}
+		}
+	}
+}
+
+// cancelCurrent stops the item playing now without touching queued items.
+func (q *Queue) cancelCurrent() {
+	q.mu.Lock()
+	cancel := q.cancelPlay
+	q.mu.Unlock()
+	if cancel != nil {
+		cancel()
 	}
 }
 

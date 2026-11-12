@@ -28,16 +28,23 @@ func (c Config) validate() error {
 // Module is the timer Tool domain.
 type Module struct {
 	cfg Config
+	// manager is created during Register; main attaches the #52 Ring engine
+	// after the live settings service exists.
+	manager *Manager
 }
 
 // NewModule builds the timer module with its code defaults.
 func NewModule() *Module { return &Module{cfg: DefaultConfig()} }
 
+// Manager exposes the running Manager so main can attach the Ring engine once
+// the live settings service is available. It is nil before Register.
+func (m *Module) Manager() *Manager { return m.manager }
+
 // Name is the module name and config section suffix.
 func (*Module) Name() string { return "timer" }
 
-// Intents declares the shared Focus intents a ringing timer alert handles.
-// The alert is not a Ring yet (#52), but "stop" and "cancel" already reach it.
+// Intents declares the shared Focus intents a ringing Timer handles. "snooze"
+// is included because, on a Timer, it acts as stop; #53 owns Alarm snooze.
 func (*Module) Intents() []focus.Intent { return alertIntents() }
 
 // Configure decodes tools.timer over the code defaults.
@@ -67,8 +74,14 @@ func (m *Module) Register(r *tool.Registry, deps tool.Deps) error {
 	if deps.Focus != nil {
 		manager = manager.WithFocus(deps.Focus)
 	}
+	// Attach the Ring engine before recovery so an overdue Timer that fires
+	// immediately at startup already Rings through the shared engine.
+	if deps.Ring != nil {
+		manager.SetRingEngine(deps.Ring)
+	}
 	if err := manager.AttachStore(deps.Store, deps.Announcements); err != nil {
 		return err
 	}
+	m.manager = manager
 	return Register(r, manager)
 }

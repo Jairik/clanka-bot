@@ -8,8 +8,8 @@ misroute from the request log.
 ## What is checked in
 
 - `assistant/internal/pipeline/testdata/routing_eval.yaml` — the labelled
-  oracle. It has at least 20 positives for each of the eighteen Fast path Tools
-  (368 total), 85 plain negatives, and 13 compound requests.
+  oracle. It has at least 20 positives for each of the twenty-one Fast path
+  Tools (431 total), 88 plain negatives, and 17 compound requests.
 - `assistant/internal/pipeline/testdata/routing_baseline.yaml` — the recorded
   Map 1 totals the real-MiniLM evaluation must not fall below.
 - `assistant/internal/pipeline/routing_eval_test.go` —
@@ -131,7 +131,7 @@ above the 0.95 precision floor. Run against
 | Tool | Positives | TP | Control TP | Semantic TP | FP | FN | Precision | Recall |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | `time.now` | 20 | 13 | 5 | 8 | 0 | 7 | 1.00 | 0.65 |
-| `date.today` | 20 | 18 | 0 | 18 | 0 | 2 | 1.00 | 0.90 |
+| `date.today` | 20 | 17 | 0 | 17 | 0 | 3 | 1.00 | 0.85 |
 | `weather.current` | 20 | 11 | 4 | 7 | 0 | 9 | 1.00 | 0.55 |
 | `audio.volume_set` | 20 | 12 | 1 | 11 | 0 | 8 | 1.00 | 0.60 |
 | `audio.stop` | 20 | 9 | 0 | 9 | 0 | 11 | 1.00 | 0.45 |
@@ -139,6 +139,9 @@ above the 0.95 precision floor. Run against
 | `timer.cancel` | 20 | 15 | 0 | 15 | 0 | 5 | 1.00 | 0.75 |
 | `timer.remaining` | 20 | 9 | 0 | 9 | 0 | 11 | 1.00 | 0.45 |
 | `timer.list` | 20 | 12 | 0 | 12 | 0 | 8 | 1.00 | 0.60 |
+| `alarm.set` | 22 | 14 | 0 | 14 | 0 | 8 | 1.00 | 0.6364 |
+| `alarm.list` | 21 | 13 | 0 | 13 | 0 | 8 | 1.00 | 0.6190 |
+| `alarm.cancel` | 20 | 11 | 0 | 11 | 0 | 9 | 1.00 | 0.5500 |
 | `voice.set` | 20 | 20 | 0 | 20 | 0 | 0 | 1.00 | 1.00 |
 | `voice.list` | 20 | 6 | 4 | 2 | 0 | 14 | 1.00 | 0.30 |
 | `voice.current` | 20 | 8 | 3 | 5 | 0 | 12 | 1.00 | 0.40 |
@@ -148,23 +151,24 @@ above the 0.95 precision floor. Run against
 | `quiet.dnd` | 20 | 20 | 0 | 20 | 0 | 0 | 1.00 | 1.00 |
 | `quiet.awake` | 20 | 20 | 2 | 18 | 0 | 0 | 1.00 | 1.00 |
 | `notify.phone` | 22 | 22 | 0 | 22 | 0 | 0 | 1.00 | 1.00 |
-| **Total** | **368** | **258** | **23** | **235** | **0** | **110** | **1.00** | **0.7011** |
+| **Total** | **431** | **295** | **23** | **272** | **0** | **136** | **1.00** | **0.6845** |
 
-These numbers are from the #62 Notifications tree and include the earlier #34,
-#44, #51, #61 and #63 corpus additions. Precision is 1.00 with no negative or
-compound misroute, and every Tool clears the 0.95 floor. The new
-`notify.phone` positives include demonstrative "send that to my phone" wording
-and explicit-message forms; 12 phone-shaped negatives and one compound keep the
-tool from swallowing device questions, other transports and two-action
-requests. The voice recall stays deliberately conservative for list/current
-questions; the Agent path answers them. Four natural `quiet.off` phrasings
-("disable quiet hours", "switch off quiet hours", "get rid of quiet hours",
-"turn off nightly quiet hours") fall to the Agent path because the `quiet.set`
-vectors are close; recall is not a floor, and adding more near duplicates would
-not make the split more reliable. The other conservative Tools are the
-timer/list confusions described below.
+These numbers are from the #62 Notifications tree merged with #53 Alarms and
+include the earlier #34, #44, #51, #61 and #63 corpus additions. Precision is
+1.00 with no negative or compound misroute, and every Tool clears the 0.95
+floor. The new `notify.phone` positives include demonstrative "send that to my
+phone" wording and explicit-message forms; 12 phone-shaped negatives and one
+compound keep the tool from swallowing device questions, other transports and
+two-action requests. The Alarm tools add their own positives, negatives and
+compound coverage from #53. The voice recall stays deliberately conservative for
+list/current questions; the Agent path answers them. Four natural `quiet.off`
+phrasings ("disable quiet hours", "switch off quiet hours", "get rid of quiet
+hours", "turn off nightly quiet hours") fall to the Agent path because the
+`quiet.set` vectors are close; recall is not a floor, and adding more near
+duplicates would not make the split more reliable. The other conservative Tools
+are the timer/list confusions described below.
 
-Plain negatives: **0 of 85** reached the Fast path. Compounds: **0 of 13**
+Plain negatives: **0 of 88** reached the Fast path. Compounds: **0 of 17**
 reached the Fast path. Every Tool is exercised by the semantic router at least
 twice, so no Tool clears the floor only because the Control phrase table
 happened to cover its positives. The timer and list confusions are the main

@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
+	"github.com/Jairik/clanka-bot/assistant/tools/alarm"
 	"github.com/Jairik/clanka-bot/assistant/tools/audiocontrol"
 	"github.com/Jairik/clanka-bot/assistant/tools/clock"
 	"github.com/Jairik/clanka-bot/assistant/tools/notify"
@@ -29,6 +30,7 @@ func NewSet() *Set {
 		weather.NewModule(),
 		audiocontrol.NewModule(),
 		timer.NewModule(),
+		alarm.NewModule(),
 		quiet.NewModule(),
 		voice.NewModule(),
 		notify.NewModule(),
@@ -104,6 +106,23 @@ func (s *Set) RegisterAll(r *tool.Registry, deps tool.Deps, sections map[string]
 		}
 		if err := module.Register(r, deps); err != nil {
 			return fmt.Errorf("tools.%s: %w", module.Name(), err)
+		}
+	}
+	return nil
+}
+
+// StartAll runs each module's optional post-registration start hook, in module
+// order. main calls it after the live settings, Cues, Zone and Ring seams are
+// bound, so an overdue Timer or Alarm recovered from SQLite fires with the
+// effective settings instead of the code defaults.
+func (s *Set) StartAll(ctx context.Context) error {
+	for _, module := range s.modules {
+		starter, ok := module.(tool.Startable)
+		if !ok {
+			continue
+		}
+		if err := starter.Start(ctx); err != nil {
+			return fmt.Errorf("tools.%s: start: %w", module.Name(), err)
 		}
 	}
 	return nil

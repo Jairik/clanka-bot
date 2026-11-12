@@ -68,6 +68,10 @@ func registerTimerModule(t *testing.T, st *store.Store, notifier *fakeNotifier, 
 	if err := module.Register(tool.NewRegistry(time.Second), deps); err != nil {
 		t.Fatalf("register timer module: %v", err)
 	}
+	// #53 moved persisted recovery to Start, after the live seams are bound.
+	if err := module.Start(context.Background()); err != nil {
+		t.Fatalf("start timer module: %v", err)
+	}
 	return module
 }
 

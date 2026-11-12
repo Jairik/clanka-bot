@@ -49,6 +49,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/wording"
 	"github.com/Jairik/clanka-bot/assistant/internal/wyoming"
 	"github.com/Jairik/clanka-bot/assistant/tools"
+	"github.com/Jairik/clanka-bot/assistant/tools/alarm"
 	"github.com/Jairik/clanka-bot/assistant/tools/timer"
 )
 
@@ -361,10 +362,13 @@ func run() error {
 		Cues:          cues,
 		Ring:          ringEngine,
 		Names:         names,
-		Quiet:         quietSvc,
-		Voices:        voiceSvc,
-		Notify:        notifySvc,
-		LastReply:     lastReplyStore,
+		// The live settings service is created below; a module reads it per
+		// action through this late-bound closure and never snapshots it.
+		Settings:  func() *settings.Service { return settingsSvc },
+		Quiet:     quietSvc,
+		Voices:    voiceSvc,
+		Notify:    notifySvc,
+		LastReply: lastReplyStore,
 	}
 	if speechSpeaker != nil {
 		deps.Speaker = speechSpeaker
@@ -501,13 +505,25 @@ func run() error {
 		})
 	}
 
-	// The Timer module installed the Notify missed hook before its recovery,
-	// so open/downtime rows already reached ntfy. Only the shutdown wait
-	// remains, and Close waits for the final history write.
+	// Timer and Alarm installed the Notify missed hook before Start's
+	// recovery, so open/downtime rows already reached ntfy. Only the shutdown
+	// waits remain, and Close waits for the final history write.
 	if module, ok := toolSet.Module("timer").(*timer.Module); ok {
 		if manager := module.Manager(); manager != nil {
 			defer manager.Close()
 		}
+	}
+	if module, ok := toolSet.Module("alarm").(*alarm.Module); ok {
+		if manager := module.Manager(); manager != nil {
+			defer manager.Close()
+		}
+	}
+	// Start persisted schedules only now: the effective settings, Cues, Zone
+	// and Ring engine are bound, so the first recovered Timer or Alarm Ring
+	// obeys stored settings instead of the code defaults. One module-list hook
+	// keeps this out of per-domain main wiring.
+	if err := toolSet.StartAll(ctx); err != nil {
+		return fmt.Errorf("start tools: %w", err)
 	}
 	if zone.IsUTC() {
 		// UTC is a safe default, not a guess: warn once so a silent one-hour

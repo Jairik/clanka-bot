@@ -116,8 +116,12 @@ A Scheduled alert set as a duration ("10 minutes") that rings when it runs out.
 _Avoid_: Countdown
 
 **Alarm**:
-A Scheduled alert set for a clock time, possibly repeating, that rings until stopped or snoozed.
+A Scheduled alert set for a clock time, possibly repeating on chosen days, that rings until stopped or snoozed.
 _Avoid_: Wake-up, timer
+
+**Snooze**:
+The request to silence a ringing Alarm and ring it again after `ring.alarm.snooze` (default 9 minutes). On a Timer it acts as stop.
+_Avoid_: Nap, delay
 
 **Reminder**:
 A Scheduled alert that speaks its message once instead of ringing, whether it was set for a duration or a clock time.

@@ -152,7 +152,7 @@ func TestSecretsAndTimersPreserveEachOtherAcrossReopen(t *testing.T) {
 	}
 	wantVersions := map[int]string{
 		1: "settings", 2: "secrets", 3: "timers", 4: "sounds",
-		5: "alert_events", 6: "voices",
+		5: "alert_events", 6: "voices", 7: "alarms",
 	}
 	applied := migrations(firstStore)
 	if len(applied) != len(wantVersions) {

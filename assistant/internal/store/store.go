@@ -46,7 +46,12 @@ type migration struct {
 // states in voices/: the file, its size/mtime for replacement detection, the
 // model revision it was validated against, staleness, the last validation
 // error and the optional consent note. The active voice and rate are ordinary
-// settings rows.
+// settings rows. Version 7 holds Alarms: their clock time, repeat rule, next
+// occurrence and an optional pending snooze. A one-off Alarm keeps its row
+// with next_fires_at = 0 until the Ring outcome is known, so a snooze survives
+// a restart; a repeating Alarm advances next_fires_at in the same transaction
+// that opens its history row. sound, volume and ramp_ms are reserved for #57's
+// per-Alarm overrides and stay NULL/empty until then.
 var migrations = []migration{
 	{
 		version: 1,
@@ -141,6 +146,32 @@ var migrations = []migration{
 				last_error         TEXT NOT NULL DEFAULT '',
 				note               TEXT NOT NULL DEFAULT ''
 			)`,
+		},
+	},
+	{
+		version: 7,
+		name:    "alarms",
+		statements: []string{
+			// hour and minute are the spoken local clock time. schedule is
+			// once/daily/weekdays/weekends/chosen; weekdays is a Sunday-first
+			// bitmask used by chosen. next_fires_at is a UTC instant; 0 means a
+			// one-off already fired and is waiting for its Ring outcome.
+			// snoozed_until is NULL unless a snooze is pending.
+			`CREATE TABLE alarms (
+				id            INTEGER PRIMARY KEY AUTOINCREMENT,
+				label         TEXT NOT NULL DEFAULT '',
+				hour          INTEGER NOT NULL,
+				minute        INTEGER NOT NULL,
+				schedule      TEXT NOT NULL,
+				weekdays      INTEGER NOT NULL DEFAULT 0,
+				next_fires_at INTEGER NOT NULL,
+				created_at    INTEGER NOT NULL,
+				snoozed_until INTEGER,
+				sound         TEXT NOT NULL DEFAULT '',
+				volume        INTEGER,
+				ramp_ms       INTEGER
+			)`,
+			`CREATE INDEX alarms_next_fires_at ON alarms (next_fires_at)`,
 		},
 	},
 }

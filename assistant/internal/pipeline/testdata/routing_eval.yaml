@@ -145,6 +145,12 @@ positives:
     # in the corpus; recall is not gated.
     - Set a timer for ten minutes.
     - Set a timer for ten seconds.
+    # Labelled timers: the name is part of the request and is extracted, not
+    # matched semantically, but the phrasing still belongs to timer.set.
+    - set a pasta timer for 10 minutes
+    - start a tea timer for five minutes
+    - set a timer for 10 minutes called pasta
+    - set a timer called tea for five minutes
   timer.cancel:
     - cancel the timer
     - cancel my timer
@@ -167,26 +173,228 @@ positives:
     - stop that timer
     - I want to cancel the timer
   timer.list:
-    - how long is left on my timer
-    - how much time is left
+    # Enumerating the active timers. "How long is left" belongs to
+    # timer.remaining now that it exists.
     - what timers do I have
     - list my timers
+    - show me my timers
+    - what timers are running
+    - how many timers are running
+    - do I have any timers
+    - what timers are active
+    - show all my timers
+    - what timers have I got
+    - list all timers
+    - are any timers running
+    - what's on my timer list
+    - which timers are set
+    - give me my timers
+    - tell me my timers
+    - what are my timers
+    - how many timers do I have
+    - are there any active timers
+    - show me all of the timers
+    - which timers are running
+  timer.remaining:
+    # The remaining-time lookup, with and without an explicit label.
+    - how long is left on my timer
+    - how much time is left
     - how much time is left on the timer
     - how long until the timer goes off
     - when does my timer finish
     - what's the time remaining
-    - do I have any timers
-    - how many timers are running
     - check the timer
     - what's left on the timer
     - how long does the timer have left
-    - show me my timers
     - is my timer still running
     - how long is the timer
     - time left on the timer
-    - what timers are active
     - how much longer on the timer
     - tell me the timer status
+    - how long is left on the pasta timer
+    - how much time is left on the pasta timer
+    - time remaining on the tea timer
+    - when is the egg timer done
+    - how long until the pasta timer goes off
+    - how long does the tea timer have left
+  voice.set:
+    # Changing the persistent voice. The name is resolved by the shared name
+    # matcher, so the corpus uses library-style names rather than inventing a
+    # catalogue.
+    - use the jarvis voice
+    - switch to the alba voice
+    - change your voice to jarvis
+    - set your voice to the alba voice
+    - can you talk in the jarvis voice
+    - please use the alba voice
+    - I want the jarvis voice
+    - make your voice jarvis
+    - change to the alba voice
+    - switch your voice to jarvis
+    - use jarvis as your voice
+    - I'd like you to use the jarvis voice
+    - can you change your voice to alba
+    - set the voice to jarvis
+    - talk in the alba voice
+    - speak in the jarvis voice
+    - use the jarvis voice from now on
+    - change your speaking voice to jarvis
+    - I want you to sound like jarvis
+    - switch to jarvis
+  voice.list:
+    # Enumerating the voice library: built-ins plus copied states.
+    - what voices do you have
+    - list the voices
+    - which voices can you do
+    - what voices are installed
+    - tell me the voices in your library
+    - show me the available voices
+    - what voices are available
+    - list your voices
+    - which voices do you know
+    - what voice options do I have
+    - what voices can you speak in
+    - tell me what voices you have
+    - show me your voice library
+    - which voices are loaded
+    - what are my voice choices
+    - can you list the voices
+    - what voices are in the library
+    - name the voices you can use
+    - what voices do you support
+    - give me the list of voices
+  voice.current:
+    # Asking about the voice speaking right now, not the catalogue.
+    - which voice is this
+    - what voice are you using
+    - what's your current voice
+    - which voice am I hearing
+    - tell me what voice you're speaking in
+    - what voice is selected
+    - which voice is active
+    - what voice are you speaking with
+    - what voice do you have now
+    - tell me which voice this is
+    - what is your voice right now
+    - which voice are you set to
+    - what voice is speaking
+    - am I hearing alba
+    - what's the voice you're using
+    - which voice did I pick
+    - what voice are you on
+    - tell me the current voice
+    - which voice is this speaking
+    - what voice setting is active
+  voice.rate:
+    # Changing the speech-rate multiplier, not music or speaker volume.
+    - speak faster
+    - talk faster
+    - speak a little slower
+    - slow down your voice
+    - speed up
+    - go back to normal speed
+    - can you speak faster
+    - please slow down
+    - talk more slowly
+    - speed up your speech
+    - slow your speaking down
+    - speak at normal speed
+    - can you speak a bit faster
+    - I want you to talk slower
+    - increase your speaking speed
+    - make your voice faster
+    - speak more quickly
+    - slow down a little
+    - return to your normal speaking rate
+    - can you slow down your voice
+  quiet.set:
+    # The daily window: two clock times, including the common reversed
+    # "from 10:30 to 7" phrasing that means 10:30 pm to 7 am.
+    - set quiet hours from 10:30 to 7
+    - set quiet hours from 11 pm to 6 am
+    - set quiet hours from 9 at night to 6 in the morning
+    - set my quiet hours from 10 pm to 7 am
+    - quiet hours from 11:30 pm until 6:30 am
+    - quiet hours from 10 at night to 7 in the morning
+    - change quiet hours to 10 pm to 7 am
+    - make quiet hours from 10:30 to 7
+    - set the quiet window from 9 pm to 6 am
+    - quiet hours should run from 11 to 7
+    - configure quiet hours from 10 pm until 7 am
+    - start quiet hours at 10 pm and end at 7
+    - quiet hours every night from 10:30 to 7
+    - I want quiet hours from 11 pm to 7 am
+    - set quiet time from 10:30 pm to 7 am
+    - quiet hours begin at 10 and end at 6
+    - change my quiet hours to 11 pm to 6 am
+    - set nightly quiet hours from 10:30 to 7
+    - quiet hours from 9 in the evening to 6 in the morning
+    - quiet hours from 10:30 in the evening to 7 in the morning
+  quiet.off:
+    - turn off quiet hours
+    - disable quiet hours
+    - quiet hours off
+    - stop quiet hours
+    - turn quiet hours off
+    - cancel quiet hours
+    - end quiet hours
+    - quiet hours are over
+    - I don't want quiet hours anymore
+    - remove quiet hours
+    - switch off quiet hours
+    - quiet hours aren't needed
+    - get rid of quiet hours
+    - deactivate quiet hours
+    - turn off the quiet window
+    - no more quiet hours
+    - quiet hours should be disabled
+    - stop the quiet schedule
+    - turn off nightly quiet hours
+    - disable my quiet hours
+  quiet.dnd:
+    # A timed do-not-disturb period, distinct from the daily window.
+    - do not disturb for two hours
+    - do not disturb for 30 minutes
+    - turn on do not disturb for an hour
+    - mute everything for an hour
+    - dnd for 45 minutes
+    - be quiet for the next two hours
+    - do not disturb me for 90 minutes
+    - silence things for 20 minutes
+    - quiet down for the next hour
+    - hold everything for two hours
+    - set do not disturb for 15 minutes
+    - turn on dnd for two hours
+    - pause notifications for 10 minutes
+    - keep things quiet for 30 minutes
+    - I need quiet for the next two hours
+    - turn on do not disturb mode for 1 hour
+    - start do not disturb for 3 hours
+    - give me two hours of quiet
+    - mute the house for an hour
+    - do not disturb for 20 minutes
+  quiet.awake:
+    # Ending only the current window, not the schedule.
+    - I'm awake
+    - I am awake
+    - I'm up
+    - I am up now
+    - I'm awake now
+    - I'm already awake
+    - I'm up for the day
+    - I'm awake, you can talk normally
+    - I'm awake and up
+    - I'm awake, stop whispering
+    - stop whispering, I'm awake
+    - I'm awake, speak normally
+    - I'm awake, no need to whisper
+    - awake now
+    - I'm awake, normal volume please
+    - I'm awake, you can be loud again
+    - I'm awake, back to normal
+    - I'm up now, no more whispering
+    - I'm awake, end the quiet please
+    - I'm awake, quiet time is over
 negatives:
   - what's the capital of France
   - who wrote hamlet
@@ -236,6 +444,37 @@ negatives:
   - what's the date of the next full moon
   - stop the car
   - cancel my subscription
+  # Timer-shaped but not Fast path requests: no duration, no timer, or a
+  # question about cooking rather than a running Timer.
+  - set a timer
+  - timer for the pasta
+  - how long is left on the oven
+  - what's the timer setting
+  # Voice-shaped but not a library or rate request: playback, volume, privacy,
+  # or a different voice service.
+  - play the jarvis song
+  - turn up the volume
+  - speak up
+  - talk to the agent
+  - what voices does Spotify have
+  - who is jarvis
+  - use the kitchen lights
+  - slow down the music
+  - change the voice memo settings on my phone
+  - speak after the tone
+  - make the music louder
+  - what are my quiet hours
+  - why is my phone on do not disturb
+  - do not disturb is enabled on my phone
+  - sleep mode on my phone
+  - I woke up at 7 this morning
+  - set an alarm for 7 am
+  - remind me to be quiet at 10
+  - play some quiet music
+  - turn down the volume
+  - good night
+  - how many hours until morning
+  - set quiet hours
 # Compound requests ask for more than one thing. They are kept separate so
 # the evaluation can report compound handling on its own.
 compounds:
@@ -247,3 +486,47 @@ compounds:
   - tell me the time then play some music
   - set a timer for 5 minutes and remind me to check the oven
   - stop talking and tell me the time
+  - change your voice to jarvis and speak faster
+  - tell me what voice you use and what time it is
+  - set quiet hours from 10 to 7 and set a timer for five minutes
+  - do not disturb for two hours and set a timer for five minutes
+# Focus cases: the same shared word must reach whatever holds Focus. Each case
+# names the holders present, the phrase's intent, and which holder wins. An
+# empty handled_by means no present holder declares the intent, so the utterance
+# must fall through to the semantic Fast path (or the Agent path when nothing
+# matches). Holder capabilities mirror the production declarations: a ringing
+# alert handles stop and cancel, the current reply handles stop, and music
+# handles the transport controls.
+focus:
+  - utterance: stop
+    holders: [ring, reply, music]
+    intent: stop
+    handled_by: ring
+  - utterance: stop
+    holders: [reply, music]
+    intent: stop
+    handled_by: reply
+  - utterance: stop
+    holders: [music]
+    intent: stop
+    handled_by: music
+  - utterance: stop
+    holders: []
+    intent: stop
+    handled_by: ""
+  - utterance: pause
+    holders: [reply, music]
+    intent: pause
+    handled_by: music
+  - utterance: pause
+    holders: []
+    intent: pause
+    handled_by: ""
+  - utterance: cancel
+    holders: [ring, reply]
+    intent: cancel
+    handled_by: ring
+  - utterance: cancel
+    holders: []
+    intent: cancel
+    handled_by: ""

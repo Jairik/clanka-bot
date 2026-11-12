@@ -21,11 +21,7 @@ const StepPercent = 10
 
 // Controls is the small audio seam the Tools drive. The Pulse sink implements
 // it in production; tests use a fake.
-type Controls interface {
-	SetVolume(ctx context.Context, percent int) error
-	AdjustVolume(ctx context.Context, delta int) error
-	Stop(ctx context.Context) error
-}
+type Controls = tool.AudioControls
 
 // VolumeIn takes an absolute percent (zero mutes), a relative delta, or
 // neither, which means one step up. Percent is a pointer so an explicit zero
@@ -49,8 +45,13 @@ type StopOut struct {
 	Stopped bool `json:"stopped"`
 }
 
-// NewVolume builds audio.volume_set.
+// NewVolume builds audio.volume_set with the default step.
 func NewVolume(controls Controls) tool.Tool[VolumeIn, VolumeOut] {
+	return NewVolumeWithStep(controls, StepPercent)
+}
+
+// NewVolumeWithStep builds audio.volume_set with a configured "louder" step.
+func NewVolumeWithStep(controls Controls, step int) tool.Tool[VolumeIn, VolumeOut] {
 	return tool.Tool[VolumeIn, VolumeOut]{
 		Name:        VolumeName,
 		Description: "Set the speaker volume to a percent, change it by a delta, or with no arguments turn it up one step.",
@@ -71,7 +72,7 @@ func NewVolume(controls Controls) tool.Tool[VolumeIn, VolumeOut] {
 			}
 			delta := in.Delta
 			if delta == 0 {
-				delta = StepPercent
+				delta = step
 			}
 			if err := controls.AdjustVolume(ctx, delta); err != nil {
 				return VolumeOut{}, err
@@ -96,18 +97,18 @@ func NewVolume(controls Controls) tool.Tool[VolumeIn, VolumeOut] {
 			"louder",
 			"turn the volume down",
 		},
-		Extract: extractVolume,
+		Extract: func(text string) (VolumeIn, bool) { return extractVolume(text, step) },
 	}
 }
 
 // extractVolume reads an absolute percent or a direction from the utterance.
-func extractVolume(text string) (VolumeIn, bool) {
+func extractVolume(text string, step int) (VolumeIn, bool) {
 	lower := strings.ToLower(text)
 	switch {
 	case strings.Contains(lower, "louder"), strings.Contains(lower, "turn it up"), strings.Contains(lower, "volume up"):
-		return VolumeIn{Delta: StepPercent}, true
+		return VolumeIn{Delta: step}, true
 	case strings.Contains(lower, "quieter"), strings.Contains(lower, "turn it down"), strings.Contains(lower, "volume down"):
-		return VolumeIn{Delta: -StepPercent}, true
+		return VolumeIn{Delta: -step}, true
 	}
 	n, ok := parse.Number(text)
 	if !ok || n < 0 || n > 100 {
@@ -135,6 +136,7 @@ func NewStop(controls Controls) tool.Tool[StopIn, StopOut] {
 		Speak: func(StopOut) string { return "Stopped." },
 		Examples: []string{
 			"stop",
+			"pause",
 			"stop talking",
 			"be quiet",
 			"pause the music",
@@ -142,9 +144,14 @@ func NewStop(controls Controls) tool.Tool[StopIn, StopOut] {
 	}
 }
 
-// Register adds both audio Tools.
+// Register adds both audio Tools with the default step.
 func Register(r *tool.Registry, controls Controls) error {
-	if err := tool.Add(r, NewVolume(controls)); err != nil {
+	return RegisterWithStep(r, controls, StepPercent)
+}
+
+// RegisterWithStep adds both audio Tools with a configured "louder" step.
+func RegisterWithStep(r *tool.Registry, controls Controls, step int) error {
+	if err := tool.Add(r, NewVolumeWithStep(controls, step)); err != nil {
 		return err
 	}
 	return tool.Add(r, NewStop(controls))

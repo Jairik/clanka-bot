@@ -29,9 +29,18 @@ const (
 
 // Settings is the Agent path's runtime configuration (non-secret).
 type Settings struct {
-	BaseURL      string
-	APIKeyEnv    string
-	Model        string
+	BaseURL string
+	// APIKeyEnv is the environment bootstrap for the provider key. It is the
+	// fallback when APIKey is nil and the variable name the secrets service
+	// declares for the Dashboard write.
+	APIKeyEnv string
+	// APIKey, when set, resolves the key per request so a stored secret takes
+	// effect without a restart. The stored value wins over APIKeyEnv.
+	APIKey func() string
+	Model  string
+	// ModelFunc, when set, is read before every provider request so a live
+	// settings override applies to the next turn. Model is the fallback.
+	ModelFunc    func() string
 	Headers      map[string]string
 	Routing      map[string]any
 	SystemPrompt string
@@ -39,11 +48,14 @@ type Settings struct {
 	// request so refreshed location data is used.
 	SystemPromptFunc   func() string
 	UnavailableMessage string
-	FirstTokenTimeout  time.Duration
-	RequestTimeout     time.Duration
-	MaxSteps           int
-	HistoryTurns       int
-	HistoryQuiet       time.Duration
+	// UnavailableMessageFunc, when set, is read for each failure so a stored
+	// wording override applies without rebuilding the Agent path.
+	UnavailableMessageFunc func() string
+	FirstTokenTimeout      time.Duration
+	RequestTimeout         time.Duration
+	MaxSteps               int
+	HistoryTurns           int
+	HistoryQuiet           time.Duration
 }
 
 // PendingConfirm is a confirm Tool call the model asked for, armed in the
@@ -70,7 +82,7 @@ type Agent struct {
 	history     *History
 	logger      *slog.Logger
 	maxSteps    int
-	unavailable string
+	unavailable func() string
 }
 
 // New builds the Agent path. History defaults mirror the prototype settings so
@@ -107,6 +119,17 @@ func New(settings Settings, registry *tool.Registry, logger *slog.Logger) (*Agen
 	if settings.SystemPromptFunc != nil {
 		prompt = NewPromptBuilderFunc(settings.SystemPromptFunc)
 	}
+	// Resolve the Unavailable wording per failure. The static value stays the
+	// required fallback, so a resolver that returns nothing cannot silence the
+	// error path.
+	unavailable := func() string {
+		if settings.UnavailableMessageFunc != nil {
+			if text := settings.UnavailableMessageFunc(); strings.TrimSpace(text) != "" {
+				return text
+			}
+		}
+		return settings.UnavailableMessage
+	}
 	return &Agent{
 		provider:    newProvider(settings),
 		registry:    registry,
@@ -114,7 +137,7 @@ func New(settings Settings, registry *tool.Registry, logger *slog.Logger) (*Agen
 		history:     NewHistory(settings.HistoryTurns, settings.HistoryQuiet, nil),
 		logger:      logger,
 		maxSteps:    settings.MaxSteps,
-		unavailable: settings.UnavailableMessage,
+		unavailable: unavailable,
 	}, nil
 }
 
@@ -233,14 +256,14 @@ func withoutIndex(calls []CallRef, skip int) []CallRef {
 	return out
 }
 
-// resolve maps a wire name to a registered, non-Local-only Tool.
+// resolve maps a wire name to a registered, enabled, non-Local-only Tool.
 func (a *Agent) resolve(call CallRef) (tool.Info, bool) {
 	name, err := tool.CanonicalName(call.Name)
 	if err != nil {
 		return tool.Info{}, false
 	}
 	info, ok := a.registry.Info(name)
-	if !ok || info.LocalOnly {
+	if !ok || info.LocalOnly || !info.Enabled {
 		return tool.Info{}, false
 	}
 	return info, true
@@ -331,7 +354,7 @@ func (a *Agent) failure(ctx context.Context, req tool.Request, err error) Result
 		return Result{Text: FirstTokenTimeoutMessage, TimedOut: true}
 	case errors.Is(err, errRequestTimeout):
 		a.logger.Error("agent request timeout", "request_id", req.ID)
-		return Result{Text: a.unavailable, Unavailable: true}
+		return Result{Text: a.unavailable(), Unavailable: true}
 	}
 	status := 0
 	var providerErr *providerError
@@ -340,7 +363,7 @@ func (a *Agent) failure(ctx context.Context, req tool.Request, err error) Result
 	}
 	// The status code is logged; the user hears only the configured message.
 	a.logger.Error("agent request failed", "request_id", req.ID, "status", status, "error", err.Error())
-	return Result{Text: a.unavailable, Unavailable: true}
+	return Result{Text: a.unavailable(), Unavailable: true}
 }
 
 func errorPayload(message string) json.RawMessage {

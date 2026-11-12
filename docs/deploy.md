@@ -81,7 +81,10 @@ ML services never touch audio devices.
 - [ ] Boot, then update and reboot:
       `sudo apt update && sudo apt full-upgrade -y && sudo reboot`
 - [ ] Set the timezone to match `.env`:
-      `sudo timedatectl set-timezone <Area/City>`
+      `sudo timedatectl set-timezone <Area/City>`. The assistant reads the live
+      `timezone` setting first, then `config.yaml`'s `timezone`, then `TZ`, and
+      logs a startup warning when the effective zone is UTC. It never infers a
+      zone from the public IP.
 - [ ] Confirm the Pi 5's 16K pages: `getconf PAGE_SIZE` prints `16384`.
 
 ### Docker
@@ -108,6 +111,133 @@ ML services never touch audio devices.
 - [ ] SSH in over the Tailscale address (do not expose SSH to the LAN/WAN).
       `systemctl enable docker` plus `restart: unless-stopped` covers reboots;
       there are no custom systemd units.
+
+### Dashboard over Tailscale
+
+The Dashboard is a separate listener served by `assistant`, using
+server-rendered Go templates and htmx. It is **off** until a Tailscale owner is
+configured, and it is meant to be reached only through `tailscale serve`, never
+published to the LAN or the internet.
+
+1. **Set the owner.** Put the exact login from `tailscale status --json` (or the
+   admin console) in `.env`, and keep the loopback port unless it clashes:
+
+   ```sh
+   ASSISTANT_DASHBOARD_PORT=8082
+   ASSISTANT_DASHBOARD_OWNER=you@example.com
+   ```
+
+   Then deploy or restart the assistant container. An empty owner disables the
+   listener. If you change `ASSISTANT_DASHBOARD_PORT`, use the same port in the
+   `tailscale serve` command below. `assistant/config.yaml` documents
+   `dashboard.owner`, `addr` and `health_timeout`.
+
+2. **Enable HTTPS on the tailnet** if it is not already on. `tailscale serve`
+   provisions the certificate for the Pi's `*.ts.net` name.
+
+3. **Proxy the loopback port from the Pi host**, not from inside a container:
+
+   ```sh
+   tailscale serve --bg 8082
+   tailscale serve status
+   ```
+
+   Serve sends `https://<pi-name>.<tailnet>.ts.net/` to
+   `http://127.0.0.1:8082`; opening that URL from any device in the tailnet
+   shows the Health page.
+
+4. **Limit the port to the owner in the tailnet policy.** Serve traffic is
+   subject to the ACL at the destination port, 443. A grant scoped to the Pi's
+   host alias does that, for example:
+
+   ```json
+   {
+     "hosts": {
+       "pi": "100.x.y.z"
+     },
+     "grants": [
+       {
+         "src": ["you@example.com"],
+         "dst": ["pi"],
+         "ip": ["tcp:443"]
+       }
+     ]
+   }
+   ```
+
+   If a broader rule already lets other members reach port 443 on the Pi, this
+   port is not isolated; narrow or remove that rule. Do not use
+   `tailscale funnel`: public traffic has no Tailscale identity headers, and the
+   Dashboard rejects it.
+
+**How the loopback boundary works.** Compose publishes the Dashboard on
+`127.0.0.1:8082` on the host and sets `ASSISTANT_DASHBOARD_ADDR=:8082` inside
+the container. Docker cannot reach a listener bound to `127.0.0.1` *inside* a
+container through a published port, so the container binds all interfaces just
+as the debug entry does. The host publication is still loopback-only. The
+handler refuses any request whose source is not loopback or the container's
+default gateway (the host) before it reads identity headers, and it ignores
+`X-Forwarded-For`. A LAN or tailnet client that somehow reaches the port
+directly therefore cannot authenticate by sending its own
+`Tailscale-User-Login`. Never add a LAN/WAN port mapping for 8082.
+
+`tailscale serve` strips client-supplied `Tailscale-*` headers and adds the
+authenticated `Tailscale-User-Login`. The Dashboard requires exactly one such
+header and compares it to the configured owner; other identities, missing
+headers, duplicate headers and tagged devices are refused with 403.
+
+Check the listener locally:
+
+```sh
+# No identity header: rejected.
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8082/health
+
+# The configured owner: 200 and the Health page.
+curl -s -H 'Tailscale-User-Login: you@example.com' http://127.0.0.1:8082/health | head
+```
+
+The second command is only a local smoke test; from another device use the
+HTTPS `*.ts.net` URL, which carries the real identity.
+
+The Dashboard also mounts the settings/Tool-override API under `/api/`
+(`/api/settings`, `/api/tools`, `/api/secrets`) behind the same identity check.
+Mutating API requests must be same-origin; the debug listener keeps its own
+localhost-only mount of the same handler. The **Tools and settings** page at
+`/settings` edits the same service: Tool enabled/Permission, the wording lists,
+and any other setting the service exposes (including the sound and voice
+settings, which appear without a page change). Wording settings
+(`tools.<name>.control_phrases`, `tools.<name>.examples`,
+`agent.request_prefixes`, `agent.filler`, `agent.unavailable_message`), the
+model name (`agent.model`), `voice.name` and `voice.rate` are marked `live` and
+apply to the next request or in the background (a voice/rate change also
+re-synthesizes the cached Agent Filler). Connection-level settings (`http.addr`, `debug.addr`,
+`dashboard.addr`, `tts.addr`, `wakeword.addr`, `stt.addr`, `embed.url`,
+`capture.source`, `playback.sink`) are marked `restart_required`: the override
+is stored, but only the next process start reads it, and the page says so. See
+the README for the curl examples.
+
+The **Voices** page at `/voices` lists built-in and custom Pocket TTS states,
+uploads a `.safetensors` state (at most 32 MB; `.pt`/`.pth` are refused),
+previews one in the browser, chooses the active voice and speech rate, and
+records an optional source/consent note. An upload is staged and header-checked
+before TTS is called, then smoke-tested and published atomically; a rejected
+file leaves the library unchanged. Previews synthesize one short phrase to WAV
+and never play on the Pi speaker or change the active voice. See the README for
+the validation and rollback sequence.
+
+The **Secrets** page at `/secrets` lists every declared secret (Tool modules
+and the active Agent provider) with `set`, `last4`, update time and source
+(`.env` or stored). Replace and Clear post to the same authenticated Dashboard;
+a cleared stored value falls back to `.env` immediately. No value is revealed,
+prefilled or echoed, and a new module declaration appears without a page edit.
+
+The Health page shows the five current Compose services (`embed`, `assistant`,
+`wakeword`, `stt`, `tts`), the resolved location and each Tool module that
+declares a health check. `embed` is checked over HTTP `/healthz`; the three
+Wyoming services are checked with `describe`; `assistant` is the process serving
+the page. One refresh is bounded by `dashboard.health_timeout` (3 s), and checks
+that overrun are shown as timed out. These are endpoint checks, not Docker's
+container health field.
 
 ### Audio and the Echo Dot
 
@@ -140,11 +270,34 @@ ML services never touch audio devices.
 - [ ] Create the host-local `.env` and adjust it:
       `cd ~/clanka-bot && cp .env.example .env`, set `TZ`, ports,
       `ASSISTANT_PULSE_SINK` and `ASSISTANT_PULSE_SOURCE` (the `parec` source
-      from `pactl list short sources`). `.env` is gitignored and never baked
-      into an image.
+      from `pactl list short sources`), and set `ASSISTANT_DASHBOARD_OWNER` to
+      your Tailscale login if you want the Dashboard (empty disables it).
+      `.env` is gitignored and never baked into an image.
 - [ ] `make check`
 - [ ] `make deploy` (or `scripts/deploy.sh`)
 - [ ] Verify: `docker compose ps`, `curl -s localhost:8080/healthz`
+- [ ] The `assistant-data` volume holds the SQLite database (ADR-0003) and the
+      `sounds/` sound library (canonical WAVs uploaded or dropped there). It
+      survives container restarts and image rebuilds. `assistant` is its only
+      mounter. It holds settings overrides and unencrypted secrets (API keys,
+      tokens) in a file mode 0600; treat a backup like the secrets it contains.
+- [ ] The separate `assistant-voices` volume holds custom voice states at
+      `/app/data/voices` in `assistant`; `tts` mounts only that volume,
+      read-only, at `/voices`. Only the voices subtree is exposed, never the
+      database or secrets. Back it up with `assistant-data`.
+      `docker compose down -v` deletes both: back them up first if the
+      settings, sounds, voices or secrets matter.
+- [ ] Custom voices: upload pre-exported Pocket TTS `.safetensors` states on
+      the Dashboard's `/voices` page, or copy them into the voices volume for
+      example `docker compose cp ./jarvis.safetensors
+      assistant:/app/data/voices/` and restart `assistant`. Only
+      `.safetensors` is accepted, at most 32 MB; `.pt`/`.pth` pickle files are
+      refused. The Dashboard path stages the file, runs the header check before
+      any model call, smoke-tests it, records the revision it passed against,
+      and publishes it atomically; it also flags a stale state for re-export and
+      records the optional consent note. A manual copy is picked up by a
+      restart, which runs the same checks during the library rescan. The active
+      voice warm-loads; others load on first use.
 - [ ] Reboot once and confirm the stack comes back without a login.
 
 ## Image tags and rollback

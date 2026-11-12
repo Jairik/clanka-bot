@@ -160,8 +160,9 @@ type Stream struct {
 }
 
 // Synthesize sends one piece of text and returns the audio stream. It waits for
-// the first audio-start so Format is known before playback opens.
-func (c *Client) Synthesize(ctx context.Context, text string, voice Voice) (*Stream, error) {
+// the first audio-start so Format is known before playback opens. Options carry
+// the live speech rate; the voice still names the library entry.
+func (c *Client) Synthesize(ctx context.Context, text string, voice Voice, opts ...SynthesisOption) (*Stream, error) {
 	if text == "" {
 		return nil, errors.New("wyoming: text is required")
 	}
@@ -171,6 +172,7 @@ func (c *Client) Synthesize(ctx context.Context, text string, voice Voice) (*Str
 	}
 	data := map[string]any{"text": text}
 	addVoice(data, voice)
+	addRate(data, opts)
 	if err := s.write("synthesize", data); err != nil {
 		s.Close()
 		return nil, err
@@ -184,13 +186,15 @@ func (c *Client) Synthesize(ctx context.Context, text string, voice Voice) (*Str
 
 // OpenStream starts a streaming synthesis. Call SendText as sentences are
 // ready, EndText when the text is complete, and Next for audio as it arrives.
-func (c *Client) OpenStream(ctx context.Context, voice Voice) (*Stream, error) {
+// The rate is fixed for the whole stream, like the voice.
+func (c *Client) OpenStream(ctx context.Context, voice Voice, opts ...SynthesisOption) (*Stream, error) {
 	s, err := c.open(ctx, modeText)
 	if err != nil {
 		return nil, err
 	}
 	data := map[string]any{}
 	addVoice(data, voice)
+	addRate(data, opts)
 	if err := s.write("synthesize-start", data); err != nil {
 		s.Close()
 		return nil, err

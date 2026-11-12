@@ -291,3 +291,18 @@ func TestWeatherCachesGeocodeAndForecastBriefly(t *testing.T) {
 		t.Fatalf("upstream calls = geocode:%d forecast:%d, want 1 each within the TTL", geoCalls, forecastCalls)
 	}
 }
+
+// TestModuleDefaultsMatchTheShippedBounds pins the defaults a missing
+// tools.weather section falls back to.
+func TestModuleDefaultsMatchTheShippedBounds(t *testing.T) {
+	cfg := weather.DefaultConfig()
+	if cfg.GeocodingURL != weather.DefaultGeocodingURL || cfg.ForecastURL != weather.DefaultForecastURL {
+		t.Fatalf("default upstreams = %q / %q", cfg.GeocodingURL, cfg.ForecastURL)
+	}
+	if cfg.Timeout.Duration() != 1500*time.Millisecond {
+		t.Errorf("timeout = %s, want 1.5s", cfg.Timeout.Duration())
+	}
+	if cfg.Budget.Duration() != 2*time.Second {
+		t.Errorf("budget = %s, want 2s", cfg.Budget.Duration())
+	}
+}

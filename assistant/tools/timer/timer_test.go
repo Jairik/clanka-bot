@@ -174,7 +174,7 @@ func TestCancelToolSpeaks(t *testing.T) {
 
 func TestTimerToolsAreFastPathEligible(t *testing.T) {
 	reg := newRegistry(t, newManager(nil))
-	for _, name := range []string{timer.SetName, timer.CancelName, timer.ListName} {
+	for _, name := range []string{timer.SetName, timer.CancelName, timer.RemainingName, timer.ListName} {
 		info, ok := reg.Info(name)
 		if !ok {
 			t.Fatalf("%s not registered", name)
@@ -182,8 +182,30 @@ func TestTimerToolsAreFastPathEligible(t *testing.T) {
 		if info.Permission != tool.PermissionAct && info.Permission != tool.PermissionRead {
 			t.Errorf("%s Permission = %q, want read or act", name, info.Permission)
 		}
-		if info.LocalOnly || !info.HasSpeak || len(info.Examples) == 0 {
+		if !info.HasSpeak || len(info.Examples) == 0 {
 			t.Errorf("%s metadata = %+v", name, info)
+		}
+	}
+}
+
+// TestListIsLocalOnly keeps the privacy declaration explicit: a timer label can
+// name something private, so the list never reaches the Agent path.
+func TestListIsLocalOnly(t *testing.T) {
+	reg := newRegistry(t, newManager(nil))
+	info, ok := reg.Info(timer.ListName)
+	if !ok {
+		t.Fatal("timer.list not registered")
+	}
+	if !info.LocalOnly {
+		t.Fatal("timer.list is not LocalOnlyYes")
+	}
+	for _, name := range []string{timer.SetName, timer.CancelName, timer.RemainingName} {
+		info, ok := reg.Info(name)
+		if !ok {
+			t.Fatalf("%s not registered", name)
+		}
+		if info.LocalOnly {
+			t.Errorf("%s is LocalOnlyYes, want LocalOnlyNo", name)
 		}
 	}
 }

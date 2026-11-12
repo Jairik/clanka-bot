@@ -169,6 +169,8 @@
     </select>
     {{else if eq .FormKind "number"}}
     <input id="field-{{.Anchor}}" name="value" type="number" step="1" value="{{.Edit}}">
+    {{else if eq .FormKind "decimal"}}
+    <input id="field-{{.Anchor}}" name="value" type="number" step="any" value="{{.Edit}}">
     {{else if eq .FormKind "duration"}}
     <input id="field-{{.Anchor}}" name="value" type="text" value="{{.Edit}}" placeholder="e.g. 9m0s">
     {{else}}

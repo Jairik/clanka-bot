@@ -73,15 +73,17 @@ func TestTypedSettingsRoundTrip(t *testing.T) {
 		settings.Bool("quiet.enabled", true),
 		settings.Int("ring.max", 5),
 		settings.Duration("snooze", 9*time.Minute),
+		settings.Float("name_match.threshold", 0.6),
 		settings.Strings("semantic.joiners", []string{"and", "then"}),
 	)
 	ctx := context.Background()
 
 	values := map[string]any{
-		"quiet.enabled":    false,
-		"ring.max":         7,
-		"snooze":           30 * time.Second,
-		"semantic.joiners": []string{"and"},
+		"quiet.enabled":        false,
+		"ring.max":             7,
+		"snooze":               30 * time.Second,
+		"name_match.threshold": 0.75,
+		"semantic.joiners":     []string{"and"},
 	}
 	for key, want := range values {
 		value, err := svc.Set(ctx, key, want)
@@ -100,6 +102,9 @@ func TestTypedSettingsRoundTrip(t *testing.T) {
 	}
 	if got := svc.Duration("snooze"); got != 30*time.Second {
 		t.Errorf("Duration(snooze) = %s, want 30s", got)
+	}
+	if got := svc.Float("name_match.threshold"); got != 0.75 {
+		t.Errorf("Float(name_match.threshold) = %v, want 0.75", got)
 	}
 	if got := svc.Strings("semantic.joiners"); len(got) != 1 || got[0] != "and" {
 		t.Errorf("Strings(semantic.joiners) = %v, want [and]", got)

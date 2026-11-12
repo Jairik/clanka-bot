@@ -25,6 +25,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/embed"
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
+	"github.com/Jairik/clanka-bot/assistant/internal/namematch"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	"github.com/Jairik/clanka-bot/assistant/internal/playback"
 	"github.com/Jairik/clanka-bot/assistant/internal/reply"
@@ -234,6 +235,12 @@ func run() error {
 	// modules register (they capture Deps), but it only becomes live once the
 	// settings service below is created and bound.
 	zone := tz.New(os.Getenv("TZ"), logger)
+	// One matcher serves sound, voice and playlist names. Its threshold is
+	// bound to the settings service below, after the definitions are built;
+	// until then it uses the config value as its fallback.
+	nameThreshold := namematch.NewThreshold(baseCfg.NameMatch.Threshold)
+	embedClient := embed.NewClient(cfg.Embed.URL, cfg.Embed.Model)
+	names := namematch.New(embedClient, namematch.Config{Threshold: nameThreshold.Get})
 	deps := tool.Deps{
 		Logger:        logger,
 		Location:      locSvc.Current,
@@ -245,6 +252,7 @@ func run() error {
 		Zone:          zone,
 		Cues:          cues,
 		Ring:          ringEngine,
+		Names:         names,
 	}
 	if speechSpeaker != nil {
 		deps.Speaker = speechSpeaker
@@ -275,6 +283,7 @@ func run() error {
 	defs := append(connections.Definitions(config.Default(), baseCfg), wordingSetup.Definitions...)
 	defs = append(defs, toolDefs...)
 	defs = append(defs, tz.Definition(baseCfg.Timezone))
+	defs = append(defs, namematch.Definition(baseCfg.NameMatch.Threshold))
 	// Sound role assignments are live settings too, so the Dashboard write and
 	// the running Cue resolution share the same service.
 	defs = append(defs, cues.Definitions(sound.Config{
@@ -302,6 +311,9 @@ func run() error {
 	// Bind after the service exists so the timezone is live overridable: the
 	// Dashboard's settings handler and any voice Tool write the same service.
 	zone.Bind(settingsSvc)
+	// The matcher reads this per lookup, so a Dashboard change applies without
+	// a restart and without a second settings observer.
+	nameThreshold.Bind(settingsSvc)
 	// Bind the same live settings service the Dashboard writes, so a role
 	// change applies on the next Cue. The shared serial sink keeps a Cue from
 	// overlapping a reply.
@@ -411,7 +423,7 @@ func run() error {
 	// Compute Tool example vectors from the effective Examples (a stored
 	// override may already exist). A dead embed service only disables semantic
 	// matching, leaving Control phrases and the Agent path working.
-	semantic := pipeline.NewSemanticRouter(registry, embed.NewClient(cfg.Embed.URL, cfg.Embed.Model), pipeline.SemanticConfig{
+	semantic := pipeline.NewSemanticRouter(registry, embedClient, pipeline.SemanticConfig{
 		Threshold: cfg.Semantic.Threshold,
 		Margin:    cfg.Semantic.Margin,
 		Joiners:   cfg.Semantic.Joiners,

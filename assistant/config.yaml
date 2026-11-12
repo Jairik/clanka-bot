@@ -84,6 +84,14 @@ semantic:
   # Compound requests with one of these joiners go to the Agent path.
   joiners: ["and", "then", "also"]
 
+# The shared spoken-name matcher for sounds, voices and Spotify playlists.
+# This value is the config layer of the live `name_match.threshold` setting; a
+# Dashboard or voice override wins. Exact and normalised names always resolve
+# first; only a near miss needs the embed service. Raise it to be stricter,
+# lower it to accept looser wording. See README.md "Name matching".
+name_match:
+  threshold: 0.60
+
 tts:
   # Wyoming TTS service. Compose sets this to the tts container; an empty
   # address disables spoken replies and leaves the debug entry text-only.

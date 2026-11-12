@@ -12,6 +12,7 @@ import (
 
 	"github.com/Jairik/clanka-bot/assistant/internal/agent"
 	"github.com/Jairik/clanka-bot/assistant/internal/dashboard"
+	"github.com/Jairik/clanka-bot/assistant/internal/namematch"
 	"github.com/Jairik/clanka-bot/assistant/internal/ring"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
@@ -84,15 +85,15 @@ func newSettingsFixture(t *testing.T) *settingsFixture {
 		settings.String("timezone", "", settings.WithConfig("Europe/London")),
 		// A future sound setting must appear without a hardcoded page list.
 		settings.String("sounds.wake", "builtin/wake.wav", settings.WithConfig("builtin/wake.wav")),
-	)
-	// The per-kind Ring settings are ordinary live settings; #48's page must
-	// expose them dynamically, including the Timer/Alarm split.
-	defs = append(defs, ring.Definitions()...)
-	defs = append(defs,
+		// A numeric setting needs a decimal editor, not the no-editor fallback.
+		namematch.Definition(0.62),
 		settings.String("http.addr", "127.0.0.1:8080",
 			settings.WithKind(settings.RestartRequired),
 			settings.WithConfig("127.0.0.1:8080")),
 	)
+	// The per-kind Ring settings are ordinary live settings; #48's page must
+	// expose them dynamically, including the Timer/Alarm split.
+	defs = append(defs, ring.Definitions()...)
 	svc, err := settings.New(ctx, st, defs...)
 	if err != nil {
 		t.Fatalf("settings.New: %v", err)
@@ -214,6 +215,41 @@ func TestSettingsPageRendersFutureSettingsFromTheServiceList(t *testing.T) {
 		if !strings.Contains(body, key) || !strings.Contains(body, "/settings/values/"+key) {
 			t.Errorf("Ring setting %q does not appear dynamically", key)
 		}
+	}
+	threshold := pageSection(t, body, `id="setting-name_match.threshold"`)
+	if !strings.Contains(threshold, "0.62") || !strings.Contains(threshold, `step="any"`) {
+		t.Errorf("numeric threshold has no decimal editor: %s", threshold)
+	}
+	if !strings.Contains(threshold, "/settings/values/name_match.threshold") {
+		t.Error("numeric threshold has no generated form action")
+	}
+}
+
+func TestSettingsFloatFormSavesAndResets(t *testing.T) {
+	f := newSettingsFixture(t)
+
+	rec := f.post("/settings/values/name_match.threshold", url.Values{"value": {"0.74"}})
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("save status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if got := f.settings.Float(namematch.KeyThreshold); got != 0.74 {
+		t.Fatalf("threshold = %v, want the saved 0.74", got)
+	}
+
+	rec = f.post("/settings/values/name_match.threshold", url.Values{"value": {"not-a-number"}})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid number status = %d, want 400", rec.Code)
+	}
+	if got := f.settings.Float(namematch.KeyThreshold); got != 0.74 {
+		t.Fatalf("threshold = %v after a rejected form, want 0.74", got)
+	}
+
+	rec = f.post("/settings/values/name_match.threshold/reset", url.Values{})
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("reset status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if got := f.settings.Float(namematch.KeyThreshold); got != 0.62 {
+		t.Fatalf("threshold after reset = %v, want the config 0.62", got)
 	}
 }
 

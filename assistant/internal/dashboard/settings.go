@@ -452,6 +452,10 @@ func newSettingView(value settings.Value, edit *editState) settingView {
 		view.FormKind = "number"
 		view.Value = strconv.Itoa(typed)
 		view.Edit = view.Value
+	case float64:
+		view.FormKind = "decimal"
+		view.Value = strconv.FormatFloat(typed, 'g', -1, 64)
+		view.Edit = view.Value
 	case time.Duration:
 		view.FormKind = "duration"
 		view.Value = typed.String()
@@ -506,6 +510,13 @@ func settingFormValue(value settings.Value, text string) (json.RawMessage, *edit
 		parsed, err := strconv.Atoi(strings.TrimSpace(text))
 		if err != nil {
 			return nil, edit, fmt.Errorf("must be a whole number")
+		}
+		raw, err := json.Marshal(parsed)
+		return raw, edit, err
+	case float64:
+		parsed, err := strconv.ParseFloat(strings.TrimSpace(text), 64)
+		if err != nil {
+			return nil, edit, fmt.Errorf("must be a number")
 		}
 		raw, err := json.Marshal(parsed)
 		return raw, edit, err
@@ -586,6 +597,7 @@ var settingLabels = map[string]string{
 	"agent.unavailable_message": "Unavailable message",
 	"agent.request_prefixes":    "Request prefixes",
 	"timezone":                  "Timezone",
+	"name_match.threshold":      "Name match threshold",
 	"http.addr":                 "HTTP address",
 	"debug.addr":                "Debug address",
 	"dashboard.addr":            "Dashboard address",

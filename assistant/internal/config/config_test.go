@@ -38,6 +38,8 @@ semantic:
   threshold: 0.75
   margin: 0.1
   joiners: ["and", "then"]
+name_match:
+  threshold: 0.66
 agent:
   request_prefixes: ["ask the agent", "hey agent"]
 `)
@@ -78,6 +80,9 @@ agent:
 	if len(cfg.Semantic.Joiners) != 2 || cfg.Semantic.Joiners[0] != "and" {
 		t.Errorf("Semantic.Joiners = %v", cfg.Semantic.Joiners)
 	}
+	if cfg.NameMatch.Threshold != 0.66 {
+		t.Errorf("NameMatch.Threshold = %v, want 0.66", cfg.NameMatch.Threshold)
+	}
 	if len(cfg.Agent.RequestPrefixes) != 2 || cfg.Agent.RequestPrefixes[1] != "hey agent" {
 		t.Errorf("Agent.RequestPrefixes = %v", cfg.Agent.RequestPrefixes)
 	}
@@ -117,6 +122,9 @@ func TestLoadAppliesDefaultsForOmittedFields(t *testing.T) {
 	}
 	if len(cfg.Semantic.Joiners) == 0 {
 		t.Error("Semantic.Joiners is empty")
+	}
+	if cfg.NameMatch.Threshold != 0.60 {
+		t.Errorf("NameMatch.Threshold = %v, want 0.60", cfg.NameMatch.Threshold)
 	}
 	if len(cfg.Agent.RequestPrefixes) == 0 {
 		t.Error("Agent.RequestPrefixes is empty")
@@ -330,6 +338,8 @@ func TestLoadRejectsInvalidSettings(t *testing.T) {
 		{"threshold above one", "semantic:\n  threshold: 1.5\n"},
 		{"negative margin", "semantic:\n  margin: -0.1\n"},
 		{"margin of one", "semantic:\n  margin: 1.0\n"},
+		{"zero name match threshold", "name_match:\n  threshold: 0\n"},
+		{"name match threshold above one", "name_match:\n  threshold: 1.5\n"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

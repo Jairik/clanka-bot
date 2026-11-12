@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math"
 	"regexp"
 	"sort"
 	"strings"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/Jairik/clanka-bot/assistant/internal/phrase"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
+	"github.com/Jairik/clanka-bot/assistant/internal/vector"
 )
 
 // Fall-through reasons reported in the request log.
@@ -195,7 +195,7 @@ func (r *SemanticRouter) BuildSet(ctx context.Context, examples map[string][]str
 		} else if len(vec) != set.dims {
 			return nil, fmt.Errorf("semantic router: example vector %d has %d dimensions, want %d", i, len(vec), set.dims)
 		}
-		set.examples = append(set.examples, example{tool: refs[i].tool, vec: normalize(vec)})
+		set.examples = append(set.examples, example{tool: refs[i].tool, vec: vector.Normalize(vec)})
 		seen[refs[i].tool] = true
 	}
 	set.tools = len(seen)
@@ -257,11 +257,11 @@ func (r *SemanticRouter) Match(ctx context.Context, transcript string) SemanticR
 		result.Err = fmt.Errorf("semantic router: utterance vector shape %d/%d, want 1/%d", len(vectors), vectorLen(vectors), set.dims)
 		return result
 	}
-	query := normalize(vectors[0])
+	query := vector.Normalize(vectors[0])
 
 	best := make(map[string]float64, set.tools)
 	for _, ex := range set.examples {
-		score := dot(query, ex.vec)
+		score := vector.Dot(query, ex.vec)
 		if current, ok := best[ex.tool]; !ok || score > current {
 			best[ex.tool] = score
 		}
@@ -391,30 +391,6 @@ func topN(scores []ToolScore, n int) []ToolScore {
 		scores = scores[:n]
 	}
 	return append([]ToolScore{}, scores...)
-}
-
-func normalize(vec []float32) []float32 {
-	var sum float64
-	for _, v := range vec {
-		sum += float64(v) * float64(v)
-	}
-	if sum == 0 {
-		return append([]float32{}, vec...)
-	}
-	norm := math.Sqrt(sum)
-	out := make([]float32, len(vec))
-	for i, v := range vec {
-		out[i] = float32(float64(v) / norm)
-	}
-	return out
-}
-
-func dot(a, b []float32) float64 {
-	var sum float64
-	for i := range a {
-		sum += float64(a[i]) * float64(b[i])
-	}
-	return sum
 }
 
 func vectorLen(vectors [][]float32) int {

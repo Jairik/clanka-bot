@@ -36,7 +36,7 @@ make build-arm64 # optional QEMU arm64 build of every image (not for latency)
    in `docker-compose.yml` to be healthy. On failure it exits non-zero, prints
    `docker compose ps` and the logs of the failing service(s).
 6. Because the service list comes from Compose, the script keeps working as the
-   stack grows from `assistant` alone to all six services.
+   stack grows from `assistant` alone to all seven services.
 
 **With a commit — rollback without rebuilding**
 
@@ -262,13 +262,15 @@ invents one. Outbound HTTPS to the configured ntfy server must be reachable
 from the Pi. See the README's **Notifications** section for the security
 caveat and the self-hosted token steps.
 
-The Health page shows the six current Compose services (`embed`, `assistant`,
-`wakeword`, `stt`, `tts`, `web-search`), the resolved location and each Tool
-module that declares a health check. `embed` and `web-search` are checked over
-HTTP `/healthz`; the three Wyoming services are checked with `describe`;
-`assistant` is the process serving the page. One refresh is bounded by
+The Health page shows the seven current Compose services (`embed`, `assistant`,
+`wakeword`, `stt`, `tts`, `web-search`, `librespot`), the resolved location,
+each Tool module that declares a health check, and the two Spotify grants
+separately. `embed` and `web-search` are checked over HTTP `/healthz`; the three
+Wyoming services are checked with `describe`; `assistant` is the process
+serving the page; `librespot` is checked by the heartbeat it writes to the
+metadata-only status volume. One refresh is bounded by
 `dashboard.health_timeout` (3 s), and checks that overrun are shown as timed
-out. These are endpoint checks, not Docker's container health field.
+out. These are endpoint/status checks, not Docker's container health field.
 
 ### Audio and the Echo Dot
 
@@ -290,10 +292,62 @@ out. These are endpoint checks, not Docker's container health field.
 
 - [ ] Make the Echo Dot the default sink and check playback:
       `pactl set-default-sink <sink>`; `speaker-test -t wav -c 2`.
-- [ ] Compose already mounts the host's Pulse socket into `assistant` only
-      (#17); set `ASSISTANT_UID`/`ASSISTANT_GID` to the user that owns it and
-      `ASSISTANT_PULSE_SINK` to the Echo Dot's sink. Never give the socket to
-      the ML services.
+- [ ] Compose mounts the host's Pulse socket into `assistant` and `librespot`
+      only (#17, ADR-0004); set `ASSISTANT_UID`/`ASSISTANT_GID` to the user
+      that owns it and `ASSISTANT_PULSE_SINK` to the Echo Dot's sink. Both
+      audio containers use the same named sink. Never give the socket to the
+      ML services.
+
+### Spotify Connect and Web API
+
+Spotify is optional. Pairing and Web API auth are separate; one can work
+without the other.
+
+- [ ] Create an app in the Spotify Developer Dashboard and add the exact
+      redirect URI to its **Redirect URIs** allowlist:
+
+      ```text
+      https://<pi-name>.<tailnet>.ts.net/spotify/callback
+      ```
+
+      HTTPS is required except for a loopback IP literal; `localhost` is not
+      accepted. Development mode is fine for one account: its owner needs
+      Premium and it allows five authenticated users. There is no client
+      secret; the flow uses Authorization Code with PKCE.
+- [ ] Put the public client ID and the same redirect URI in `.env`:
+      `SPOTIFY_CLIENT_ID`, `SPOTIFY_REDIRECT_URI`, and optionally
+      `SPOTIFY_DEVICE_NAME`, `SPOTIFY_ZEROCONF_INTERFACE`,
+      `SPOTIFY_MDNS_HOSTNAME`, `SPOTIFY_ZEROCONF_PORT`, `SPOTIFY_BITRATE`,
+      `SPOTIFY_INITIAL_VOLUME` and `SPOTIFY_CACHE_LIMIT`. A client ID without a redirect URI (or the reverse)
+      is a startup error, not a silently disabled button.
+- [ ] `librespot` uses **host networking**. Spotify Connect discovery is mDNS;
+      a Docker bridge network hides the multicast from the LAN. No port is
+      published. Allow UDP 5353 and the configured zeroconf TCP port on the
+      LAN. The container runs its own D-Bus/Avahi responder restricted to the
+      default-route interface and IPv4, so the host needs no Avahi daemon or
+      D-Bus socket mount. On a multi-homed host (Tailscale, Docker, Wi-Fi),
+      set `SPOTIFY_ZEROCONF_INTERFACE` to the LAN interface name (for example
+      `wlan0` or `eth0`) so the advertised address is reachable. It is an
+      interface name, not an IP. `SPOTIFY_MDNS_HOSTNAME` changes the
+      `.local` name Avahi publishes (default `clanka`).
+- [ ] Pair once: open Spotify on a phone or desktop on the same LAN, play
+      something, open **Devices**, and choose `Clanka` (or
+      `SPOTIFY_DEVICE_NAME`). The credentials are cached in the
+      `librespot-cache` volume; later container restarts reuse them. The
+      Assistant never mounts that volume.
+- [ ] Open the Dashboard's `/spotify` page over Tailscale and click **Connect
+      Web API**. The callback writes only `SPOTIFY_REFRESH_TOKEN` to the
+      write-only secrets table. The same token appears on `/secrets`; the
+      Spotify page never shows it.
+- [ ] Check `/health`: **Connect pairing** reports paired/not paired (or
+      unavailable when the heartbeat is stale), and **Web API auth** reports
+      connected/configured/reconnect needed separately. A missing or stale
+      librespot heartbeat is never guessed as paired. Development-mode refresh
+      tokens last six months; a **reconnect needed** state means Connect again.
+- [ ] Troubleshoot with `docker compose logs librespot`,
+      `docker compose ps`, and `avahi-browse -t _spotify-connect._tcp`. The
+      `librespot-status` volume is metadata only; `librespot-cache` holds
+      credentials and must be treated like the secrets database.
 
 ### The stack
 
@@ -327,6 +381,12 @@ out. These are endpoint checks, not Docker's container health field.
       database or secrets. Back it up with `assistant-data`.
       `docker compose down -v` deletes both: back them up first if the
       settings, sounds, voices or secrets matter.
+- [ ] The `librespot-cache` volume holds Spotify Connect credentials and audio
+      cache; only `librespot` mounts it. The `librespot-status` volume holds a
+      metadata-only heartbeat (pairing/session/device/timestamp) and is mounted
+      read-only into `assistant` at `/spotify-status`. It contains no
+      credentials. `docker compose down -v` deletes both; pairing then needs to
+      be repeated from the Spotify app.
 - [ ] Custom voices: upload pre-exported Pocket TTS `.safetensors` states on
       the Dashboard's `/voices` page, or copy them into the voices volume for
       example `docker compose cp ./jarvis.safetensors
@@ -370,9 +430,11 @@ recognises `snapshot_download`, `hf_hub_download`, `from_pretrained`,
 `SentenceTransformer(...)`, `RUN python prefetch.py`, `/models` and the
 download CLIs.
 
-Verified across the six-service stack: `make check` reports OK, `make build-arm64`
-builds `assistant`, `embed`, `tts`, `wakeword`, `stt` and the `web-search`
-wrapper as `arm64`, and each image starts healthy with `--network none`. A
+The six-service stack remains as verified in #66. `make check` now reports OK
+for seven services. The new `librespot` image builds from the pinned v0.8.0
+commit and cross-builds for arm64; it is the one service that needs host
+networking and the host Pulse socket, so it is not run under `--network none`.
+The ML images still start healthy with `--network none`. A
 code-only `stt` rebuild logs `RUN python prefetch.py` as **CACHED** and rebuilds
 only the app-code `COPY`; the same holds for `tts` (prefetch layer cached) and
 `embed` (`SentenceTransformer(...)` layer cached), and `wakeword` only reruns

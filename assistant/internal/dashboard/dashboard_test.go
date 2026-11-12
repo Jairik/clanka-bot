@@ -8,6 +8,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -102,7 +104,7 @@ func TestNewDashboardRequiresAnOwner(t *testing.T) {
 
 func TestDashboardRejectsRequestsWithoutTheTailscaleLogin(t *testing.T) {
 	handler := newHandler(t, dashboard.Options{})
-	for _, path := range []string{"/", "/health", "/health/panel", "/alerts", "/settings", "/secrets", "/sounds", "/sounds/audio/chime", "/voices", "/voices/audio/alba", "/personas", "/static/app.css"} {
+	for _, path := range []string{"/", "/health", "/health/panel", "/alerts", "/settings", "/secrets", "/sounds", "/sounds/audio/chime", "/voices", "/voices/audio/alba", "/personas", "/spotify", "/static/app.css"} {
 		t.Run(path, func(t *testing.T) {
 			rec := serve(handler, request(http.MethodGet, path, ""))
 			if rec.Code != http.StatusForbidden {
@@ -431,13 +433,13 @@ func TestDashboardMountsTheAPIBehindAuthAndSameOrigin(t *testing.T) {
 	}
 }
 
-func TestComposeServiceChecksCoverTheSixServices(t *testing.T) {
+func TestComposeServiceChecksCoverTheSevenServices(t *testing.T) {
 	links := dashboard.ComposeServiceChecks(config.Default())
 	names := make([]string, 0, len(links))
 	for _, link := range links {
 		names = append(names, link.Name)
 	}
-	want := []string{"embed", "assistant", "wakeword", "stt", "tts", "web-search"}
+	want := []string{"embed", "assistant", "wakeword", "stt", "tts", "web-search", "librespot"}
 	if strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Fatalf("services = %v, want %v", names, want)
 	}
@@ -456,6 +458,37 @@ func TestComposeServiceChecksCoverTheSixServices(t *testing.T) {
 	}
 	if links[5].Check == nil {
 		t.Error("web-search check is not wired")
+	}
+	// The default config has no librespot status volume, so the row is
+	// explicitly unconfigured rather than a fabricated failure.
+	if links[6].Check != nil {
+		t.Error("librespot check = wired without a status file")
+	}
+}
+
+func TestLibrespotServiceCheckReadsTheHeartbeat(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "librespot.status")
+	cfg := config.Default()
+	cfg.Spotify.PairingStatusFile = path
+	links := dashboard.ComposeServiceChecks(cfg)
+	var check dashboard.ServiceCheck
+	for _, link := range links {
+		if link.Name == "librespot" {
+			check = link
+		}
+	}
+	if check.Check == nil {
+		t.Fatal("librespot check is not wired for a configured status file")
+	}
+	if err := check.Check(context.Background()); err == nil {
+		t.Fatal("a missing heartbeat was reported healthy")
+	}
+	updated := time.Now().UTC().Format(time.RFC3339)
+	if err := os.WriteFile(path, []byte("version=1\nstate=paired\nsession=unknown\ndevice=Clanka\nupdated="+updated+"\n"), 0o600); err != nil {
+		t.Fatalf("write heartbeat: %v", err)
+	}
+	if err := check.Check(context.Background()); err != nil {
+		t.Fatalf("fresh heartbeat check: %v", err)
 	}
 }
 

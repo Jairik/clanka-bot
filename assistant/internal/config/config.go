@@ -14,6 +14,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/notify"
 	"github.com/Jairik/clanka-bot/assistant/internal/quiet"
+	"github.com/Jairik/clanka-bot/assistant/internal/spotify"
 	"github.com/Jairik/clanka-bot/assistant/internal/tz"
 	"gopkg.in/yaml.v3"
 )
@@ -33,6 +34,9 @@ type Config struct {
 		// named volume here; local runs use ./data.
 		Dir string `yaml:"dir"`
 	} `yaml:"data"`
+	// Spotify is the non-secret Web API app configuration plus the librespot
+	// pairing heartbeat path. The refresh token is a write-only secret.
+	Spotify spotify.Config `yaml:"spotify"`
 	// Timezone is the IANA zone that clock-time Alarms and Reminders use. It is
 	// the config layer of the live `timezone` setting; empty falls back to TZ,
 	// then UTC. Nothing is inferred from an IP address.
@@ -263,6 +267,7 @@ func Default() Config {
 	cfg.Dashboard.Addr = "127.0.0.1:8082"
 	cfg.Dashboard.HealthTimeout = Duration(3 * time.Second)
 	cfg.Data.Dir = "data"
+	cfg.Spotify = spotify.DefaultConfig()
 	cfg.Tools.DefaultTimeout = Duration(2 * time.Second)
 	cfg.Embed.URL = "http://embed:8085"
 	cfg.Embed.Model = "sentence-transformers/all-MiniLM-L6-v2"
@@ -371,6 +376,21 @@ func applyEnv(cfg *Config) error {
 	if v := os.Getenv("ASSISTANT_DATA_DIR"); v != "" {
 		cfg.Data.Dir = v
 	}
+	// Spotify Web API app pair. The client ID is public; there is no client
+	// secret because the flow uses PKCE. The refresh token is a secret and is
+	// never read from this section.
+	if v := os.Getenv("SPOTIFY_CLIENT_ID"); v != "" {
+		cfg.Spotify.ClientID = v
+	}
+	if v := os.Getenv("SPOTIFY_REDIRECT_URI"); v != "" {
+		cfg.Spotify.RedirectURI = v
+	}
+	if v := os.Getenv("ASSISTANT_SPOTIFY_STATUS_FILE"); v != "" {
+		cfg.Spotify.PairingStatusFile = v
+	}
+	if v := os.Getenv("SPOTIFY_DEVICE_NAME"); v != "" {
+		cfg.Spotify.DeviceName = v
+	}
 	if v := os.Getenv("ASSISTANT_EMBED_URL"); v != "" {
 		cfg.Embed.URL = v
 	}
@@ -457,6 +477,9 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.Data.Dir) == "" {
 		return fmt.Errorf("config: data.dir is required")
+	}
+	if err := c.Spotify.Validate(); err != nil {
+		return fmt.Errorf("config: %w", err)
 	}
 	if _, err := tz.Load(c.Timezone); err != nil {
 		return fmt.Errorf("config: timezone: %w", err)

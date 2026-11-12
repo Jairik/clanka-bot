@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/config"
+	"github.com/Jairik/clanka-bot/assistant/internal/spotify"
 	"github.com/Jairik/clanka-bot/assistant/internal/wyoming"
 	"github.com/Jairik/clanka-bot/assistant/tools/web"
 )
@@ -18,9 +19,11 @@ import (
 // Health refresh short even when a model container is wedged.
 const wyomingHealthTimeout = 2 * time.Second
 
-// ComposeServiceChecks returns the six services in the current Compose stack.
-// The checks are endpoint checks, not Docker's health field: the page answers
-// whether the assistant can actually reach what it needs.
+// ComposeServiceChecks returns the seven services in the current Compose
+// stack. The checks are endpoint checks, not Docker's health field: the page
+// answers whether the assistant can actually reach what it needs. librespot
+// has no HTTP endpoint, so its check reads the heartbeat it writes to the
+// status volume.
 func ComposeServiceChecks(cfg config.Config) []ServiceCheck {
 	webCfg := web.FromConfig(cfg)
 	return []ServiceCheck{
@@ -30,6 +33,7 @@ func ComposeServiceChecks(cfg config.Config) []ServiceCheck {
 		WyomingService("stt", cfg.STT.Addr),
 		WyomingService("tts", cfg.TTS.Addr),
 		HTTPService("web-search", strings.TrimRight(webCfg.BaseURL, "/")+"/healthz"),
+		PairingService("librespot", cfg.Spotify.PairingStatusFile, cfg.Spotify.StaleAfter.Duration()),
 	}
 }
 
@@ -72,5 +76,22 @@ func WyomingService(name, addr string) ServiceCheck {
 		client := wyoming.NewClient(addr, wyoming.WithTimeout(wyomingHealthTimeout))
 		_, err := client.Describe(ctx)
 		return err
+	}}
+}
+
+// PairingService checks librespot's heartbeat file. A missing or stale file is
+// a real failure for the Compose row; the Spotify section separately reports
+// whether the cached credentials say paired or unpaired.
+func PairingService(name, path string, staleAfter time.Duration) ServiceCheck {
+	if strings.TrimSpace(path) == "" {
+		return ServiceCheck{Name: name}
+	}
+	reader := spotify.PairingReader{Path: path, StaleAfter: staleAfter}
+	return ServiceCheck{Name: name, Check: func(context.Context) error {
+		status := reader.Status()
+		if !status.Available {
+			return fmt.Errorf("%s", status.Detail)
+		}
+		return nil
 	}}
 }

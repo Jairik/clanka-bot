@@ -18,6 +18,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/secrets"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 	"github.com/Jairik/clanka-bot/assistant/internal/sound"
+	"github.com/Jairik/clanka-bot/assistant/internal/spotify"
 	"github.com/Jairik/clanka-bot/assistant/internal/status"
 	"github.com/Jairik/clanka-bot/assistant/internal/toolpolicy"
 	"github.com/Jairik/clanka-bot/assistant/internal/tz"
@@ -86,6 +87,11 @@ type Options struct {
 	// Personas backs the Persona page: the same library and atomic selection
 	// the persona Tools use. The page is read-only when it is nil.
 	Personas *persona.Service
+	// Spotify is the one Web API auth seam shared with the future Spotify
+	// Tools. The page never renders a token; the pairing reader is separate
+	// because Connect pairing and Web API auth are different grants.
+	Spotify        *spotify.Auth
+	SpotifyPairing *spotify.PairingReader
 	// ProxyAllowed overrides the trusted source-address check. Production uses
 	// the default (loopback plus the container's default gateway); tests inject
 	// their own address policy.
@@ -97,24 +103,26 @@ type Options struct {
 // Handler is the authenticated Dashboard mux. Register extra pages before
 // serving; the auth and security middleware already wraps every route.
 type Handler struct {
-	owner        string
-	logger       *slog.Logger
-	healthStatus *status.Source
-	settings     *settings.Service
-	tools        *toolpolicy.Policy
-	secrets      *secrets.Service
-	sounds       *sound.Service
-	previews     PreviewQueue
-	voices       *voicelib.Service
-	voiceProbe   voicelib.Probe
-	voicePreview VoicePreview
-	toolModules  ModuleProvider
-	zone         *tz.Service
-	now          func() time.Time
-	personas     *persona.Service
-	proxyAllowed func(net.IP) bool
-	templates    *template.Template
-	mux          *http.ServeMux
+	owner          string
+	logger         *slog.Logger
+	healthStatus   *status.Source
+	settings       *settings.Service
+	tools          *toolpolicy.Policy
+	secrets        *secrets.Service
+	sounds         *sound.Service
+	previews       PreviewQueue
+	voices         *voicelib.Service
+	voiceProbe     voicelib.Probe
+	voicePreview   VoicePreview
+	toolModules    ModuleProvider
+	zone           *tz.Service
+	now            func() time.Time
+	personas       *persona.Service
+	spotify        *spotify.Auth
+	spotifyPairing *spotify.PairingReader
+	proxyAllowed   func(net.IP) bool
+	templates      *template.Template
+	mux            *http.ServeMux
 }
 
 //go:embed templates/*.html static/*
@@ -158,24 +166,26 @@ func New(opts Options) (*Handler, error) {
 		})
 	}
 	h := &Handler{
-		owner:        owner,
-		logger:       logger,
-		healthStatus: healthStatus,
-		settings:     opts.Settings,
-		tools:        opts.ToolPolicy,
-		secrets:      opts.Secrets,
-		sounds:       opts.Sounds,
-		previews:     opts.PreviewQueue,
-		voices:       opts.Voices,
-		voiceProbe:   opts.VoiceProbe,
-		voicePreview: opts.VoicePreview,
-		toolModules:  opts.ToolModules,
-		zone:         opts.Zone,
-		now:          now,
-		personas:     opts.Personas,
-		proxyAllowed: opts.ProxyAllowed,
-		templates:    templates,
-		mux:          http.NewServeMux(),
+		owner:          owner,
+		logger:         logger,
+		healthStatus:   healthStatus,
+		settings:       opts.Settings,
+		tools:          opts.ToolPolicy,
+		secrets:        opts.Secrets,
+		sounds:         opts.Sounds,
+		previews:       opts.PreviewQueue,
+		voices:         opts.Voices,
+		voiceProbe:     opts.VoiceProbe,
+		voicePreview:   opts.VoicePreview,
+		toolModules:    opts.ToolModules,
+		zone:           opts.Zone,
+		now:            now,
+		personas:       opts.Personas,
+		spotify:        opts.Spotify,
+		spotifyPairing: opts.SpotifyPairing,
+		proxyAllowed:   opts.ProxyAllowed,
+		templates:      templates,
+		mux:            http.NewServeMux(),
 	}
 	// htmx is vendored under static/, so the UI works on a tailnet without
 	// internet access.
@@ -234,6 +244,14 @@ func New(opts Options) (*Handler, error) {
 	h.Mutating("POST /alerts/alarms/{id}/reset", h.alertAlarmReset)
 	h.Mutating("POST /secrets/{name}", h.secretsSet)
 	h.Mutating("POST /secrets/{name}/clear", h.secretsClear)
+	// Spotify Connect pairing and Web API auth are separate surfaces. The
+	// callback is a cross-site top-level GET from accounts.spotify.com, so it
+	// uses its own state/owner/cookie validation rather than Mutating.
+	h.Handle("/spotify", h.spotifyPage)
+	h.Handle("/spotify/callback", h.spotifyCallback)
+	h.Mutating("/spotify/connect", h.spotifyConnect)
+	h.Mutating("/spotify/verify", h.spotifyVerify)
+	h.Mutating("/spotify/disconnect", h.spotifyDisconnect)
 	h.Handle("/", h.index)
 	return h, nil
 }

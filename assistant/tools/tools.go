@@ -17,6 +17,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/tools/quiet"
 	"github.com/Jairik/clanka-bot/assistant/tools/random"
 	"github.com/Jairik/clanka-bot/assistant/tools/reminder"
+	spotifytools "github.com/Jairik/clanka-bot/assistant/tools/spotify"
 	"github.com/Jairik/clanka-bot/assistant/tools/system"
 	"github.com/Jairik/clanka-bot/assistant/tools/timer"
 	"github.com/Jairik/clanka-bot/assistant/tools/units"
@@ -50,6 +51,7 @@ func NewSet() *Set {
 		random.NewModule(),
 		persona.NewModule(),
 		web.NewModule(),
+		spotifytools.NewModule(),
 	}}
 }
 

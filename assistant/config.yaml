@@ -34,6 +34,34 @@ data:
   # unencrypted, so treat a backup like the secrets it contains.
   dir: "data"
 
+# Spotify. Connect pairing (librespot) and Web API auth are separate grants.
+# The Web API refresh token is a write-only secret named SPOTIFY_REFRESH_TOKEN;
+# it is never a value in this file. The OAuth flow is Authorization Code with
+# PKCE, so there is no client secret.
+spotify:
+  # Public client ID from the Spotify Developer Dashboard. Empty keeps the Web
+  # API page explanatory; pairing still works. Set it together with
+  # redirect_uri, or startup fails rather than silently disabling the button.
+  client_id: ""
+  # Must exactly match one Redirect URI in the app's allowlist, including the
+  # path. HTTPS is required except for a loopback IP literal; Spotify does not
+  # accept "localhost". Compose passes SPOTIFY_REDIRECT_URI from .env, e.g.
+  # https://<pi-name>.<tailnet>.ts.net/spotify/callback
+  redirect_uri: ""
+  # librespot's metadata-only heartbeat. Compose sets
+  # ASSISTANT_SPOTIFY_STATUS_FILE to /spotify-status/librespot.status and
+  # mounts the volume read-only; empty means the Health page reports pairing as
+  # unconfigured. This file contains no credentials.
+  pairing_status_file: ""
+  # The Connect device name. It must match the librespot container's
+  # SPOTIFY_DEVICE_NAME, which Compose sets from the same variable.
+  device_name: "Clanka"
+  # A heartbeat older than this is reported as unavailable, never guessed.
+  # librespot writes every 10 s.
+  stale_after: 45s
+  # One token or Web API request.
+  timeout: 10s
+
 # The IANA timezone clock-time Alarms and Reminders are interpreted in. This is
 # the config layer of the live `timezone` setting; a Dashboard or voice override
 # wins. Empty uses the TZ environment variable, then UTC, and UTC logs a startup

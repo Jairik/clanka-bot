@@ -3,6 +3,7 @@ package dashboard
 import (
 	"context"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/spotify"
 	"github.com/Jairik/clanka-bot/assistant/internal/status"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 )
@@ -19,6 +20,9 @@ type healthView struct {
 	Services      []checkView
 	Location      checkView
 	Modules       []checkView
+	// Spotify keeps Connect pairing and Web API auth separate; they are
+	// different grants and one can be healthy while the other is not.
+	Spotify []checkView
 }
 
 type checkView struct {
@@ -40,6 +44,7 @@ func (h *Handler) health(ctx context.Context) healthView {
 		Services:      checkViews(report.Services),
 		Location:      checkViewOf(report.Location),
 		Modules:       checkViews(report.Modules),
+		Spotify:       h.spotifyChecks(),
 	}
 }
 
@@ -58,4 +63,58 @@ func checkViewOf(check tool.StatusCheck) checkView {
 		StatusLabel: status.Label(check.State),
 		Detail:      check.Detail,
 	}
+}
+
+// spotifyChecks reports the two Spotify grants independently. It reads only
+// status metadata: pairing comes from librespot's heartbeat file, Web API auth
+// from the token manager's last safe result.
+func (h *Handler) spotifyChecks() []checkView {
+	pairing := spotify.PairingStatus{
+		State:  spotify.PairingNotConfigured,
+		Label:  "not configured",
+		Detail: "librespot pairing is not configured in this deployment.",
+	}
+	if h.spotifyPairing != nil {
+		pairing = h.spotifyPairing.Status()
+	}
+	pairingView := checkView{Name: "Connect pairing", Detail: pairing.Detail}
+	switch pairing.State {
+	case spotify.PairingPaired:
+		pairingView.Status = string(tool.StatusOK)
+		pairingView.StatusLabel = "paired"
+	case spotify.PairingNotPaired:
+		pairingView.Status = string(tool.StatusNotConfigured)
+		pairingView.StatusLabel = "not paired"
+	case spotify.PairingUnavailable:
+		pairingView.Status = string(tool.StatusError)
+		pairingView.StatusLabel = "unavailable"
+	default:
+		pairingView.Status = string(tool.StatusNotConfigured)
+		pairingView.StatusLabel = pairing.Label
+	}
+
+	webAPI := spotify.WebAPIStatus{
+		State:  spotify.WebAPINotConfigured,
+		Label:  "not configured",
+		Detail: "Spotify is not wired in this deployment.",
+	}
+	if h.spotify != nil {
+		webAPI = h.spotify.Status()
+	}
+	webView := checkView{Name: "Web API auth", Detail: webAPI.Detail}
+	switch webAPI.State {
+	case spotify.WebAPIConnected:
+		webView.Status = string(tool.StatusOK)
+		webView.StatusLabel = "connected"
+	case spotify.WebAPIReconnect:
+		webView.Status = string(tool.StatusError)
+		webView.StatusLabel = "reconnect needed"
+	case spotify.WebAPIError, spotify.WebAPIStoreUnavailable:
+		webView.Status = string(tool.StatusError)
+		webView.StatusLabel = "error"
+	default:
+		webView.Status = string(tool.StatusNotConfigured)
+		webView.StatusLabel = webAPI.Label
+	}
+	return []checkView{pairingView, webView}
 }

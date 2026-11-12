@@ -187,6 +187,7 @@ func TestFetchURLPolicy(t *testing.T) {
 		{"ftp", "ftp://example.com/file", errBadFetchURL},
 		{"javascript", "javascript:alert(1)", errBadFetchURL},
 		{"relative", "example.com/story", errBadFetchURL},
+		{"parser disagreement", `http://example.com\@127.0.0.1/`, errBadFetchURL},
 		{"credential user", "http://user@example.com/", errCredentials},
 		{"credential pair", "http://user:pass@example.com/", errCredentials},
 		{"loopback", "http://127.0.0.1/", errBlockedAddress},

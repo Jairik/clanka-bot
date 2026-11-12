@@ -27,7 +27,6 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/voice"
 	"github.com/Jairik/clanka-bot/assistant/internal/wyoming"
 	"github.com/Jairik/clanka-bot/assistant/tools"
-	"github.com/Jairik/clanka-bot/assistant/tools/weather"
 )
 
 func main() {
@@ -97,17 +96,17 @@ func run() error {
 		filler = loadAgentFiller(logger, client, wantVoice, cfg.Agent.Filler, cfg.TTS.Timeout.Duration())
 	}
 
-	// Timers reuse the reply Speaker for their alert.
-	var timerAlert func(context.Context, string) error
-	if speechSpeaker != nil {
-		timerAlert = speechSpeaker.SayText
+	// One module list owns Tool wiring; each module reads its tools.<name>
+	// section and falls back to code defaults.
+	deps := tool.Deps{
+		Logger:   logger,
+		Location: locSvc.Current,
+		Audio:    sink,
 	}
-	if err := tools.RegisterAll(registry, tools.Options{
-		Weather:    weather.Deps{Location: locSvc.Current},
-		Audio:      sink,
-		TimerAlert: timerAlert,
-		Logger:     logger,
-	}); err != nil {
+	if speechSpeaker != nil {
+		deps.Speaker = speechSpeaker
+	}
+	if err := tools.NewSet().RegisterAll(registry, deps, cfg.Tools.Sections); err != nil {
 		return fmt.Errorf("register tools: %w", err)
 	}
 

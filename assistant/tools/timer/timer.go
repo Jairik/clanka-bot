@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -42,24 +43,33 @@ type entry struct {
 
 // Manager owns the running timers and fires their alert.
 type Manager struct {
-	mu      sync.Mutex
-	now     func() time.Time
-	say     func(ctx context.Context, text string) error
-	logger  *slog.Logger
-	seq     int
-	entries map[string]*entry
+	mu        sync.Mutex
+	now       func() time.Time
+	say       func(ctx context.Context, text string) error
+	logger    *slog.Logger
+	alertText string
+	seq       int
+	entries   map[string]*entry
 }
 
-// NewManager builds an empty manager. A nil now uses time.Now; a nil sayer
-// still fires but logs that the alert was dropped.
+// NewManager builds an empty manager with the default alert phrase. A nil now
+// uses time.Now; a nil sayer still fires but logs that the alert was dropped.
 func NewManager(now func() time.Time, say func(ctx context.Context, text string) error, logger *slog.Logger) *Manager {
+	return NewManagerText(now, say, logger, AlertText)
+}
+
+// NewManagerText builds an empty manager with a configured alert phrase.
+func NewManagerText(now func() time.Time, say func(ctx context.Context, text string) error, logger *slog.Logger, alertText string) *Manager {
 	if now == nil {
 		now = time.Now
 	}
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Manager{now: now, say: say, logger: logger, entries: make(map[string]*entry)}
+	if strings.TrimSpace(alertText) == "" {
+		alertText = AlertText
+	}
+	return &Manager{now: now, say: say, logger: logger, alertText: alertText, entries: make(map[string]*entry)}
 }
 
 // Set starts a timer and returns it.
@@ -101,7 +111,7 @@ func (m *Manager) fire(id string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), alertTimeout)
 	defer cancel()
-	if err := say(ctx, AlertText); err != nil {
+	if err := say(ctx, m.alertText); err != nil {
 		m.logger.Error("timer alert", "timer_id", id, "error", err.Error())
 	}
 }

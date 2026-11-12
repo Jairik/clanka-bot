@@ -427,8 +427,15 @@ func (h *Handler) buildAlertsView(flash, errorText string, edit *alertEditState)
 
 	now := h.now()
 	loc := h.alertLocation()
+	// One bounded history read feeds both the open fired/ringing rows and the
+	// missed section, so three managers returning the same shared table cannot
+	// duplicate a row.
+	events := h.alertHistory(deps)
+	pending := make(map[string]bool)
+	live := make(map[string]bool)
 	if timers != nil {
 		for _, item := range timers.List() {
+			pending[alertKey("timer", item.ID)] = true
 			label := item.Label
 			if label == "" {
 				label = "—"
@@ -449,6 +456,7 @@ func (h *Handler) buildAlertsView(flash, errorText string, edit *alertEditState)
 	}
 	if alarms != nil {
 		for _, item := range alarms.List() {
+			pending[alertKey("alarm", item.ID)] = true
 			label := item.Label
 			if label == "" {
 				label = "—"
@@ -468,6 +476,7 @@ func (h *Handler) buildAlertsView(flash, errorText string, edit *alertEditState)
 	}
 	if reminders != nil {
 		for _, item := range reminders.List() {
+			pending[alertKey("reminder", item.ID)] = true
 			detail := "Speaks once"
 			if item.When != "" {
 				detail += " · " + item.When
@@ -485,16 +494,76 @@ func (h *Handler) buildAlertsView(flash, errorText string, edit *alertEditState)
 			})
 		}
 	}
+	// A fired alert has already deleted its pending row. Its open history row
+	// is the only remaining record, so show it as an active row that can still
+	// be cancelled by the owning manager; skip a repeating Alarm's open row
+	// because its pending next occurrence is already listed above.
+	for _, event := range events {
+		if !event.State.Open() {
+			continue
+		}
+		switch event.Kind {
+		case "timer":
+			if timers == nil {
+				continue
+			}
+		case "alarm":
+			if alarms == nil {
+				continue
+			}
+		case "reminder":
+			if reminders == nil {
+				continue
+			}
+		default:
+			continue
+		}
+		key := alertKey(event.Kind, event.SourceID)
+		if pending[key] || live[key] {
+			continue
+		}
+		live[key] = true
+		label := event.Label
+		if label == "" {
+			label = "—"
+		}
+		at := event.FiresAt
+		if at.IsZero() {
+			at = event.FiredAt
+		}
+		detail := "Ringing now"
+		if event.State == alertstore.StateFired {
+			detail = "Fired; waiting for the speaker"
+		}
+		view.Alerts = append(view.Alerts, scheduledAlertView{
+			KindKey:      event.Kind,
+			Kind:         alertKindName(event.Kind),
+			Label:        label,
+			Next:         formatAlertTime(at, now, loc),
+			NextISO:      at.UTC().Format(time.RFC3339),
+			Detail:       detail,
+			CancelAction: alertCancelAction(event.Kind, event.SourceID),
+			CancelLabel:  alertCancelLabel(event.Kind, event.Label, at, now, loc),
+			firesAt:      at,
+		})
+	}
 	sort.SliceStable(view.Alerts, func(i, j int) bool {
 		return view.Alerts[i].firesAt.Before(view.Alerts[j].firesAt)
 	})
 
+	// The override editor lists only pending Alarms. A one-off that already
+	// fired has no next occurrence to edit, so it stays a cancel-only row.
 	if alarms != nil {
 		view.Alarms = h.buildAlarmEditors(alarms.List(), edit)
 	}
 
-	view.Missed = h.buildMissedAlerts(deps)
+	view.Missed = h.buildMissedAlerts(events)
 	return view
+}
+
+// alertKey identifies one alert kind and its manager/source id for dedupe.
+func alertKey(kind, id string) string {
+	return kind + "\x00" + id
 }
 
 // buildAlarmEditors renders one editor per Alarm with the current override
@@ -604,10 +673,10 @@ func (h *Handler) alarmSoundOptions(current, edited string) []soundOption {
 	return options
 }
 
-// buildMissedAlerts reads the shared alert history once. Every manager wraps
-// the same alert_events table, so asking all three would list every missed row
-// three times; one source is enough and the kind column keeps it readable.
-func (h *Handler) buildMissedAlerts(deps alertsDeps) []missedAlertView {
+// alertHistory reads the shared alert history once. Every manager wraps the
+// same alert_events table, so asking all three would list every row three
+// times; one source is enough and the kind column keeps it readable.
+func (h *Handler) alertHistory(deps alertsDeps) []alertstore.Event {
 	var events []alertstore.Event
 	var err error
 	switch {
@@ -622,6 +691,11 @@ func (h *Handler) buildMissedAlerts(deps alertsDeps) []missedAlertView {
 		h.logger.Warn("alert history read failed", "error", err.Error())
 		return nil
 	}
+	return events
+}
+
+// buildMissedAlerts filters the one bounded history read to missed rows.
+func (h *Handler) buildMissedAlerts(events []alertstore.Event) []missedAlertView {
 	now := h.now()
 	loc := h.alertLocation()
 	out := make([]missedAlertView, 0, missedDisplayLimit)

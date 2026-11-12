@@ -630,6 +630,13 @@ func TestAlertsRingingCancelTargetsOnlyThatAlarm(t *testing.T) {
 	}
 	f.player.waitStart(t)
 
+	// The repeating Alarm is both a pending row and an open ringing event; the
+	// page must list it once, not once per source.
+	rec := f.get("/alerts")
+	if got := strings.Count(rec.Body.String(), `<tr class="alert-alarm">`); got != 1 {
+		t.Fatalf("active Alarm rows while ringing = %d, want 1 (deduped)", got)
+	}
+
 	// A second Alarm is created while the first Ring owns the slot. It waits
 	// on the same one-speaker queue; cancelling the first by id must let this
 	// unrelated new Ring start, not cancel it too.
@@ -637,7 +644,7 @@ func TestAlertsRingingCancelTargetsOnlyThatAlarm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("set second: %v", err)
 	}
-	rec := f.post("/alerts/alarm/"+url.PathEscape(first.ID)+"/cancel", nil)
+	rec = f.post("/alerts/alarm/"+url.PathEscape(first.ID)+"/cancel", nil)
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("ringing cancel status = %d, body = %s", rec.Code, rec.Body.String())
 	}
@@ -679,6 +686,97 @@ func TestAlertsRingingCancelTargetsOnlyThatAlarm(t *testing.T) {
 	}
 	if got := seen[second.ID]; got != "stopped/cancel" {
 		t.Errorf("second event = %q, want stopped/cancel", got)
+	}
+}
+
+func TestAlertsListsAndCancelsOneOffAlarmAndRingingTimer(t *testing.T) {
+	f := newAlertsFixture(t)
+	f.setMaxRing(5 * time.Second)
+	f.player.onPlay = func(ctx context.Context) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	f.clock.Set(time.Date(2026, 11, 12, 6, 59, 59, 950_000_000, time.UTC))
+
+	// A one-off Alarm deletes its pending row when it fires, and List omits the
+	// row while its Ring finishes. The page must still show it and cancel it.
+	fired, err := f.alarm.Set(f.ctx, alarm.SetIn{Hour: 7, Schedule: string(alarm.Once), Label: "wake once"})
+	if err != nil {
+		t.Fatalf("set one-off Alarm: %v", err)
+	}
+	f.player.waitStart(t)
+	if rows := f.alarm.List(); len(rows) != 0 {
+		t.Fatalf("pending Alarms after firing = %+v, want none", rows)
+	}
+
+	// A real Timer fires while the Alarm owns the speaker. Its pending row and
+	// live entry are already gone too, so only the open history row remains.
+	timerItem, err := f.timer.Start("kettle", 120*time.Millisecond)
+	if err != nil {
+		t.Fatalf("start Timer: %v", err)
+	}
+	waitFor(t, 3*time.Second, "the Timer to reach an open history row", func() bool {
+		events, err := f.timer.History(10)
+		if err != nil {
+			return false
+		}
+		for _, event := range events {
+			if event.Kind == "timer" && event.SourceID == timerItem.ID && event.State.Open() {
+				return true
+			}
+		}
+		return false
+	})
+
+	rec := f.get("/alerts")
+	body := rec.Body.String()
+	for _, want := range []string{"wake once", "kettle", "Ringing now", "Fired; waiting for the speaker"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("active page missing %q:\n%s", want, body)
+		}
+	}
+	if got := strings.Count(body, `<tr class="alert-alarm">`); got != 1 {
+		t.Fatalf("active Alarm rows = %d, want the one firing Alarm", got)
+	}
+	// A fired one-off has no next occurrence, so it must not get an override
+	// editor; only its active cancel row belongs on the page.
+	if !strings.Contains(body, "No Alarms are set.") || strings.Contains(body, `id="alarm-overrides-`+fired.ID+`"`) {
+		t.Fatalf("fired one-off Alarm got a nonexistent pending editor:\n%s", body)
+	}
+
+	// Cancelling the ringing one-off frees the speaker for the queued Timer.
+	if rec := f.post("/alerts/alarm/"+url.PathEscape(fired.ID)+"/cancel", nil); rec.Code != http.StatusSeeOther {
+		t.Fatalf("cancel ringing one-off status = %d", rec.Code)
+	}
+	f.player.waitStart(t)
+
+	// The Timer now rings and stays on the page; cancel by its id ends it and
+	// records the user's cancel rather than a shutdown.
+	rec = f.get("/alerts")
+	if !strings.Contains(rec.Body.String(), "kettle") {
+		t.Fatalf("ringing Timer missing after it started:\n%s", rec.Body.String())
+	}
+	if rec := f.post("/alerts/timer/"+url.PathEscape(timerItem.ID)+"/cancel", nil); rec.Code != http.StatusSeeOther {
+		t.Fatalf("cancel ringing Timer status = %d", rec.Code)
+	}
+	waitFor(t, 3*time.Second, "both open Ring history rows to finish", func() bool {
+		events, err := f.alarm.History(10)
+		if err != nil {
+			return false
+		}
+		seen := map[string]string{}
+		for _, event := range events {
+			if event.SourceID == fired.ID || event.SourceID == timerItem.ID {
+				seen[event.SourceID] = string(event.State) + "/" + event.EndedBy
+			}
+		}
+		return seen[fired.ID] == "stopped/cancel" && seen[timerItem.ID] == "stopped/cancel"
+	})
+
+	rec = f.get("/alerts")
+	body = rec.Body.String()
+	if strings.Contains(body, "wake once") || strings.Contains(body, "kettle") {
+		t.Fatalf("cancelled alerts stayed on the page:\n%s", body)
 	}
 }
 

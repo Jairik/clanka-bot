@@ -200,12 +200,12 @@ The second command is only a local smoke test; from another device use the
 HTTPS `*.ts.net` URL, which carries the real identity.
 
 The Dashboard also mounts the settings/Tool-override API under `/api/`
-(`/api/settings`, `/api/tools`) behind the same identity check. Mutating API
-requests must be same-origin; the debug listener keeps its own localhost-only
-mount of the same handler. The **Tools and settings** page at `/settings`
-edits the same service: Tool enabled/Permission, the wording lists, and any
-other setting the service exposes (including a future sound setting, which
-appears without a page change). Wording settings
+(`/api/settings`, `/api/tools`, `/api/secrets`) behind the same identity check.
+Mutating API requests must be same-origin; the debug listener keeps its own
+localhost-only mount of the same handler. The **Tools and settings** page at
+`/settings` edits the same service: Tool enabled/Permission, the wording lists,
+and any other setting the service exposes (including a future sound setting,
+which appears without a page change). Wording settings
 (`tools.<name>.control_phrases`, `tools.<name>.examples`,
 `agent.request_prefixes`, `agent.filler`, `agent.unavailable_message`) and the
 model name (`agent.model`) are marked `live` and apply to the next request or
@@ -214,6 +214,12 @@ in the background. Connection-level settings (`http.addr`, `debug.addr`,
 `capture.source`, `playback.sink`) are marked `restart_required`: the override
 is stored, but only the next process start reads it, and the page says so. See
 the README for the curl examples.
+
+The **Secrets** page at `/secrets` lists every declared secret (Tool modules
+and the active Agent provider) with `set`, `last4`, update time and source
+(`.env` or stored). Replace and Clear post to the same authenticated Dashboard;
+a cleared stored value falls back to `.env` immediately. No value is revealed,
+prefilled or echoed, and a new module declaration appears without a page edit.
 
 The Health page shows the five current Compose services (`embed`, `assistant`,
 `wakeword`, `stt`, `tts`), the resolved location and each Tool module that

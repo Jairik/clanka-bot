@@ -573,6 +573,7 @@ func run() error {
 			Location:      locSvc,
 			Settings:      settingsSvc,
 			ToolPolicy:    toolPolicy,
+			Secrets:       secretsSvc,
 			Sounds:        cues,
 			PreviewQueue:  previewQueue,
 			API:           apiHandler,

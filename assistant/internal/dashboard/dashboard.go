@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
+	"github.com/Jairik/clanka-bot/assistant/internal/secrets"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 	"github.com/Jairik/clanka-bot/assistant/internal/sound"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
@@ -64,6 +65,9 @@ type Options struct {
 	// either is nil.
 	Settings   *settings.Service
 	ToolPolicy *toolpolicy.Policy
+	// Secrets backs the write-only Secrets page: the same service the Agent
+	// provider and Tool modules resolve values from. Only metadata is rendered.
+	Secrets *secrets.Service
 	// Sounds backs the Sounds page: the library, uploads and previews use the
 	// same service the Cue roles read. PreviewQueue schedules a Pi preview
 	// between turns; without one the handler plays synchronously.
@@ -88,6 +92,7 @@ type Handler struct {
 	location      Location
 	settings      *settings.Service
 	tools         *toolpolicy.Policy
+	secrets       *secrets.Service
 	sounds        *sound.Service
 	previews      PreviewQueue
 	proxyAllowed  func(net.IP) bool
@@ -136,6 +141,7 @@ func New(opts Options) (*Handler, error) {
 		location:      opts.Location,
 		settings:      opts.Settings,
 		tools:         opts.ToolPolicy,
+		secrets:       opts.Secrets,
 		sounds:        opts.Sounds,
 		previews:      opts.PreviewQueue,
 		proxyAllowed:  opts.ProxyAllowed,
@@ -156,6 +162,9 @@ func New(opts Options) (*Handler, error) {
 	// Every Settings mutation goes through Mutating, so it inherits the
 	// Dashboard identity and the same-origin guard.
 	h.Handle("/settings", h.settingsPage)
+	// The Secrets page lists every declared secret and offers replace/clear.
+	// Both writes go through Mutating for identity and same-origin.
+	h.Handle("/secrets", h.secretsPage)
 	// The Sounds page owns uploads, role assignment, Ring settings and the two
 	// previews. Every write goes through Mutating for identity and same-origin.
 	h.Handle("/sounds", h.soundsPage)
@@ -170,6 +179,8 @@ func New(opts Options) (*Handler, error) {
 	h.Mutating("POST /settings/tools/{name}/reset", h.settingsToolReset)
 	h.Mutating("POST /settings/values/{key}", h.settingsValueSave)
 	h.Mutating("POST /settings/values/{key}/reset", h.settingsValueReset)
+	h.Mutating("POST /secrets/{name}", h.secretsSet)
+	h.Mutating("POST /secrets/{name}/clear", h.secretsClear)
 	h.Handle("/", h.index)
 	return h, nil
 }

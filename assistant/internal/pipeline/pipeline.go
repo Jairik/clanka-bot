@@ -181,6 +181,9 @@ func New(reg *tool.Registry, phrases map[string]string, logger *slog.Logger, opt
 	}
 	normalized := make(map[string]string, len(phrases))
 	intents := make(map[string]string, len(phrases))
+	// Reject conflicting spellings before target validation, so map order
+	// cannot choose between an ambiguity error and an unknown-target error.
+	targets := make(map[string]string, len(phrases))
 	for phrase, name := range phrases {
 		key := NormalizePhrase(phrase)
 		if key == "" {
@@ -190,24 +193,20 @@ func New(reg *tool.Registry, phrases map[string]string, logger *slog.Logger, opt
 		if target == "" {
 			return nil, fmt.Errorf("pipeline: control phrase %q has no target", phrase)
 		}
-		if prev, exists := normalized[key]; exists && prev != target {
+		if prev, exists := targets[key]; exists && prev != target {
 			return nil, fmt.Errorf("pipeline: control phrase %q maps to both %q and %q", phrase, prev, target)
 		}
-		if prev, exists := intents[key]; exists && prev != target {
-			return nil, fmt.Errorf("pipeline: control phrase %q maps to both %q and %q", phrase, prev, target)
-		}
+		targets[key] = target
+	}
+	for phrase, name := range phrases {
+		key := NormalizePhrase(phrase)
+		target := strings.TrimSpace(name)
 		if focus.IsIntentTarget(target) {
 			if _, ok := focus.ParseIntent(target); !ok {
 				return nil, fmt.Errorf("pipeline: control phrase %q points at unknown intent %q", phrase, target)
 			}
-			if prev, exists := normalized[key]; exists && prev != target {
-				return nil, fmt.Errorf("pipeline: control phrase %q maps to both %q and %q", phrase, prev, target)
-			}
 			intents[key] = target
 			continue
-		}
-		if prev, exists := intents[key]; exists && prev != target {
-			return nil, fmt.Errorf("pipeline: control phrase %q maps to both %q and %q", phrase, prev, target)
 		}
 		info, ok := reg.Info(target)
 		if !ok {

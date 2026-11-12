@@ -127,6 +127,29 @@ curl -s -X POST localhost:8081/debug/transcript \
   -H 'Content-Type: application/json' -d '{"text":"turn the volume to 40"}'
 ```
 
+The utility Tools answer common questions without the Agent path:
+
+```sh
+curl -s -X POST localhost:8081/debug/transcript \
+  -H 'Content-Type: application/json' -d '{"text":"what time is it in Tokyo"}'
+curl -s -X POST localhost:8081/debug/transcript \
+  -H 'Content-Type: application/json' -d '{"text":"how many days until Christmas"}'
+curl -s -X POST localhost:8081/debug/transcript \
+  -H 'Content-Type: application/json' -d '{"text":"what is 15% of 80"}'
+curl -s -X POST localhost:8081/debug/transcript \
+  -H 'Content-Type: application/json' -d '{"text":"convert 5 miles to km"}'
+curl -s -X POST localhost:8081/debug/transcript \
+  -H 'Content-Type: application/json' -d '{"text":"pick between pizza and tacos"}'
+```
+
+`time.in_city` uses a shipped city-to-IANA table and embedded tzdata, never a
+network lookup; `date.countdown` counts calendar days in the effective
+`timezone`; `calc.evaluate` uses a bounded arithmetic grammar rather than code
+execution; `units.convert` has a fixed unit table with no currency;
+`random.flip`/`roll`/`pick` use `crypto/rand` and preserve the words the user
+gave. Coverage, grammar and limits are in
+[docs/utility-tools.md](docs/utility-tools.md).
+
 Timers are stored in the database and survive a restart. Give one a label
 ("set a pasta timer for 10 minutes") and ask for it later ("how long is left on
 the pasta timer"); `timer.list` is Local-only because labels can be private.

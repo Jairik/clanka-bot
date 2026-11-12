@@ -30,11 +30,14 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/tools/alarm"
 	"github.com/Jairik/clanka-bot/assistant/tools/audiocontrol"
+	"github.com/Jairik/clanka-bot/assistant/tools/calc"
 	"github.com/Jairik/clanka-bot/assistant/tools/clock"
 	notifytools "github.com/Jairik/clanka-bot/assistant/tools/notify"
 	quiettools "github.com/Jairik/clanka-bot/assistant/tools/quiet"
+	"github.com/Jairik/clanka-bot/assistant/tools/random"
 	"github.com/Jairik/clanka-bot/assistant/tools/reminder"
 	"github.com/Jairik/clanka-bot/assistant/tools/timer"
+	"github.com/Jairik/clanka-bot/assistant/tools/units"
 	"github.com/Jairik/clanka-bot/assistant/tools/voice"
 	"github.com/Jairik/clanka-bot/assistant/tools/weather"
 	"gopkg.in/yaml.v3"
@@ -44,6 +47,8 @@ import (
 var routingEvalTools = []string{
 	clock.Name,
 	clock.DateName,
+	clock.CityName,
+	clock.CountdownName,
 	weather.Name,
 	audiocontrol.VolumeName,
 	audiocontrol.StopName,
@@ -67,6 +72,11 @@ var routingEvalTools = []string{
 	reminder.ListName,
 	reminder.CancelName,
 	notifytools.Name,
+	calc.Name,
+	units.Name,
+	random.FlipName,
+	random.RollName,
+	random.PickName,
 }
 
 const (
@@ -287,6 +297,14 @@ func evalRegistry(t *testing.T) (*tool.Registry, *timer.Manager, *alarm.Manager,
 	if err := clock.RegisterDate(reg, func() time.Time { return fixed }); err != nil {
 		t.Fatalf("register date: %v", err)
 	}
+	if err := clock.RegisterCity(reg, func() time.Time { return fixed }); err != nil {
+		t.Fatalf("register city time: %v", err)
+	}
+	// The UTC fallback makes the countdown deterministic; the timezone-setting
+	// path is covered by the clock package's own tests.
+	if err := clock.RegisterCountdown(reg, func() time.Time { return fixed }, nil); err != nil {
+		t.Fatalf("register countdown: %v", err)
+	}
 
 	geo := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, `{"results":[{"name":"Berlin","latitude":52.52,"longitude":13.41,"timezone":"Europe/Berlin"}]}`)
@@ -378,6 +396,14 @@ func evalRegistry(t *testing.T) (*tool.Registry, *timer.Manager, *alarm.Manager,
 		LastReply: lastreply.New(),
 	}); err != nil {
 		t.Fatalf("register notify: %v", err)
+	}
+	// The utility Tools execute their real handlers in the evaluation. They
+	// have no external dependencies: calc and units are pure, and random uses
+	// crypto/rand without a network or seed.
+	for _, module := range []tool.Module{calc.NewModule(), units.NewModule(), random.NewModule()} {
+		if err := module.Register(reg, tool.Deps{}); err != nil {
+			t.Fatalf("register %s: %v", module.Name(), err)
+		}
 	}
 	return reg, manager, alarmManager, reminderModule.Manager()
 }

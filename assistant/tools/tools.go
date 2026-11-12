@@ -9,11 +9,14 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/tools/alarm"
 	"github.com/Jairik/clanka-bot/assistant/tools/audiocontrol"
+	"github.com/Jairik/clanka-bot/assistant/tools/calc"
 	"github.com/Jairik/clanka-bot/assistant/tools/clock"
 	"github.com/Jairik/clanka-bot/assistant/tools/notify"
 	"github.com/Jairik/clanka-bot/assistant/tools/quiet"
+	"github.com/Jairik/clanka-bot/assistant/tools/random"
 	"github.com/Jairik/clanka-bot/assistant/tools/reminder"
 	"github.com/Jairik/clanka-bot/assistant/tools/timer"
+	"github.com/Jairik/clanka-bot/assistant/tools/units"
 	"github.com/Jairik/clanka-bot/assistant/tools/voice"
 	"github.com/Jairik/clanka-bot/assistant/tools/weather"
 	"gopkg.in/yaml.v3"
@@ -36,6 +39,9 @@ func NewSet() *Set {
 		voice.NewModule(),
 		reminder.NewModule(),
 		notify.NewModule(),
+		calc.NewModule(),
+		units.NewModule(),
+		random.NewModule(),
 	}}
 }
 

@@ -491,6 +491,11 @@ func issueCreateFailure(err error) string {
 		return "GitHub refused the request. Check the token's permissions."
 	case errors.Is(err, errNotFound):
 		return "GitHub couldn't find that repository. Check the name and the token's access."
+	case errors.Is(err, context.DeadlineExceeded):
+		// The registry's own deadline fired; as with a transport failure, the
+		// POST may have created the issue, so the outcome is unknown and there
+		// is no retry.
+		return "I couldn't confirm whether the GitHub issue was created, so I didn't retry it."
 	}
 	var apiErr *apiError
 	if errors.As(err, &apiErr) && apiErr.Status >= 500 {

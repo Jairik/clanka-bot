@@ -84,6 +84,18 @@ authenticated Dashboard's `/secrets` page discovers declarations from the same
 service, so a name added here appears automatically with Replace and Clear
 forms; no page edit is needed.
 
+### If the Tool sends a Notification or refers to the previous reply
+
+`tool.Deps.Notify` is the one ntfy service (`Send` and `NotifyMissed`); do not
+build a second HTTP client, and do not put the topic or token in a setting or a
+log line. `tool.Deps.LastReply` returns the previous reply with its `Tool`,
+`Path` and `LocalOnly` provenance, so "send that to my phone" can resolve
+"that" without persisting private text. Any Tool that leaves the Pi must refuse
+a reply whose `LocalOnly` is true; the declared privacy of another Tool is not
+overridable by a follow-up. A Scheduled-alert module installs
+`deps.Notify.NotifyMissed` before its recovery runs, so a missed row recovered
+at startup is not lost.
+
 ### If the Tool can hold Focus
 
 A shared Control phrase (`stop`, `pause`, `resume`, `next`, `cancel`, `snooze`)

@@ -107,6 +107,10 @@ func checkFetchURL(target *url.URL) error {
 	if target.Opaque != "" || target.Host == "" {
 		return errBadFetchURL
 	}
+	// Bound a redirect Location as well as the initial model-supplied link.
+	if len([]rune(target.String())) > maxFetchURLRunes {
+		return fmt.Errorf("%w: longer than %d runes", errBadFetchURL, maxFetchURLRunes)
+	}
 	// A URL with user:password@ in it is a credential, not a public page. It
 	// must never be forwarded to an upstream or into a log line.
 	if target.User != nil {

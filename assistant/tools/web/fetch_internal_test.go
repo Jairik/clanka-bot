@@ -206,6 +206,7 @@ func TestFetchURLPolicy(t *testing.T) {
 		{"octal ipv4", "http://0177.0.0.1/", errBlockedAddress},
 		{"port zero", "http://example.com:0/", errBadFetchURL},
 		{"port too large", "http://example.com:99999/", errBadFetchURL},
+		{"long URL", "http://example.com/" + strings.Repeat("a", maxFetchURLRunes), errBadFetchURL},
 	}
 	for _, tt := range invalid {
 		t.Run(tt.name, func(t *testing.T) {

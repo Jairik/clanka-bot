@@ -4,7 +4,7 @@ SHELL := /bin/bash
 GIT_SHA ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
 export GIT_SHA
 
-.PHONY: build up down logs deploy rollback build-arm64 test check routing-eval latency-report
+.PHONY: build up down logs deploy rollback build-arm64 test check routing-eval latency-report new-tool
 
 build: ## Build every service image for this host.
 	docker compose build
@@ -36,6 +36,13 @@ test: ## Run the assistant, deployment and mic-check test suites.
 
 check: ## Check compose and Dockerfile deployment conventions.
 	bash scripts/check-compose.sh
+
+new-tool: ## Scaffold a Tool module: make new-tool name=<module>.<tool>
+	@test -n "$$name" || { \
+		echo "usage: make new-tool name=<module>.<tool>" >&2; \
+		exit 2; \
+	}
+	cd assistant && go run ./cmd/newtool
 
 routing-eval: ## Real-MiniLM routing check; enforces the 0.95 per-Tool floor.
 	@test -n "$(ROUTING_EVAL_EMBED_URL)" || { \

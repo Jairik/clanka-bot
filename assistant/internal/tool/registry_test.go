@@ -117,6 +117,10 @@ func TestRegistrationRejectsInvalidTools(t *testing.T) {
 			tl.AgentOnly = true
 			tl.Extract = func(text string) (echoIn, bool) { return echoIn{Text: text}, true }
 		}},
+		{"agent only and local only", func(tl *tool.Tool[echoIn, echoOut]) {
+			tl.AgentOnly = true
+			tl.LocalOnly = tool.LocalOnlyYes
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

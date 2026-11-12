@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,6 +18,10 @@ import (
 )
 
 func newTestServer(t *testing.T) (http.Handler, *bytes.Buffer) {
+	return newTestServerWith(t)
+}
+
+func newTestServerWith(t *testing.T, opts ...api.Option) (http.Handler, *bytes.Buffer) {
 	t.Helper()
 	var logs bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&logs, nil))
@@ -30,12 +35,13 @@ func newTestServer(t *testing.T) (http.Handler, *bytes.Buffer) {
 	if err != nil {
 		t.Fatalf("pipeline.New: %v", err)
 	}
-	return api.NewHandler(p, logger, true), &logs
+	return api.NewHandler(p, logger, true, opts...), &logs
 }
 
 func postTranscript(t *testing.T, handler http.Handler, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/debug/transcript", strings.NewReader(body))
+	req.RemoteAddr = "127.0.0.1:12345"
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	return rec
@@ -137,7 +143,9 @@ func TestDebugEntryDisabledReturns404(t *testing.T) {
 func TestDebugEntryOnlyAcceptsPost(t *testing.T) {
 	handler, _ := newTestServer(t)
 	rec := httptest.NewRecorder()
-	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/debug/transcript", nil))
+	req := httptest.NewRequest(http.MethodGet, "/debug/transcript", nil)
+	req.RemoteAddr = "127.0.0.1:12345"
+	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want 405", rec.Code)
 	}
@@ -149,5 +157,30 @@ func TestHealthzRejectsPost(t *testing.T) {
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/healthz", nil))
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want 405", rec.Code)
+	}
+}
+
+func TestDebugEntryRejectsSiblingContainers(t *testing.T) {
+	gateway := net.ParseIP("172.18.0.1")
+	handler, _ := newTestServerWith(t, api.WithDebugAllowlist(func(ip net.IP) bool {
+		return ip.IsLoopback() || ip.Equal(gateway)
+	}))
+
+	post := func(remote string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/debug/transcript", strings.NewReader(`{"text":"what time is it"}`))
+		req.RemoteAddr = remote
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+
+	if rec := post("127.0.0.1:40000"); rec.Code != http.StatusOK {
+		t.Fatalf("loopback status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if rec := post("172.18.0.1:40000"); rec.Code != http.StatusOK {
+		t.Fatalf("host gateway status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if rec := post("172.18.0.5:40000"); rec.Code != http.StatusForbidden {
+		t.Fatalf("sibling status = %d, want 403: %s", rec.Code, rec.Body.String())
 	}
 }

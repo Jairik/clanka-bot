@@ -6,12 +6,14 @@ package weather
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
@@ -28,7 +30,15 @@ const (
 	DefaultForecastURL = "https://api.open-meteo.com/v1/forecast"
 	currentFields      = "temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m"
 	maxResponseBytes   = 256 << 10
+	defaultHTTPTimeout = 1500 * time.Millisecond
+	defaultBudget      = 2 * time.Second
+	geocodeTTL         = 10 * time.Minute
+	forecastTTL        = time.Minute
 )
+
+// upstreamUnavailable is the truthful message for a timeout, transport error
+// or upstream 5xx. The user can retry; we never invent a weather answer.
+const upstreamUnavailable = "Weather is unavailable right now."
 
 // In optionally names a city. An empty city uses the current location.
 type In struct {
@@ -53,12 +63,23 @@ type Deps struct {
 	GeocodingURL string
 	ForecastURL  string
 	Location     func() (location.Location, bool)
+	// Timeout bounds each upstream call; zero uses 1.5s. Budget bounds
+	// geocode plus forecast together; zero uses 2s. Both keep a bad upstream
+	// from turning one Fast path request into a 6+ second turn.
+	Timeout time.Duration
+	Budget  time.Duration
 }
 
 // New builds the weather.current Tool.
 func New(deps Deps) tool.Tool[In, Out] {
+	if deps.Timeout <= 0 {
+		deps.Timeout = defaultHTTPTimeout
+	}
+	if deps.Budget <= 0 {
+		deps.Budget = defaultBudget
+	}
 	if deps.HTTP == nil {
-		deps.HTTP = &http.Client{Timeout: 5 * time.Second}
+		deps.HTTP = &http.Client{Timeout: deps.Timeout}
 	}
 	if deps.GeocodingURL == "" {
 		deps.GeocodingURL = DefaultGeocodingURL
@@ -67,6 +88,7 @@ func New(deps Deps) tool.Tool[In, Out] {
 		deps.ForecastURL = DefaultForecastURL
 	}
 
+	cache := newCache()
 	return tool.Tool[In, Out]{
 		Name:        Name,
 		Description: "Get the current weather where the user is, or in a named city.",
@@ -74,7 +96,7 @@ func New(deps Deps) tool.Tool[In, Out] {
 		LocalOnly:   tool.LocalOnlyNo,
 		Timeout:     8 * time.Second,
 		Handler: func(ctx context.Context, in In) (Out, error) {
-			return current(ctx, deps, in)
+			return current(ctx, deps, in, cache)
 		},
 		Speak: speak,
 		Examples: []string{
@@ -118,7 +140,12 @@ func speak(out Out) string {
 	return fmt.Sprintf("It's %.0f %s and %s in %s.", out.TemperatureC, unit, out.Condition, out.City)
 }
 
-func current(ctx context.Context, deps Deps, in In) (Out, error) {
+func current(ctx context.Context, deps Deps, in In, cache *cache) (Out, error) {
+	if deps.Budget > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, deps.Budget)
+		defer cancel()
+	}
 	city := strings.TrimSpace(in.City)
 	if city == "" {
 		if deps.Location == nil {
@@ -140,13 +167,13 @@ func current(ctx context.Context, deps Deps, in In) (Out, error) {
 		}
 	}
 
-	place, err := geocode(ctx, deps, city)
+	place, err := cachedGeocode(ctx, deps, cache, city)
 	if err != nil {
-		return Out{}, err
+		return Out{}, userFacing(err)
 	}
-	forecast, err := forecast(ctx, deps, place.Latitude, place.Longitude)
+	forecast, err := cachedForecast(ctx, deps, cache, place)
 	if err != nil {
-		return Out{}, err
+		return Out{}, userFacing(err)
 	}
 
 	return Out{
@@ -161,6 +188,87 @@ func current(ctx context.Context, deps Deps, in In) (Out, error) {
 
 func unknownLocation() error {
 	return &tool.ToolError{Say: "I don't know where I am yet."}
+}
+
+// userFacing keeps a specific ToolError (unknown place, unknown location) but
+// turns a timeout, transport error or upstream status into one truthful,
+// actionable message instead of a generic internal failure.
+func userFacing(err error) error {
+	var toolErr *tool.ToolError
+	if errors.As(err, &toolErr) {
+		return err
+	}
+	return &tool.ToolError{Say: upstreamUnavailable}
+}
+
+type cacheEntry[T any] struct {
+	value T
+	at    time.Time
+}
+
+// cache is a tiny in-process TTL cache. It is not persistence: a restart just
+// starts empty, and the prototype stays within its single-process scope (#35).
+type cache struct {
+	mu        sync.Mutex
+	places    map[string]cacheEntry[place]
+	forecasts map[string]cacheEntry[forecastResponse]
+}
+
+func newCache() *cache {
+	return &cache{
+		places:    make(map[string]cacheEntry[place]),
+		forecasts: make(map[string]cacheEntry[forecastResponse]),
+	}
+}
+
+func cacheKey(city string) string { return strings.ToLower(strings.TrimSpace(city)) }
+
+func cachedGeocode(ctx context.Context, deps Deps, c *cache, city string) (place, error) {
+	key := cacheKey(city)
+	if c != nil {
+		c.mu.Lock()
+		entry, ok := c.places[key]
+		c.mu.Unlock()
+		if ok && time.Since(entry.at) < geocodeTTL {
+			return entry.value, nil
+		}
+	}
+	value, err := geocode(ctx, deps, city)
+	if err != nil {
+		return place{}, err
+	}
+	if c != nil {
+		c.mu.Lock()
+		c.places[key] = cacheEntry[place]{value: value, at: time.Now()}
+		c.mu.Unlock()
+	}
+	return value, nil
+}
+
+func forecastKey(p place) string {
+	return strconv.FormatFloat(p.Latitude, 'f', 4, 64) + "," + strconv.FormatFloat(p.Longitude, 'f', 4, 64)
+}
+
+func cachedForecast(ctx context.Context, deps Deps, c *cache, p place) (forecastResponse, error) {
+	key := forecastKey(p)
+	if c != nil {
+		c.mu.Lock()
+		entry, ok := c.forecasts[key]
+		c.mu.Unlock()
+		if ok && time.Since(entry.at) < forecastTTL {
+			return entry.value, nil
+		}
+	}
+	value, err := forecast(ctx, deps, p.Latitude, p.Longitude)
+	if err != nil {
+		return forecastResponse{}, err
+	}
+	if c != nil {
+		c.mu.Lock()
+		c.forecasts[key] = cacheEntry[forecastResponse]{value: value, at: time.Now()}
+		c.mu.Unlock()
+	}
+	return value, nil
 }
 
 type place struct {

@@ -7,8 +7,12 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"os"
+	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/latency"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
@@ -33,13 +37,21 @@ func WithResponder(responder Responder) Option {
 	return func(s *server) { s.responder = responder }
 }
 
+// WithDebugAllowlist replaces the source-address check. It exists for tests
+// and for a deployment whose bridge gateway is known another way. Production
+// uses the default: loopback plus this container's default gateway (the host
+// that publishes the loopback port), nothing else.
+func WithDebugAllowlist(allowed func(net.IP) bool) Option {
+	return func(s *server) { s.debugAllowed = allowed }
+}
+
 // NewHandler builds the HTTP surface: GET /healthz, plus POST
 // /debug/transcript when the debug entry is enabled.
 func NewHandler(p *pipeline.Pipeline, logger *slog.Logger, debugEnabled bool, opts ...Option) http.Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	s := &server{pipeline: p, logger: logger, debugEnabled: debugEnabled}
+	s := &server{pipeline: p, logger: logger, debugEnabled: debugEnabled, debugAllowed: defaultDebugAllowlist}
 	for _, opt := range opts {
 		opt(s)
 	}
@@ -54,6 +66,7 @@ type server struct {
 	logger       *slog.Logger
 	debugEnabled bool
 	responder    Responder
+	debugAllowed func(net.IP) bool
 }
 
 func (s *server) healthz(w http.ResponseWriter, r *http.Request) {
@@ -85,6 +98,14 @@ func (s *server) debugTranscript(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	// The debug entry drives act Tools and provider spend. Reject sibling
+	// containers by source address; do not trust X-Forwarded-For, which is
+	// caller-controlled. Host loopback reaches the container through Docker's
+	// published port from the bridge gateway, so that one address is allowed.
+	if !s.debugSourceAllowed(r.RemoteAddr) {
+		s.reject(w, tool.NewRequestID(), "debug entry is local only", http.StatusForbidden)
 		return
 	}
 
@@ -147,6 +168,62 @@ func (s *server) debugTranscript(w http.ResponseWriter, r *http.Request) {
 		RequestID: reply.RequestID,
 		Spoken:    spoken,
 	})
+}
+
+func (s *server) debugSourceAllowed(remoteAddr string) bool {
+	host := remoteAddr
+	if parsed, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		host = parsed
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	if ip == nil {
+		return false
+	}
+	if s.debugAllowed == nil {
+		return ip.IsLoopback()
+	}
+	return s.debugAllowed(ip)
+}
+
+// defaultDebugAllowlist accepts loopback and this container's default gateway.
+// Compose publishes 127.0.0.1:8081 on the host; Docker's proxy reaches the
+// container from the bridge gateway, while a sibling container arrives from
+// its own address and is refused. The gateway is read from the route table
+// once, and a missing gateway fails closed (loopback only).
+func defaultDebugAllowlist(ip net.IP) bool {
+	if ip.IsLoopback() {
+		return true
+	}
+	gateway := containerGateway()
+	return gateway != nil && ip.Equal(gateway)
+}
+
+var (
+	gatewayOnce sync.Once
+	gatewayIP   net.IP
+)
+
+func containerGateway() net.IP {
+	gatewayOnce.Do(func() {
+		raw, err := os.ReadFile("/proc/net/route")
+		if err != nil {
+			return
+		}
+		for _, line := range strings.Split(string(raw), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) < 4 || fields[1] != "00000000" {
+				continue
+			}
+			// The Gateway column is little-endian hex.
+			value, err := strconv.ParseUint(fields[2], 16, 32)
+			if err != nil {
+				continue
+			}
+			gatewayIP = net.IPv4(byte(value), byte(value>>8), byte(value>>16), byte(value>>24))
+			return
+		}
+	})
+	return gatewayIP
 }
 
 func (s *server) reject(w http.ResponseWriter, requestID, message string, status int) {

@@ -16,7 +16,10 @@ type EndpointConfig struct {
 	// before the utterance is over.
 	Silence time.Duration
 	// ThresholdDBFS is the RMS level below which a frame counts as silence.
-	// The dev box's webcam mic sits around -45 dBFS with nobody talking.
+	// It depends on the source gain: the dev box's Webcam C270 measured idle
+	// RMS -37.9 to -29.7 dBFS at 100% source volume, above the -38 default.
+	// Use scripts/mic-noise-check.sh to measure a real mic; the 500 ms window
+	// itself stays fixed (#36).
 	ThresholdDBFS float64
 	// MinSpeech is how much above-threshold audio must accumulate before the
 	// endpointer treats it as the question. It keeps a chime tail or a door

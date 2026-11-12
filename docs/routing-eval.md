@@ -41,9 +41,12 @@ predictions the router actually made.
 ## Running it
 
 The normal suite stays offline: `TestRoutingEvalAgainstMiniLM` skips unless
-`ROUTING_EVAL_EMBED_URL` is set. To run it against the real model, start only
-the embed service in an isolated Compose project and publish a spare loopback
-port. Do not reuse another stack's project or stop anyone else's containers.
+`ROUTING_EVAL_EMBED_URL` is set. The explicit integration target is
+`make routing-eval ROUTING_EVAL_EMBED_URL=http://127.0.0.1:18085`; it fails
+when the variable is missing, so the 0.95 per-Tool floor is not silently
+unguarded. To run it against the real model, start only the embed service in an
+isolated Compose project and publish a spare loopback port. Do not reuse
+another stack's project or stop anyone else's containers.
 
 ```sh
 # Build the same pinned MiniLM image the stack uses, if it is not built yet.
@@ -96,10 +99,18 @@ above the 0.95 precision floor. Run against
 | `weather.current` | 20 | 11 | 4 | 7 | 0 | 9 | 1.00 | 0.55 |
 | `audio.volume_set` | 20 | 15 | 1 | 14 | 0 | 5 | 1.00 | 0.75 |
 | `audio.stop` | 20 | 9 | 2 | 7 | 0 | 11 | 1.00 | 0.45 |
-| `timer.set` | 20 | 8 | 0 | 8 | 0 | 12 | 1.00 | 0.40 |
+| `timer.set` | 22 | 10 | 0 | 10 | 0 | 12 | 1.00 | 0.4545 |
 | `timer.cancel` | 20 | 15 | 1 | 14 | 0 | 5 | 1.00 | 0.75 |
 | `timer.list` | 20 | 5 | 0 | 5 | 0 | 15 | 1.00 | 0.25 |
-| **Total** | **160** | **94** | **13** | **81** | **0** | **66** | **1.00** | **0.59** |
+| **Total** | **162** | **96** | **13** | **83** | **0** | **66** | **1.00** | **0.5926** |
+
+These are the numbers after the #34 fix in the final fix pass. The router now
+trims trailing sentence punctuation and collapses whitespace before embedding,
+so the two observed STT forms (`Set a timer for ten minutes.`,
+`Set a timer for ten seconds.`) pass; `timer.set` TP rose from 8 to 10 and
+recall from 0.40 to 0.4545 without changing threshold or margin. The raw
+`ROUTING_EVAL_*` lines are in
+[`prototype-run/routing-eval-after-fixes.txt`](prototype-run/routing-eval-after-fixes.txt).
 
 Plain negatives: **0 of 48** reached the Fast path. Compounds: **0 of 8**
 reached the Fast path. Every Tool was exercised by the semantic router at

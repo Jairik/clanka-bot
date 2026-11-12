@@ -10,6 +10,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/audio"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	"github.com/Jairik/clanka-bot/assistant/internal/reply"
+	"github.com/Jairik/clanka-bot/assistant/internal/speech"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 )
 
@@ -155,5 +156,146 @@ func TestCancelledReplyStopsStreamingAndNeverPlaysTheFiller(t *testing.T) {
 	}
 	if opens := sink.times(); len(opens) != 0 {
 		t.Fatalf("filler played after the request was cancelled")
+	}
+}
+
+// timedSink records when each sound opened, how many bytes it wrote and when
+// it closed, so a test can prove the Filler and the reply never overlap.
+type timedSink struct {
+	mu     sync.Mutex
+	sounds []soundStamp
+}
+
+type soundStamp struct {
+	opened time.Time
+	closed time.Time
+	bytes  int
+}
+
+func (s *timedSink) Open(context.Context, audio.Format) (io.WriteCloser, error) {
+	return &timedWriter{sink: s, opened: time.Now()}, nil
+}
+
+func (s *timedSink) stamps() []soundStamp {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]soundStamp(nil), s.sounds...)
+}
+
+type timedWriter struct {
+	sink   *timedSink
+	opened time.Time
+	bytes  int
+}
+
+func (w *timedWriter) Write(p []byte) (int, error) {
+	w.bytes += len(p)
+	return len(p), nil
+}
+
+func (w *timedWriter) Close() error {
+	w.sink.mu.Lock()
+	w.sink.sounds = append(w.sink.sounds, soundStamp{opened: w.opened, closed: time.Now(), bytes: w.bytes})
+	w.sink.mu.Unlock()
+	return nil
+}
+
+// slowTTSSpeaker models TTS: text is available immediately, but the first PCM
+// chunk is only submitted after ttsDelay.
+type slowTTSSpeaker struct {
+	sink     speech.Sink
+	ttsDelay time.Duration
+	mu       sync.Mutex
+	audioAt  time.Time
+}
+
+func (s *slowTTSSpeaker) SayText(ctx context.Context, _ string) error {
+	select {
+	case <-time.After(s.ttsDelay):
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	if hook := speech.FirstAudioHook(ctx); hook != nil {
+		hook()
+	}
+	writer, err := s.sink.Open(ctx, audio.Format{Rate: 24000, Width: 2, Channels: 1})
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.audioAt = time.Now()
+	s.mu.Unlock()
+	if _, err := writer.Write([]byte{1, 2, 3, 4, 5, 6, 7, 8}); err != nil {
+		_ = writer.Close()
+		return err
+	}
+	return writer.Close()
+}
+
+func (s *slowTTSSpeaker) started() time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.audioAt
+}
+
+func TestFillerPlaysWhenTextArrivesBeforeReplyAudio(t *testing.T) {
+	inner := &timedSink{}
+	playSink := speech.NewSerialSink(inner)
+	speaker := &slowTTSSpeaker{sink: playSink, ttsDelay: 1100 * time.Millisecond}
+	routed := &fakePipeline{}
+	routed.handle = func(events pipeline.Events) pipeline.Reply {
+		time.Sleep(1400 * time.Millisecond) // text at 1.4 s
+		events.Delta("It is three o four.")
+		return pipeline.Reply{Text: "It is three o four.", Path: tool.PathFast}
+	}
+	session := reply.New(routed, speaker, playSink, testFiller())
+
+	started := time.Now()
+	if _, err := session.AskFrom(context.Background(), request(), "what time is it", started); err != nil {
+		t.Fatalf("AskFrom: %v", err)
+	}
+
+	sounds := inner.stamps()
+	if len(sounds) != 2 {
+		t.Fatalf("sounds = %d, want the filler and the reply", len(sounds))
+	}
+	filler, response := sounds[0], sounds[1]
+	if fromStart := filler.opened.Sub(started); fromStart < 1400*time.Millisecond || fromStart > 2100*time.Millisecond {
+		t.Fatalf("filler started %v after Ask, want about 1.5 s (text had arrived but audio had not)", fromStart)
+	}
+	if filler.bytes != len(testFiller().PCM) {
+		t.Fatalf("first sound wrote %d bytes, want the cached filler", filler.bytes)
+	}
+	if response.bytes <= filler.bytes {
+		t.Fatalf("second sound wrote %d bytes, want the reply PCM", response.bytes)
+	}
+	if filler.closed.After(response.opened) {
+		t.Fatalf("filler (closed %v) overlapped the reply (opened %v)", filler.closed, response.opened)
+	}
+	if response.opened.Sub(started) < 2400*time.Millisecond {
+		t.Fatalf("reply audio started %v after Ask, want after the 2.5 s TTS delay", response.opened.Sub(started))
+	}
+}
+
+func TestReplyAudioBeforeTheFillerDeadlineSuppressesTheFiller(t *testing.T) {
+	inner := &timedSink{}
+	playSink := speech.NewSerialSink(inner)
+	speaker := &slowTTSSpeaker{sink: playSink, ttsDelay: 100 * time.Millisecond}
+	routed := &fakePipeline{}
+	routed.handle = func(events pipeline.Events) pipeline.Reply {
+		events.Delta("It is three o four.")
+		return pipeline.Reply{Text: "It is three o four.", Path: tool.PathFast}
+	}
+	session := reply.New(routed, speaker, playSink, testFiller())
+
+	if _, err := session.AskFrom(context.Background(), request(), "what time is it", time.Now()); err != nil {
+		t.Fatalf("AskFrom: %v", err)
+	}
+	sounds := inner.stamps()
+	if len(sounds) != 1 {
+		t.Fatalf("sounds = %d, want only the reply (no filler)", len(sounds))
+	}
+	if sounds[0].bytes <= len(testFiller().PCM) {
+		t.Fatalf("only sound wrote %d bytes, want reply PCM", sounds[0].bytes)
 	}
 }

@@ -219,3 +219,77 @@ func readLine(t *testing.T, r io.Reader) string {
 	}
 	return line
 }
+
+// orderSink records whether the sound-slot hook ran before the first write.
+type orderSink struct {
+	mu    sync.Mutex
+	order []string
+	fail  bool
+}
+
+func (s *orderSink) Open(context.Context, audio.Format) (io.WriteCloser, error) { return s, nil }
+func (s *orderSink) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	s.order = append(s.order, "write")
+	fail := s.fail
+	s.mu.Unlock()
+	if fail {
+		return 0, io.ErrClosedPipe
+	}
+	return len(p), nil
+}
+func (s *orderSink) Close() error { return nil }
+func (s *orderSink) events() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.order...)
+}
+
+func TestFirstAudioHookRunsBeforeTheFirstPCMWrite(t *testing.T) {
+	chunk := bytes.Repeat([]byte{1, 2}, 480)
+	addr := serveOnce(t, func(conn net.Conn) {
+		readLine(t, conn)
+		writeEvent(t, conn, "audio-start", map[string]any{"rate": 24000, "width": 2, "channels": 1})
+		writeAudio(t, conn, chunk)
+		writeEvent(t, conn, "audio-stop", nil)
+	})
+
+	sink := &orderSink{}
+	speaker := speech.New(wyoming.NewClient(addr), sink, wyoming.Voice{}, nil)
+	ctx := speech.WithFirstAudio(context.Background(), func() {
+		sink.mu.Lock()
+		sink.order = append(sink.order, "hook")
+		sink.mu.Unlock()
+	})
+	if _, err := speaker.Say(ctx, "Hello."); err != nil {
+		t.Fatalf("Say: %v", err)
+	}
+	got := sink.events()
+	if len(got) != 2 || got[0] != "hook" || got[1] != "write" {
+		t.Fatalf("events = %v, want [hook write]", got)
+	}
+}
+
+func TestFailedFirstWriteDoesNotMarkReplyAudio(t *testing.T) {
+	chunk := bytes.Repeat([]byte{1, 2}, 480)
+	addr := serveOnce(t, func(conn net.Conn) {
+		readLine(t, conn)
+		writeEvent(t, conn, "audio-start", map[string]any{"rate": 24000, "width": 2, "channels": 1})
+		writeAudio(t, conn, chunk)
+		writeEvent(t, conn, "audio-stop", nil)
+	})
+
+	sink := &orderSink{fail: true}
+	speaker := speech.New(wyoming.NewClient(addr), sink, wyoming.Voice{}, nil)
+	timeline := latency.New("req-failed-write", latency.SourceVoice)
+	ctx := latency.WithContext(context.Background(), timeline)
+	if _, err := speaker.Say(ctx, "Hello."); err == nil {
+		t.Fatal("Say succeeded, want a write error")
+	}
+	if timeline.HasReplyAudio() {
+		t.Fatal("reply audio was marked after the first write failed")
+	}
+	if _, ok := timeline.Duration(latency.StageTTSFirstAudio); ok {
+		t.Fatal("tts_first_audio was recorded after the first write failed")
+	}
+}

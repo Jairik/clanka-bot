@@ -91,13 +91,21 @@ func (s *Session) ask(ctx context.Context, req tool.Request, transcript string, 
 		return reply, nil
 	}
 
-	player := newPlayer(ctx, s.speaker, s.sink)
-	chunker := speech.NewChunker()
-	// The request has one sound slot. Whichever of the Agent path cue, the
-	// slow-reply cue or the first streamed chunk claims it is heard first, so a
-	// request never carries two Fillers and a Filler never talks over a reply.
+	// The request has one sound slot. The Agent path cue, the slow-reply cue
+	// and the first actual reply PCM race for it; text alone does not claim it,
+	// because TTS may still be silent after the first delta (#25/S4).
 	var claimed atomic.Bool
-	firstSound := func() bool { return claimed.CompareAndSwap(false, true) }
+	claimedCh := make(chan struct{})
+	firstSound := func() bool {
+		if claimed.CompareAndSwap(false, true) {
+			close(claimedCh)
+			return true
+		}
+		return false
+	}
+
+	player := newPlayer(ctx, s.speaker, s.sink, func() { firstSound() })
+	chunker := speech.NewChunker()
 	var prefix string
 	streamed := 0
 
@@ -118,19 +126,17 @@ func (s *Session) ask(ctx context.Context, req tool.Request, transcript string, 
 		},
 		Delta: func(delta string) {
 			for _, chunk := range chunker.Write(delta) {
-				firstSound()
+				// Do not claim the sound slot here: the reply counts as heard
+				// when its first PCM reaches the sink, not when text arrives.
 				player.play(item{text: chunk})
 				streamed++
 			}
 		},
 	}
 
-	stopCue := s.cueSlowReply(player, from, firstSound)
+	stopCue := s.cueSlowReply(player, from, firstSound, claimedCh)
 	reply := s.pipeline.HandleEvents(ctx, req, transcript, events)
-	// The cue must not be queued after the player closes its queue.
-	stopCue()
 	if rest := chunker.Flush(); rest != "" {
-		firstSound()
 		player.play(item{text: rest})
 		streamed++
 	}
@@ -144,11 +150,14 @@ func (s *Session) ask(ctx context.Context, req tool.Request, transcript string, 
 			text = strings.TrimSpace(strings.TrimPrefix(text, prefix))
 		}
 		if text != "" {
-			firstSound()
 			player.play(item{text: text})
 		}
 	}
 	err := player.finish()
+	// The cue is direct playback, not a player item, so it is safe to let it
+	// cover the gap while the pipeline has returned but TTS has not started.
+	// It exits as soon as any sound claims the slot.
+	stopCue()
 	s.complete(ctx, err)
 	return reply, err
 }
@@ -188,8 +197,8 @@ func isCancellation(ctx context.Context, err error) bool {
 
 // cueSlowReply plays the one Filler when no reply audio has started by
 // FillerAfter, measured from the endpointer. The returned stop function must run
-// before playback drains; it waits for the timer goroutine to exit.
-func (s *Session) cueSlowReply(player *player, from time.Time, claim func() bool) func() {
+// before the session returns; it waits for the cue goroutine to exit.
+func (s *Session) cueSlowReply(player *player, from time.Time, claim func() bool, claimed <-chan struct{}) func() {
 	if s.filler == nil || s.sink == nil {
 		return func() {}
 	}
@@ -201,11 +210,18 @@ func (s *Session) cueSlowReply(player *player, from time.Time, claim func() bool
 		defer timer.Stop()
 		select {
 		case <-stopped:
+		case <-claimed:
 		case <-player.ctx.Done():
 		case <-timer.C:
-			// Nothing is being said yet; the cue keeps the user company.
+			// No reply PCM has reached the sink yet; the cue keeps the user
+			// company. Play it directly rather than queueing behind a text
+			// item that is still in TTS synthesis: SerialSink makes a reply
+			// that starts meanwhile wait for this short phrase, so the two
+			// never overlap.
 			if s.filler != nil && s.sink != nil && claim() {
-				player.play(item{filler: s.filler})
+				if err := s.filler.Play(player.ctx, s.sink); err != nil && player.ctx.Err() == nil {
+					s.logger.Warn("reply: filler", "error", err.Error())
+				}
 			}
 		}
 	}()
@@ -235,8 +251,9 @@ type player struct {
 	err     error
 }
 
-func newPlayer(ctx context.Context, speaker Speaker, sink speech.Sink) *player {
+func newPlayer(ctx context.Context, speaker Speaker, sink speech.Sink, firstAudio func()) *player {
 	playCtx, cancel := context.WithCancel(ctx)
+	playCtx = speech.WithFirstAudio(playCtx, firstAudio)
 	p := &player{
 		speaker: speaker,
 		sink:    sink,

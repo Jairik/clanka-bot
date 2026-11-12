@@ -111,9 +111,11 @@ type Agent struct {
 
 // Provider is one OpenAI-compatible provider entry.
 type Provider struct {
-	BaseURL        string            `yaml:"base_url"`
-	APIKeyEnv      string            `yaml:"api_key_env"`
-	Model          string            `yaml:"model"`
+	BaseURL   string `yaml:"base_url"`
+	APIKeyEnv string `yaml:"api_key_env"`
+	Model     string `yaml:"model"`
+	// AlternateModel records the written second choice for a manual model
+	// switch. It is never read at runtime: there is no failover (ADR-0002).
 	AlternateModel string            `yaml:"alternate_model"`
 	Headers        map[string]string `yaml:"headers"`
 	Routing        map[string]any    `yaml:"routing"`

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/latency"
+	"github.com/Jairik/clanka-bot/assistant/internal/phrase"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 )
 
@@ -56,6 +57,9 @@ type Result struct {
 	Pending     *PendingConfirm
 	Unavailable bool
 	TimedOut    bool
+	// Cancelled is a Barge-in or shutdown, not a provider failure. The caller
+	// must not log it as unavailable or mark the request failed.
+	Cancelled bool
 }
 
 // Agent runs the tool-calling loop against one registry.
@@ -131,7 +135,7 @@ func (a *Agent) Run(ctx context.Context, req tool.Request, utterance string, onD
 	for step := 0; step < a.maxSteps; step++ {
 		reply, err := a.provider.stream(ctx, messages, tools, onDelta)
 		if err != nil {
-			return a.failure(req, err)
+			return a.failure(ctx, req, err)
 		}
 		if len(reply.Calls) == 0 {
 			text := strings.TrimSpace(reply.Content)
@@ -150,14 +154,33 @@ func (a *Agent) Run(ctx context.Context, req tool.Request, utterance string, onD
 
 		// A confirm Tool never runs here. The registry arms the single pending
 		// call and returns the question to ask, so enforcement cannot be
-		// bypassed by the model. Returning now keeps at most one pending call.
-		if pending, ok := a.propose(reply.Calls); ok {
-			a.logger.Info("agent confirmation pending", "request_id", req.ID, "tool", pending.Tool)
-			text := pending.Summary
-			if text == "" {
-				text = ConfirmPrompt
+		// bypassed by the model. Sibling read/act calls in the same model step
+		// still run: only the confirm call waits for the spoken yes (#20).
+		if confirmIndex := a.firstConfirm(reply.Calls); confirmIndex >= 0 {
+			runnable := withoutIndex(reply.Calls, confirmIndex)
+			outcomes := a.execute(ctx, req, runnable)
+			for i, call := range runnable {
+				recorded = append(recorded, ToolCall{Name: outcomes[i].Name, Args: call.Args, Result: outcomes[i].Payload, LocalOnly: outcomes[i].LocalOnly})
 			}
-			return Result{Text: text, Calls: recorded, Pending: &pending}
+			pending, err := a.propose(reply.Calls[confirmIndex])
+			if err == nil {
+				a.logger.Info("agent confirmation pending", "request_id", req.ID, "tool", pending.Tool)
+				text := pending.Summary
+				if text == "" {
+					text = ConfirmPrompt
+				}
+				return Result{Text: text, Calls: recorded, Pending: &pending}
+			}
+			// The proposal was invalid (for example unparsable arguments).
+			// Report every call back to the model and keep the loop honest
+			// instead of arming something that cannot run.
+			a.logger.Error("agent confirmation propose", "request_id", req.ID, "tool", reply.Calls[confirmIndex].Name, "error", err.Error())
+			messages = append(messages, a.prompt.AssistantToolCalls(reply.Content, reply.Calls))
+			for i, call := range runnable {
+				messages = append(messages, a.prompt.ToolResult(call.ID, outcomes[i].Payload, outcomes[i].LocalOnly))
+			}
+			messages = append(messages, a.prompt.ToolResult(reply.Calls[confirmIndex].ID, errorPayload("confirmation required"), false))
+			continue
 		}
 
 		messages = append(messages, a.prompt.AssistantToolCalls(reply.Content, reply.Calls))
@@ -174,22 +197,40 @@ func (a *Agent) Run(ctx context.Context, req tool.Request, utterance string, onD
 	return Result{Text: MaxStepsMessage, Calls: recorded}
 }
 
-// propose finds a confirm Tool call in one model step and asks the registry to
-// arm it. It never runs the call.
-func (a *Agent) propose(calls []CallRef) (tool.PendingConfirmation, bool) {
-	for _, call := range calls {
-		info, ok := a.resolve(call)
-		if !ok || info.Permission != tool.PermissionConfirm {
+// firstConfirm returns the index of the first runnable confirm call in one
+// model step, or -1. A call whose streamed arguments were invalid is not a
+// runnable confirm: it is reported as a Tool error instead.
+func (a *Agent) firstConfirm(calls []CallRef) int {
+	for i, call := range calls {
+		if call.ArgsError != "" {
 			continue
 		}
-		pending, err := a.registry.Propose(info.Name, call.Args)
-		if err != nil {
-			a.logger.Error("agent confirmation propose", "tool", info.Name, "error", err.Error())
-			return tool.PendingConfirmation{}, false
+		info, ok := a.resolve(call)
+		if ok && info.Permission == tool.PermissionConfirm {
+			return i
 		}
-		return pending, true
 	}
-	return tool.PendingConfirmation{}, false
+	return -1
+}
+
+// propose asks the registry to arm one confirm call. It never runs the call.
+func (a *Agent) propose(call CallRef) (tool.PendingConfirmation, error) {
+	info, ok := a.resolve(call)
+	if !ok || info.Permission != tool.PermissionConfirm {
+		return tool.PendingConfirmation{}, errors.New("agent: call is not a confirm tool")
+	}
+	return a.registry.Propose(info.Name, call.Args)
+}
+
+// withoutIndex copies calls without one index, preserving model order.
+func withoutIndex(calls []CallRef, skip int) []CallRef {
+	out := make([]CallRef, 0, len(calls)-1)
+	for i, call := range calls {
+		if i != skip {
+			out = append(out, call)
+		}
+	}
+	return out
 }
 
 // resolve maps a wire name to a registered, non-Local-only Tool.
@@ -221,6 +262,11 @@ func (a *Agent) execute(ctx context.Context, req tool.Request, calls []CallRef) 
 	infos := make([]tool.Info, len(calls))
 	valid := make([]bool, len(calls))
 	for i, call := range calls {
+		if call.ArgsError != "" {
+			out[i] = outcome{Name: call.Name, Payload: errorPayload(call.ArgsError)}
+			a.logger.Warn("agent tool refused", "request_id", req.ID, "tool", call.Name, "reason", call.ArgsError)
+			continue
+		}
 		info, ok := a.resolve(call)
 		infos[i], valid[i] = info, ok
 		if !ok {
@@ -272,7 +318,13 @@ func (a *Agent) runOne(ctx context.Context, req tool.Request, call CallRef, info
 	return outcome{Name: info.Name, Payload: payload, LocalOnly: info.LocalOnly}
 }
 
-func (a *Agent) failure(req tool.Request, err error) Result {
+func (a *Agent) failure(ctx context.Context, req tool.Request, err error) Result {
+	// A Barge-in or shutdown cancels the request context. That is the caller's
+	// intention, not a provider failure: no error log, no Unavailable flag and
+	// no agent_error/MarkFailed on the request line (F5 / #33-36 follow-up).
+	if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+		return Result{Cancelled: true}
+	}
 	switch {
 	case errors.Is(err, errFirstTokenTimeout):
 		a.logger.Error("agent first token timeout", "request_id", req.ID)
@@ -308,17 +360,27 @@ func callNames(calls []ToolCall) []string {
 }
 
 // MatchRequestPrefix strips a configured Agent request prefix. The comparison
-// is normalised (lowercase, collapsed spaces), which suits STT transcripts that
-// carry no casing.
+// is normalised (lowercase, collapsed spaces, trailing sentence punctuation
+// dropped), which suits STT transcripts that carry no casing and add a full
+// stop. A separator after the prefix may be a space, comma, full stop, question
+// mark or exclamation mark; anything else ("agentic") does not match (#33).
 func MatchRequestPrefix(text string, prefixes []string) (string, bool) {
-	normalised := normalisePrefixText(text)
+	normalised := phrase.Normalize(text)
 	matched := ""
 	for _, prefix := range prefixes {
-		candidate := normalisePrefixText(prefix)
+		candidate := phrase.Normalize(prefix)
 		if candidate == "" || len(candidate) <= len(matched) {
 			continue
 		}
-		if normalised != candidate && !strings.HasPrefix(normalised, candidate+" ") && !strings.HasPrefix(normalised, candidate+",") {
+		if normalised == candidate {
+			matched = candidate
+			continue
+		}
+		if !strings.HasPrefix(normalised, candidate) {
+			continue
+		}
+		rest := normalised[len(candidate):]
+		if !strings.ContainsRune(" ,.!?", rune(rest[0])) {
 			continue
 		}
 		matched = candidate
@@ -326,12 +388,6 @@ func MatchRequestPrefix(text string, prefixes []string) (string, bool) {
 	if matched == "" {
 		return "", false
 	}
-	rest := strings.TrimLeft(normalised[len(matched):], " ,")
+	rest := strings.TrimLeft(normalised[len(matched):], " ,.!?")
 	return strings.TrimSpace(rest), true
-}
-
-func normalisePrefixText(text string) string {
-	text = strings.ToLower(strings.TrimSpace(text))
-	text = strings.Trim(text, ",?!.")
-	return strings.Join(strings.Fields(text), " ")
 }

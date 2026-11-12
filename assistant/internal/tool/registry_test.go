@@ -193,3 +193,67 @@ func TestExtractReturnsTypedArguments(t *testing.T) {
 		t.Fatal("Extract matched unmatched text")
 	}
 }
+
+func TestExecuteValidatesTheDeclaredSchemaBeforeTheHandler(t *testing.T) {
+	runs := 0
+	reg := tool.NewRegistry(time.Second)
+	tl := echoTool()
+	tl.Handler = func(context.Context, echoIn) (echoOut, error) {
+		runs++
+		return echoOut{}, nil
+	}
+	if err := tool.Add(reg, tl); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	for _, args := range []string{
+		`{"text":`,            // malformed JSON
+		`{}`,                  // required field missing
+		`null`,                // not an object
+		`{"text":42}`,         // wrong type
+		`{"text":"hi","x":1}`, // unknown field
+	} {
+		if _, err := reg.Execute(context.Background(), "test.echo", json.RawMessage(args)); err == nil {
+			t.Fatalf("Execute(%s) succeeded, want a schema error", args)
+		}
+	}
+	if runs != 0 {
+		t.Fatalf("handler ran %d times for rejected arguments, want 0", runs)
+	}
+	if _, err := reg.Execute(context.Background(), "test.echo", json.RawMessage(`{"text":"hi"}`)); err != nil {
+		t.Fatalf("valid arguments failed: %v", err)
+	}
+	if runs != 1 {
+		t.Fatalf("handler ran %d times, want 1", runs)
+	}
+}
+
+func TestNoArgumentToolsKeepTheirEmptyDefault(t *testing.T) {
+	runs := 0
+	reg := tool.NewRegistry(time.Second)
+	def := tool.Tool[struct {
+		ID string `json:"id,omitempty"`
+	}, struct{}]{
+		Name: "test.optional", Description: "Optional arguments.", Permission: tool.PermissionAct, LocalOnly: tool.LocalOnlyNo,
+		Handler: func(context.Context, struct {
+			ID string `json:"id,omitempty"`
+		}) (struct{}, error) {
+			runs++
+			return struct{}{}, nil
+		},
+	}
+	if err := tool.Add(reg, def); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	// An omitted object and an explicit empty object are the legitimate
+	// "no arguments" forms, not malformed JSON.
+	if _, err := reg.Execute(context.Background(), "test.optional", nil); err != nil {
+		t.Fatalf("nil arguments: %v", err)
+	}
+	if _, err := reg.Execute(context.Background(), "test.optional", json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("empty object: %v", err)
+	}
+	if runs != 2 {
+		t.Fatalf("handler ran %d times, want 2", runs)
+	}
+}

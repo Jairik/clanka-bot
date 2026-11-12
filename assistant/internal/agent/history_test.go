@@ -93,6 +93,9 @@ func TestMatchRequestPrefix(t *testing.T) {
 	}{
 		{"ask the agent what's the weather", "what's the weather", true},
 		{"Agent, what time is it?", "what time is it", true},
+		{"Agent. What time is it?", "what time is it", true},
+		{"Agent! what time is it", "what time is it", true},
+		{"agent? what time is it", "what time is it", true},
 		{"hey agent what's on my calendar", "what's on my calendar", true},
 		{"agent", "", true},
 		{"Hey agent!", "", true},

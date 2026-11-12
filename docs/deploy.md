@@ -28,9 +28,10 @@ make build-arm64 # optional QEMU arm64 build of every image (not for latency)
    except gitignored files such as `.env`).
 2. If HEAD is detached after an earlier rollback, returns to the tracked branch.
 3. Runs `git pull --ff-only`; diverged history fails the deploy.
-4. Runs `docker compose up -d --build` with `GIT_SHA` set to
+4. Runs `docker compose up -d --build --remove-orphans` with `GIT_SHA` set to
    `git rev-parse --short HEAD`, so every image is tagged
-   `clanka/<service>:<sha>`.
+   `clanka/<service>:<sha>` and containers from a different service set are
+   removed.
 5. Waits up to `DEPLOY_HEALTH_TIMEOUT` seconds (default 120) for every service
    in `docker-compose.yml` to be healthy. On failure it exits non-zero, prints
    `docker compose ps` and the logs of the failing service(s).
@@ -47,8 +48,11 @@ scripts/deploy.sh <sha>      # or: make rollback SHA=<sha>
 2. Checks that every image named in that commit's Compose file already exists
    locally; if one is missing it stops before touching containers and says
    which one.
-3. Runs `docker compose up -d --no-build`, so the existing SHA-tagged images are
-   reused. Old images are pruned by hand (`docker image prune`).
+3. Runs `docker compose up -d --no-build --remove-orphans`, so the existing
+   SHA-tagged images are reused and containers that only exist in a newer
+   commit's service set are removed. The host then runs exactly the rolled-back
+   stack, and the health wait enumerates that commit's services only. Old images
+   are pruned by hand (`docker image prune`).
 
 The next plain `make deploy` switches back to the tracked branch and pulls.
 

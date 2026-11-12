@@ -11,6 +11,10 @@ ENV EMBED_MODEL=${EMBED_MODEL}
 # Bake the model into the image; runtime uses this same cache directory.
 ENV HF_HOME=/models
 RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('${EMBED_MODEL}')"
+# Startup is offline like stt and tts: a missing/renamed model fails fast
+# instead of reaching the network on the Pi.
+ENV HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1
 
 RUN useradd -m -u 10001 embed
 USER embed

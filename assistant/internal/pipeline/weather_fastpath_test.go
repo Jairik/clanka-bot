@@ -55,7 +55,8 @@ func TestWeatherAnswersOnTheFastPath(t *testing.T) {
 		emb.vectors[example] = []float32{1, 0}
 	}
 	emb.vectors["what's the weather like"] = []float32{1, 0}
-	emb.vectors["What's the weather like?"] = []float32{1, 0}
+	// The router trims the STT full stop before embedding (#34).
+	emb.vectors["What's the weather like"] = []float32{1, 0}
 
 	logger, _ := testLogger()
 	router := pipeline.NewSemanticRouter(reg, emb, semanticConfig())

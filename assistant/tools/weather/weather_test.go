@@ -205,3 +205,89 @@ func TestWeatherIsANonlocalFastPathRead(t *testing.T) {
 		t.Error("Examples is empty")
 	}
 }
+
+func TestWeatherBoundsAStalledUpstreamAndSpeaksTruthfully(t *testing.T) {
+	geo := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"results":[{"name":"Berlin","latitude":52.52,"longitude":13.41}]}`)
+	}))
+	defer geo.Close()
+	forecast := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(5 * time.Second):
+		case <-r.Context().Done():
+		}
+	}))
+	defer forecast.Close()
+
+	def := weather.New(weather.Deps{
+		GeocodingURL: geo.URL,
+		ForecastURL:  forecast.URL,
+		Timeout:      100 * time.Millisecond,
+		Budget:       250 * time.Millisecond,
+	})
+	reg := tool.NewRegistry(time.Second)
+	if err := tool.Add(reg, def); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	started := time.Now()
+	_, err := reg.Execute(context.Background(), weather.Name, json.RawMessage(`{"city":"Berlin"}`))
+	if err == nil {
+		t.Fatal("Execute succeeded, want a bounded failure")
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("weather took %v, want a bounded failure", elapsed)
+	}
+	if got, want := tool.FailureMessage(err), "Weather is unavailable right now."; got != want {
+		t.Fatalf("FailureMessage = %q, want %q", got, want)
+	}
+}
+
+func TestWeatherReportsTransient503WithoutInventingAnAnswer(t *testing.T) {
+	geo := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"results":[{"name":"Berlin","latitude":52.52,"longitude":13.41}]}`)
+	}))
+	defer geo.Close()
+	forecast := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "upstream unavailable", http.StatusServiceUnavailable)
+	}))
+	defer forecast.Close()
+
+	def := weather.New(weather.Deps{GeocodingURL: geo.URL, ForecastURL: forecast.URL})
+	reg := tool.NewRegistry(time.Second)
+	if err := tool.Add(reg, def); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	_, err := reg.Execute(context.Background(), weather.Name, json.RawMessage(`{"city":"Berlin"}`))
+	if err == nil {
+		t.Fatal("Execute succeeded on a 503, want a truthful failure")
+	}
+	if got, want := tool.FailureMessage(err), "Weather is unavailable right now."; got != want {
+		t.Fatalf("FailureMessage = %q, want %q", got, want)
+	}
+}
+
+func TestWeatherCachesGeocodeAndForecastBriefly(t *testing.T) {
+	var geoCalls, forecastCalls int
+	geo := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		geoCalls++
+		fmt.Fprint(w, `{"results":[{"name":"Berlin","latitude":52.52,"longitude":13.41}]}`)
+	}))
+	defer geo.Close()
+	forecast := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		forecastCalls++
+		fmt.Fprint(w, `{"current":{"temperature_2m":3.9,"apparent_temperature":1.3,
+			"relative_humidity_2m":85,"weather_code":3,"wind_speed_10m":5.2}}`)
+	}))
+	defer forecast.Close()
+
+	def := weather.New(weather.Deps{GeocodingURL: geo.URL, ForecastURL: forecast.URL})
+	first := execute(t, def, weather.In{City: "Berlin"})
+	second := execute(t, def, weather.In{City: "Berlin"})
+	if first != second {
+		t.Fatalf("cached result = %+v, want %+v", second, first)
+	}
+	if geoCalls != 1 || forecastCalls != 1 {
+		t.Fatalf("upstream calls = geocode:%d forecast:%d, want 1 each within the TTL", geoCalls, forecastCalls)
+	}
+}

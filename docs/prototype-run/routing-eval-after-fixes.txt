@@ -1,0 +1,104 @@
+cd assistant && ROUTING_EVAL_EMBED_URL=http://127.0.0.1:18085 \
+	go test ./internal/pipeline -run TestRoutingEvalAgainstMiniLM -count=1 -v
+=== RUN   TestRoutingEvalAgainstMiniLM
+    routing_eval_test.go:344: MISS positive tool=time.now utterance="what's the current time" got_tool= path=agent_path reason=below_margin
+    routing_eval_test.go:344: MISS positive tool=time.now utterance="got the time" got_tool= path=agent_path reason=below_threshold
+    routing_eval_test.go:344: MISS positive tool=time.now utterance="what's the time on the clock" got_tool= path=agent_path reason=below_margin
+    routing_eval_test.go:344: MISS positive tool=time.now utterance="current time please" got_tool= path=agent_path reason=below_threshold
+    routing_eval_test.go:344: MISS positive tool=time.now utterance="can you check the time" got_tool= path=agent_path reason=below_threshold
+    routing_eval_test.go:344: MISS positive tool=time.now utterance="what's the hour" got_tool= path=agent_path reason=below_margin
+    routing_eval_test.go:344: MISS positive tool=time.now utterance="do you have the time" got_tool= path=agent_path reason=below_threshold
+    routing_eval_test.go:344: MISS positive tool=date.today utterance="can you tell me the date" got_tool= path=agent_path reason=below_margin
+    routing_eval_test.go:344: MISS positive tool=date.today utterance="what date are we on" got_tool= path=agent_path reason=below_threshold
+    routing_eval_test.go:344: MISS positive tool=weather.current utterance="do I need an umbrella today" got_tool= path=agent_path reason=below_threshold
+    routing_eval_test.go:344: MISS positive tool=weather.current utterance="how hot is it today" got_tool= path=agent_path reason=below_threshold
+    routing_eval_test.go:344: MISS positive tool=weather.current utterance="what's the forecast for today" got_tool= path=agent_path reason=below_threshold
+    routing_eval_test.go:344: MISS positive tool=weather.current utterance="is it sunny out" got_tool= path=agent_path reason=below_threshold
+    routing_eval_test.go:344: MISS positive tool=weather.current utterance="what's the weather in Paris" got_tool= path=agent_path reason=below_threshold
+    routing_eval_test.go:344: MISS positive tool=weather.current utterance="should I wear a jacket today" got_tool= path=agent_path reason=below_threshold
+    routing_eval_test.go:344: MISS positive tool=weather.current utterance="how windy is it" got_tool= path=agent_path reason=below_threshold
+    routing_eval_test.go:344: MISS positive tool=weather.current utterance="what's the temperature in London" got_tool= path=agent_path reason=below_threshold
+    routing_eval_test.go:344: MISS positive tool=weather.current utterance="what are the conditions outside" got_tool= path=agent_path reason=below_threshold
+    routing_eval_test.go:344: MISS positive tool=audio.volume_set utterance="make it quieter" got_tool= path=agent_path reason=below_threshold
+    routing_eval_test.go:344: MISS positive tool=audio.volume_set utterance="turn it down a bit" got_tool= path=agent_path reason=below_threshold
+    routing_eval_test.go:344: MISS positive tool=audio.volume_set utterance="I want the volume at 25" got_tool= path=agent_path reason=below_threshold
+    routing_eval_test.go:344: MISS positive tool=audio.volume_set utterance="make it a bit louder" got_tool= path=agent_path reason=below_margin
+    routing_eval_test.go:344: MISS positive tool=audio.volume_set utterance="make it quieter please" got_tool= path=agent_path reason=below_threshold
+    routing_eval_test.go:344: MISS positive tool=audio.stop utterance="quiet please" got_tool= path=agent_path reason=below_threshold
+    routing_eval_test.go:344: MISS positive tool=audio.stop utterance="shut up" got_tool= path=agent_path reason=below_threshold
+    routing_eval_test.go:344: MISS positive tool=audio.stop utterance="stop playing" got_tool= path=agent_path reason=below_threshold
+    routing_eval_test.go:344: MISS positive tool=audio.stop utterance="turn it off" got_tool= path=agent_path reason=below_margin
+    routing_eval_test.go:344: MISS positive tool=audio.stop utterance="stop the audio" got_tool= path=agent_path reason=below_margin
+    routing_eval_test.go:344: MISS positive tool=audio.stop utterance="can you stop" got_tool= path=agent_path reason=below_threshold
+    routing_eval_test.go:344: MISS positive tool=audio.stop utterance="stop the playback" got_tool= path=agent_path reason=below_margin
+    routing_eval_test.go:344: MISS positive tool=audio.stop utterance="that's enough" got_tool= path=agent_path reason=below_threshold
+    routing_eval_test.go:344: MISS positive tool=audio.stop utterance="hush" got_tool= path=agent_path reason=below_threshold
+    routing_eval_test.go:344: MISS positive tool=audio.stop utterance="stop the sound" got_tool= path=agent_path reason=below_threshold
+    routing_eval_test.go:344: MISS positive tool=audio.stop utterance="pause it" got_tool= path=agent_path reason=below_threshold
+2026/11/11 19:55:03 INFO timer set timer_id=1 duration_s=300
+2026/11/11 19:55:03 INFO timer cancelled timer_id="" count=1
+2026/11/11 19:55:03 INFO timer set timer_id=2 duration_s=600
+2026/11/11 19:55:03 INFO timer cancelled timer_id="" count=1
+2026/11/11 19:55:03 INFO timer set timer_id=3 duration_s=3600
+2026/11/11 19:55:03 INFO timer cancelled timer_id="" count=1
+2026/11/11 19:55:03 INFO timer set timer_id=4 duration_s=5400
+2026/11/11 19:55:03 INFO timer cancelled timer_id="" count=1
+2026/11/11 19:55:03 INFO timer set timer_id=5 duration_s=30
+2026/11/11 19:55:03 INFO timer cancelled timer_id="" count=1
+    routing_eval_test.go:344: MISS positive tool=timer.set utterance="set a timer for two minutes" got_tool= path=agent_path reason=below_margin
+2026/11/11 19:55:03 INFO timer set timer_id=6 duration_s=300
+2026/11/11 19:55:03 INFO timer cancelled timer_id="" count=1
+    routing_eval_test.go:344: MISS positive tool=timer.set utterance="remind me in ten minutes" got_tool= path=agent_path reason=below_threshold
+    routing_eval_test.go:344: MISS positive tool=timer.set utterance="set a timer for 20 minutes" got_tool= path=agent_path reason=below_margin
+    routing_eval_test.go:344: MISS positive tool=timer.set utterance="timer for one hour" got_tool= path=agent_path reason=below_margin
+    routing_eval_test.go:344: MISS positive tool=timer.set utterance="start a timer for 90 seconds" got_tool= path=agent_path reason=below_margin
+    routing_eval_test.go:344: MISS positive tool=timer.set utterance="set a timer for 3 minutes" got_tool= path=agent_path reason=below_margin
+    routing_eval_test.go:344: MISS positive tool=timer.set utterance="can you set a timer for fifteen minutes" got_tool= path=agent_path reason=below_margin
+2026/11/11 19:55:03 INFO timer set timer_id=7 duration_s=300
+2026/11/11 19:55:03 INFO timer cancelled timer_id="" count=1
+    routing_eval_test.go:344: MISS positive tool=timer.set utterance="wake me in 10 minutes" got_tool= path=agent_path reason=below_threshold
+    routing_eval_test.go:344: MISS positive tool=timer.set utterance="make a timer for forty five minutes" got_tool= path=agent_path reason=below_margin
+    routing_eval_test.go:344: MISS positive tool=timer.set utterance="timer for 2 hours" got_tool= path=agent_path reason=below_margin
+2026/11/11 19:55:03 INFO timer set timer_id=8 duration_s=300
+2026/11/11 19:55:03 INFO timer cancelled timer_id="" count=1
+    routing_eval_test.go:344: MISS positive tool=timer.set utterance="start the timer for 30 minutes" got_tool= path=agent_path reason=below_margin
+    routing_eval_test.go:344: MISS positive tool=timer.set utterance="countdown for 10 seconds" got_tool= path=agent_path reason=below_margin
+2026/11/11 19:55:03 INFO timer set timer_id=9 duration_s=600
+2026/11/11 19:55:03 INFO timer cancelled timer_id="" count=1
+2026/11/11 19:55:03 INFO timer set timer_id=10 duration_s=10
+2026/11/11 19:55:03 INFO timer cancelled timer_id="" count=1
+    routing_eval_test.go:344: MISS positive tool=timer.cancel utterance="stop the countdown" got_tool= path=agent_path reason=below_margin
+    routing_eval_test.go:344: MISS positive tool=timer.cancel utterance="get rid of the timer" got_tool= path=agent_path reason=below_margin
+    routing_eval_test.go:344: MISS positive tool=timer.cancel utterance="cancel the alarm" got_tool= path=agent_path reason=below_threshold
+    routing_eval_test.go:344: MISS positive tool=timer.cancel utterance="end the timer" got_tool= path=agent_path reason=below_margin
+    routing_eval_test.go:344: MISS positive tool=timer.cancel utterance="clear the timer" got_tool= path=agent_path reason=below_margin
+    routing_eval_test.go:344: MISS positive tool=timer.list utterance="how much time is left on the timer" got_tool= path=agent_path reason=below_margin
+    routing_eval_test.go:344: MISS positive tool=timer.list utterance="how long until the timer goes off" got_tool= path=agent_path reason=below_margin
+    routing_eval_test.go:344: MISS positive tool=timer.list utterance="when does my timer finish" got_tool= path=agent_path reason=below_margin
+    routing_eval_test.go:344: MISS positive tool=timer.list utterance="what's the time remaining" got_tool= path=agent_path reason=below_margin
+    routing_eval_test.go:344: MISS positive tool=timer.list utterance="do I have any timers" got_tool= path=agent_path reason=below_margin
+    routing_eval_test.go:344: MISS positive tool=timer.list utterance="how many timers are running" got_tool= path=agent_path reason=below_margin
+    routing_eval_test.go:344: MISS positive tool=timer.list utterance="check the timer" got_tool= path=agent_path reason=below_threshold
+    routing_eval_test.go:344: MISS positive tool=timer.list utterance="what's left on the timer" got_tool= path=agent_path reason=below_margin
+    routing_eval_test.go:344: MISS positive tool=timer.list utterance="show me my timers" got_tool= path=agent_path reason=below_margin
+    routing_eval_test.go:344: MISS positive tool=timer.list utterance="is my timer still running" got_tool= path=agent_path reason=below_margin
+    routing_eval_test.go:344: MISS positive tool=timer.list utterance="how long is the timer" got_tool= path=agent_path reason=below_margin
+    routing_eval_test.go:344: MISS positive tool=timer.list utterance="time left on the timer" got_tool= path=agent_path reason=below_margin
+    routing_eval_test.go:344: MISS positive tool=timer.list utterance="what timers are active" got_tool= path=agent_path reason=below_margin
+    routing_eval_test.go:344: MISS positive tool=timer.list utterance="how much longer on the timer" got_tool= path=agent_path reason=below_margin
+    routing_eval_test.go:344: MISS positive tool=timer.list utterance="tell me the timer status" got_tool= path=agent_path reason=below_threshold
+    routing_eval_test.go:373: ROUTING_EVAL threshold=0.710 margin=0.230 positives=162 negatives=48 compounds=8 floor=0.950
+    routing_eval_test.go:382: ROUTING_EVAL_TOOL time.now positives=20 tp=13 control_tp=5 semantic_tp=8 fp=0 fn=7 precision=1.0000 recall=0.6500
+    routing_eval_test.go:382: ROUTING_EVAL_TOOL date.today positives=20 tp=18 control_tp=0 semantic_tp=18 fp=0 fn=2 precision=1.0000 recall=0.9000
+    routing_eval_test.go:382: ROUTING_EVAL_TOOL weather.current positives=20 tp=11 control_tp=4 semantic_tp=7 fp=0 fn=9 precision=1.0000 recall=0.5500
+    routing_eval_test.go:382: ROUTING_EVAL_TOOL audio.volume_set positives=20 tp=15 control_tp=1 semantic_tp=14 fp=0 fn=5 precision=1.0000 recall=0.7500
+    routing_eval_test.go:382: ROUTING_EVAL_TOOL audio.stop positives=20 tp=9 control_tp=2 semantic_tp=7 fp=0 fn=11 precision=1.0000 recall=0.4500
+    routing_eval_test.go:382: ROUTING_EVAL_TOOL timer.set positives=22 tp=10 control_tp=0 semantic_tp=10 fp=0 fn=12 precision=1.0000 recall=0.4545
+    routing_eval_test.go:382: ROUTING_EVAL_TOOL timer.cancel positives=20 tp=15 control_tp=1 semantic_tp=14 fp=0 fn=5 precision=1.0000 recall=0.7500
+    routing_eval_test.go:382: ROUTING_EVAL_TOOL timer.list positives=20 tp=5 control_tp=0 semantic_tp=5 fp=0 fn=15 precision=1.0000 recall=0.2500
+    routing_eval_test.go:396: ROUTING_EVAL_NEGATIVES total=48 misrouted=0
+    routing_eval_test.go:397: ROUTING_EVAL_COMPOUNDS total=8 misrouted=0
+    routing_eval_test.go:398: ROUTING_EVAL_TOTAL tp=96 control_tp=13 semantic_tp=83 fp=0 fn=66 precision=1.0000 recall=0.5926
+--- PASS: TestRoutingEvalAgainstMiniLM (1.82s)
+PASS
+ok  	github.com/Jairik/clanka-bot/assistant/internal/pipeline	1.824s

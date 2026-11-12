@@ -42,10 +42,12 @@ type fakeEmbedder struct {
 	err     error
 	block   bool
 	calls   int
+	last    []string
 }
 
 func (f *fakeEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	f.calls++
+	f.last = append([]string(nil), texts...)
 	if f.block {
 		<-ctx.Done()
 		return nil, ctx.Err()
@@ -627,5 +629,31 @@ func TestSemanticZeroCosineIsScoredNotSkipped(t *testing.T) {
 	}
 	if record := logRecord(t, logs); record["fallthrough_reason"] != "below_threshold" {
 		t.Errorf("reason = %v, want below_threshold", record["fallthrough_reason"])
+	}
+}
+
+func TestSemanticMatchEmbedsTheTranscriptWithoutSTTPunctuation(t *testing.T) {
+	reg := tool.NewRegistry(time.Second)
+	if err := clock.Register(reg, func() time.Time { return time.Now() }); err != nil {
+		t.Fatalf("register clock: %v", err)
+	}
+	info, _ := reg.Info(clock.Name)
+	emb := &fakeEmbedder{vectors: map[string][]float32{}}
+	for _, example := range info.Examples {
+		emb.vectors[example] = []float32{1, 0}
+	}
+	emb.vectors["what time is it"] = []float32{1, 0}
+	emb.vectors["What time is it"] = []float32{1, 0}
+
+	router := pipeline.NewSemanticRouter(reg, emb, semanticConfig())
+	if err := router.Build(context.Background()); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	result := router.Match(context.Background(), "What time is it?")
+	if result.Tool != clock.Name {
+		t.Fatalf("tool = %q, want %q (reason %q err %v)", result.Tool, clock.Name, result.Reason, result.Err)
+	}
+	if len(emb.last) != 1 || emb.last[0] != "What time is it" {
+		t.Fatalf("embedded %q, want the normalized transcript", emb.last)
 	}
 }

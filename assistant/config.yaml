@@ -80,8 +80,10 @@ stt:
   endpoint:
     # Fixed end-of-speech window from the latency budget (#12), not adaptive.
     silence: 500ms
-    # RMS level below which a frame counts as silence. The dev box's webcam
-    # mic sits around -45 dBFS with nobody talking.
+    # RMS level below which a frame counts as silence. This is not a claim
+    # about every mic: the dev box's Webcam C270 measured -37.9 to -29.7 dBFS
+    # idle at 100% source volume, above this default. Measure with
+    # scripts/mic-noise-check.sh and set the gain before a human-mic run (#36).
     threshold_dbfs: -38
     # Above-threshold audio needed before it counts as the question, so a chime
     # tail or click cannot open an utterance and then end it on silence.
@@ -137,6 +139,8 @@ agent:
       # The key lives only in the environment, never in this file.
       api_key_env: OPENROUTER_API_KEY
       model: deepseek/deepseek-v4.1-flash
+      # Written second choice for a manual switch only. There is no runtime
+      # failover (ADR-0002), so this value is not read by the client.
       alternate_model: deepseek/deepseek-v4-pro
       routing:
         # OpenRouter prefers low-latency hosts. ZDR and data-collection denial

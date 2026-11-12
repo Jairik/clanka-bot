@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/phrase"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 )
 
@@ -167,7 +168,11 @@ func (r *SemanticRouter) Match(ctx context.Context, transcript string) SemanticR
 		ctx, cancel = context.WithTimeout(ctx, r.cfg.Timeout)
 		defer cancel()
 	}
-	vectors, err := r.embedder.Embed(ctx, []string{transcript})
+	// STT adds a full stop (and sometimes capitalises) to every transcript.
+	// Embed the same words the examples use: trailing sentence punctuation and
+	// extra whitespace must not push a timer request under the margin (#34).
+	// Case is preserved so names keep their signal.
+	vectors, err := r.embedder.Embed(ctx, []string{phrase.TrimSentence(transcript)})
 	if err != nil {
 		result.Reason = reasonEmbedFailed
 		result.Err = err

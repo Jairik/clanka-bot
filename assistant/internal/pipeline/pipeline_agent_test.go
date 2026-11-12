@@ -146,14 +146,14 @@ func TestOpenQuestionFallsThroughToTheAgent(t *testing.T) {
 	}
 }
 
-func TestHandleStreamForwardsDeltasToTheAgent(t *testing.T) {
+func TestHandleEventsForwardsDeltasToTheAgent(t *testing.T) {
 	runner := newFakeRunner()
 	runner.result = agent.Result{Text: "partial answer"}
 	p := newAgentPipeline(t, runner, tool.NewRegistry(time.Second), nil)
 
 	var deltas []string
-	reply := p.HandleStream(context.Background(), request(), "tell me something", func(delta string) {
-		deltas = append(deltas, delta)
+	reply := p.HandleEvents(context.Background(), request(), "tell me something", pipeline.Events{
+		Delta: func(delta string) { deltas = append(deltas, delta) },
 	})
 	if reply.Text != "partial answer" {
 		t.Fatalf("reply = %q", reply.Text)
@@ -235,5 +235,22 @@ func TestAgentFailureIsVisibleOnTheRequestLine(t *testing.T) {
 				t.Fatal("a spoken Unavailable message left the request marked successful")
 			}
 		})
+	}
+}
+
+func TestCancelledAgentTurnIsNotMarkedFailed(t *testing.T) {
+	runner := newFakeRunner()
+	runner.result = agent.Result{Cancelled: true}
+	p := newAgentPipeline(t, runner, tool.NewRegistry(time.Second), nil)
+
+	timeline := latency.New("req-cancelled", latency.SourceVoice)
+	ctx := latency.WithContext(context.Background(), timeline)
+	reply := p.Handle(ctx, request(), "tell me a long story")
+
+	if reply.Text != "" {
+		t.Fatalf("reply = %q, want no spoken text on cancellation", reply.Text)
+	}
+	if timeline.Failed() {
+		t.Fatal("cancelled agent turn was marked failed")
 	}
 }

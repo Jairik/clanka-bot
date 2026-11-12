@@ -1,0 +1,1052 @@
+[
+  {
+    "id": "control-time",
+    "say": "what time is it",
+    "note": "Control phrase; never calls embed",
+    "verdict": "pass",
+    "reason": "all request lines matched",
+    "observed": "control_phrase/time.now/ok 'What time is it?'",
+    "transcript": "What time is it?",
+    "response_ms": 734,
+    "responses_ms": [
+      734
+    ],
+    "barge_stop_ms": null,
+    "budget": "within p50",
+    "reply_audio_seconds": 1.02,
+    "reply_peak_dbfs": -36.3,
+    "requests": [
+      {
+        "time": "2026-11-12T01:05:33.629486233Z",
+        "level": "INFO",
+        "msg": "request",
+        "request_id": "2eed6abfc61aa29c4341461142d9c3e9",
+        "source": "voice",
+        "path": "control_phrase",
+        "tool": "time.now",
+        "transcript": "What time is it?",
+        "outcome": "ok",
+        "response_ms": 734,
+        "stages": {
+          "endpointing_ms": 522,
+          "routing_ms": 0,
+          "stt_finalize_ms": 91,
+          "tool_execute_ms": 0,
+          "tts_first_audio_ms": 118
+        },
+        "checkpoints": {
+          "first_chunk_ms": 615
+        },
+        "extract": "none",
+        "fallthrough_reason": "",
+        "margin": 0,
+        "top_tools": []
+      }
+    ]
+  },
+  {
+    "id": "semantic-time",
+    "say": "what time is it right now",
+    "note": "Semantic Fast path (not in the Control table)",
+    "verdict": "pass",
+    "reason": "all request lines matched",
+    "observed": "fast_path/time.now/ok 'What time is it right now?'",
+    "transcript": "What time is it right now?",
+    "response_ms": 801,
+    "responses_ms": [
+      801
+    ],
+    "barge_stop_ms": null,
+    "budget": "within p50",
+    "reply_audio_seconds": 0.51,
+    "reply_peak_dbfs": -36.4,
+    "requests": [
+      {
+        "time": "2026-11-12T01:05:41.621124287Z",
+        "level": "INFO",
+        "msg": "request",
+        "request_id": "3f033326dcb2f0917b6a010d5b7edfd5",
+        "source": "voice",
+        "path": "fast_path",
+        "tool": "time.now",
+        "transcript": "What time is it right now?",
+        "outcome": "ok",
+        "response_ms": 801,
+        "stages": {
+          "endpointing_ms": 522,
+          "routing_ms": 18,
+          "stt_finalize_ms": 147,
+          "tool_execute_ms": 0,
+          "tts_first_audio_ms": 110
+        },
+        "checkpoints": {
+          "first_chunk_ms": 690
+        },
+        "extract": "none",
+        "fallthrough_reason": "",
+        "margin": 0.27971254279320035,
+        "top_tools": [
+          {
+            "tool": "time.now",
+            "score": 0.8078452863457704
+          },
+          {
+            "tool": "date.today",
+            "score": 0.52813274355257
+          },
+          {
+            "tool": "timer.list",
+            "score": 0.4343454011137057
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "date",
+    "say": "what's today's date",
+    "note": "",
+    "verdict": "pass",
+    "reason": "all request lines matched",
+    "observed": "fast_path/date.today/ok \"What's today's date?\"",
+    "transcript": "What's today's date?",
+    "response_ms": 743,
+    "responses_ms": [
+      743
+    ],
+    "barge_stop_ms": null,
+    "budget": "within p50",
+    "reply_audio_seconds": 2.08,
+    "reply_peak_dbfs": -35.7,
+    "requests": [
+      {
+        "time": "2026-11-12T01:05:50.263359961Z",
+        "level": "INFO",
+        "msg": "request",
+        "request_id": "e442704981137ecebee4dfe0995b3930",
+        "source": "voice",
+        "path": "fast_path",
+        "tool": "date.today",
+        "transcript": "What's today's date?",
+        "outcome": "ok",
+        "response_ms": 743,
+        "stages": {
+          "endpointing_ms": 522,
+          "routing_ms": 25,
+          "stt_finalize_ms": 62,
+          "tool_execute_ms": 0,
+          "tts_first_audio_ms": 132
+        },
+        "checkpoints": {
+          "first_chunk_ms": 611
+        },
+        "extract": "none",
+        "fallthrough_reason": "",
+        "margin": 0.5951020673275829,
+        "top_tools": [
+          {
+            "tool": "date.today",
+            "score": 1.0000000002335048
+          },
+          {
+            "tool": "time.now",
+            "score": 0.40489793290592185
+          },
+          {
+            "tool": "timer.list",
+            "score": 0.24422093652210564
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "timer-set-words",
+    "say": "set a timer for ten minutes",
+    "note": "Observed miss: 0.786, margin 0.122 < 0.23. Without STT's period the score is 1.0 and margin 0.359",
+    "verdict": "pass",
+    "reason": "all request lines matched",
+    "observed": "fast_path/timer.set/ok 'Set a timer for ten minutes.'",
+    "transcript": "Set a timer for ten minutes.",
+    "response_ms": 735,
+    "responses_ms": [
+      735
+    ],
+    "barge_stop_ms": null,
+    "budget": "within p50",
+    "reply_audio_seconds": 0.38,
+    "reply_peak_dbfs": -38.3,
+    "requests": [
+      {
+        "time": "2026-11-12T01:05:58.26136055Z",
+        "level": "INFO",
+        "msg": "request",
+        "request_id": "0a9d4c72e316c79860676e2b44975841",
+        "source": "voice",
+        "path": "fast_path",
+        "tool": "timer.set",
+        "transcript": "Set a timer for ten minutes.",
+        "outcome": "ok",
+        "response_ms": 735,
+        "stages": {
+          "endpointing_ms": 511,
+          "routing_ms": 17,
+          "stt_finalize_ms": 75,
+          "tool_execute_ms": 0,
+          "tts_first_audio_ms": 130
+        },
+        "checkpoints": {
+          "first_chunk_ms": 605
+        },
+        "extract": "ok",
+        "fallthrough_reason": "",
+        "margin": 0.34638695482583537,
+        "top_tools": [
+          {
+            "tool": "timer.set",
+            "score": 0.9850455840015276
+          },
+          {
+            "tool": "timer.list",
+            "score": 0.6386586291756923
+          },
+          {
+            "tool": "timer.cancel",
+            "score": 0.6294937281655208
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "timer-set-seconds-miss",
+    "say": "set a timer for ten seconds",
+    "note": "Second observed timer.set miss (margin 0.063)",
+    "verdict": "pass",
+    "reason": "all request lines matched",
+    "observed": "fast_path/timer.set/ok 'Set a timer for ten seconds.'",
+    "transcript": "Set a timer for ten seconds.",
+    "response_ms": 736,
+    "responses_ms": [
+      736
+    ],
+    "barge_stop_ms": null,
+    "budget": "within p50",
+    "reply_audio_seconds": 0.48,
+    "reply_peak_dbfs": -38.8,
+    "requests": [
+      {
+        "time": "2026-11-12T01:06:06.010337602Z",
+        "level": "INFO",
+        "msg": "request",
+        "request_id": "8758401a2511c974f2057ed96d5a1f5f",
+        "source": "voice",
+        "path": "fast_path",
+        "tool": "timer.set",
+        "transcript": "Set a timer for ten seconds.",
+        "outcome": "ok",
+        "response_ms": 736,
+        "stages": {
+          "endpointing_ms": 512,
+          "routing_ms": 21,
+          "stt_finalize_ms": 93,
+          "tool_execute_ms": 0,
+          "tts_first_audio_ms": 108
+        },
+        "checkpoints": {
+          "first_chunk_ms": 627
+        },
+        "extract": "ok",
+        "fallthrough_reason": "",
+        "margin": 0.30367356673464363,
+        "top_tools": [
+          {
+            "tool": "timer.set",
+            "score": 0.9394736536861844
+          },
+          {
+            "tool": "timer.cancel",
+            "score": 0.6358000869515408
+          },
+          {
+            "tool": "timer.list",
+            "score": 0.6213172259210535
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "agent-timer-set",
+    "say": "agent please run a timer test for five minutes",
+    "note": "Timer Tool through the Agent path: the test double calls timer.set(300 s)",
+    "verdict": "pass",
+    "reason": "all request lines matched",
+    "observed": "agent_path/timer.set/ok 'Agent, please run a timer test for five minutes.'",
+    "transcript": "Agent, please run a timer test for five minutes.",
+    "response_ms": 3720,
+    "responses_ms": [
+      3720
+    ],
+    "barge_stop_ms": null,
+    "budget": "p50-p95",
+    "reply_audio_seconds": 7.78,
+    "reply_peak_dbfs": -36.0,
+    "requests": [
+      {
+        "time": "2026-11-12T01:06:32.112487131Z",
+        "level": "INFO",
+        "msg": "request",
+        "request_id": "a9589799b8e02886895192794934932e",
+        "source": "voice",
+        "path": "agent_path",
+        "tool": "timer.set",
+        "transcript": "Agent, please run a timer test for five minutes.",
+        "outcome": "ok",
+        "response_ms": 3720,
+        "stages": {
+          "agent_first_token_ms": 1,
+          "endpointing_ms": 522,
+          "routing_ms": 0,
+          "stt_finalize_ms": 263,
+          "tool_execute_ms": 0,
+          "tts_first_audio_ms": 1581
+        },
+        "checkpoints": {
+          "first_chunk_ms": 2139
+        },
+        "extract": "none",
+        "fallthrough_reason": "",
+        "margin": 0,
+        "top_tools": []
+      }
+    ]
+  },
+  {
+    "id": "timer-list",
+    "say": "how long is left on my timer",
+    "note": "",
+    "verdict": "pass",
+    "reason": "all request lines matched",
+    "observed": "fast_path/timer.list/ok 'How long is left on my timer?'",
+    "transcript": "How long is left on my timer?",
+    "response_ms": 804,
+    "responses_ms": [
+      804
+    ],
+    "barge_stop_ms": null,
+    "budget": "within p50",
+    "reply_audio_seconds": 2.53,
+    "reply_peak_dbfs": -35.5,
+    "requests": [
+      {
+        "time": "2026-11-12T01:06:42.642367176Z",
+        "level": "INFO",
+        "msg": "request",
+        "request_id": "6ce70e09cac5616ad6f7333816bab11e",
+        "source": "voice",
+        "path": "fast_path",
+        "tool": "timer.list",
+        "transcript": "How long is left on my timer?",
+        "outcome": "ok",
+        "response_ms": 804,
+        "stages": {
+          "endpointing_ms": 511,
+          "routing_ms": 9,
+          "stt_finalize_ms": 152,
+          "tool_execute_ms": 0,
+          "tts_first_audio_ms": 129
+        },
+        "checkpoints": {
+          "first_chunk_ms": 675
+        },
+        "extract": "none",
+        "fallthrough_reason": "",
+        "margin": 0.31616169104915626,
+        "top_tools": [
+          {
+            "tool": "timer.list",
+            "score": 0.9999999984369123
+          },
+          {
+            "tool": "timer.cancel",
+            "score": 0.6838383073877561
+          },
+          {
+            "tool": "timer.set",
+            "score": 0.6600240537535177
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "timer-cancel",
+    "say": "cancel the timer",
+    "note": "",
+    "verdict": "pass",
+    "reason": "all request lines matched",
+    "observed": "fast_path/timer.cancel/ok 'Cancel the timer.'",
+    "transcript": "Cancel the timer.",
+    "response_ms": 857,
+    "responses_ms": [
+      857
+    ],
+    "barge_stop_ms": null,
+    "budget": "within p50",
+    "reply_audio_seconds": 0.64,
+    "reply_peak_dbfs": -39.3,
+    "requests": [
+      {
+        "time": "2026-11-12T01:06:49.783499861Z",
+        "level": "INFO",
+        "msg": "request",
+        "request_id": "f144b89b4a6c6ca9cbcf4d332e812686",
+        "source": "voice",
+        "path": "fast_path",
+        "tool": "timer.cancel",
+        "transcript": "Cancel the timer.",
+        "outcome": "ok",
+        "response_ms": 857,
+        "stages": {
+          "endpointing_ms": 500,
+          "routing_ms": 11,
+          "stt_finalize_ms": 239,
+          "tool_execute_ms": 0,
+          "tts_first_audio_ms": 103
+        },
+        "checkpoints": {
+          "first_chunk_ms": 753
+        },
+        "extract": "ok",
+        "fallthrough_reason": "",
+        "margin": 0.3531345511463293,
+        "top_tools": [
+          {
+            "tool": "timer.cancel",
+            "score": 1.0000000071979678
+          },
+          {
+            "tool": "timer.list",
+            "score": 0.6468654560516385
+          },
+          {
+            "tool": "timer.set",
+            "score": 0.6369136685695689
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "volume-set",
+    "say": "set the volume to thirty percent",
+    "note": "",
+    "verdict": "pass",
+    "reason": "all request lines matched",
+    "observed": "fast_path/audio.volume_set/ok 'Set the volume to thirty percent.'",
+    "transcript": "Set the volume to thirty percent.",
+    "response_ms": 854,
+    "responses_ms": [
+      854
+    ],
+    "barge_stop_ms": null,
+    "budget": "within p50",
+    "reply_audio_seconds": 1.15,
+    "reply_peak_dbfs": -40.0,
+    "requests": [
+      {
+        "time": "2026-11-12T01:06:58.26665667Z",
+        "level": "INFO",
+        "msg": "request",
+        "request_id": "66adfbd67587f58d86667ecb0a212ae5",
+        "source": "voice",
+        "path": "fast_path",
+        "tool": "audio.volume_set",
+        "transcript": "Set the volume to thirty percent.",
+        "outcome": "ok",
+        "response_ms": 854,
+        "stages": {
+          "endpointing_ms": 501,
+          "routing_ms": 75,
+          "stt_finalize_ms": 152,
+          "tool_execute_ms": 15,
+          "tts_first_audio_ms": 108
+        },
+        "checkpoints": {
+          "first_chunk_ms": 745
+        },
+        "extract": "ok",
+        "fallthrough_reason": "",
+        "margin": 0.5698075650302705,
+        "top_tools": [
+          {
+            "tool": "audio.volume_set",
+            "score": 0.9505373920200125
+          },
+          {
+            "tool": "timer.set",
+            "score": 0.38072982698974206
+          },
+          {
+            "tool": "audio.stop",
+            "score": 0.28804388261268754
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "volume-up",
+    "say": "louder",
+    "note": "",
+    "verdict": "pass",
+    "reason": "all request lines matched",
+    "observed": "control_phrase/audio.volume_set/ok 'Louder.'",
+    "transcript": "Louder.",
+    "response_ms": 812,
+    "responses_ms": [
+      812
+    ],
+    "barge_stop_ms": null,
+    "budget": "within p50",
+    "reply_audio_seconds": 0.22,
+    "reply_peak_dbfs": -47.5,
+    "requests": [
+      {
+        "time": "2026-11-12T01:07:04.630272331Z",
+        "level": "INFO",
+        "msg": "request",
+        "request_id": "1df37444828d0523e9912d543f4055f8",
+        "source": "voice",
+        "path": "control_phrase",
+        "tool": "audio.volume_set",
+        "transcript": "Louder.",
+        "outcome": "ok",
+        "response_ms": 812,
+        "stages": {
+          "endpointing_ms": 511,
+          "routing_ms": 0,
+          "stt_finalize_ms": 183,
+          "tool_execute_ms": 8,
+          "tts_first_audio_ms": 107
+        },
+        "checkpoints": {
+          "first_chunk_ms": 704
+        },
+        "extract": "none",
+        "fallthrough_reason": "",
+        "margin": 0,
+        "top_tools": []
+      }
+    ]
+  },
+  {
+    "id": "audio-stop",
+    "say": "stop",
+    "note": "",
+    "verdict": "pass",
+    "reason": "all request lines matched",
+    "observed": "control_phrase/audio.stop/ok 'Stop.'",
+    "transcript": "Stop.",
+    "response_ms": 696,
+    "responses_ms": [
+      696
+    ],
+    "barge_stop_ms": null,
+    "budget": "within p50",
+    "reply_audio_seconds": 0.29,
+    "reply_peak_dbfs": -40.0,
+    "requests": [
+      {
+        "time": "2026-11-12T01:07:10.760290751Z",
+        "level": "INFO",
+        "msg": "request",
+        "request_id": "946f695ac816772504a41c9ec7eaab82",
+        "source": "voice",
+        "path": "control_phrase",
+        "tool": "audio.stop",
+        "transcript": "Stop.",
+        "outcome": "ok",
+        "response_ms": 696,
+        "stages": {
+          "endpointing_ms": 501,
+          "routing_ms": 0,
+          "stt_finalize_ms": 77,
+          "tool_execute_ms": 0,
+          "tts_first_audio_ms": 116
+        },
+        "checkpoints": {
+          "first_chunk_ms": 579
+        },
+        "extract": "none",
+        "fallthrough_reason": "",
+        "margin": 0,
+        "top_tools": []
+      }
+    ]
+  },
+  {
+    "id": "weather-control",
+    "say": "what's the weather like",
+    "note": "Network-bound Tool; may exceed the budget on its own",
+    "verdict": "fail",
+    "reason": "request 1: outcome 'failed', want 'ok'",
+    "observed": "control_phrase/weather.current/failed \"What's the weather like?\"",
+    "transcript": "What's the weather like?",
+    "response_ms": 3395,
+    "responses_ms": [
+      3395
+    ],
+    "barge_stop_ms": null,
+    "budget": "OVER p95",
+    "reply_audio_seconds": 0.8,
+    "reply_peak_dbfs": -36.6,
+    "requests": [
+      {
+        "time": "2026-11-12T01:07:21.00239197Z",
+        "level": "ERROR",
+        "msg": "request",
+        "request_id": "ca478e55e5ae1c153cee5045db854f78",
+        "source": "voice",
+        "path": "control_phrase",
+        "tool": "weather.current",
+        "transcript": "What's the weather like?",
+        "outcome": "failed",
+        "response_ms": 3395,
+        "stages": {
+          "endpointing_ms": 522,
+          "routing_ms": 0,
+          "stt_finalize_ms": 124,
+          "tool_execute_ms": 2000,
+          "tts_first_audio_ms": 747
+        },
+        "checkpoints": {
+          "first_chunk_ms": 2647
+        },
+        "extract": "none",
+        "fallthrough_reason": "",
+        "margin": 0,
+        "top_tools": [],
+        "error": "tool: Weather is unavailable right now."
+      }
+    ]
+  },
+  {
+    "id": "weather-city",
+    "say": "what's the weather in Berlin",
+    "note": "",
+    "verdict": "pass",
+    "reason": "all request lines matched",
+    "observed": "fast_path/weather.current/ok \"What's the weather in Berlin?\"",
+    "transcript": "What's the weather in Berlin?",
+    "response_ms": 1083,
+    "responses_ms": [
+      1083
+    ],
+    "barge_stop_ms": null,
+    "budget": "within p50",
+    "reply_audio_seconds": 1.95,
+    "reply_peak_dbfs": -36.9,
+    "requests": [
+      {
+        "time": "2026-11-12T01:07:29.616570014Z",
+        "level": "INFO",
+        "msg": "request",
+        "request_id": "d9957e5b77a2b8c28a24d14f2bc2bfb6",
+        "source": "voice",
+        "path": "fast_path",
+        "tool": "weather.current",
+        "transcript": "What's the weather in Berlin?",
+        "outcome": "ok",
+        "response_ms": 1083,
+        "stages": {
+          "endpointing_ms": 501,
+          "routing_ms": 17,
+          "stt_finalize_ms": 201,
+          "tool_execute_ms": 241,
+          "tts_first_audio_ms": 120
+        },
+        "checkpoints": {
+          "first_chunk_ms": 963
+        },
+        "extract": "ok",
+        "fallthrough_reason": "",
+        "margin": 0.881950003243038,
+        "top_tools": [
+          {
+            "tool": "weather.current",
+            "score": 0.9810316519945161
+          },
+          {
+            "tool": "date.today",
+            "score": 0.09908164875147817
+          },
+          {
+            "tool": "audio.volume_set",
+            "score": 0.09383222766211324
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "agent-question",
+    "say": "agent what is the capital of France",
+    "note": "Prefix must short-circuit the Fast path, not merely fall through to it",
+    "verdict": "pass",
+    "reason": "all request lines matched",
+    "observed": "agent_path/-/ok 'Agent, what is the capital of France?'",
+    "transcript": "Agent, what is the capital of France?",
+    "response_ms": 2117,
+    "responses_ms": [
+      2117
+    ],
+    "barge_stop_ms": null,
+    "budget": "within p50",
+    "reply_audio_seconds": 2.11,
+    "reply_peak_dbfs": -35.6,
+    "requests": [
+      {
+        "time": "2026-11-12T01:07:41.576797446Z",
+        "level": "INFO",
+        "msg": "request",
+        "request_id": "281b69e2d722a6100380a6ca599e00a7",
+        "source": "voice",
+        "path": "agent_path",
+        "tool": "",
+        "transcript": "Agent, what is the capital of France?",
+        "outcome": "ok",
+        "response_ms": 2117,
+        "stages": {
+          "agent_first_token_ms": 201,
+          "endpointing_ms": 501,
+          "routing_ms": 0,
+          "stt_finalize_ms": 141,
+          "tts_first_audio_ms": 120
+        },
+        "checkpoints": {
+          "first_chunk_ms": 1997
+        },
+        "extract": "none",
+        "fallthrough_reason": "",
+        "margin": 0,
+        "top_tools": []
+      }
+    ]
+  },
+  {
+    "id": "agent-history",
+    "say": "agent what did I ask before",
+    "note": "Checks the provider received the previous turn",
+    "verdict": "pass",
+    "reason": "all request lines matched",
+    "observed": "agent_path/-/ok 'Agent, what did I ask before?'",
+    "transcript": "Agent, what did I ask before?",
+    "response_ms": 2137,
+    "responses_ms": [
+      2137
+    ],
+    "barge_stop_ms": null,
+    "budget": "within p50",
+    "reply_audio_seconds": 1.92,
+    "reply_peak_dbfs": -37.1,
+    "requests": [
+      {
+        "time": "2026-11-12T01:07:52.747166863Z",
+        "level": "INFO",
+        "msg": "request",
+        "request_id": "09a086e5d9508911494ca14daca7c490",
+        "source": "voice",
+        "path": "agent_path",
+        "tool": "",
+        "transcript": "Agent, what did I ask before?",
+        "outcome": "ok",
+        "response_ms": 2137,
+        "stages": {
+          "agent_first_token_ms": 204,
+          "endpointing_ms": 501,
+          "routing_ms": 0,
+          "stt_finalize_ms": 180,
+          "tts_first_audio_ms": 100
+        },
+        "checkpoints": {
+          "first_chunk_ms": 2036
+        },
+        "extract": "none",
+        "fallthrough_reason": "",
+        "margin": 0,
+        "top_tools": []
+      }
+    ]
+  },
+  {
+    "id": "agent-tool",
+    "say": "agent what time is it",
+    "note": "The test double calls time.now, then answers with its result",
+    "verdict": "pass",
+    "reason": "all request lines matched",
+    "observed": "agent_path/time.now/ok 'Agent, what time is it?'",
+    "transcript": "Agent, what time is it?",
+    "response_ms": 2157,
+    "responses_ms": [
+      2157
+    ],
+    "barge_stop_ms": null,
+    "budget": "within p50",
+    "reply_audio_seconds": 5.7,
+    "reply_peak_dbfs": -36.2,
+    "requests": [
+      {
+        "time": "2026-11-12T01:08:11.142944647Z",
+        "level": "INFO",
+        "msg": "request",
+        "request_id": "36db8683fe30bd78fbe68958c98312f0",
+        "source": "voice",
+        "path": "agent_path",
+        "tool": "time.now",
+        "transcript": "Agent, what time is it?",
+        "outcome": "ok",
+        "response_ms": 2157,
+        "stages": {
+          "agent_first_token_ms": 1,
+          "endpointing_ms": 500,
+          "routing_ms": 0,
+          "stt_finalize_ms": 189,
+          "tool_execute_ms": 0,
+          "tts_first_audio_ms": 123
+        },
+        "checkpoints": {
+          "first_chunk_ms": 2034
+        },
+        "extract": "none",
+        "fallthrough_reason": "",
+        "margin": 0,
+        "top_tools": []
+      }
+    ]
+  },
+  {
+    "id": "barge-in",
+    "say": "tell me a long story",
+    "note": "Wake word during a slow Agent reply, then a Fast path turn",
+    "verdict": "pass",
+    "reason": "all request lines matched",
+    "observed": "agent_path/-/cancelled 'Tell me a long story.'; control_phrase/time.now/ok 'What time is it?'",
+    "transcript": "What time is it?",
+    "response_ms": 751,
+    "responses_ms": [
+      2257,
+      751
+    ],
+    "barge_stop_ms": 0,
+    "budget": "within p50",
+    "reply_audio_seconds": 4.32,
+    "reply_peak_dbfs": -35.1,
+    "requests": [
+      {
+        "time": "2026-11-12T01:08:21.939931414Z",
+        "level": "WARN",
+        "msg": "request",
+        "request_id": "eb3283fb4f7e6e70bc4822790d061780",
+        "source": "voice",
+        "path": "agent_path",
+        "tool": "",
+        "transcript": "Tell me a long story.",
+        "outcome": "cancelled",
+        "response_ms": 2257,
+        "stages": {
+          "agent_first_token_ms": 202,
+          "endpointing_ms": 522,
+          "routing_ms": 37,
+          "stt_finalize_ms": 197,
+          "tts_first_audio_ms": 95
+        },
+        "checkpoints": {
+          "first_chunk_ms": 2162
+        },
+        "extract": "none",
+        "fallthrough_reason": "below_threshold",
+        "margin": 0.09726500848893394,
+        "top_tools": [
+          {
+            "tool": "time.now",
+            "score": 0.33200863167583283
+          },
+          {
+            "tool": "audio.stop",
+            "score": 0.2347436231868989
+          },
+          {
+            "tool": "timer.list",
+            "score": 0.23148700491381952
+          }
+        ],
+        "error": "speech: context canceled"
+      },
+      {
+        "time": "2026-11-12T01:08:28.43365261Z",
+        "level": "INFO",
+        "msg": "request",
+        "request_id": "57c1f7d469beed51eefeea98597944fd",
+        "source": "voice",
+        "path": "control_phrase",
+        "tool": "time.now",
+        "transcript": "What time is it?",
+        "outcome": "ok",
+        "response_ms": 751,
+        "stages": {
+          "endpointing_ms": 522,
+          "routing_ms": 0,
+          "stt_finalize_ms": 96,
+          "tool_execute_ms": 0,
+          "tts_first_audio_ms": 130
+        },
+        "checkpoints": {
+          "first_chunk_ms": 620
+        },
+        "extract": "none",
+        "fallthrough_reason": "",
+        "margin": 0,
+        "top_tools": []
+      }
+    ]
+  },
+  {
+    "id": "provider-failure",
+    "say": "agent trigger a provider failure",
+    "note": "HTTP 401 from the test double: the same path a bad key takes",
+    "verdict": "pass",
+    "reason": "all request lines matched",
+    "observed": "agent_path/-/failed 'Agent trigger a provider failure.'",
+    "transcript": "Agent trigger a provider failure.",
+    "response_ms": 2174,
+    "responses_ms": [
+      2174
+    ],
+    "barge_stop_ms": null,
+    "budget": "within p50",
+    "reply_audio_seconds": 1.09,
+    "reply_peak_dbfs": -37.6,
+    "requests": [
+      {
+        "time": "2026-11-12T01:08:37.858556837Z",
+        "level": "ERROR",
+        "msg": "request",
+        "request_id": "3c2e96f28b1cdd3a463d768fc0dca556",
+        "source": "voice",
+        "path": "agent_path",
+        "tool": "",
+        "transcript": "Agent trigger a provider failure.",
+        "outcome": "failed",
+        "response_ms": 2174,
+        "stages": {
+          "endpointing_ms": 522,
+          "routing_ms": 0,
+          "stt_finalize_ms": 190,
+          "tts_first_audio_ms": 110
+        },
+        "checkpoints": {
+          "first_chunk_ms": 2064
+        },
+        "agent_error": "unavailable",
+        "extract": "none",
+        "fallthrough_reason": "",
+        "margin": 0,
+        "top_tools": []
+      }
+    ]
+  },
+  {
+    "id": "embed-stopped",
+    "say": "what's the temperature outside",
+    "note": "embed stopped: semantic match fails and the request falls through",
+    "verdict": "pass",
+    "reason": "all request lines matched",
+    "observed": "agent_path/-/ok \"What's the temperature outside?\"",
+    "transcript": "What's the temperature outside?",
+    "response_ms": 2225,
+    "responses_ms": [
+      2225
+    ],
+    "barge_stop_ms": null,
+    "budget": "within p50",
+    "reply_audio_seconds": 2.37,
+    "reply_peak_dbfs": -35.6,
+    "requests": [
+      {
+        "time": "2026-11-12T01:08:50.776111587Z",
+        "level": "INFO",
+        "msg": "request",
+        "request_id": "16bec320616d42ccb978647ecb757a0a",
+        "source": "voice",
+        "path": "agent_path",
+        "tool": "",
+        "transcript": "What's the temperature outside?",
+        "outcome": "ok",
+        "response_ms": 2225,
+        "stages": {
+          "agent_first_token_ms": 202,
+          "endpointing_ms": 501,
+          "routing_ms": 150,
+          "stt_finalize_ms": 148,
+          "tts_first_audio_ms": 97
+        },
+        "checkpoints": {
+          "first_chunk_ms": 2127
+        },
+        "embed_error": "embed: call service: Post \"http://embed:8085/embed\": context deadline exceeded",
+        "extract": "none",
+        "fallthrough_reason": "embed_failed",
+        "margin": 0,
+        "top_tools": []
+      }
+    ]
+  },
+  {
+    "id": "agent-timer-fire",
+    "say": "agent please run a timer test for ten seconds",
+    "note": "Timer Tool through the Agent path; the alert is not a request line",
+    "verdict": "pass",
+    "reason": "all request lines matched",
+    "observed": "agent_path/timer.set/ok 'Agent, please run a timer test for ten seconds.'",
+    "transcript": "Agent, please run a timer test for ten seconds.",
+    "response_ms": 2214,
+    "responses_ms": [
+      2214
+    ],
+    "barge_stop_ms": null,
+    "budget": "within p50",
+    "reply_audio_seconds": 9.44,
+    "reply_peak_dbfs": -36.3,
+    "requests": [
+      {
+        "time": "2026-11-12T01:09:27.810132915Z",
+        "level": "INFO",
+        "msg": "request",
+        "request_id": "baef35f051228258949563eb4ca67987",
+        "source": "voice",
+        "path": "agent_path",
+        "tool": "timer.set",
+        "transcript": "Agent, please run a timer test for ten seconds.",
+        "outcome": "ok",
+        "response_ms": 2214,
+        "stages": {
+          "agent_first_token_ms": 1,
+          "endpointing_ms": 511,
+          "routing_ms": 0,
+          "stt_finalize_ms": 222,
+          "tool_execute_ms": 0,
+          "tts_first_audio_ms": 137
+        },
+        "checkpoints": {
+          "first_chunk_ms": 2076
+        },
+        "extract": "none",
+        "fallthrough_reason": "",
+        "margin": 0,
+        "top_tools": []
+      }
+    ]
+  }
+]

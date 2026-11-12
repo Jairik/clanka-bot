@@ -15,6 +15,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/sound"
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
 	"github.com/Jairik/clanka-bot/assistant/internal/tz"
+	"github.com/Jairik/clanka-bot/assistant/internal/voicelib"
 	"gopkg.in/yaml.v3"
 )
 
@@ -66,6 +67,10 @@ type Deps struct {
 	// and a future Reminder (#54) can use its Speak/Clip helpers so its speech
 	// and Cue obey quiet.volume. Nil means Quiet hours are unavailable.
 	Quiet *quiet.Service
+	// Voices is the persistent voice library and active selection shared with
+	// the Dashboard. The voice Tools read and write it; nil registration is
+	// allowed so the conformance suite can check metadata without a database.
+	Voices *voicelib.Service
 }
 
 // SecretResolver is the shared seam a module uses to read a declared secret.

@@ -26,6 +26,19 @@ jobs:
       - name: Test
         run: go test -count=1 ./...
 
+  tts-test:
+    name: TTS Python tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install wire-format test dependencies
+        run: pip install "wyoming==1.11.0" numpy pytest
+      - name: Test
+        run: python -m pytest tts/tests -q
+
   routing-eval:
     name: Routing eval (real MiniLM)
     runs-on: ubuntu-latest

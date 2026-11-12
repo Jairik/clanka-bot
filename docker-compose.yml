@@ -73,6 +73,10 @@ services:
       # The one SQLite database (ADR-0003). Only assistant mounts this volume;
       # restarting or rebuilding a service keeps it.
       - assistant-data:/app/data
+      # Voice states are their own volume, nested under data.dir, so only this
+      # subtree can ever be mounted into tts. The database and secrets stay on
+      # assistant-data and are never exposed to another service.
+      - assistant-voices:/app/data/voices
       # Host PipeWire through its PulseAudio-compatible socket and cookie.
       - ${XDG_RUNTIME_DIR:-/run/user/1000}/pulse:/run/pulse:ro
       - ${HOME}/.config/pulse:/pulse-cookie:ro
@@ -156,9 +160,16 @@ services:
       TTS_LANGUAGE: ${TTS_LANGUAGE:-english}
       TTS_VOICES: ${TTS_VOICES:-${TTS_VOICE:-alba}}
       TTS_VOICE: ${TTS_VOICE:-alba}
+      # Custom pre-exported Pocket TTS voice states. The assistant writes them
+      # to the voices volume; tts only reads this subtree.
+      TTS_VOICE_DIR: "/voices"
       TZ: ${TZ:-UTC}
     # No Pulse mount and no weights volume: model services do computation only
-    # (ADR-0001) and the image already carries the weights.
+    # (ADR-0001) and the image already carries the weights. Only the voices
+    # volume is mounted read-only, so tts can never read the database or the
+    # secrets that share assistant-data.
+    volumes:
+      - assistant-voices:/voices:ro
     expose:
       - "10200"
     healthcheck:
@@ -171,5 +182,9 @@ services:
 
 volumes:
   # Named so the database survives `docker compose down`, rebuilds and deploys.
-  # Only the assistant service mounts it (ADR-0003).
+  # Only assistant mounts assistant-data.
   assistant-data:
+  # Voice states are isolated in their own volume: assistant mounts it
+  # read-write under data.dir, tts mounts the same subtree read-only at /voices.
+  # This is ADR-0003's one cross-service data exception, narrowed to voices.
+  assistant-voices:

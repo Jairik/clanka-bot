@@ -1,6 +1,6 @@
 # One SQLite database, owned by the assistant process, holds all persistent state
 
-Scheduled alerts, settings overrides, lists and notes, and Hermes job state all live in a single SQLite file on a Docker volume. Only the Go `assistant` process opens it, using a pure-Go driver so the arm64 image needs no cgo. Other services (the Dashboard, Hermes) reach this state through `assistant`'s API, never by opening the file. We chose this so restarts and deploys keep state, so there is one place to back up, and so the rules about who may change what (Permission levels, Local-only data) are enforced in one process. Settings resolve in three layers: code default, then `config.yaml`, then a stored override that can be reset.
+Scheduled alerts, settings overrides, lists and notes, and Hermes job state all live in a single SQLite file on a Docker volume. Only the Go `assistant` process opens it, using a pure-Go driver so the arm64 image needs no cgo. Other services (the Dashboard, Hermes) reach this state through `assistant`'s API, never by opening the file. The `tts` service mounts only a separate `assistant-voices` volume read-only at `/voices`, solely to read pre-exported voice states; it never sees or opens the database. We chose this so restarts and deploys keep state, so there is one place to back up, and so the rules about who may change what (Permission levels, Local-only data) are enforced in one process. Settings resolve in three layers: code default, then `config.yaml`, then a stored override that can be reset.
 
 ## Considered Options
 

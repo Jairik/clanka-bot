@@ -8,8 +8,8 @@ misroute from the request log.
 ## What is checked in
 
 - `assistant/internal/pipeline/testdata/routing_eval.yaml` — the labelled
-  oracle. It has at least 20 positives for each of the twelve Fast path Tools
-  (266 total), 64 plain negatives, and 10 compound requests.
+  oracle. It has at least 20 positives for each of the sixteen Fast path Tools
+  (346 total), 75 plain negatives, and 12 compound requests.
 - `assistant/internal/pipeline/testdata/routing_baseline.yaml` — the recorded
   Map 1 totals the real-MiniLM evaluation must not fall below.
 - `assistant/internal/pipeline/routing_eval_test.go` —
@@ -139,23 +139,28 @@ above the 0.95 precision floor. Run against
 | `timer.cancel` | 20 | 15 | 0 | 15 | 0 | 5 | 1.00 | 0.75 |
 | `timer.remaining` | 20 | 9 | 0 | 9 | 0 | 11 | 1.00 | 0.45 |
 | `timer.list` | 20 | 12 | 0 | 12 | 0 | 8 | 1.00 | 0.60 |
+| `voice.set` | 20 | 20 | 0 | 20 | 0 | 0 | 1.00 | 1.00 |
+| `voice.list` | 20 | 6 | 4 | 2 | 0 | 14 | 1.00 | 0.30 |
+| `voice.current` | 20 | 8 | 3 | 5 | 0 | 12 | 1.00 | 0.40 |
+| `voice.rate` | 20 | 16 | 2 | 14 | 0 | 4 | 1.00 | 0.80 |
 | `quiet.set` | 20 | 20 | 0 | 20 | 0 | 0 | 1.00 | 1.00 |
 | `quiet.off` | 20 | 16 | 2 | 14 | 0 | 4 | 1.00 | 0.80 |
 | `quiet.dnd` | 20 | 20 | 0 | 20 | 0 | 0 | 1.00 | 1.00 |
 | `quiet.awake` | 20 | 20 | 2 | 18 | 0 | 0 | 1.00 | 1.00 |
-| **Total** | **266** | **186** | **14** | **172** | **0** | **80** | **1.00** | **0.6992** |
+| **Total** | **346** | **236** | **23** | **213** | **0** | **110** | **1.00** | **0.6821** |
 
-These numbers are from the #61 Quiet hours tree and include the earlier #34,
-#44, #51 and #63 corpus additions. Precision is 1.00 with no negative or
-compound misroute, and every Tool clears the 0.95 floor. `quiet.set`, `quiet.dnd`
-and `quiet.awake` route their full 20 positives. Four natural `quiet.off`
-phrasings ("disable quiet hours", "switch off quiet hours", "get rid of quiet
-hours", "turn off nightly quiet hours") fall to the Agent path because the
-`quiet.set` vectors are close; recall is not a floor, and adding more near
-duplicates would not make the split more reliable. The other conservative
-Tools are the timer/list confusions described below.
+These numbers are from the #61 Quiet hours tree after the #63 voice merge and
+include the earlier #34, #44 and #51 corpus additions. Precision is 1.00 with
+no negative or compound misroute, and every Tool clears the 0.95 floor. The
+voice recall stays deliberately conservative for list/current questions; the
+Agent path answers them. Four natural `quiet.off` phrasings ("disable quiet
+hours", "switch off quiet hours", "get rid of quiet hours", "turn off nightly
+quiet hours") fall to the Agent path because the `quiet.set` vectors are close;
+recall is not a floor, and adding more near duplicates would not make the split
+more reliable. The other conservative Tools are the timer/list confusions
+described below.
 
-Plain negatives: **0 of 64** reached the Fast path. Compounds: **0 of 10**
+Plain negatives: **0 of 75** reached the Fast path. Compounds: **0 of 12**
 reached the Fast path. Every Tool is exercised by the semantic router at least
 five times, so no Tool clears the floor only because the Control phrase table
 happened to cover its positives. The timer and list confusions are the main

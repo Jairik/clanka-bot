@@ -142,3 +142,15 @@ _Avoid_: Chime, earcon, beep, notification sound
 **Sound library**:
 The built-in sounds that ship in the image plus the canonical WAV files in `sounds/` on the data volume, indexed by name, duration and added date. Uploading a WAV or MP3 through the Dashboard stores one downmixed, resampled and loudness-normalised WAV; a Cue role names one library sound or `none`.
 _Avoid_: Sound bank, audio collection
+
+**Voice library**:
+The built-in Pocket TTS voices warmed in the `tts` image plus the pre-exported `.safetensors` voice states in `voices/` on the voices volume. The active entry is one persistent setting; other entries load on first use.
+_Avoid_: Voice bank, voice pack
+
+**Voice state**:
+A pre-exported Pocket TTS `.safetensors` file holding the streaming model state for one voice. It is validated against a model revision and becomes stale when that revision changes; `.pt`/`.pth` pickle files are never accepted.
+_Avoid_: Voice file, voice model, embedding
+
+**Speech rate**:
+The `voice.rate` multiplier that changes how fast the Assistant speaks: `1.0` is normal, values above it are faster. It is implemented by resampling, so pitch moves with speed.
+_Avoid_: Speed, tempo, speaking pace

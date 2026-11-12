@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -52,6 +53,9 @@ type Config struct {
 		Voice   string   `yaml:"voice"`
 		Timeout Duration `yaml:"timeout"`
 	} `yaml:"tts"`
+	// Voice is the custom voice-state library and the config layer of the live
+	// voice.rate setting. voice.name's config layer stays tts.voice.
+	Voice   Voice `yaml:"voice"`
 	Capture struct {
 		// Source names a Pulse source; empty uses the host default.
 		Source   string `yaml:"source"`
@@ -185,6 +189,33 @@ type AgentHistory struct {
 // Dashboard or voice override wins.
 type Quiet = quiet.Config
 
+// Voice configures the custom voice-state library. Files are pre-exported
+// Pocket TTS .safetensors states; the folder is mounted read-only into tts and
+// never baked into an image.
+type Voice struct {
+	// Dir holds custom .safetensors voice states. Empty means data.dir/voices.
+	// A relative path resolves under data.dir; an absolute path is used as-is,
+	// so a volume path can be configured without the Dashboard.
+	Dir string `yaml:"dir"`
+	// TTSDir is the same folder's path inside the tts container. The assistant
+	// sends "<TTSDir>/<file>" with a synthesis request.
+	TTSDir string `yaml:"tts_dir"`
+	// Rate is the config layer of the live voice.rate multiplier (1.0 normal).
+	Rate float64 `yaml:"rate"`
+}
+
+// VoiceDir resolves the assistant-side library path.
+func (c Config) VoiceDir() string {
+	dir := strings.TrimSpace(c.Voice.Dir)
+	if dir == "" {
+		return filepath.Join(c.Data.Dir, "voices")
+	}
+	if filepath.IsAbs(dir) {
+		return dir
+	}
+	return filepath.Join(c.Data.Dir, dir)
+}
+
 // Sounds names the sound assigned to each fixed Cue role. Duration caps are
 // checked when the value is assigned, never by trimming the file.
 type Sounds struct {
@@ -234,6 +265,11 @@ func Default() Config {
 	cfg.Quiet = Quiet{Enabled: false, Start: "22:30", End: "07:00", Volume: 35}
 	cfg.TTS.Voice = "alba"
 	cfg.TTS.Timeout = Duration(30 * time.Second)
+	// Custom voice states live beside the database on the data volume. Compose
+	// mounts the same volume read-only into tts at /voices.
+	cfg.Voice.Dir = "voices"
+	cfg.Voice.TTSDir = "/voices"
+	cfg.Voice.Rate = 1.0
 	cfg.Playback.Binary = "pacat"
 	cfg.Capture.Binary = "parec"
 	cfg.Capture.Rate = 16000
@@ -351,6 +387,19 @@ func applyEnv(cfg *Config) error {
 	if v := os.Getenv("ASSISTANT_TTS_VOICE"); v != "" {
 		cfg.TTS.Voice = v
 	}
+	if v := os.Getenv("ASSISTANT_VOICE_DIR"); v != "" {
+		cfg.Voice.Dir = v
+	}
+	if v := os.Getenv("ASSISTANT_VOICE_TTS_DIR"); v != "" {
+		cfg.Voice.TTSDir = v
+	}
+	if v := os.Getenv("ASSISTANT_VOICE_RATE"); v != "" {
+		rate, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			return fmt.Errorf("config: ASSISTANT_VOICE_RATE=%q: %w", v, err)
+		}
+		cfg.Voice.Rate = rate
+	}
 	if v := os.Getenv("ASSISTANT_PULSE_SINK"); v != "" {
 		cfg.Playback.Sink = v
 	}
@@ -454,6 +503,12 @@ func (c Config) Validate() error {
 	}
 	if err := c.validateVoice(); err != nil {
 		return err
+	}
+	if c.Voice.Rate < 0.5 || c.Voice.Rate > 2.0 {
+		return fmt.Errorf("config: voice.rate must be between 0.5 and 2.0")
+	}
+	if c.TTS.Addr != "" && !strings.HasPrefix(c.Voice.TTSDir, "/") {
+		return fmt.Errorf("config: voice.tts_dir must be an absolute path inside the tts container")
 	}
 	if c.Location.RefreshInterval.Duration() <= 0 {
 		return fmt.Errorf("config: location.refresh_interval must be positive")

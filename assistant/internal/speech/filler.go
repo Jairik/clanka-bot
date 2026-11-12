@@ -22,14 +22,14 @@ type Filler struct {
 
 // SynthesizeFiller renders the whole phrase through the TTS service once and
 // caches the PCM. Startup calls it before the request loop begins.
-func SynthesizeFiller(ctx context.Context, client *wyoming.Client, voice wyoming.Voice, text string) (*Filler, error) {
+func SynthesizeFiller(ctx context.Context, client *wyoming.Client, voice wyoming.Voice, text string, opts ...wyoming.SynthesisOption) (*Filler, error) {
 	if strings.TrimSpace(text) == "" {
 		return nil, errors.New("speech: filler text is required")
 	}
 	if client == nil {
 		return nil, errors.New("speech: tts client is required")
 	}
-	stream, err := client.Synthesize(ctx, text, voice)
+	stream, err := client.Synthesize(ctx, text, voice, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("speech: synthesize filler: %w", err)
 	}

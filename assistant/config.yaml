@@ -63,6 +63,10 @@ tools:
     step_percent: 10
   timer:
     alert_text: "Your timer is done."
+  voice:
+    # One "faster"/"slower" step as a multiplier fraction. voice.rate is clamped
+    # to [0.5, 2.0] and rounded to two decimals.
+    step: 0.1
 
 # Embed service (MiniLM). Model name is here so bge-small can be tried later.
 embed:
@@ -72,11 +76,11 @@ embed:
   timeout: 150ms
 
 # Semantic Fast path tuning from the #26 routing evaluation. The corpus is
-# internal/pipeline/testdata/routing_eval.yaml (266 positives, at least 20 per
-# Tool, 64 negatives and 10 compounds) run against
+# internal/pipeline/testdata/routing_eval.yaml (346 positives, at least 20 per
+# Tool, 75 negatives and 12 compounds) run against
 # sentence-transformers/all-MiniLM-L6-v2. At these values every Tool has
 # precision 1.00 against the confirmed 0.95 per-Tool floor, overall recall is
-# 0.70, and no negative or compound reaches the Fast path. Recall is
+# 0.68, and no negative or compound reaches the Fast path. Recall is
 # deliberately conservative: ambiguous phrasing goes to the Agent path instead
 # of risking a wrong Tool call. See docs/routing-eval.md.
 semantic:
@@ -97,10 +101,30 @@ tts:
   # Wyoming TTS service. Compose sets this to the tts container; an empty
   # address disables spoken replies and leaves the debug entry text-only.
   addr: "tts:10200"
-  # Pocket TTS voice name, a local wav, or an hf:// voice URL.
+  # Pocket TTS voice name. This is the config layer of the live `voice.name`
+  # setting; a Dashboard or voice override wins. Built-in names are the voices
+  # the tts image warmed (TTS_VOICES), not an invented catalogue.
   voice: "alba"
   # Covers connect plus the gap between audio chunks.
   timeout: 30s
+
+# Custom voice states: pre-exported Pocket TTS .safetensors files in one folder
+# on the voices volume. Only that folder is mounted read-only into tts and is
+# never baked into an image or committed. Only .safetensors is accepted (no
+# .pt/.pth/pickle), at most 32 MB; a file is usable after a library rescan
+# smoke-tests it against the running model revision.
+voice:
+  # Empty means data.dir/voices. A relative path resolves under data.dir; an
+  # absolute path names a volume path, so files can be copied in headlessly.
+  dir: "voices"
+  # The same folder inside the tts container. Compose mounts only the voices
+  # volume at /voices read-only; the assistant sends "<tts_dir>/<file>" to tts
+  # and never a host path.
+  tts_dir: "/voices"
+  # Config layer of the live `voice.rate` setting: 1.0 is normal, 1.2 is 20%
+  # faster. Implemented by resampling, so pitch rises with speed; values are
+  # clamped to [0.5, 2.0].
+  rate: 1.0
 
 # Microphone capture. Only this process opens the Pulse source (ADR-0001).
 capture:
@@ -225,6 +249,20 @@ control_phrases:
   "cancel": cancel
   "snooze": snooze
   "louder": audio.volume_set
+  # The voice library questions are short and semantically close to each
+  # other, so these fixed phrasings route exactly instead of relying on the
+  # margin. The paraphrases still exercise the semantic Fast path.
+  "what voices do you have": voice.list
+  "list the voices": voice.list
+  "what voices are available": voice.list
+  "list your voices": voice.list
+  "which voice is this": voice.current
+  "what voice are you using": voice.current
+  "what's your current voice": voice.current
+  # A bare Control phrase means one step faster; "slower" and "normal speed"
+  # go through the semantic Fast path so their direction is extracted.
+  "speak faster": voice.rate
+  "talk faster": voice.rate
   "what's the weather like": weather.current
   "what is the weather like": weather.current
   "what's the weather": weather.current

@@ -34,6 +34,9 @@ type fakeProvider struct {
 	replies  []string
 	status   int
 	delay    time.Duration
+	// hang keeps the response open after writing the scripted chunks, so a
+	// test can stall after a role-only prologue.
+	hang bool
 }
 
 type fakeRequest struct {
@@ -65,6 +68,7 @@ func (f *fakeProvider) serve(w http.ResponseWriter, r *http.Request) {
 	f.requests = append(f.requests, fakeRequest{Body: body, Header: r.Header.Clone()})
 	status := f.status
 	delay := f.delay
+	hang := f.hang
 	reply := ""
 	if len(f.replies) > 0 {
 		reply = f.replies[0]
@@ -88,6 +92,12 @@ func (f *fakeProvider) serve(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprint(w, reply)
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	if hang {
+		<-r.Context().Done()
+	}
 }
 
 func (f *fakeProvider) request(t *testing.T, index int) fakeRequest {
@@ -616,6 +626,44 @@ func TestProviderFailuresPlayTheUnavailableMessage(t *testing.T) {
 				t.Errorf("log does not record status %d: %s", status, logs.String())
 			}
 		})
+	}
+}
+
+// roleOnlyChunk is a provider prologue: a choice with only a role delta, no
+// content and no Tool call. It must not consume the first-token budget.
+func roleOnlyChunk() string {
+	var b strings.Builder
+	writeChunk(&b, map[string]any{
+		"id": "chatcmpl-test", "object": "chat.completion.chunk", "created": 1, "model": "test",
+		"choices": []any{map[string]any{
+			"index":         0,
+			"delta":         map[string]any{"role": "assistant"},
+			"finish_reason": nil,
+		}},
+	})
+	return b.String()
+}
+
+func TestFirstTokenTimeoutSurvivesARoleOnlyPrologue(t *testing.T) {
+	fake := newFakeProvider(t, roleOnlyChunk())
+	fake.hang = true
+	settings := testSettings(fake.start().URL)
+	settings.FirstTokenTimeout = 100 * time.Millisecond
+	// Long enough that passing this test only through the request budget would
+	// time out the assertion.
+	settings.RequestTimeout = 5 * time.Second
+	a := newTestAgent(t, settings, nil, nil)
+
+	started := time.Now()
+	result := a.Run(context.Background(), tool.Request{ID: "req-role"}, "hello", nil)
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("Run took %v; the role-only prologue disabled the first-token budget", elapsed)
+	}
+	if !result.TimedOut {
+		t.Error("result.TimedOut = false")
+	}
+	if result.Text != agent.FirstTokenTimeoutMessage {
+		t.Errorf("reply = %q, want %q", result.Text, agent.FirstTokenTimeoutMessage)
 	}
 }
 

@@ -9,8 +9,8 @@ misroute from the request log.
 
 - `assistant/internal/pipeline/testdata/routing_eval.yaml` — the labelled
   oracle. It has at least 20 positives for each Fast path Tool (exact counts in
-  the results table), 177 plain
-  negatives, and 31 compound requests (exact counts in the results table).
+  the results table), 178 plain
+  negatives, and 34 compound requests (exact counts in the results table).
 - `assistant/internal/pipeline/testdata/routing_baseline.yaml` — the recorded
   Map 1 totals the real-MiniLM evaluation must not fall below.
 - `assistant/internal/pipeline/routing_eval_test.go` —
@@ -208,10 +208,10 @@ is low because the city token dominates the embedding: known phrasings route,
 and an unlisted city reaches the same Tool through the Agent path, which then
 uses the local city table rather than a guess.
 
-Plain negatives: **0 of 177** reached the Fast path, including the utility
+Plain negatives: **0 of 178** reached the Fast path, including the utility
 non-requests such as an unsupported event, a currency conversion, a bare
 "roll out the red carpet" and an open-ended pick, plus the reminder-, phone-,
-repeat-, web-lookup-, page-read- and GitHub-shaped non-requests. Compounds: **0 of 31** reached the Fast path,
+repeat-, web-lookup-, page-read- and GitHub-shaped non-requests. Compounds: **0 of 34** reached the Fast path,
 including mixed utility requests such as calculating a percentage and
 converting miles. Every Tool is exercised by the semantic
 router at least twice, so no Tool clears the floor only because the Control
@@ -225,6 +225,20 @@ coverage is negative direct routing plus the Agent integration tests
 journey), never a Fast path positive. The timer and list confusions are
 the main reason recall is conservative; those requests go to the Agent path
 rather than risking a wrong timer action.
+
+Compound detection has two layers. The router rejects a match when a second
+*Tool* also clears the threshold and the utterance contains a configured
+joiner. That misses a Control phrase or a repeated command, because a Focus
+intent is not a Tool and the same Tool can only produce one score. The pipeline
+therefore also looks at each clause after a joiner. It routes to the Agent path
+when that clause is a whole Control phrase or Focus intent, or when it begins
+with a word that opens a Fast-path Example ("set ...", "tell ...", "pause").
+The rule is deliberately conservative: it requires a clause of at least two
+words before the joiner, ignores pronouns/question words/auxiliaries as clause
+openers, and treats "end at 7"/"start at 10" as a schedule continuation. That
+leaves "an hour and a half", "on tuesdays and thursdays", "pizza and tacos" and
+a label containing "and" on the Fast path, while "set a timer for five minutes
+and pause" reaches the Agent path with both intents intact.
 
 ### Focus cases
 

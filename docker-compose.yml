@@ -49,6 +49,10 @@ services:
       # Empty keeps the Dashboard off. Set it to the owner's Tailscale login;
       # tailscale serve on the host proxies to 127.0.0.1:8082 (docs/deploy.md).
       ASSISTANT_DASHBOARD_OWNER: ${ASSISTANT_DASHBOARD_OWNER:-}
+      # Exact public Host(s) tailscale serve sends, comma-separated (for
+      # example pi.example.ts.net). Empty fails closed: only a loopback Host is
+      # accepted, so the Dashboard is reachable by curl but not through serve.
+      ASSISTANT_DASHBOARD_HOSTS: ${ASSISTANT_DASHBOARD_HOSTS:-}
       ASSISTANT_EMBED_URL: "http://embed:8085"
       ASSISTANT_TTS_ADDR: "tts:10200"
       # ADR-0003: the one SQLite database lives on the assistant-data volume.

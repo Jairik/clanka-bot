@@ -59,6 +59,10 @@ func TestSecretsStayOutOfTheSettingsAPI(t *testing.T) {
 	)
 	do := func(method, path, body string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		req.Host = "127.0.0.1:8081"
 		req.RemoteAddr = "127.0.0.1:40000"
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)

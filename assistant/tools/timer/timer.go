@@ -105,6 +105,10 @@ type Manager struct {
 	// cancel from a shutdown for the history outcome.
 	active        map[string]context.CancelFunc
 	ringCancelled map[string]bool
+	// activeLabels keeps the label of each ringing Timer. The pending row and
+	// live entry are gone by then, so a cancel by label needs this metadata to
+	// find the alert the user can hear.
+	activeLabels map[string]string
 }
 
 // MissedAlert is the notification hook payload for a Timer that ran to
@@ -148,6 +152,7 @@ func NewManagerText(now func() time.Time, say func(ctx context.Context, text str
 		entries:       make(map[string]*entry),
 		active:        make(map[string]context.CancelFunc),
 		ringCancelled: make(map[string]bool),
+		activeLabels:  make(map[string]string),
 	}
 }
 
@@ -351,12 +356,14 @@ func (m *Manager) fire(id string) {
 		return
 	}
 	m.active[timer.ID] = ringCancel
+	m.activeLabels[timer.ID] = timer.Label
 	m.mu.Unlock()
 	defer func() {
 		ringCancel()
 		m.mu.Lock()
 		delete(m.active, timer.ID)
 		delete(m.ringCancelled, timer.ID)
+		delete(m.activeLabels, timer.ID)
 		m.mu.Unlock()
 	}()
 
@@ -392,6 +399,7 @@ func (m *Manager) releaseRing(id string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.active, id)
+	delete(m.activeLabels, id)
 	cancelled := m.ringCancelled[id]
 	delete(m.ringCancelled, id)
 	return cancelled
@@ -642,9 +650,11 @@ func (m *Manager) CancelTimers(id string) (int, error) {
 		return cancelled, err
 	}
 	if id != "" {
-		if cancel := m.active[id]; cancel != nil {
+		if cancel := m.active[id]; cancel != nil && !m.ringCancelled[id] {
 			// A fired Timer has no pending row or live entry; mark the Ring so
-			// its history row records stopped/cancel, then end it now.
+			// its history row records stopped/cancel, then end it now. The
+			// cancellation flag dedupes a second cancel before the fire
+			// goroutine deletes the active entry.
 			m.ringCancelled[id] = true
 			cancel()
 			cancelled++
@@ -653,6 +663,9 @@ func (m *Manager) CancelTimers(id string) (int, error) {
 		return cancelled, nil
 	}
 	for activeID, cancel := range m.active {
+		if m.ringCancelled[activeID] {
+			continue
+		}
 		m.ringCancelled[activeID] = true
 		cancel()
 		cancelled++
@@ -675,7 +688,26 @@ func (m *Manager) CancelLabel(label string) (int, error) {
 			ids = append(ids, key)
 		}
 	}
-	return m.cancelLocked(ids, "label", label)
+	cancelled, err := m.cancelLocked(ids, "label", label)
+	if err != nil {
+		return cancelled, err
+	}
+	// A ringing Timer has already left the pending map. Match its retained
+	// label and stop that Ring too, so "cancel the pasta timer" silences the
+	// one the user can hear. Only an id with this label is touched; a newer
+	// unrelated Ring keeps sounding.
+	for id, activeLabel := range m.activeLabels {
+		if activeLabel != label {
+			continue
+		}
+		if cancel := m.active[id]; cancel != nil && !m.ringCancelled[id] {
+			m.ringCancelled[id] = true
+			cancel()
+			cancelled++
+			m.logger.Info("timer ring cancelled", "timer_id", id)
+		}
+	}
+	return cancelled, nil
 }
 
 // cancelLocked removes the persisted rows then the live entries. The caller

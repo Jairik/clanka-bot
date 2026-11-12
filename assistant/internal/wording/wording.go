@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/phrase"
@@ -136,6 +137,11 @@ func Build(reg *tool.Registry, cfg Config) (Setup, error) {
 		}
 		if !info.HasSpeak {
 			return Setup{}, fmt.Errorf("wording: control phrase %q points at %q, which has no Speak renderer", text, target)
+		}
+		if info.AgentOnly {
+			// Control phrases are a Fast-path route; an AgentOnly Tool must
+			// only be reachable through a model call.
+			return Setup{}, fmt.Errorf("wording: control phrase %q points at AgentOnly tool %q", text, target)
 		}
 		if info.Permission == tool.PermissionConfirm {
 			return Setup{}, fmt.Errorf("wording: control phrase %q points at confirm Tool %q", text, target)
@@ -304,6 +310,20 @@ func WithFillerKeys(keys ...string) Option {
 	return func(m *Manager) { m.fillerKeys = append([]string(nil), keys...) }
 }
 
+// WithRetryBackoff changes the bounded retry schedule for a failed Examples
+// rebuild or Filler synthesis. Production uses the defaults; tests shorten
+// them so a retry can be observed without sleeping for seconds.
+func WithRetryBackoff(initial, max time.Duration) Option {
+	return func(m *Manager) {
+		if initial > 0 {
+			m.retryInitial = initial
+		}
+		if max >= initial && max > 0 {
+			m.retryMax = max
+		}
+	}
+}
+
 // ErrClosed reports a Manager that has been stopped.
 var ErrClosed = errors.New("wording: manager is closed")
 
@@ -327,6 +347,12 @@ type Manager struct {
 
 	fillerSignature func() string
 	fillerKeys      []string
+
+	// retryInitial and retryMax bound the background retry of a failed
+	// Examples rebuild or Filler synthesis. The worker owns the timer, so a
+	// dead embed or TTS service cannot spin and a recovery needs no restart.
+	retryInitial time.Duration
+	retryMax     time.Duration
 
 	// builtMu guards the Examples snapshot the worker last installed.
 	builtMu sync.Mutex
@@ -367,6 +393,8 @@ func NewManager(svc *settings.Service, setup Setup, initial *speech.Filler, synt
 		synth:        synth,
 		logger:       logger,
 		filler:       initial,
+		retryInitial: 2 * time.Second,
+		retryMax:     2 * time.Minute,
 		wake:         make(chan struct{}, 1),
 		barrier:      make(chan chan struct{}),
 		done:         make(chan struct{}),
@@ -410,6 +438,12 @@ func (m *Manager) Start(ctx context.Context, router *pipeline.SemanticRouter) {
 	m.cancel = cancel
 	m.startMu.Unlock()
 	go m.run(runCtx)
+	// Run one sync now: it installs nothing when the startup build already
+	// succeeded, and it starts the first retry when that build failed.
+	select {
+	case m.wake <- struct{}{}:
+	default:
+	}
 }
 
 // Close stops the worker and removes the settings observer. It is safe to call
@@ -505,27 +539,70 @@ func (m *Manager) Wait(ctx context.Context) error {
 
 // run is the one background goroutine. All rebuilds are serialized here, so a
 // stale build can never overwrite a newer one and there is no background data
-// race with request reads.
+// race with request reads. A failed rebuild schedules one bounded-backoff
+// retry; a later change signal or success cancels it.
 func (m *Manager) run(ctx context.Context) {
 	defer close(m.done)
+	backoff := m.retryInitial
+	var timer *time.Timer
+	var retry <-chan time.Time
+	stopRetry := func() {
+		if timer != nil {
+			timer.Stop()
+			timer = nil
+		}
+		retry = nil
+	}
+	defer stopRetry()
+	scheduleRetry := func() {
+		stopRetry()
+		if backoff <= 0 {
+			return
+		}
+		timer = time.NewTimer(backoff)
+		retry = timer.C
+		if next := backoff * 2; next < m.retryMax {
+			backoff = next
+		} else if m.retryMax > 0 {
+			backoff = m.retryMax
+		}
+	}
+	applied := func(failed bool) {
+		if failed {
+			scheduleRetry()
+			return
+		}
+		stopRetry()
+		backoff = m.retryInitial
+	}
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-m.wake:
-			m.sync(ctx)
+			applied(m.sync(ctx, false))
 		case reply := <-m.barrier:
-			m.sync(ctx)
+			applied(m.sync(ctx, false))
 			close(reply)
+		case <-retry:
+			retry = nil
+			if m.sync(ctx, true) {
+				scheduleRetry()
+			} else {
+				stopRetry()
+				backoff = m.retryInitial
+			}
 		}
 	}
 }
 
 // sync applies the current settings. It is the only writer of the cached
-// Filler and the installed Examples snapshot.
-func (m *Manager) sync(ctx context.Context) {
-	m.syncFiller(ctx)
-	m.syncExamples(ctx)
+// Filler and the installed Examples snapshot. It reports whether a background
+// retry is still needed.
+func (m *Manager) sync(ctx context.Context, retry bool) bool {
+	fillerFailed := m.syncFiller(ctx, retry)
+	examplesFailed := m.syncExamples(ctx)
+	return fillerFailed || examplesFailed
 }
 
 // Routing returns the live Control phrase table and Agent request prefixes from
@@ -660,9 +737,9 @@ func (m *Manager) Filler() *speech.Filler {
 // syncExamples rebuilds the index off to the side. Old vectors stay live on a
 // failure, and a set whose snapshot was superseded while embedding is
 // discarded instead of being swapped in.
-func (m *Manager) syncExamples(ctx context.Context) {
+func (m *Manager) syncExamples(ctx context.Context) bool {
 	if m.router == nil {
-		return
+		return false
 	}
 	m.changeMu.Lock()
 	startVersion := m.version
@@ -673,12 +750,12 @@ func (m *Manager) syncExamples(ctx context.Context) {
 	built := cloneExamples(m.built)
 	m.builtMu.Unlock()
 	if equalExamples(current, built) {
-		return
+		return false
 	}
 	set, err := m.router.BuildSet(ctx, current)
 	if err != nil {
 		m.logger.Warn("wording: examples rebuild failed, keeping old vectors", "error", err.Error())
-		return
+		return true
 	}
 	// Check and swap are atomic with respect to a change signal. A newer
 	// override that arrived at any point up to here makes this set stale; the
@@ -687,7 +764,7 @@ func (m *Manager) syncExamples(ctx context.Context) {
 	if m.version != startVersion {
 		m.changeMu.Unlock()
 		m.logger.Info("wording: examples rebuild superseded, discarding stale vectors")
-		return
+		return false
 	}
 	m.router.Swap(set)
 	m.builtMu.Lock()
@@ -695,25 +772,29 @@ func (m *Manager) syncExamples(ctx context.Context) {
 	m.builtMu.Unlock()
 	m.changeMu.Unlock()
 	m.logger.Info("wording: examples rebuilt", "tools", set.ToolCount())
+	return false
 }
 
 // syncFiller re-synthesizes the cached audio when the effective Filler text
-// changed. A failed synthesis keeps the old audio and is not retried until the
-// text changes again, so a dead TTS service cannot spin.
-func (m *Manager) syncFiller(ctx context.Context) {
+// changed. A failed synthesis keeps the old audio; the worker retries the same
+// key on its bounded backoff, so a dead TTS service cannot spin and a transient
+// failure recovers without another wording change.
+func (m *Manager) syncFiller(ctx context.Context, retry bool) bool {
 	text := strings.TrimSpace(m.settings.String(FillerKey))
 	if text == "" || m.synth == nil {
-		return
+		return false
 	}
 	key := m.keyFor(text)
 	m.fillerMu.RLock()
 	cached, cachedKey, attemptedKey := m.filler, m.fillerKey, m.attemptedKey
 	m.fillerMu.RUnlock()
 	if cached != nil && cachedKey == key {
-		return
+		return false
 	}
-	if attemptedKey == key {
-		return
+	// A normal wake never re-attempts a key that just failed; only the retry
+	// tick does, so a burst of unrelated settings cannot hammer TTS.
+	if attemptedKey == key && !retry {
+		return false
 	}
 	filler, err := m.synth(ctx, text)
 	if err != nil {
@@ -721,14 +802,14 @@ func (m *Manager) syncFiller(ctx context.Context) {
 		m.fillerMu.Lock()
 		m.attemptedKey = key
 		m.fillerMu.Unlock()
-		return
+		return true
 	}
 	if filler == nil || len(filler.PCM) == 0 {
 		m.logger.Warn("wording: filler synthesis returned no audio, keeping old audio")
 		m.fillerMu.Lock()
 		m.attemptedKey = key
 		m.fillerMu.Unlock()
-		return
+		return true
 	}
 	m.fillerMu.Lock()
 	m.filler = filler
@@ -736,6 +817,7 @@ func (m *Manager) syncFiller(ctx context.Context) {
 	m.attemptedKey = ""
 	m.fillerMu.Unlock()
 	m.logger.Info("wording: filler re-synthesized", "text", filler.Text, "audio_bytes", len(filler.PCM))
+	return false
 }
 
 func contains(list []string, value string) bool {

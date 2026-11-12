@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/activity"
+	"github.com/Jairik/clanka-bot/assistant/internal/httpguard"
 	"github.com/Jairik/clanka-bot/assistant/internal/persona"
 	"github.com/Jairik/clanka-bot/assistant/internal/secrets"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
@@ -100,6 +101,13 @@ type Options struct {
 	// without speaking: main passes a reply.Session created with no speaker.
 	// When nil the Activity page still lists requests but hides the box.
 	Typed TypedResponder
+	// Hosts is the explicit public Host allowlist: the tailnet name
+	// `tailscale serve` exposes, exactly as it appears in the URL. Loopback
+	// names are always accepted for the documented local smoke test. An empty
+	// list keeps the Dashboard reachable only through a loopback Host, so a
+	// DNS-rebinding page cannot borrow the owner identity; main logs the setup
+	// instruction.
+	Hosts []string
 	// ProxyAllowed overrides the trusted source-address check. Production uses
 	// the default (loopback plus the container's default gateway); tests inject
 	// their own address policy.
@@ -134,6 +142,7 @@ type Handler struct {
 	// voice loop is already single-turn; this gives the Dashboard the same
 	// one-request-at-a-time behaviour and one pending Confirmation at a time.
 	askLock      chan struct{}
+	hosts        httpguard.Hosts
 	proxyAllowed func(net.IP) bool
 	templates    *template.Template
 	mux          *http.ServeMux
@@ -160,6 +169,10 @@ func New(opts Options) (*Handler, error) {
 	templates, err := template.ParseFS(assets, "templates/*.html")
 	if err != nil {
 		return nil, fmt.Errorf("dashboard: parse templates: %w", err)
+	}
+	hosts, err := httpguard.NewHosts(opts.Hosts)
+	if err != nil {
+		return nil, fmt.Errorf("dashboard: %w", err)
 	}
 	staticFS, err := fs.Sub(assets, "static")
 	if err != nil {
@@ -200,6 +213,7 @@ func New(opts Options) (*Handler, error) {
 		activity:       opts.Activity,
 		typed:          opts.Typed,
 		askLock:        make(chan struct{}, 1),
+		hosts:          hosts,
 		proxyAllowed:   opts.ProxyAllowed,
 		templates:      templates,
 		mux:            http.NewServeMux(),
@@ -309,6 +323,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	setSecurityHeaders(w)
 	if !h.sourceAllowed(r.RemoteAddr) {
 		h.reject(w, r, "untrusted source", "")
+		return
+	}
+	// Reject a Host outside the configured tailnet name before reading any
+	// identity header, so a DNS-rebinding page cannot borrow the owner login it
+	// has guessed and a local process cannot use an arbitrary name.
+	if !h.hosts.Allows(r) {
+		h.reject(w, r, "unexpected host", "")
 		return
 	}
 	login, ok := h.identity(r)

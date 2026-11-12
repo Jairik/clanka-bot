@@ -347,6 +347,7 @@ func (f *activityFixture) form(text string) *http.Request {
 	f.t.Helper()
 	values := url.Values{"text": {text}}
 	req := httptest.NewRequest(http.MethodPost, "/activity/ask", strings.NewReader(values.Encode()))
+	req.Host = "127.0.0.1:8082"
 	req.RemoteAddr = "127.0.0.1:12345"
 	req.Header.Set("Tailscale-User-Login", owner)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")

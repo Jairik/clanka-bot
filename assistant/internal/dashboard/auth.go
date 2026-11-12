@@ -4,11 +4,12 @@ import (
 	"context"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/Jairik/clanka-bot/assistant/internal/httpguard"
 )
 
 // identityHeader is the only header trusted for authentication. Serve adds it
@@ -87,38 +88,9 @@ func (h *Handler) reject(w http.ResponseWriter, r *http.Request, reason, login s
 // SameOrigin is the CSRF guard for mutating routes. Safe methods pass. For a
 // mutation, a browser-supplied same-origin fetch marker is accepted, otherwise
 // Origin (or Referer) must name this host, including a proxy-forwarded host.
+// The rule lives in httpguard so the debug listener uses the same policy.
 func SameOrigin(r *http.Request) bool {
-	switch r.Method {
-	case http.MethodGet, http.MethodHead, http.MethodOptions:
-		return true
-	}
-	switch r.Header.Get("Sec-Fetch-Site") {
-	case "same-origin":
-		return true
-	case "":
-		// Older clients do not send Fetch Metadata; fall through to Origin.
-	default:
-		return false
-	}
-	source := r.Header.Get("Origin")
-	if source == "" {
-		source = r.Header.Get("Referer")
-	}
-	parsed, err := url.Parse(source)
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
-		return false
-	}
-	if strings.EqualFold(parsed.Host, r.Host) {
-		return true
-	}
-	forwarded := r.Header.Get("X-Forwarded-Host")
-	if forwarded == "" {
-		return false
-	}
-	// X-Forwarded-Host can be a comma-separated chain; the first entry is the
-	// original host set by the trusted local proxy.
-	first, _, _ := strings.Cut(forwarded, ",")
-	return strings.EqualFold(parsed.Host, strings.TrimSpace(first))
+	return httpguard.SameOrigin(r)
 }
 
 var (

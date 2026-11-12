@@ -42,6 +42,8 @@ func newTestServerWith(t *testing.T, opts ...api.Option) (http.Handler, *bytes.B
 func postTranscript(t *testing.T, handler http.Handler, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/debug/transcript", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Host = "127.0.0.1:8081"
 	req.RemoteAddr = "127.0.0.1:12345"
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -145,6 +147,7 @@ func TestDebugEntryOnlyAcceptsPost(t *testing.T) {
 	handler, _ := newTestServer(t)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/debug/transcript", nil)
+	req.Host = "127.0.0.1:8081"
 	req.RemoteAddr = "127.0.0.1:12345"
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusMethodNotAllowed {
@@ -169,6 +172,8 @@ func TestDebugEntryRejectsSiblingContainers(t *testing.T) {
 
 	post := func(remote string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodPost, "/debug/transcript", strings.NewReader(`{"text":"what time is it"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Host = "127.0.0.1:8081"
 		req.RemoteAddr = remote
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
@@ -199,6 +204,7 @@ func TestSettingsRoutesAreLocalOnlyAndAbsentFromTheHealthListener(t *testing.T) 
 
 	get := func(remote string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
+		req.Host = "127.0.0.1:8081"
 		req.RemoteAddr = remote
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
@@ -238,6 +244,7 @@ func TestWithAPIMountsComposedHandlersBehindTheDebugGate(t *testing.T) {
 
 	get := func(remote string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodGet, "/api/secrets", nil)
+		req.Host = "127.0.0.1:8081"
 		req.RemoteAddr = remote
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)

@@ -23,6 +23,12 @@ dashboard:
   # container-bound 127.0.0.1 is unreachable through Docker's published port;
   # the host mapping is still 127.0.0.1 only.
   addr: "127.0.0.1:8082"
+  # Exact public Host header(s) that may reach the Dashboard, as `tailscale
+  # serve` sends them (for example pi.example.ts.net). Loopback names are
+  # always accepted for the curl smoke test. Empty fails closed and logs the
+  # setup instruction: only a loopback Host is accepted, so serve traffic is
+  # refused until this is set. A wildcard is rejected.
+  hosts: []
   # One Health page refresh, covering every service and module check. Checks
   # that overrun are shown as timed out; no request waits longer than this.
   health_timeout: 3s
@@ -154,7 +160,7 @@ embed:
 
 # Semantic Fast path tuning from the #26 routing evaluation. The corpus is
 # internal/pipeline/testdata/routing_eval.yaml (804 positives, at least 20 per
-# Tool, 177 negatives and 31 compounds) run against
+# Tool, 178 negatives and 34 compounds) run against
 # sentence-transformers/all-MiniLM-L6-v2. At these values every Tool has
 # precision 1.00 against the confirmed 0.95 per-Tool floor, overall recall is
 # 0.6953, and no negative or compound reaches the Fast path. Recall is
@@ -332,11 +338,15 @@ control_phrases:
   # Playback and timer controls are single words, which embed poorly, so they
   # are matched exactly instead. "louder", "quieter" and "mute" still run
   # volume_set's Extract, so the direction and the zero level come from the
-  # phrase. "stop", "pause", "cancel" and "snooze" are shared intents: they
-  # reach a ringing alert, the current reply or music before any Tool. Snooze
-  # on a Timer acts as stop; #53 gives an Alarm its real snooze.
+  # phrase. "stop", "pause", "resume", "next", "cancel" and "snooze" are shared
+  # intents: they reach a ringing alert, the current reply or music before any
+  # Tool. Snooze on a Timer acts as stop; #53 gives an Alarm its real snooze.
+  # Resume and next currently reach music only; they fall through when nothing
+  # holds that Transport intent (#72 adds the music holder).
   "stop": stop
   "pause": pause
+  "resume": resume
+  "next": next
   "cancel": cancel
   "snooze": snooze
   "louder": audio.volume_set

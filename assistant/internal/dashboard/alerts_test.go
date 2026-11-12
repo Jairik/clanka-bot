@@ -316,6 +316,7 @@ func (f *alertsFixture) post(target string, values url.Values) *httptest.Respons
 func (f *alertsFixture) postWith(target string, values url.Values, edit func(*http.Request)) *httptest.ResponseRecorder {
 	f.t.Helper()
 	req := httptest.NewRequest(http.MethodPost, target, strings.NewReader(values.Encode()))
+	req.Host = "127.0.0.1:8082"
 	req.RemoteAddr = "127.0.0.1:12345"
 	req.Header.Set("Tailscale-User-Login", owner)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -419,6 +420,7 @@ func TestAlertsCancelStopsOneFutureTimerThroughItsManager(t *testing.T) {
 	// Identity and same-origin are required before the cancel route can run.
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, target, strings.NewReader(""))
+	req.Host = "127.0.0.1:8082"
 	req.RemoteAddr = "127.0.0.1:12345"
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	f.handler.ServeHTTP(rec, req)
@@ -796,6 +798,7 @@ func TestAlertsMutationsRequireIdentityAndSameOrigin(t *testing.T) {
 		t.Run(route, func(t *testing.T) {
 			rec := httptest.NewRecorder()
 			req := httptest.NewRequest(http.MethodPost, route, strings.NewReader(""))
+			req.Host = "127.0.0.1:8082"
 			req.RemoteAddr = "127.0.0.1:12345"
 			req.Header.Set("Sec-Fetch-Site", "same-origin")
 			f.handler.ServeHTTP(rec, req)

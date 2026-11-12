@@ -114,11 +114,11 @@ func TestLoadAppliesDefaultsForOmittedFields(t *testing.T) {
 	if cfg.Embed.Timeout.Duration() != 150*time.Millisecond {
 		t.Errorf("Embed.Timeout = %s, want 150ms", cfg.Embed.Timeout.Duration())
 	}
-	if cfg.Semantic.Threshold != 0.70 {
-		t.Errorf("Semantic.Threshold = %v, want 0.70", cfg.Semantic.Threshold)
+	if cfg.Semantic.Threshold != 0.71 {
+		t.Errorf("Semantic.Threshold = %v, want 0.71", cfg.Semantic.Threshold)
 	}
-	if cfg.Semantic.Margin != 0.08 {
-		t.Errorf("Semantic.Margin = %v, want 0.08", cfg.Semantic.Margin)
+	if cfg.Semantic.Margin != 0.23 {
+		t.Errorf("Semantic.Margin = %v, want 0.23", cfg.Semantic.Margin)
 	}
 	if len(cfg.Semantic.Joiners) == 0 {
 		t.Error("Semantic.Joiners is empty")
@@ -482,5 +482,55 @@ func TestLoadRejectsHalfConfiguredSpotify(t *testing.T) {
 	}
 	if _, err := config.Load(writeConfig(t, "spotify:\n  redirect_uri: \"https://pi.tailnet.ts.net/spotify/callback\"\n")); err == nil {
 		t.Fatal("Load accepted a redirect URI without a client ID")
+	}
+}
+
+// TestSemanticDefaultsMatchTheShippedPolicy locks the code default that a
+// config without a semantic block inherits. The old 0.70/0.08 pair silently
+// weakened the margin when the block was omitted.
+func TestSemanticDefaultsMatchTheShippedPolicy(t *testing.T) {
+	cfg := config.Default()
+	if cfg.Semantic.Threshold != 0.71 || cfg.Semantic.Margin != 0.23 {
+		t.Fatalf("Default semantic = %.3f/%.3f, want 0.710/0.230", cfg.Semantic.Threshold, cfg.Semantic.Margin)
+	}
+
+	path := writeConfig(t, `
+http:
+  addr: ":8080"
+`)
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.Semantic.Threshold != 0.71 || loaded.Semantic.Margin != 0.23 {
+		t.Fatalf("omitted semantic block loaded %.3f/%.3f, want 0.710/0.230", loaded.Semantic.Threshold, loaded.Semantic.Margin)
+	}
+}
+
+// TestDashboardHostsAreParsedAndValidated covers the S2 config seam.
+func TestDashboardHostsAreParsedAndValidated(t *testing.T) {
+	t.Setenv("ASSISTANT_DASHBOARD_HOSTS", "pi.example.ts.net, assistant.example ")
+	path := writeConfig(t, `
+dashboard:
+  owner: "alice@example.com"
+  addr: "127.0.0.1:8082"
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Dashboard.Hosts) != 2 || cfg.Dashboard.Hosts[0] != "pi.example.ts.net" {
+		t.Fatalf("Dashboard.Hosts = %#v", cfg.Dashboard.Hosts)
+	}
+
+	t.Setenv("ASSISTANT_DASHBOARD_HOSTS", "")
+	path = writeConfig(t, `
+dashboard:
+  owner: "alice@example.com"
+  addr: "127.0.0.1:8082"
+  hosts: ["*.ts.net"]
+`)
+	if _, err := config.Load(path); err == nil {
+		t.Fatal("Load accepted a wildcard dashboard host")
 	}
 }

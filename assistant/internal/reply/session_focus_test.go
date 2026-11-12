@@ -11,6 +11,7 @@ import (
 
 	"github.com/Jairik/clanka-bot/assistant/internal/agent"
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
+	"github.com/Jairik/clanka-bot/assistant/internal/latency"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	"github.com/Jairik/clanka-bot/assistant/internal/reply"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
@@ -176,3 +177,69 @@ func (a *fakeAgent) Run(context.Context, tool.Request, string, func(string)) age
 }
 
 func (a *fakeAgent) History() *agent.History { return a.history }
+
+// cancelQuietTTS stops on cancellation without reporting an error, as a real
+// sink can after a cancelled synthesis. The turn outcome itself must carry the
+// cancellation.
+type cancelQuietTTS struct {
+	started chan struct{}
+	once    sync.Once
+}
+
+func (s *cancelQuietTTS) SayText(ctx context.Context, _ string) error {
+	s.once.Do(func() { close(s.started) })
+	<-ctx.Done()
+	return nil
+}
+
+// TestStopRecordsTheOriginalReplyAsCancelled is the telemetry truthfulness
+// regression: a shared "stop" cancels the turn, not the parent request, so the
+// completion event must still read cancelled rather than a clean drain.
+func TestStopRecordsTheOriginalReplyAsCancelled(t *testing.T) {
+	var registry focus.Registry
+	runner := newBlockingAgent()
+	speaker := &cancelQuietTTS{started: make(chan struct{})}
+
+	p, err := pipeline.New(tool.NewRegistry(time.Second), map[string]string{"stop": "stop"},
+		slog.New(slog.NewTextHandler(&strings.Builder{}, nil)),
+		pipeline.WithAgent(runner, nil),
+		pipeline.WithFocus(&registry),
+	)
+	if err != nil {
+		t.Fatalf("pipeline.New: %v", err)
+	}
+	session := reply.New(p, speaker, nil, nil, reply.WithFocus(&registry))
+
+	completed := make(chan latency.Completed, 1)
+	timeline := latency.New("original", latency.SourceVoice, latency.WithObserver(func(event latency.Completed) {
+		completed <- event
+	}))
+	ctx := latency.WithContext(context.Background(), timeline)
+
+	originalDone := make(chan error, 1)
+	go func() {
+		_, err := session.Ask(ctx, tool.Request{ID: "original", Device: tool.DevicePi}, "tell me a long story")
+		originalDone <- err
+	}()
+	select {
+	case <-speaker.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the original reply never started speaking")
+	}
+	if _, err := session.Ask(context.Background(), tool.Request{ID: "stop", Device: tool.DeviceSatellite}, "stop"); err != nil {
+		t.Fatalf("stop request failed: %v", err)
+	}
+	select {
+	case <-originalDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the original reply did not stop")
+	}
+	select {
+	case event := <-completed:
+		if event.Outcome != latency.OutcomeCancelled {
+			t.Fatalf("outcome = %q, want cancelled", event.Outcome)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the original reply wrote no completion event")
+	}
+}

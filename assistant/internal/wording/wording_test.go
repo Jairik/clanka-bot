@@ -102,6 +102,10 @@ func newFixtureWith(t *testing.T, initial *speech.Filler, synth wording.FillerSy
 		t.Fatalf("settings.New: %v", err)
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	// The production retry starts at two seconds. Most tests assert the
+	// immediate state, so keep the timer out of their way; retry tests pass
+	// WithRetryBackoff themselves.
+	opts = append([]wording.Option{wording.WithRetryBackoff(time.Hour, time.Hour)}, opts...)
 	mgr, err := wording.NewManager(svc, setup, initial, synth, logger, opts...)
 	if err != nil {
 		t.Fatalf("wording.NewManager: %v", err)

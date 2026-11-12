@@ -127,15 +127,9 @@ func (p *provider) stream(ctx context.Context, messages []openai.ChatCompletionM
 	var out completion
 	var order []int64
 	partial := make(map[int64]*partialCall)
-	first := true
 	firstToken := true
 
 	for stream.Next() {
-		if first {
-			first = false
-			timer.Stop()
-			timer = time.AfterFunc(p.requestTimeout, func() { cancel(errRequestTimeout) })
-		}
 		chunk := stream.Current()
 		if len(chunk.Choices) == 0 {
 			continue
@@ -143,6 +137,12 @@ func (p *provider) stream(ctx context.Context, messages []openai.ChatCompletionM
 		delta := chunk.Choices[0].Delta
 		if firstToken && (delta.Content != "" || len(delta.ToolCalls) > 0) {
 			firstToken = false
+			// The first-token budget ends only on real content or a Tool call.
+			// A role-only prologue must not replace it with the longer request
+			// budget, or a provider could stall past FirstTokenTimeout. The
+			// request timer then covers the rest of the stream.
+			timer.Stop()
+			timer = time.AfterFunc(p.requestTimeout, func() { cancel(errRequestTimeout) })
 			// Agent first token is the first token with content or a Tool
 			// call, not a role-only prologue. First-wins across Agent steps.
 			latency.SetStage(ctx, latency.StageAgentFirstToken, time.Since(started))

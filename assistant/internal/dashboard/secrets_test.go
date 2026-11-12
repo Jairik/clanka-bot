@@ -101,6 +101,7 @@ func (f *secretsFixture) get(target string) *httptest.ResponseRecorder {
 func (f *secretsFixture) form(method, target string, values url.Values) *http.Request {
 	f.t.Helper()
 	req := httptest.NewRequest(method, target, strings.NewReader(values.Encode()))
+	req.Host = "127.0.0.1:8082"
 	req.RemoteAddr = "127.0.0.1:12345"
 	req.Header.Set("Tailscale-User-Login", owner)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -395,6 +396,7 @@ func TestSecretsRejectsUnknownEmptyAndMalformedFormsWithoutEchoingTheValue(t *te
 	// A malformed form is rejected before the service sees anything.
 	req := httptest.NewRequest(http.MethodPost, "/secrets/"+secretOpenRouter,
 		strings.NewReader("value=%zz&other="+dummyNewValue))
+	req.Host = "127.0.0.1:8082"
 	req.RemoteAddr = "127.0.0.1:12345"
 	req.Header.Set("Tailscale-User-Login", owner)
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")

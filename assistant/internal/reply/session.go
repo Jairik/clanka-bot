@@ -287,7 +287,10 @@ func (s *Session) ask(ctx context.Context, req tool.Request, transcript string, 
 	// cover the gap while the pipeline has returned but TTS has not started.
 	// It exits as soon as any sound claims the slot.
 	stopCue()
-	s.complete(ctx, err)
+	// Complete with the turn context: a shared "stop" cancels only this turn,
+	// so the parent can still be live while the reply was cancelled. Using the
+	// parent would log a stopped reply as ok/no_audio in Activity and telemetry.
+	s.complete(turnCtx, err)
 	return reply, err
 }
 

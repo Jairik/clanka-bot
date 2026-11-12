@@ -35,7 +35,10 @@ curl -s -X POST localhost:8081/debug/transcript \
 
 The response is the spoken-form reply from the `time.now` Tool, plus the
 routing path and a request id, and the reply is spoken on the configured Pulse
-sink as it is synthesised (`"spoken": true`). Paraphrases work too, via the
+sink as it is synthesised (`"spoken": true`). The debug and `/api/` listeners
+accept only a loopback `Host`, require `Content-Type: application/json` on a
+mutation body, and reject a browser cross-site request; the documented
+`localhost` curl calls above are the supported client. Paraphrases work too, via the
 `embed` MiniLM service that Compose starts alongside the assistant:
 
 ```sh
@@ -780,7 +783,7 @@ There is no general hot-reload framework.
 | --- | --- |
 | `tools.<name>.control_phrases` | The exact phrases that route to that Tool. A replacement applies to the next request. |
 | `focus.<intent>.phrases` | Exact phrases for one shared Focus intent (`stop`, `pause`, `resume`, `next`, `cancel`, `snooze`). They act on a ringing alert, the current reply or music; with nothing in Focus they fall through to the semantic Fast path. |
-| `tools.<name>.examples` | Semantic Fast path Examples. A change re-embeds in the background; routing keeps the old vectors until the new ones are ready, and a superseded rebuild is discarded. |
+| `tools.<name>.examples` | Semantic Fast path Examples. A change re-embeds in the background; routing keeps the old vectors until the new ones are ready, a superseded rebuild is discarded, and a failed rebuild retries with bounded backoff (a startup failure recovers without a restart). |
 | `agent.request_prefixes` | Prefixes that go straight to the Agent path. A change applies to the next request. |
 | `agent.filler` | The phrase played while the Agent path waits. A change re-synthesizes the cached audio in the background; the old audio plays until the new clip is ready, and at most one Filler still plays per request. |
 | `agent.unavailable_message` | The phrase spoken when the model is unreachable. A change applies to the next failure. |

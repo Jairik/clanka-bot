@@ -947,6 +947,8 @@ negatives:
   - timer for the pasta
   - how long is left on the oven
   - what's the timer setting
+  # Disclosed #51 failure, now below the threshold; keep it locked in.
+  - how long is pasta supposed to cook
   # Alarm-shaped but not a new Alarm: a sound preview, a volume change for a
   # later per-Alarm override, or a phone alarm the assistant does not own.
   - play the alarm sound
@@ -1106,6 +1108,12 @@ negatives:
 compounds:
   - what time is it and set a timer for five minutes
   - set a timer for five minutes and tell me the weather
+  # The semantic half is a Timer request, the other half is a shared Control
+  # phrase or a second command. Exact-phrase matching only sees the whole
+  # utterance, so the pipeline must recognise the separate clause itself.
+  - set a timer for five minutes and pause
+  - set a timer for five minutes and resume
+  - set a timer for five minutes and set another timer for ten minutes
   - turn the volume down and stop the music
   - what's the date and what time is it
   - cancel the timer and set a new one for ten minutes
@@ -1166,6 +1174,22 @@ focus:
   - utterance: pause
     holders: []
     intent: pause
+    handled_by: ""
+  - utterance: resume
+    holders: [music]
+    intent: resume
+    handled_by: music
+  - utterance: resume
+    holders: []
+    intent: resume
+    handled_by: ""
+  - utterance: next
+    holders: [music]
+    intent: next
+    handled_by: music
+  - utterance: next
+    holders: []
+    intent: next
     handled_by: ""
   - utterance: cancel
     holders: [ring, reply]

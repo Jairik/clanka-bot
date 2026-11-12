@@ -650,6 +650,13 @@ func (m *Manager) CancelTimers(id string) (int, error) {
 			cancelled++
 			m.logger.Info("timer ring cancelled", "timer_id", id)
 		}
+		return cancelled, nil
+	}
+	for activeID, cancel := range m.active {
+		m.ringCancelled[activeID] = true
+		cancel()
+		cancelled++
+		m.logger.Info("timer ring cancelled", "timer_id", activeID)
 	}
 	return cancelled, nil
 }

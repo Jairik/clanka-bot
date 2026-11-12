@@ -304,6 +304,43 @@ func TestAssignmentNoneDisablesPlayback(t *testing.T) {
 	}
 }
 
+func TestReminderAndRingCueSeamsResolveAndPlay(t *testing.T) {
+	f := newFixture(t, sound.Config{})
+	writeLibraryWAV(t, f.sounds.LibraryDir(), "birds.wav", 300*time.Millisecond)
+	if err := f.sounds.Rescan(context.Background()); err != nil {
+		t.Fatalf("Rescan: %v", err)
+	}
+	ctx := context.Background()
+	for _, role := range []sound.Role{sound.RoleReminder, sound.RoleTimerRing, sound.RoleAlarmRing} {
+		if _, err := f.settings.Set(ctx, sound.Key(role), "birds"); err != nil {
+			t.Fatalf("Set %s: %v", role, err)
+		}
+		clip, ok := f.sounds.Clip(role)
+		if !ok || clip.Duration != 300*time.Millisecond {
+			t.Fatalf("%s clip = %+v, %v", role, clip.Duration, ok)
+		}
+	}
+	// #54 and #52 consume these roles later; the playback seam is usable now.
+	if err := f.sounds.Play(ctx, sound.RoleReminder); err != nil {
+		t.Fatalf("Play reminder: %v", err)
+	}
+	if err := f.sounds.Play(ctx, sound.RoleTimerRing); err != nil {
+		t.Fatalf("Play timer ring: %v", err)
+	}
+	if writes, _ := f.sink.snapshot(); len(writes) != 2 {
+		t.Fatalf("reminder/ring writes = %d, want 2", len(writes))
+	}
+	if _, err := f.settings.Set(ctx, sound.Key(sound.RoleAlarmRing), sound.None); err != nil {
+		t.Fatalf("Set alarm none: %v", err)
+	}
+	if err := f.sounds.Play(ctx, sound.RoleAlarmRing); err != nil {
+		t.Fatalf("Play none alarm: %v", err)
+	}
+	if writes, _ := f.sink.snapshot(); len(writes) != 2 {
+		t.Fatalf("none alarm added a write: %d", len(writes))
+	}
+}
+
 func TestLiveAssignmentChangesTheNextClip(t *testing.T) {
 	f := newFixture(t, sound.Config{})
 	writeLibraryWAV(t, f.sounds.LibraryDir(), "birds.wav", 400*time.Millisecond)

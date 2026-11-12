@@ -24,6 +24,8 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	"github.com/Jairik/clanka-bot/assistant/internal/reply"
+	"github.com/Jairik/clanka-bot/assistant/internal/secrets"
+	"github.com/Jairik/clanka-bot/assistant/internal/secretsapi"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 	"github.com/Jairik/clanka-bot/assistant/internal/settingsapi"
 	"github.com/Jairik/clanka-bot/assistant/internal/speech"
@@ -76,6 +78,22 @@ func run() error {
 			logger.Error("store close", "error", err.Error())
 		}
 	}()
+
+	// The provider entry names the secret key and is needed before Tool
+	// registration so the secrets service knows every writable name.
+	provider, err := cfg.Agent.ActiveProvider()
+	if err != nil {
+		return err
+	}
+	toolSet := tools.NewSet()
+	// The declared names are the write-only allowlist: Tool modules first, then
+	// the Agent provider's key. Environment variables with the same names are
+	// the bootstrap; a stored value wins.
+	secretNames := append(toolSet.SecretNames(), provider.APIKeyEnv)
+	secretsSvc, err := secrets.New(ctx, st.DB(), secretNames)
+	if err != nil {
+		return fmt.Errorf("secrets: %w", err)
+	}
 
 	// Resolve the place once before serving so the first request has it; Watch
 	// keeps it fresh every 24h. The prompt reads the service per request.
@@ -135,12 +153,13 @@ func run() error {
 		Location:      locSvc.Current,
 		Audio:         sink,
 		Store:         st,
+		Secrets:       secretsSvc,
 		Announcements: announcements,
 	}
 	if speechSpeaker != nil {
 		deps.Speaker = speechSpeaker
 	}
-	if err := tools.NewSet().RegisterAll(registry, deps, cfg.Tools.Sections); err != nil {
+	if err := toolSet.RegisterAll(registry, deps, cfg.Tools.Sections); err != nil {
 		return fmt.Errorf("register tools: %w", err)
 	}
 
@@ -163,13 +182,15 @@ func run() error {
 		return fmt.Errorf("tool settings: %w", err)
 	}
 
-	provider, err := cfg.Agent.ActiveProvider()
-	if err != nil {
-		return err
-	}
 	agentPath, err := agent.New(agent.Settings{
-		BaseURL:            provider.BaseURL,
-		APIKeyEnv:          provider.APIKeyEnv,
+		BaseURL:   provider.BaseURL,
+		APIKeyEnv: provider.APIKeyEnv,
+		// Read the resolved key per request: a value stored from the Dashboard
+		// takes effect on the next turn without a restart.
+		APIKey: func() string {
+			value, _ := secretsSvc.Get(provider.APIKeyEnv)
+			return value
+		},
 		Model:              provider.Model,
 		Headers:            provider.Headers,
 		Routing:            provider.Routing,
@@ -262,10 +283,20 @@ func run() error {
 			// behaviour is demonstrable without a Reminder.
 			opts = append(opts, api.WithAnnouncements(announcements))
 		}
-		// Settings and Tool-override writes live only on the localhost debug
-		// listener; the health listener never mounts this handler. #47 mounts
-		// the same composable handler behind Tailscale identity.
-		opts = append(opts, api.WithSettings(settingsapi.New(settingsSvc, toolPolicy, logger)))
+		// Settings, Tool-override and secret writes live only on the localhost
+		// debug listener; the health listener never mounts this handler. #47
+		// mounts the same composable mux behind Tailscale identity.
+		apiMux := http.NewServeMux()
+		settingsHandler := settingsapi.New(settingsSvc, toolPolicy, logger)
+		secretsHandler := secretsapi.New(secretsSvc, logger)
+		mount := func(prefix string, handler http.Handler) {
+			apiMux.Handle(prefix, handler)
+			apiMux.Handle(prefix+"/", handler)
+		}
+		mount("/settings", settingsHandler)
+		mount("/tools", settingsHandler)
+		mount("/secrets", secretsHandler)
+		opts = append(opts, api.WithAPI(apiMux))
 		servers = append(servers, &http.Server{
 			Addr:              cfg.Debug.Addr,
 			Handler:           api.NewHandler(p, logger, true, opts...),

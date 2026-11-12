@@ -64,7 +64,16 @@ func WithDebugAllowlist(allowed func(net.IP) bool) Option {
 // authentication of its own; the debug source allowlist guards it here, and
 // #47 will mount the same handler behind Tailscale identity.
 func WithSettings(handler http.Handler) Option {
-	return func(s *server) { s.settings = handler }
+	return WithAPI(handler)
+}
+
+// WithAPI mounts any composable API handler under /api/ on the debug handler.
+// main passes one mux that serves the settings, Tool-override and secrets
+// subtrees together; #47 mounts the same handler behind Tailscale identity.
+// The handler is absent when the debug entry is disabled, so the public health
+// listener can never serve it.
+func WithAPI(handler http.Handler) Option {
+	return func(s *server) { s.api = handler }
 }
 
 // NewHandler builds the HTTP surface: GET /healthz, plus POST
@@ -81,10 +90,10 @@ func NewHandler(p *pipeline.Pipeline, logger *slog.Logger, debugEnabled bool, op
 	mux.HandleFunc("/healthz", s.healthz)
 	mux.HandleFunc("/debug/transcript", s.debugTranscript)
 	mux.HandleFunc("/debug/announce", s.debugAnnounce)
-	if debugEnabled && s.settings != nil {
-		// Settings writes are local-only: the same source check as the debug
-		// entry wraps the whole /api/ subtree.
-		mux.Handle("/api/", s.localOnly(http.StripPrefix("/api", s.settings)))
+	if debugEnabled && s.api != nil {
+		// Settings, Tool and secret writes are local-only: the same source
+		// check as the debug entry wraps the whole /api/ subtree.
+		mux.Handle("/api/", s.localOnly(http.StripPrefix("/api", s.api)))
 	}
 	return mux
 }
@@ -94,7 +103,7 @@ type server struct {
 	logger       *slog.Logger
 	debugEnabled bool
 	responder    Responder
-	settings     http.Handler
+	api          http.Handler
 	announcer    Announcer
 	debugAllowed func(net.IP) bool
 }
@@ -194,8 +203,8 @@ func (s *server) debugTranscript(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// localOnly wraps the settings subtree in the same source check as the debug
-// entry. The settings handler performs no authentication itself.
+// localOnly wraps the API subtree in the same source check as the debug entry.
+// The mounted handlers perform no authentication themselves.
 func (s *server) localOnly(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !s.debugSourceAllowed(r.RemoteAddr) {

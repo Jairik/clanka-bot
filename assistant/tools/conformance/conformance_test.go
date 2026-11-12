@@ -12,14 +12,17 @@ import (
 // stubModule is a deliberately broken Tool module for the contract failure
 // cases. A well-formed module comes from the real module packages.
 type stubModule struct {
-	name     string
-	register func(*tool.Registry) error
-	samples  map[string]any
+	name            string
+	register        func(*tool.Registry) error
+	samples         map[string]any
+	requiredSecrets []string
 }
 
 func (m stubModule) Name() string { return m.name }
 
 func (m stubModule) Register(r *tool.Registry, _ tool.Deps) error { return m.register(r) }
+
+func (m stubModule) RequiredSecrets() []string { return m.requiredSecrets }
 
 func (m stubModule) ConformanceSamples() map[string]any {
 	if m.samples == nil {
@@ -107,8 +110,29 @@ func TestMissingSampleFails(t *testing.T) {
 	wantProblem(t, problems, "add a representative output to ConformanceSamples")
 }
 
-// TestMisroutedExampleFails proves an Example that does not reach its own Tool
-// on the real semantic Fast path fails clearly. It duplicates time.now's first
+// TestBadRequiredSecretsFails proves the module contract rejects an unnamed or
+// repeated secret before a module can register with a malformed declaration.
+func TestBadRequiredSecretsFails(t *testing.T) {
+	module := stubModule{
+		name:            "conformance_broken",
+		requiredSecrets: []string{"", " SHARED_KEY", "SHARED_KEY"},
+		register: func(r *tool.Registry) error {
+			return tool.Add(r, tool.Tool[struct{}, struct{}]{
+				Name:        "conformance.bad_secrets",
+				Description: "A Tool with malformed secret metadata.",
+				Permission:  tool.PermissionRead,
+				LocalOnly:   tool.LocalOnlyNo,
+				Handler:     func(context.Context, struct{}) (struct{}, error) { return struct{}{}, nil },
+			})
+		},
+	}
+	problems := inspect(module).problems
+	wantProblem(t, problems, "RequiredSecrets[0] is empty")
+	wantProblem(t, problems, `RequiredSecrets[1] " SHARED_KEY" has surrounding whitespace`)
+	wantProblem(t, problems, `RequiredSecrets repeats "SHARED_KEY"`)
+}
+
+// TestMisroutedExampleFails proves an Example that does not reach its own Tool// on the real semantic Fast path fails clearly. It duplicates time.now's first
 // Example, so both Tools score 1.0 and the margin rejects the tie.
 func TestMisroutedExampleFails(t *testing.T) {
 	endpoint := strings.TrimSpace(os.Getenv(EmbedURLEnv))

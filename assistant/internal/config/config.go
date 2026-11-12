@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/tz"
 	"gopkg.in/yaml.v3"
 )
 
@@ -28,7 +29,11 @@ type Config struct {
 		// named volume here; local runs use ./data.
 		Dir string `yaml:"dir"`
 	} `yaml:"data"`
-	Tools struct {
+	// Timezone is the IANA zone that clock-time Alarms and Reminders use. It is
+	// the config layer of the live `timezone` setting; empty falls back to TZ,
+	// then UTC. Nothing is inferred from an IP address.
+	Timezone string `yaml:"timezone"`
+	Tools    struct {
 		DefaultTimeout Duration `yaml:"default_timeout"`
 		// Disabled is the config layer for a Tool's enabled setting. Names are
 		// canonical Tool names such as weather.current.
@@ -356,6 +361,9 @@ func (c Config) validate() error {
 	}
 	if strings.TrimSpace(c.Data.Dir) == "" {
 		return fmt.Errorf("config: data.dir is required")
+	}
+	if _, err := tz.Load(c.Timezone); err != nil {
+		return fmt.Errorf("config: timezone: %w", err)
 	}
 	if c.Tools.DefaultTimeout.Duration() <= 0 {
 		return fmt.Errorf("config: tools.default_timeout must be positive")

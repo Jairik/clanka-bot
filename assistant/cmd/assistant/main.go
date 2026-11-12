@@ -33,6 +33,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/internal/toolpolicy"
+	"github.com/Jairik/clanka-bot/assistant/internal/tz"
 	"github.com/Jairik/clanka-bot/assistant/internal/voice"
 	"github.com/Jairik/clanka-bot/assistant/internal/wyoming"
 	"github.com/Jairik/clanka-bot/assistant/tools"
@@ -148,7 +149,10 @@ func run() error {
 	}
 
 	// One module list owns Tool wiring; each module reads its tools.<name>
-	// section and falls back to code defaults.
+	// section and falls back to code defaults. The timezone seam exists before
+	// modules register (they capture Deps), but it only becomes live once the
+	// settings service below is created and bound.
+	zone := tz.New(os.Getenv("TZ"), logger)
 	deps := tool.Deps{
 		Logger:        logger,
 		Location:      locSvc.Current,
@@ -156,6 +160,7 @@ func run() error {
 		Store:         st,
 		Secrets:       secretsSvc,
 		Announcements: announcements,
+		Zone:          zone,
 	}
 	if speechSpeaker != nil {
 		deps.Speaker = speechSpeaker
@@ -174,9 +179,18 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	settingsSvc, err := settings.New(ctx, st, toolDefs...)
+	defs := append(append([]settings.Definition{}, toolDefs...), tz.Definition(cfg.Timezone))
+	settingsSvc, err := settings.New(ctx, st, defs...)
 	if err != nil {
 		return fmt.Errorf("settings: %w", err)
+	}
+	// Bind after the service exists so the timezone is live overridable: the
+	// Dashboard's settings handler and any voice Tool write the same service.
+	zone.Bind(settingsSvc)
+	if zone.IsUTC() {
+		// UTC is a safe default, not a guess: warn once so a silent one-hour
+		// error in a clock-time Alarm is visible at startup.
+		logger.Warn("timezone is UTC: set the timezone setting or TZ so clock-time alerts use local time")
 	}
 	toolPolicy, err := toolpolicy.New(settingsSvc, registry)
 	if err != nil {
@@ -345,6 +359,7 @@ func run() error {
 		"data_dir", cfg.Data.Dir,
 		"store", st.Path(),
 		"settings", len(settingsSvc.List()),
+		"timezone", zone.Name(),
 		"speech", cfg.TTS.Addr != "",
 		"tts_addr", cfg.TTS.Addr,
 		"pulse_sink", cfg.Playback.Sink,

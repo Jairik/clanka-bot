@@ -43,18 +43,20 @@ func (keywordEmbedder) Embed(_ context.Context, texts []string) ([][]float32, er
 	out := make([][]float32, len(texts))
 	for i, text := range texts {
 		lower := strings.ToLower(text)
-		v := make([]float32, 5)
+		v := make([]float32, 6)
 		switch {
 		case strings.Contains(lower, "cancel"):
 			v[0] = 1
-		case strings.Contains(lower, "left") || strings.Contains(lower, "timers do i have") || strings.Contains(lower, "list my timers"):
+		case strings.Contains(lower, "left") || strings.Contains(lower, "remaining") || strings.Contains(lower, "until") || strings.Contains(lower, "longer") || strings.Contains(lower, "finish"):
 			v[1] = 1
 		case strings.Contains(lower, "volume") || strings.Contains(lower, "louder") || strings.Contains(lower, "turn it"):
 			v[2] = 1
 		case strings.Contains(lower, "stop") || strings.Contains(lower, "quiet") || strings.Contains(lower, "pause"):
 			v[3] = 1
-		default:
+		case strings.Contains(lower, "timers"):
 			v[4] = 1
+		default:
+			v[5] = 1
 		}
 		out[i] = v
 	}
@@ -91,7 +93,7 @@ func newToolPipeline(t *testing.T, controls audiocontrol.Controls) (*pipeline.Pi
 	return p, manager
 }
 
-func TestFastPathSetsAndListsATimer(t *testing.T) {
+func TestFastPathSetsAndReportsTimerRemaining(t *testing.T) {
 	p, manager := newToolPipeline(t, &audioRecorder{})
 
 	reply := p.Handle(context.Background(), request(), "set a timer for five minutes")
@@ -107,8 +109,8 @@ func TestFastPathSetsAndListsATimer(t *testing.T) {
 	manager.Cancel("")
 
 	reply = p.Handle(context.Background(), request(), "how long is left on my timer")
-	if reply.Tool != timer.ListName || !strings.Contains(reply.Text, "No timers") {
-		t.Fatalf("list reply = %+v, want timer.list speaking the empty list", reply)
+	if reply.Tool != timer.RemainingName || !strings.Contains(reply.Text, "No timers") {
+		t.Fatalf("remaining reply = %+v, want timer.remaining speaking the empty answer", reply)
 	}
 }
 

@@ -112,6 +112,10 @@ _Avoid_: Wake-up, timer
 A Scheduled alert that speaks its message once instead of ringing, whether it was set for a duration or a clock time.
 _Avoid_: Note, alarm with message
 
+**Label**:
+A short spoken name attached to a Scheduled alert, such as "pasta", so a later request can name it ("how long is left on the pasta timer").
+_Avoid_: Name, tag, title
+
 **Ring**:
 The repeating sound a Timer or Alarm makes when it goes off, until it is stopped, snoozed or times out.
 _Avoid_: Alert sound

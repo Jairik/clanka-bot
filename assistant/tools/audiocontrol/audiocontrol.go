@@ -33,8 +33,9 @@ type VolumeIn struct {
 
 // VolumeOut echoes the requested change for the log and the reply.
 type VolumeOut struct {
-	Percent int `json:"percent,omitempty"`
-	Delta   int `json:"delta,omitempty"`
+	Percent int  `json:"percent,omitempty"`
+	Delta   int  `json:"delta,omitempty"`
+	Muted   bool `json:"muted,omitempty"`
 }
 
 // StopIn has no arguments.
@@ -68,7 +69,7 @@ func NewVolumeWithStep(controls Controls, step int) tool.Tool[VolumeIn, VolumeOu
 				if err := controls.SetVolume(ctx, *in.Percent); err != nil {
 					return VolumeOut{}, err
 				}
-				return VolumeOut{Percent: *in.Percent}, nil
+				return VolumeOut{Percent: *in.Percent, Muted: *in.Percent == 0}, nil
 			}
 			delta := in.Delta
 			if delta == 0 {
@@ -85,6 +86,8 @@ func NewVolumeWithStep(controls Controls, step int) tool.Tool[VolumeIn, VolumeOu
 				return "Volume up."
 			case out.Delta < 0:
 				return "Volume down."
+			case out.Muted:
+				return "Muted."
 			default:
 				return fmt.Sprintf("Volume set to %d percent.", out.Percent)
 			}
@@ -96,19 +99,34 @@ func NewVolumeWithStep(controls Controls, step int) tool.Tool[VolumeIn, VolumeOu
 			"turn it up",
 			"louder",
 			"turn the volume down",
+			"quieter",
+			"mute",
+			"mute the sound",
+			"mute the volume",
+			"unmute",
 		},
 		Extract: func(text string) (VolumeIn, bool) { return extractVolume(text, step) },
 	}
 }
 
-// extractVolume reads an absolute percent or a direction from the utterance.
+// extractVolume reads an absolute percent, a direction, or mute from the
+// utterance. Mute is an absolute zero through the same sink backend as the
+// other volume calls; it never changes a Ring's own absolute volume settings
+// or the Quiet-hours software gain.
 func extractVolume(text string, step int) (VolumeIn, bool) {
 	lower := strings.ToLower(text)
 	switch {
+	case strings.Contains(lower, "unmute"), strings.Contains(lower, "un-mute"):
+		// There is no stored pre-mute level: one step up is the honest
+		// recovery, and an absolute request still works.
+		return VolumeIn{Delta: step}, true
 	case strings.Contains(lower, "louder"), strings.Contains(lower, "turn it up"), strings.Contains(lower, "volume up"):
 		return VolumeIn{Delta: step}, true
 	case strings.Contains(lower, "quieter"), strings.Contains(lower, "turn it down"), strings.Contains(lower, "volume down"):
 		return VolumeIn{Delta: -step}, true
+	case strings.Contains(lower, "mute"):
+		zero := 0
+		return VolumeIn{Percent: &zero}, true
 	}
 	n, ok := parse.Number(text)
 	if !ok || n < 0 || n > 100 {

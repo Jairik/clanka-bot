@@ -79,7 +79,7 @@ type Reply struct {
 	Pending   *agent.PendingConfirm
 	// LocalOnly reports that the reply text came from a Local-only Tool. A
 	// follow-up that would send the reply off the Pi (notify.phone) must
-	// refuse it.
+	// refuse it, and the last-reply store keeps the flag as provenance.
 	LocalOnly bool
 	// Unavailable marks an Agent-path failure whose Text is the configured
 	// Unavailable message. The reply session plays the error Cue before it.
@@ -147,9 +147,10 @@ func WithFocus(registry *focus.Registry) Option {
 	return func(p *Pipeline) { p.focus = registry }
 }
 
-// WithLastReply records every final reply with its provenance, so a follow-up
-// Tool such as notify.phone can resolve "that" without re-routing the previous
-// turn. The store is in-memory; nil disables the seam.
+// WithLastReply records every completed final reply with its provenance, so a
+// follow-up Tool such as assistant.repeat or notify.phone can resolve "that"
+// without re-routing the previous turn. The store is in-memory; nil disables
+// the seam. A cancelled or blank turn does not replace the previous record.
 func WithLastReply(store *lastreply.Store) Option {
 	return func(p *Pipeline) { p.lastReply = store }
 }
@@ -372,7 +373,16 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 		record.reason = ""
 		reply.Path = tool.PathControlPhrase
 		reply.Tool = name
-		reply.Text, record.failure, reply.Pending = p.callTool(ctx, req, transcript, name, tool.PathControlPhrase, nil)
+		// A phrase such as "quieter" names the Tool exactly but still needs
+		// its direction extracted; without Extract the call has no arguments,
+		// which keeps "louder" as the one-step default it always was.
+		var args json.RawMessage
+		if info, found := p.registry.Info(name); found && info.HasExtract {
+			if extracted, extractedOK := p.registry.Extract(name, transcript); extractedOK {
+				args = extracted
+			}
+		}
+		reply.Text, record.failure, reply.Pending = p.callTool(ctx, req, transcript, name, tool.PathControlPhrase, args)
 		reply.LocalOnly = p.localOnlyTool(name)
 		return reply
 	}
@@ -512,10 +522,10 @@ func (p *Pipeline) localOnlyTool(name string) bool {
 // after playback are logged together; without one, as in a text-only caller,
 // the pipeline logs the routing-only line itself.
 func (p *Pipeline) finish(ctx context.Context, started time.Time, req tool.Request, transcript string, reply Reply, record routeLog) {
-	// Keep the last reply with its provenance for follow-ups such as "send that
-	// to my phone". Recording happens before this request's own reply becomes
-	// visible, so a Tool called during this turn sees the previous turn.
-	if p.lastReply != nil {
+	// Keep the last completed reply for follow-ups. A cancelled turn (Barge-in
+	// or shutdown) and a blank answer must not replace the last thing the user
+	// actually heard; an error or Unavailable reply was spoken, so it counts.
+	if p.lastReply != nil && ctx.Err() == nil && strings.TrimSpace(reply.Text) != "" {
 		p.lastReply.Record(lastreply.Reply{
 			Text:      reply.Text,
 			Tool:      reply.Tool,

@@ -317,6 +317,42 @@ positives:
     - set an alarm for noon
     - set an alarm for midnight
     - please set an alarm for 6:30
+    # Per-Alarm sound phrasings: "with the X sound" is still a create request.
+    - wake me at 7 with the birds sound
+    - wake me up at 6:30 with the birds sound
+    - set an alarm for 7 with the birds sound
+    - set an alarm for 7 am with the birds sound
+    - set an alarm for 6:30 on weekdays with the birds sound
+    - set an alarm for 8 on weekends with the birds sound
+    - set a work alarm for 7:30 with the birds sound
+    - wake me at 7 with the chime sound
+  alarm.update:
+    # Changing an existing Alarm's per-alert overrides. "change"/"update"/
+    # "switch" and "my alarm sound/volume/ramp" keep these apart from a new
+    # alarm.
+    - change my 7 am alarm to the birds sound
+    - change my 7 am alarm to birds
+    - change my alarm sound to the birds sound
+    - change my alarm sound to birds
+    - change my alarm's sound to birds
+    - update my 7 am alarm to the birds sound
+    - update my alarm sound to birds
+    - switch my 7 am alarm to the birds sound
+    - switch my alarm to birds
+    - make my 7 am alarm use the birds sound
+    - make my alarm use birds
+    - use the birds sound for my 7 am alarm
+    - use the birds sound for my alarm
+    - set my alarm sound to birds
+    - set my alarm volume to 40
+    - change my alarm volume to 40
+    - update my alarm volume to 30
+    - change my alarm ramp to 10 seconds
+    - update my alarm ramp to 20 seconds
+    - change my 7 am alarm ramp to 5 seconds
+    - clear my alarm sound
+    - reset my alarm volume
+    - use the default sound for my alarm
   alarm.list:
     - what alarms do I have
     - list my alarms
@@ -538,6 +574,76 @@ positives:
     - I'm up now, no more whispering
     - I'm awake, end the quiet please
     - I'm awake, quiet time is over
+  assistant.repeat:
+    # Repeat the last spoken reply, not the current utterance and not a
+    # schedule's repeat rule.
+    - say that again
+    - what did you say
+    - repeat that
+    - can you repeat that
+    - say it again
+    - what was that
+    - I missed that
+    - come again
+    - say that once more
+    - repeat what you just said
+    - could you say that again
+    - what did you just say
+    - say it one more time
+    - I didn't catch that
+    - repeat your last answer
+    - tell me that again
+    - I didn't hear what you said
+    - can you say that again please
+    - what were you saying
+    - run that by me again
+  assistant.help:
+    # Generated from the enabled registry; the wording asks for capabilities,
+    # not a specific Tool.
+    - what can you do
+    - what can you help with
+    - what are your capabilities
+    - what are you able to do
+    - list your tools
+    - what tools do you have
+    - help
+    - tell me what you can do
+    - what can you do for me
+    - what are you capable of
+    - show me your tools
+    - list what you can do
+    - what functions do you have
+    - what can I ask you
+    - what kind of things can you do
+    - what commands do you have
+    - tell me your abilities
+    - what services can you offer
+    - what are the things you can do
+    - give me a list of your tools
+  system.status:
+    # Health and availability questions about the Assistant itself, not the
+    # weather, an alarm or a phone.
+    - are you ok
+    - are you okay
+    - how are you
+    - how are you doing
+    - are you healthy
+    - is everything working
+    - is everything okay
+    - any problems
+    - system status
+    - status report
+    - check your health
+    - check the services
+    - are your services up
+    - is the system running
+    - how are things running
+    - are you still healthy
+    - is anything broken
+    - is the system healthy
+    - do you have any issues
+    - how's the system doing
+
   notify.phone:
     # "That" refers to the previous Assistant reply; the handler resolves it
     # with provenance and refuses a Local-only result.
@@ -848,6 +954,18 @@ negatives:
   - what's the alarm on my phone
   - set a timer for 7 minutes
   - wake up the house
+  # Override-shaped but not a supported change: a sound preview, a time-only
+  # change, a label change, a phone alarm, or a non-alarm playlist.
+  - play the birds sound
+  - what sound does my alarm make
+  - change my alarm tone
+  - change my 7 am alarm to 8 am
+  - change my alarm label to work
+  - delete the birds sound
+  - cancel my alarm sound
+  - change my 7 am alarm
+  - set the alarm volume on my phone
+  - change my playlist to birds
   # Voice-shaped but not a library or rate request: playback, volume, privacy,
   # or a different voice service.
   - play the jarvis song
@@ -935,6 +1053,28 @@ negatives:
   - activate the kitchen lights
   - use the force
   - switch to the news
+  # Repeat and self-description shaped, but a request for another action or
+  # another kind of repeat.
+  - repeat the alarm tomorrow
+  - set the alarm to repeat every day
+  - repeat the song
+  - repeat after me
+  - say hello to my mother
+  - tell me a joke
+  - what did I say earlier
+  - help me set a timer
+  - I need help with my alarm
+  - what tools does the alarm use
+  - how are the roads
+  - what's the status of my timer
+  - is my alarm set
+  - is everything on my shopping list
+  - check the weather
+  - are you awake
+  - are you there
+  - are you sure
+  - what can you do about my alarm
+
 # Compound requests ask for more than one thing. They are kept separate so
 # the evaluation can report compound handling on its own.
 compounds:
@@ -950,10 +1090,15 @@ compounds:
   - cancel my alarm and set a new one for 7
   - what time is my alarm and what's the weather
   - set an alarm for 7 and turn the volume down
+  - wake me at 7 with the birds sound and turn the volume down
+  - change my alarm sound and set another alarm for 8
   - change your voice to jarvis and speak faster
   - tell me what voice you use and what time it is
   - set quiet hours from 10 to 7 and set a timer for five minutes
   - do not disturb for two hours and set a timer for five minutes
+  - what can you do and send that to my phone
+  - what can you do and set a timer
+  - are you ok and what time is it
   - send that to my phone and set a timer for five minutes
 # Focus cases: the same shared word must reach whatever holds Focus. Each case
 # names the holders present, the phrase's intent, and which holder wins. An

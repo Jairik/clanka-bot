@@ -250,7 +250,10 @@ func (s *Session) ask(ctx context.Context, req tool.Request, transcript string, 
 
 	stopCue := s.cueSlowReply(player, filler, from, firstSound, claimedCh, claimFocus)
 	reply := s.pipeline.HandleEvents(turnCtx, req, transcript, events)
-	if rest := chunker.Flush(); rest != "" {
+	// A stopped turn must not speak its unflushed remainder or a fallback line.
+	// Check both contexts: a parent can publish Err before cancelling the turn.
+	stopped := turnCtx.Err() != nil || ctx.Err() != nil
+	if rest := chunker.Flush(); rest != "" && !stopped {
 		// The remaining text is the end of the reply even without punctuation.
 		player.play(item{text: rest, sentenceEnd: true})
 		streamed++
@@ -259,7 +262,7 @@ func (s *Session) ask(ctx context.Context, req tool.Request, transcript string, 
 	// A prefix already spoken by the Prefix event is not repeated. A pending
 	// Confirmation question is always spoken, even if the model said something
 	// before proposing the call.
-	if streamed == 0 || reply.Pending != nil {
+	if (streamed == 0 || reply.Pending != nil) && !stopped {
 		text := reply.Text
 		if prefix != "" {
 			text = strings.TrimSpace(strings.TrimPrefix(text, prefix))
@@ -455,6 +458,7 @@ type player struct {
 	speaker Speaker
 	sink    speech.Sink
 	gate    *playback.Gate
+	turn    context.Context
 	ctx     context.Context
 	cancel  context.CancelFunc
 	items   chan item
@@ -470,6 +474,7 @@ func newPlayer(ctx context.Context, speaker Speaker, sink speech.Sink, gate *pla
 		speaker: speaker,
 		sink:    sink,
 		gate:    gate,
+		turn:    ctx,
 		ctx:     playCtx,
 		cancel:  cancel,
 		items:   make(chan item, 16),
@@ -487,7 +492,7 @@ func (p *player) run() {
 		close(p.done)
 	}()
 	for next := range p.items {
-		if p.ctx.Err() != nil {
+		if p.stopped() {
 			continue // Drain on cancellation or after a playback failure.
 		}
 		// A Ring waits for the current sentence and then owns the floor. This
@@ -496,6 +501,9 @@ func (p *player) run() {
 		done, gateErr := p.gate.BeginReply(p.ctx)
 		if gateErr != nil {
 			continue
+		}
+		if p.stopped() {
+			continue // The turn was stopped while waiting for the floor.
 		}
 		var err error
 		switch {
@@ -518,6 +526,12 @@ func (p *player) run() {
 			p.cancel()
 		}
 	}
+}
+
+// stopped reports cancellation of the player or its turn. A parent context can
+// publish Err before cancelling its children, so both are checked.
+func (p *player) stopped() bool {
+	return p.ctx.Err() != nil || p.turn.Err() != nil
 }
 
 func (p *player) play(next item) {

@@ -141,6 +141,33 @@ func newFixtureAt(t *testing.T, dir string, cfg sound.Config) *fixture {
 	return &fixture{dir: dir, store: st, sounds: sounds, settings: sett, sink: sink}
 }
 
+func TestClipNameResolvesLibrarySoundAndAppliesTheRoleCap(t *testing.T) {
+	f := newFixture(t, sound.Config{})
+	writeLibraryWAV(t, f.sounds.LibraryDir(), "birds.wav", 500*time.Millisecond)
+	writeLibraryWAV(t, f.sounds.LibraryDir(), "long.wav", 61*time.Second)
+	if err := f.sounds.Rescan(context.Background()); err != nil {
+		t.Fatalf("Rescan: %v", err)
+	}
+
+	// A per-alert name resolves to the indexed clip at the Cue format.
+	clip, ok := f.sounds.ClipName(sound.RoleAlarmRing, "birds")
+	if !ok || len(clip.PCM) == 0 || clip.Format != cueFormat {
+		t.Fatalf("ClipName(birds) = %v, ok=%v, format=%+v", len(clip.PCM), ok, clip.Format)
+	}
+	// A missing name is false, never a different entry.
+	if _, ok := f.sounds.ClipName(sound.RoleAlarmRing, "missing"); ok {
+		t.Fatal("ClipName(missing) resolved")
+	}
+	// The Alarm Ring cap refuses the 61 s sound.
+	if _, ok := f.sounds.ClipName(sound.RoleAlarmRing, "long"); ok {
+		t.Fatal("ClipName(long) accepted an over-cap sound")
+	}
+	// ClipName never accepts a path, even one under the data volume.
+	if _, ok := f.sounds.ClipName(sound.RoleAlarmRing, "sounds/birds.wav"); ok {
+		t.Fatal("ClipName accepted a path")
+	}
+}
+
 func TestLibraryIndexesBuiltinAndVolumeWav(t *testing.T) {
 	f := newFixture(t, sound.Config{})
 	writeLibraryWAV(t, f.sounds.LibraryDir(), "birds.wav", 500*time.Millisecond)

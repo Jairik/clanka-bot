@@ -1,9 +1,12 @@
-// Package alarm implements the alarm.set, alarm.list and alarm.cancel Tools.
-// An Alarm is a clock-time Scheduled alert that may repeat daily, on weekdays,
-// on weekends or on chosen weekdays. It Rings through the shared internal/ring
-// engine with the Alarm settings (a 30 s ramp by default) and supports snooze
-// (9 min by default). Alarms are persisted in the one SQLite store when the
-// module receives one and follow the same two-minute downtime rule as Timers.
+// Package alarm implements the alarm.set, alarm.list, alarm.cancel and
+// alarm.update Tools. An Alarm is a clock-time Scheduled alert that may repeat
+// daily, on weekdays, on weekends or on chosen weekdays. It Rings through the
+// shared internal/ring engine with the Alarm settings (a 30 s ramp by default)
+// and supports snooze (9 min by default). Each Alarm may override the Ring
+// sound, volume and ramp for itself (#57); the overrides are stored in the
+// Alarm row and applied by the Ring engine without changing the kind settings.
+// Alarms are persisted in the one SQLite store when the module receives one and
+// follow the same two-minute downtime rule as Timers.
 package alarm
 
 import (
@@ -21,9 +24,11 @@ import (
 
 	"github.com/Jairik/clanka-bot/assistant/internal/alertstore"
 	"github.com/Jairik/clanka-bot/assistant/internal/announce"
+	"github.com/Jairik/clanka-bot/assistant/internal/namematch"
 	"github.com/Jairik/clanka-bot/assistant/internal/parse"
 	"github.com/Jairik/clanka-bot/assistant/internal/ring"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
+	"github.com/Jairik/clanka-bot/assistant/internal/sound"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/internal/tz"
 )
@@ -33,6 +38,7 @@ const (
 	SetName    = "alarm.set"
 	ListName   = "alarm.list"
 	CancelName = "alarm.cancel"
+	UpdateName = "alarm.update"
 )
 
 // SnoozeText is the line spoken by the turn that snoozes a ringing Alarm.
@@ -52,8 +58,9 @@ const (
 )
 
 // Alarm is one configured clock-time alert. Sound, Volume and RampSeconds are
-// stored for #57's per-Alarm overrides but no Tool sets them yet; a nil volume
-// or ramp means "use the kind default", so an explicit 0 volume stays distinct.
+// optional per-Alarm Ring overrides (#57): Sound names a library sound and is
+// empty for the kind default; a nil Volume or RampSeconds keeps the kind
+// setting, so an explicit 0 volume or 0 ramp stays distinct from the default.
 type Alarm struct {
 	ID          string    `json:"id"`
 	Label       string    `json:"label,omitempty"`
@@ -70,17 +77,60 @@ type Alarm struct {
 // SetIn is one alarm.set request. Schedule is once, daily, weekdays, weekends
 // or chosen; a non-empty Weekdays list selects chosen. Tomorrow forces the
 // one-off occurrence to the next local day even when the clock time is future.
+// Sound is the spoken library sound for this Alarm; Volume and RampSeconds are
+// optional per-Alarm overrides. A nil pointer keeps the kind default.
 type SetIn struct {
-	Hour     int      `json:"hour"`
-	Minute   int      `json:"minute,omitempty"`
-	Schedule string   `json:"schedule,omitempty"`
-	Weekdays []string `json:"weekdays,omitempty"`
-	Label    string   `json:"label,omitempty"`
-	Tomorrow bool     `json:"tomorrow,omitempty"`
+	Hour        int      `json:"hour"`
+	Minute      int      `json:"minute,omitempty"`
+	Schedule    string   `json:"schedule,omitempty"`
+	Weekdays    []string `json:"weekdays,omitempty"`
+	Label       string   `json:"label,omitempty"`
+	Tomorrow    bool     `json:"tomorrow,omitempty"`
+	Sound       string   `json:"sound,omitempty"`
+	Volume      *int     `json:"volume,omitempty"`
+	RampSeconds *int     `json:"ramp_seconds,omitempty"`
 }
 
-// SetOut is the Alarm that was created.
-type SetOut = Alarm
+// SetOut is the Alarm that was created plus the sound-resolution result used
+// by the reply. A requested sound that the shared matcher could not resolve is
+// stored as the kind default and reported with SoundFallback, so the reply can
+// say so instead of naming a guessed sound.
+type SetOut struct {
+	Alarm
+	RequestedSound string `json:"requested_sound,omitempty"`
+	SoundFallback  bool   `json:"sound_fallback,omitempty"`
+}
+
+// UpdateIn changes the per-Alarm overrides of one existing Alarm. ID, Time and
+// Label select it; Time and Label may be combined. Sound is a spoken or
+// canonical library name, Volume and RampSeconds are optional overrides, and
+// the *Reset flags clear that field back to the kind default. An explicit 0
+// volume or ramp is distinct from a reset. This is also the Dashboard's typed
+// write path for the Scheduled alerts page (#58).
+type UpdateIn struct {
+	ID          string `json:"id,omitempty"`
+	Label       string `json:"label,omitempty"`
+	Time        string `json:"time,omitempty"`
+	Sound       string `json:"sound,omitempty"`
+	SoundReset  bool   `json:"sound_reset,omitempty"`
+	Volume      *int   `json:"volume,omitempty"`
+	VolumeReset bool   `json:"volume_reset,omitempty"`
+	RampSeconds *int   `json:"ramp_seconds,omitempty"`
+	RampReset   bool   `json:"ramp_reset,omitempty"`
+}
+
+// UpdateOut reports the selected Alarm and what changed. Matched is 0 when no
+// Alarm matched; Ambiguous is true when more than one did and nothing was
+// written. Changed holds "sound", "volume" and/or "ramp" for the reply and the
+// Dashboard.
+type UpdateOut struct {
+	Alarm          Alarm    `json:"alarm"`
+	Matched        int      `json:"matched"`
+	Ambiguous      bool     `json:"ambiguous,omitempty"`
+	Changed        []string `json:"changed,omitempty"`
+	RequestedSound string   `json:"requested_sound,omitempty"`
+	SoundFallback  bool     `json:"sound_fallback,omitempty"`
+}
 
 // CancelIn names the Alarm to cancel by id, spoken label or clock time. Empty
 // fields cancel every Alarm.
@@ -116,7 +166,9 @@ type MissedAlert struct {
 }
 
 // Options are the Manager's seams. A nil Now uses time.Now, a nil Zone means
-// UTC, and a nil Snooze reads the live ring.alarm.snooze setting.
+// UTC, and a nil Snooze reads the live ring.alarm.snooze setting. Cues and
+// Names resolve per-Alarm sound overrides through the shared library and name
+// matcher; nil makes a requested sound fall back to the kind default.
 type Options struct {
 	Now           func() time.Time
 	Say           func(context.Context, string) error
@@ -125,6 +177,8 @@ type Options struct {
 	Settings      func() *settings.Service
 	Announcements *announce.Queue
 	Snooze        func() time.Duration
+	Cues          *sound.Service
+	Names         *namematch.Matcher
 }
 
 // entry is one live Alarm and its pending callback.
@@ -148,6 +202,8 @@ type Manager struct {
 	settings      func() *settings.Service
 	announcements *announce.Queue
 	snooze        func() time.Duration
+	cues          *sound.Service
+	names         *namematch.Matcher
 
 	db      *sql.DB
 	history *alertstore.Store
@@ -190,6 +246,8 @@ func NewManager(opts Options) *Manager {
 		settings:      opts.Settings,
 		announcements: opts.Announcements,
 		snooze:        opts.Snooze,
+		cues:          opts.Cues,
+		names:         opts.Names,
 		ctx:           ctx,
 		cancel:        cancel,
 		entries:       make(map[string]*entry),
@@ -225,17 +283,26 @@ func (m *Manager) location() *time.Location {
 }
 
 // Set persists (when a store is attached) and schedules one Alarm. The next
-// occurrence is computed with the live timezone at this call.
-func (m *Manager) Set(ctx context.Context, in SetIn) (Alarm, error) {
+// occurrence is computed with the live timezone at this call. An optional
+// spoken sound is resolved through the shared matcher before the row is
+// written; an unmatched name stores the kind default and is reported so the
+// reply can say so.
+func (m *Manager) Set(ctx context.Context, in SetIn) (SetOut, error) {
 	if in.Hour < 0 || in.Hour > 23 {
-		return Alarm{}, &tool.ToolError{Say: "An alarm needs an hour from 0 to 23."}
+		return SetOut{}, &tool.ToolError{Say: "An alarm needs an hour from 0 to 23."}
 	}
 	if in.Minute < 0 || in.Minute > 59 {
-		return Alarm{}, &tool.ToolError{Say: "An alarm needs a minute from 0 to 59."}
+		return SetOut{}, &tool.ToolError{Say: "An alarm needs a minute from 0 to 59."}
 	}
 	spec, weekdays, err := normalizeSchedule(in.Schedule, in.Weekdays)
 	if err != nil {
-		return Alarm{}, &tool.ToolError{Say: capitalize(err.Error()) + "."}
+		return SetOut{}, &tool.ToolError{Say: capitalize(err.Error()) + "."}
+	}
+	if err := validateVolume(in.Volume); err != nil {
+		return SetOut{}, err
+	}
+	if err := validateRamp(in.RampSeconds); err != nil {
+		return SetOut{}, err
 	}
 	now := m.now()
 	loc := m.location()
@@ -243,6 +310,7 @@ func (m *Manager) Set(ctx context.Context, in SetIn) (Alarm, error) {
 	if spec.schedule != Once {
 		next = nextOccurrence(spec, in.Hour, in.Minute, loc, now)
 	}
+	out := SetOut{}
 	alarm := Alarm{
 		Label:       cleanAlarmLabel(in.Label),
 		Hour:        in.Hour,
@@ -250,11 +318,22 @@ func (m *Manager) Set(ctx context.Context, in SetIn) (Alarm, error) {
 		Schedule:    spec.schedule,
 		Weekdays:    weekdays,
 		NextFiresAt: next,
+		Volume:      cloneInt(in.Volume),
+		RampSeconds: cloneInt(in.RampSeconds),
+	}
+	if spoken := strings.TrimSpace(in.Sound); spoken != "" {
+		name, fallback, err := m.resolveSound(ctx, spoken)
+		if err != nil {
+			return SetOut{}, err
+		}
+		alarm.Sound = name
+		out.RequestedSound = spoken
+		out.SoundFallback = fallback
 	}
 	if m.db != nil {
 		id, err := m.insert(ctx, alarm, spec.days, now)
 		if err != nil {
-			return Alarm{}, err
+			return SetOut{}, err
 		}
 		alarm.ID = id
 	} else {
@@ -269,8 +348,12 @@ func (m *Manager) Set(ctx context.Context, in SetIn) (Alarm, error) {
 		"label", alarm.Label,
 		"time", formatClock(alarm.Hour, alarm.Minute),
 		"schedule", alarm.Schedule,
-		"next_fires_at", next)
-	return alarm, nil
+		"next_fires_at", next,
+		"sound", alarm.Sound,
+		"volume", alarm.Volume,
+		"ramp_seconds", alarm.RampSeconds)
+	out.Alarm = alarm
+	return out, nil
 }
 
 // List returns the configured Alarms, soonest first. It reads the store when
@@ -312,6 +395,284 @@ func sortAlarms(alarms []Alarm) {
 	sort.Slice(alarms, func(i, j int) bool {
 		return alarms[i].NextFiresAt.Before(alarms[j].NextFiresAt)
 	})
+}
+
+// Update changes the per-Alarm overrides of one existing Alarm. It never
+// changes the schedule, label or next occurrence: only sound, volume and ramp
+// are written, so a pending repeat or snooze keeps its time. An ambiguous
+// match writes nothing and reports Ambiguous; the caller must ask which Alarm.
+func (m *Manager) Update(ctx context.Context, in UpdateIn) (UpdateOut, error) {
+	if err := validateUpdate(in); err != nil {
+		return UpdateOut{}, err
+	}
+	match, err := updateMatch(in)
+	if err != nil {
+		return UpdateOut{}, err
+	}
+
+	var matches []Alarm
+	if m.db != nil {
+		stored, err := m.readAlarms(ctx)
+		if err != nil {
+			return UpdateOut{}, err
+		}
+		for _, saved := range stored {
+			if saved.nextFiresAt.UnixMilli() <= 0 && saved.snoozedUntil.IsZero() {
+				continue // a finished one-off that is only waiting for its Ring to end
+			}
+			if match(saved.alarm) {
+				matches = append(matches, saved.alarm)
+			}
+		}
+	} else {
+		m.mu.Lock()
+		for _, e := range m.entries {
+			if match(e.alarm) {
+				// Report the live occurrence, matching List, so a snoozed or
+				// rescheduled in-memory Alarm describes its pending time.
+				alarm := e.alarm
+				alarm.NextFiresAt = e.occurrence
+				matches = append(matches, alarm)
+			}
+		}
+		m.mu.Unlock()
+	}
+	switch len(matches) {
+	case 0:
+		return UpdateOut{Matched: 0}, nil
+	case 1:
+	default:
+		return UpdateOut{Matched: len(matches), Ambiguous: true}, nil
+	}
+
+	target := matches[0]
+	updated := target
+	out := UpdateOut{Matched: 1}
+	var changed []string
+	if in.SoundReset || strings.TrimSpace(in.Sound) != "" {
+		changed = append(changed, "sound")
+		if in.SoundReset {
+			updated.Sound = ""
+		} else {
+			spoken := strings.TrimSpace(in.Sound)
+			name, fallback, err := m.resolveSound(ctx, spoken)
+			if err != nil {
+				return UpdateOut{}, err
+			}
+			updated.Sound = name
+			out.RequestedSound = spoken
+			out.SoundFallback = fallback
+		}
+	}
+	if in.VolumeReset {
+		changed = append(changed, "volume")
+		updated.Volume = nil
+	} else if in.Volume != nil {
+		changed = append(changed, "volume")
+		updated.Volume = cloneInt(in.Volume)
+	}
+	if in.RampReset {
+		changed = append(changed, "ramp")
+		updated.RampSeconds = nil
+	} else if in.RampSeconds != nil {
+		changed = append(changed, "ramp")
+		updated.RampSeconds = cloneInt(in.RampSeconds)
+	}
+	if len(changed) == 0 {
+		return UpdateOut{}, &tool.ToolError{Say: "What should I change about the alarm?"}
+	}
+
+	if m.db != nil {
+		ok, err := m.updateRow(ctx, target.ID, in, updated)
+		if err != nil {
+			return UpdateOut{}, err
+		}
+		if !ok {
+			// alarm.cancel deleted the row between the read and this write.
+			// An UPDATE cannot recreate it, so report no match and schedule
+			// nothing.
+			return UpdateOut{Matched: 0}, nil
+		}
+	}
+
+	m.mu.Lock()
+	if m.cancelled[target.ID] {
+		m.mu.Unlock()
+		return UpdateOut{Matched: 0}, nil
+	}
+	if e := m.entries[target.ID]; e != nil {
+		// The timer and occurrence stay as they are; the next fire picks up the
+		// new overrides from this live entry (or the row when store-backed).
+		e.alarm.Sound = updated.Sound
+		e.alarm.Volume = cloneInt(updated.Volume)
+		e.alarm.RampSeconds = cloneInt(updated.RampSeconds)
+	}
+	m.mu.Unlock()
+
+	out.Alarm = updated
+	out.Changed = changed
+	m.logger.Info("alarm updated",
+		"alarm_id", target.ID,
+		"changed", changed,
+		"sound", updated.Sound,
+		"volume", updated.Volume,
+		"ramp_seconds", updated.RampSeconds)
+	return out, nil
+}
+
+// validateUpdate rejects contradictory and out-of-range override requests
+// before any row is touched.
+func validateUpdate(in UpdateIn) error {
+	if !in.hasChanges() {
+		return &tool.ToolError{Say: "What should I change about the alarm?"}
+	}
+	if in.SoundReset && strings.TrimSpace(in.Sound) != "" {
+		return &tool.ToolError{Say: "Choose a sound or the default, not both."}
+	}
+	if in.VolumeReset && in.Volume != nil {
+		return &tool.ToolError{Say: "Choose a volume or the default, not both."}
+	}
+	if in.RampReset && in.RampSeconds != nil {
+		return &tool.ToolError{Say: "Choose a ramp or the default, not both."}
+	}
+	if err := validateVolume(in.Volume); err != nil {
+		return err
+	}
+	return validateRamp(in.RampSeconds)
+}
+
+// hasChanges reports whether the request names at least one override change.
+func (in UpdateIn) hasChanges() bool {
+	return in.SoundReset || strings.TrimSpace(in.Sound) != "" ||
+		in.VolumeReset || in.Volume != nil ||
+		in.RampReset || in.RampSeconds != nil
+}
+
+// updateMatch builds the selector. An id is exact. A time and a label may be
+// combined, which narrows an otherwise ambiguous request instead of updating
+// an arbitrary member.
+func updateMatch(in UpdateIn) (func(Alarm) bool, error) {
+	if id := strings.TrimSpace(in.ID); id != "" {
+		return func(alarm Alarm) bool { return alarm.ID == id }, nil
+	}
+	var predicates []func(Alarm) bool
+	if text := strings.TrimSpace(in.Time); text != "" {
+		hour, minute, ok := parse.Clock(text)
+		if !ok {
+			return nil, &tool.ToolError{Say: "Which alarm should I change?"}
+		}
+		predicates = append(predicates, func(alarm Alarm) bool {
+			return alarm.Hour == hour && alarm.Minute == minute
+		})
+	}
+	if text := strings.TrimSpace(in.Label); text != "" {
+		label := cleanAlarmLabel(text)
+		if label == "" {
+			return nil, &tool.ToolError{Say: "Which alarm should I change?"}
+		}
+		predicates = append(predicates, func(alarm Alarm) bool { return alarm.Label == label })
+	}
+	if len(predicates) == 0 {
+		// No selector is allowed when exactly one Alarm exists; Update then
+		// matches it. More than one is reported as ambiguous and nothing is
+		// written, so an arbitrary Alarm is never changed.
+		return func(Alarm) bool { return true }, nil
+	}
+	return func(alarm Alarm) bool {
+		for _, predicate := range predicates {
+			if !predicate(alarm) {
+				return false
+			}
+		}
+		return true
+	}, nil
+}
+
+// resolveSound names one library sound through the shared matcher. The second
+// result is true when the spoken name did not resolve and the kind default
+// must be used. A matched sound over the Alarm Ring cap is an error, not a
+// silent fallback, because the user asked for that specific sound.
+func (m *Manager) resolveSound(ctx context.Context, spoken string) (string, bool, error) {
+	spoken = strings.TrimSpace(spoken)
+	if spoken == "" {
+		return "", false, nil
+	}
+	if m.cues == nil || m.names == nil {
+		m.logger.Warn("alarm sound requested but the sound library or name matcher is not wired",
+			"spoken", spoken)
+		return "", true, nil
+	}
+	candidates := make([]string, 0, len(m.cues.List()))
+	for _, entry := range m.cues.List() {
+		if entry.Name != "" {
+			candidates = append(candidates, entry.Name)
+		}
+	}
+	if len(candidates) == 0 {
+		return "", true, nil
+	}
+	result := m.names.Match(ctx, spoken, candidates)
+	if !result.Matched() {
+		m.logger.Info("alarm sound not matched; using the kind default",
+			"spoken", spoken, "reason", result.Reason, "score", result.Score, "error", result.Err)
+		return "", true, nil
+	}
+	if err := m.cues.Validate(sound.RoleAlarmRing, result.Name); err != nil {
+		// The shared validator also reports a disappeared file. Only a real cap
+		// breach is worth refusing; an unavailable entry falls back.
+		if entry, ok := m.cues.Find(result.Name); ok && entry.Duration > sound.Cap(sound.RoleAlarmRing) {
+			return "", false, &tool.ToolError{Say: fmt.Sprintf(
+				"I can't use the %s sound for an alarm; it is longer than %s.",
+				entry.Name, sound.Cap(sound.RoleAlarmRing))}
+		}
+		m.logger.Warn("alarm sound unavailable; using the kind default",
+			"spoken", spoken, "sound", result.Name, "error", err)
+		return "", true, nil
+	}
+	return result.Name, false, nil
+}
+
+// validateVolume rejects a value the Ring could not apply.
+func validateVolume(volume *int) error {
+	if volume == nil {
+		return nil
+	}
+	if *volume < 0 || *volume > 100 {
+		return &tool.ToolError{Say: "An alarm volume must be between 0 and 100."}
+	}
+	return nil
+}
+
+// validateRamp rejects a negative or over-long ramp. Zero is valid: it means
+// no ramp, which is different from a nil default.
+func validateRamp(seconds *int) error {
+	if seconds == nil {
+		return nil
+	}
+	if *seconds < 0 || time.Duration(*seconds)*time.Second > ring.MaxRamp {
+		return &tool.ToolError{Say: "An alarm ramp must be between 0 and 60 minutes."}
+	}
+	return nil
+}
+
+// cloneInt copies an optional value so the caller cannot mutate a stored Alarm.
+func cloneInt(value *int) *int {
+	if value == nil {
+		return nil
+	}
+	copied := *value
+	return &copied
+}
+
+// rampDuration turns a stored whole-second override into the Ring's duration
+// pointer. A nil override stays nil so the kind default (30 s for an Alarm)
+// applies.
+func rampDuration(seconds *int) *time.Duration {
+	if seconds == nil {
+		return nil
+	}
+	value := time.Duration(*seconds) * time.Second
+	return &value
 }
 
 // Cancel removes the Alarms selected by in and reports how many were removed.
@@ -528,12 +889,18 @@ func (m *Manager) fire(id string, snoozed bool) {
 	}()
 
 	if m.engine != nil {
+		// The per-Alarm overrides travel with this one Ring request. The engine
+		// applies them to its own copy of the kind settings, so no global
+		// setting or other Alarm is changed.
 		result := m.engine.Ring(ringCtx, ring.Request{
 			Kind:         ring.Alarm,
 			ID:           id,
 			Label:        alarm.Label,
 			FiresAt:      state.occurrence,
 			FallbackText: fallbackText(alarm),
+			Sound:        alarm.Sound,
+			Volume:       cloneInt(alarm.Volume),
+			Ramp:         rampDuration(alarm.RampSeconds),
 			AllowSnooze:  true,
 			SnoozeText:   SnoozeText,
 			OnStart:      func() { m.markRinging(state.eventID) },

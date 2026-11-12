@@ -14,38 +14,26 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Jairik/clanka-bot/assistant/internal/location"
 	"github.com/Jairik/clanka-bot/assistant/internal/persona"
 	"github.com/Jairik/clanka-bot/assistant/internal/secrets"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 	"github.com/Jairik/clanka-bot/assistant/internal/sound"
-	"github.com/Jairik/clanka-bot/assistant/internal/tool"
+	"github.com/Jairik/clanka-bot/assistant/internal/status"
 	"github.com/Jairik/clanka-bot/assistant/internal/toolpolicy"
 	"github.com/Jairik/clanka-bot/assistant/internal/voicelib"
-	"github.com/Jairik/clanka-bot/assistant/tools"
 )
 
-const defaultHealthTimeout = 3 * time.Second
-
 // Modules is the Tool module list and its health checks.
-type Modules interface {
-	Modules() []tool.Module
-	Health(context.Context) []tools.Health
-}
+type Modules = status.Modules
 
 // Location is the place service the Health page reports.
-type Location interface {
-	Health(context.Context) error
-	Current() (location.Location, bool)
-}
+type Location = status.Location
 
 // ServiceCheck is one Compose service's health check. A nil Check means the
 // service is not configured in this deployment, which is shown as such rather
-// than as a failure.
-type ServiceCheck struct {
-	Name  string
-	Check func(context.Context) error
-}
+// than as a failure. The type lives in internal/status so the page and the
+// system.status Tool share one definition.
+type ServiceCheck = status.ServiceCheck
 
 // Options configures the Dashboard. Owner is the only Tailscale login allowed
 // in; New refuses to build without one, so an unconfigured instance cannot
@@ -57,6 +45,9 @@ type Options struct {
 	Services      []ServiceCheck
 	Modules       Modules
 	Location      Location
+	// Status optionally supplies the shared bounded snapshot main also gives
+	// the system.status Tool. When nil, New builds one from the fields above.
+	Status *status.Source
 	// API is an optional unauthenticated handler mounted under /api/ behind
 	// the Dashboard identity and same-origin checks. #40's settings handler is
 	// mounted here; secrets and uploads can use the same seam.
@@ -97,25 +88,21 @@ type Options struct {
 // Handler is the authenticated Dashboard mux. Register extra pages before
 // serving; the auth and security middleware already wraps every route.
 type Handler struct {
-	owner         string
-	logger        *slog.Logger
-	healthTimeout time.Duration
-	services      []ServiceCheck
-	modules       Modules
-	location      Location
-	settings      *settings.Service
-	tools         *toolpolicy.Policy
-	secrets       *secrets.Service
-	sounds        *sound.Service
-	previews      PreviewQueue
-	voices        *voicelib.Service
-	voiceProbe    voicelib.Probe
-	voicePreview  VoicePreview
-	personas      *persona.Service
-	proxyAllowed  func(net.IP) bool
-	now           func() time.Time
-	templates     *template.Template
-	mux           *http.ServeMux
+	owner        string
+	logger       *slog.Logger
+	healthStatus *status.Source
+	settings     *settings.Service
+	tools        *toolpolicy.Policy
+	secrets      *secrets.Service
+	sounds       *sound.Service
+	previews     PreviewQueue
+	voices       *voicelib.Service
+	voiceProbe   voicelib.Probe
+	voicePreview VoicePreview
+	personas     *persona.Service
+	proxyAllowed func(net.IP) bool
+	templates    *template.Template
+	mux          *http.ServeMux
 }
 
 //go:embed templates/*.html static/*
@@ -132,10 +119,6 @@ func New(opts Options) (*Handler, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	timeout := opts.HealthTimeout
-	if timeout <= 0 {
-		timeout = defaultHealthTimeout
-	}
 	now := opts.Now
 	if now == nil {
 		now = time.Now
@@ -149,26 +132,35 @@ func New(opts Options) (*Handler, error) {
 		return nil, fmt.Errorf("dashboard: static assets: %w", err)
 	}
 
+	// One shared bounded snapshot feeds the Health page; main passes the same
+	// source to the system.status Tool. Tests may omit it and supply their own
+	// checks directly.
+	healthStatus := opts.Status
+	if healthStatus == nil {
+		healthStatus = status.New(status.Options{
+			Timeout:  opts.HealthTimeout,
+			Services: opts.Services,
+			Modules:  opts.Modules,
+			Location: opts.Location,
+			Now:      now,
+		})
+	}
 	h := &Handler{
-		owner:         owner,
-		logger:        logger,
-		healthTimeout: timeout,
-		services:      opts.Services,
-		modules:       opts.Modules,
-		location:      opts.Location,
-		settings:      opts.Settings,
-		tools:         opts.ToolPolicy,
-		secrets:       opts.Secrets,
-		sounds:        opts.Sounds,
-		previews:      opts.PreviewQueue,
-		voices:        opts.Voices,
-		voiceProbe:    opts.VoiceProbe,
-		voicePreview:  opts.VoicePreview,
-		personas:      opts.Personas,
-		proxyAllowed:  opts.ProxyAllowed,
-		now:           now,
-		templates:     templates,
-		mux:           http.NewServeMux(),
+		owner:        owner,
+		logger:       logger,
+		healthStatus: healthStatus,
+		settings:     opts.Settings,
+		tools:        opts.ToolPolicy,
+		secrets:      opts.Secrets,
+		sounds:       opts.Sounds,
+		previews:     opts.PreviewQueue,
+		voices:       opts.Voices,
+		voiceProbe:   opts.VoiceProbe,
+		voicePreview: opts.VoicePreview,
+		personas:     opts.Personas,
+		proxyAllowed: opts.ProxyAllowed,
+		templates:    templates,
+		mux:          http.NewServeMux(),
 	}
 	// htmx is vendored under static/, so the UI works on a tailnet without
 	// internet access.

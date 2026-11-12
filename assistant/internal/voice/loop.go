@@ -71,6 +71,14 @@ type PendingDropper interface {
 	DropPending() (tool.PendingConfirmation, bool)
 }
 
+// Announcer is the Announcement queue as the voice loop sees it. A wake word
+// starts a turn, which stops unprompted speech before capture so it is not
+// recorded as part of the question.
+type Announcer interface {
+	TurnStarted()
+	TurnFinished()
+}
+
 // Config is the voice loop's fixed settings.
 type Config struct {
 	// FrameBytes is the PCM frame size handed to the services. 1024 bytes is
@@ -93,7 +101,10 @@ type Deps struct {
 	// Dropper is optional: when set, a Barge-in also drops a waiting
 	// Confirmation so a stale yes cannot run later.
 	Dropper PendingDropper
-	Logger  *slog.Logger
+	// Announcer is optional: when set, a wake word stops unprompted speech
+	// before capture starts.
+	Announcer Announcer
+	Logger    *slog.Logger
 }
 
 // micFrame is one captured PCM block stamped with its capture time. The stamp
@@ -220,6 +231,12 @@ func (l *Loop) waitForWake(ctx context.Context) (bool, error) {
 // speak. It reports whether the wake word interrupted the reply (Barge-in) so
 // the caller starts a fresh turn without waiting for another wake word.
 func (l *Loop) session(ctx context.Context) (bool, error) {
+	// A wake word starts a turn: stop unprompted speech before capture, so its
+	// audio is not recorded as part of the question.
+	if l.deps.Announcer != nil {
+		l.deps.Announcer.TurnStarted()
+		defer l.deps.Announcer.TurnFinished()
+	}
 	sessCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 

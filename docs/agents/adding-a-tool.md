@@ -63,6 +63,21 @@ Replace it with the real operation:
 Completion: the Tool does the real work, the placeholder config is replaced, and
 `go test ./tools/<module>` still passes.
 
+### If the Tool needs a secret
+
+Declare the name on the module by implementing the optional
+`tool.SecretDeclarer` interface:
+
+```go
+// RequiredSecrets lists .env names the write-only store can also hold.
+func (*Module) RequiredSecrets() []string { return []string{"EXAMPLE_API_KEY"} }
+```
+
+Read it through the shared `tool.Deps.Secrets` resolver (`Get(name)`), which
+returns the stored value first and the `.env` bootstrap second. Never put the
+value in `config.yaml`, a setting, a log line or an error; the secrets API lists
+the declared name with only `set`, `last4`, `updated_at` and `source`.
+
 ## 4. Choose the Permission level
 
 | Permission | Use when | Fast path |

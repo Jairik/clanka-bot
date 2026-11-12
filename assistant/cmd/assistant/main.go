@@ -25,6 +25,8 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	"github.com/Jairik/clanka-bot/assistant/internal/reply"
+	"github.com/Jairik/clanka-bot/assistant/internal/secrets"
+	"github.com/Jairik/clanka-bot/assistant/internal/secretsapi"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 	"github.com/Jairik/clanka-bot/assistant/internal/settingsapi"
 	"github.com/Jairik/clanka-bot/assistant/internal/speech"
@@ -77,6 +79,22 @@ func run() error {
 			logger.Error("store close", "error", err.Error())
 		}
 	}()
+
+	// The provider entry names the secret key and is needed before Tool
+	// registration so the secrets service knows every writable name.
+	provider, err := cfg.Agent.ActiveProvider()
+	if err != nil {
+		return err
+	}
+	toolSet := tools.NewSet()
+	// The declared names are the write-only allowlist: Tool modules first, then
+	// the Agent provider's key. Environment variables with the same names are
+	// the bootstrap; a stored value wins.
+	secretNames := append(toolSet.SecretNames(), provider.APIKeyEnv)
+	secretsSvc, err := secrets.New(ctx, st.DB(), secretNames)
+	if err != nil {
+		return fmt.Errorf("secrets: %w", err)
+	}
 
 	// Resolve the place once before serving so the first request has it; Watch
 	// keeps it fresh every 24h. The prompt reads the service per request.
@@ -136,13 +154,13 @@ func run() error {
 		Location:      locSvc.Current,
 		Audio:         sink,
 		Store:         st,
+		Secrets:       secretsSvc,
 		Announcements: announcements,
 	}
 	if speechSpeaker != nil {
 		deps.Speaker = speechSpeaker
 	}
-	moduleSet := tools.NewSet()
-	if err := moduleSet.RegisterAll(registry, deps, cfg.Tools.Sections); err != nil {
+	if err := toolSet.RegisterAll(registry, deps, cfg.Tools.Sections); err != nil {
 		return fmt.Errorf("register tools: %w", err)
 	}
 
@@ -167,14 +185,27 @@ func run() error {
 	// The settings API has no authentication of its own. It is mounted on the
 	// localhost debug listener and, from #47, on the authenticated Dashboard.
 	settingsHandler := settingsapi.New(settingsSvc, toolPolicy, logger)
-
-	provider, err := cfg.Agent.ActiveProvider()
-	if err != nil {
-		return err
+	// One composable mux also serves the write-only secrets routes, so both
+	// surfaces get the same handlers and neither exposes them publicly.
+	secretsHandler := secretsapi.New(secretsSvc, logger)
+	apiHandler := http.NewServeMux()
+	mountAPI := func(prefix string, handler http.Handler) {
+		apiHandler.Handle(prefix, handler)
+		apiHandler.Handle(prefix+"/", handler)
 	}
+	mountAPI("/settings", settingsHandler)
+	mountAPI("/tools", settingsHandler)
+	mountAPI("/secrets", secretsHandler)
+
 	agentPath, err := agent.New(agent.Settings{
-		BaseURL:            provider.BaseURL,
-		APIKeyEnv:          provider.APIKeyEnv,
+		BaseURL:   provider.BaseURL,
+		APIKeyEnv: provider.APIKeyEnv,
+		// Read the resolved key per request: a value stored from the Dashboard
+		// takes effect on the next turn without a restart.
+		APIKey: func() string {
+			value, _ := secretsSvc.Get(provider.APIKeyEnv)
+			return value
+		},
 		Model:              provider.Model,
 		Headers:            provider.Headers,
 		Routing:            provider.Routing,
@@ -267,10 +298,10 @@ func run() error {
 			// behaviour is demonstrable without a Reminder.
 			opts = append(opts, api.WithAnnouncements(announcements))
 		}
-		// Settings and Tool-override writes live on the localhost debug
-		// listener and on the authenticated Dashboard. The health listener
-		// never mounts this handler.
-		opts = append(opts, api.WithSettings(settingsHandler))
+		// Settings, Tool-override and secret writes live on the localhost
+		// debug listener and on the authenticated Dashboard. The health
+		// listener never mounts this handler.
+		opts = append(opts, api.WithAPI(apiHandler))
 		servers = append(servers, &http.Server{
 			Addr:              cfg.Debug.Addr,
 			Handler:           api.NewHandler(p, logger, true, opts...),
@@ -287,9 +318,9 @@ func run() error {
 			Logger:        logger,
 			HealthTimeout: cfg.Dashboard.HealthTimeout.Duration(),
 			Services:      dashboard.ComposeServiceChecks(cfg),
-			Modules:       moduleSet,
+			Modules:       toolSet,
 			Location:      locSvc,
-			API:           settingsHandler,
+			API:           apiHandler,
 		})
 		if err != nil {
 			return err

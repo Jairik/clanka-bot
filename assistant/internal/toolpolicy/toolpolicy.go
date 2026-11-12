@@ -169,18 +169,22 @@ func New(svc *settings.Service, reg *tool.Registry) (*Policy, error) {
 	return p, nil
 }
 
-// Effective implements tool.Policy for the registry's hot path. It fails
-// closed: a missing or invalid Permission falls back to the code declaration,
-// and the stored value can never loosen it.
+// Effective implements tool.Policy for the registry's hot path. Both settings
+// come from one snapshot, so a concurrent batch update cannot mix the old
+// enabled flag with the new Permission. It fails closed: a missing or invalid
+// Permission falls back to the code declaration, and the stored value can
+// never loosen it.
 func (p *Policy) Effective(name string, declared tool.Permission) tool.ToolSettings {
+	enabledKey, permissionKey := EnabledKey(name), PermissionKey(name)
+	values := p.settings.GetMany(enabledKey, permissionKey)
 	enabled := true
-	if value, ok := p.settings.Get(EnabledKey(name)); ok {
+	if value, ok := values[enabledKey]; ok {
 		if flag, ok := value.Value.(bool); ok {
 			enabled = flag
 		}
 	}
 	permission := declared
-	if value, ok := p.settings.Get(PermissionKey(name)); ok {
+	if value, ok := values[permissionKey]; ok {
 		if text, ok := value.Value.(string); ok {
 			candidate := tool.Permission(text)
 			if candidate.Valid() && candidate.AtLeast(declared) {
@@ -197,12 +201,22 @@ func (p *Policy) Get(name string) (State, bool) {
 	if !ok {
 		return State{}, false
 	}
-	enabledValue, _ := p.settings.Get(EnabledKey(name))
-	permissionValue, _ := p.settings.Get(PermissionKey(name))
+	enabledKey, permissionKey := EnabledKey(name), PermissionKey(name)
+	values := p.settings.GetMany(enabledKey, permissionKey)
+	enabledValue := values[enabledKey]
+	permissionValue := values[permissionKey]
+	enabled := true
+	if flag, ok := enabledValue.Value.(bool); ok {
+		enabled = flag
+	}
+	permission := tool.Permission("")
+	if text, ok := permissionValue.Value.(string); ok {
+		permission = tool.Permission(text)
+	}
 	return State{
 		Name:             name,
-		Enabled:          p.settings.Bool(EnabledKey(name)),
-		Permission:       tool.Permission(p.settings.String(PermissionKey(name))),
+		Enabled:          enabled,
+		Permission:       permission,
 		Declared:         info.Permission,
 		LocalOnly:        info.LocalOnly,
 		EnabledSource:    enabledValue.Source,

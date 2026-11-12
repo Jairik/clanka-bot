@@ -295,6 +295,49 @@ func TestDisabledToolIsNotOfferedToTheAgent(t *testing.T) {
 	}
 }
 
+func TestEffectiveReadsBothOverridesFromOneSnapshot(t *testing.T) {
+	ctx := context.Background()
+	_, _, policy, _ := wire(t, toolpolicy.Config{})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 50; i++ {
+			if _, err := policy.Set(ctx, "test.read", toolpolicy.Update{
+				Enabled:    boolPtr(false),
+				Permission: permissionPtr(tool.PermissionConfirm),
+			}); err != nil {
+				t.Errorf("Set disabled+confirm: %v", err)
+				return
+			}
+			if _, err := policy.Set(ctx, "test.read", toolpolicy.Update{
+				Enabled:    boolPtr(true),
+				Permission: permissionPtr(tool.PermissionRead),
+			}); err != nil {
+				t.Errorf("Set enabled+read: %v", err)
+				return
+			}
+		}
+	}()
+
+	for {
+		select {
+		case <-done:
+			return
+		default:
+		}
+		setting := policy.Effective("test.read", tool.PermissionRead)
+		// Each Set writes both fields in one batch, so a reader must never see
+		// the old enabled flag paired with the new Permission.
+		if setting.Enabled && setting.Permission != tool.PermissionRead {
+			t.Fatalf("mixed snapshot: enabled=%v permission=%q", setting.Enabled, setting.Permission)
+		}
+		if !setting.Enabled && setting.Permission != tool.PermissionConfirm {
+			t.Fatalf("mixed snapshot: enabled=%v permission=%q", setting.Enabled, setting.Permission)
+		}
+	}
+}
+
 func TestConcurrentCallsAndOverridesAreSafe(t *testing.T) {
 	ctx := context.Background()
 	reg, _, policy, _ := wire(t, toolpolicy.Config{})

@@ -267,6 +267,21 @@ func (s *Service) Get(key string) (Value, bool) {
 	return s.valueLocked(def), true
 }
 
+// GetMany returns several effective values from one consistent snapshot.
+// A caller that needs related settings as a pair (a Tool's enabled flag and
+// Permission) uses this so a concurrent batch write cannot mix layers.
+func (s *Service) GetMany(keys ...string) map[string]Value {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	values := make(map[string]Value, len(keys))
+	for _, key := range keys {
+		if def, ok := s.defs[key]; ok {
+			values[key] = s.valueLocked(def)
+		}
+	}
+	return values
+}
+
 // List returns every setting in key order.
 func (s *Service) List() []Value {
 	s.mu.RLock()

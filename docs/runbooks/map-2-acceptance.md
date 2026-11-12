@@ -364,9 +364,9 @@ did not go to `aec_music_sink`, or a cap written without measurements.
 ## 6. #72 and #73 live voice checks
 
 **Closes:** part of [#72](https://github.com/Jairik/clanka-bot/issues/72) (live
-acceptance; the code is fake-tested only). Only the #72 checks can run now.
-[#73](https://github.com/Jairik/clanka-bot/issues/73) is not built, so its
-checks are listed for later and are not run.
+acceptance) and [#73](https://github.com/Jairik/clanka-bot/issues/73). Both
+are built and tested against a fake Spotify Web API only; these steps are the
+live checks.
 
 **#72 boxes:**
 
@@ -410,14 +410,28 @@ playing on the Pi. Focus order is ringing alert, then reply, then music
    make routing-eval ROUTING_EVAL_EMBED_URL=http://127.0.0.1:18085
    ```
 
-**#73 boxes (not built; do not run yet):**
+**#73 boxes:**
 
 - "play my running playlist on shuffle" resolves via the cache and name matcher
 - The cache refreshes every 6 hours and at startup
 - `previous`, `shuffle`, `repeat`, `queue_add` and `like` work by voice
 - Each new Tool meets the same conformance and routing-eval rules
 
-**Results (#72):**
+**#73 steps** (the section 4 sign-in already grants the playlist and library
+scopes; no second Connect is needed):
+
+8. Restart the assistant and check the log shows the playlist cache loaded:
+   `docker compose logs --tail=100 assistant | grep -i playlist`.
+9. Say "play my <name> playlist on shuffle" with one of your playlist names.
+   It must start that playlist with shuffle on. Try a close-but-not-exact name
+   too, and note whether it matched or asked.
+10. Say "previous", "turn shuffle off", "repeat this song", "add <a song> to
+    the queue" and "like this song". Check each in the Spotify app.
+11. Make a new playlist in the Spotify app, then restart the assistant and ask
+    for it by name. It must play (cache refreshed at startup). The 6-hour
+    refresh is covered by the fake-clock tests; note it as not observed live.
+
+**Results (#72 and #73):**
 
 | Step | Result | Notes |
 | --- | --- | --- |
@@ -428,8 +442,12 @@ playing on the Pi. Focus order is ringing alert, then reply, then music
 | 5 ducking and restore | | |
 | 6 max_volume enforced | | |
 | 7 make test and routing-eval | | |
+| 8 playlist cache loaded | | |
+| 9 playlist on shuffle | | |
+| 10 previous/shuffle/repeat/queue/like | | |
+| 11 new playlist after restart | | |
 
-**Pass:** steps 1 to 7 pass. **Fail:** any command acting on the wrong holder,
+**Pass:** steps 1 to 11 pass. **Fail:** any command acting on the wrong holder,
 volume above `music.max_volume`, or music that does not restore after ducking.
 
 ## 7. #69 and #74 RAM budget

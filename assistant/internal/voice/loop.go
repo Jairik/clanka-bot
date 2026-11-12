@@ -107,7 +107,11 @@ type Deps struct {
 	// WakeCue resolves the live wake Cue once per detection. When set it
 	// replaces Config.Chime, and ok=false means the role is assigned none.
 	WakeCue func() (pcm []byte, format audio.Format, ok bool)
-	Logger  *slog.Logger
+	// Observer, when set, receives each completed voice request at the same
+	// moment the structured request log line is written. It feeds the
+	// Dashboard Activity page; nil leaves the loop unchanged.
+	Observer latency.Observer
+	Logger   *slog.Logger
 }
 
 // micFrame is one captured PCM block stamped with its capture time. The stamp
@@ -312,7 +316,7 @@ func (l *Loop) session(ctx context.Context) (bool, error) {
 	// playback (#27). It starts at the user's last voiced frame, not the end
 	// of the silence window; the same instant is the Filler clock (#25).
 	ended := time.Now()
-	timeline := latency.New(tool.NewRequestID(), latency.SourceVoice)
+	timeline := latency.New(tool.NewRequestID(), latency.SourceVoice, latency.WithObserver(l.deps.Observer))
 	timeline.SetLastVoice(endpointer.LastSpeech())
 	if last := endpointer.LastSpeech(); !last.IsZero() {
 		timeline.Set(latency.StageEndpointing, ended.Sub(last))

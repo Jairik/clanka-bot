@@ -284,6 +284,13 @@ func (p *Pipeline) HandleEvents(ctx context.Context, req tool.Request, transcrip
 				reply.LocalOnly = true
 			}
 			if res.Call != nil {
+				// The Dashboard's Activity view gets the executed call and its
+				// spoken result. Local-only results stay in memory and on screen.
+				latency.AddToolCall(ctx, latency.ToolCallDetail{
+					Name:      res.Call.Name,
+					LocalOnly: res.Call.LocalOnly,
+					Result:    reply.Text,
+				})
 				p.recordTurn(transcript, reply.Text, []agent.ToolCall{*res.Call})
 			}
 			record.reason = ""
@@ -454,6 +461,21 @@ func (p *Pipeline) callAgent(ctx context.Context, req tool.Request, transcript s
 	names := make([]string, 0, len(result.Calls))
 	for _, call := range result.Calls {
 		names = append(names, call.Name)
+		// The Agent path never calls a Local-only Tool; the flag is still
+		// carried so the Activity display has one provenance rule everywhere.
+		latency.AddToolCall(ctx, latency.ToolCallDetail{
+			Name:      call.Name,
+			LocalOnly: call.LocalOnly,
+			Result:    string(call.Result),
+		})
+	}
+	if result.Pending != nil {
+		info, _ := p.registry.Info(result.Pending.Tool)
+		latency.AddToolCall(ctx, latency.ToolCallDetail{
+			Name:      result.Pending.Tool,
+			LocalOnly: info.LocalOnly,
+			Result:    "Confirmation required.",
+		})
 	}
 	reply.Tool = strings.Join(names, ",")
 }
@@ -462,6 +484,7 @@ func (p *Pipeline) callTool(ctx context.Context, req tool.Request, transcript, n
 	toolStarted := time.Now()
 	defer func() { latency.AddStage(ctx, latency.StageToolExecute, time.Since(toolStarted)) }()
 
+	info, _ := p.registry.Info(name)
 	req.Path = path
 	result, err := p.registry.Execute(tool.WithRequest(ctx, req), name, args)
 	if err != nil {
@@ -472,17 +495,39 @@ func (p *Pipeline) callTool(ctx context.Context, req tool.Request, transcript, n
 		if errors.As(err, &required) {
 			pending, proposeErr := p.registry.Propose(name, args)
 			if proposeErr == nil {
+				// The Tool did not run; still show which call is waiting.
+				latency.AddToolCall(ctx, latency.ToolCallDetail{
+					Name:      name,
+					LocalOnly: info.LocalOnly,
+					Result:    "Confirmation required.",
+				})
 				return pending.Summary, "", &pending
 			}
 			err = proposeErr
 		}
-		return tool.FailureMessage(err), err.Error(), nil
+		message := tool.FailureMessage(err)
+		latency.AddToolCall(ctx, latency.ToolCallDetail{
+			Name:      name,
+			LocalOnly: info.LocalOnly,
+			Result:    message,
+		})
+		return message, err.Error(), nil
 	}
 	spoken, ok := p.registry.Speak(name, result)
 	if !ok {
 		err := fmt.Errorf("tool %q has no Speak renderer", name)
+		latency.AddToolCall(ctx, latency.ToolCallDetail{
+			Name:      name,
+			LocalOnly: info.LocalOnly,
+			Result:    tool.DefaultFailureMessage,
+		})
 		return tool.DefaultFailureMessage, err.Error(), nil
 	}
+	latency.AddToolCall(ctx, latency.ToolCallDetail{
+		Name:      name,
+		LocalOnly: info.LocalOnly,
+		Result:    spoken,
+	})
 	p.recordToolTurn(transcript, spoken, name, result)
 	return spoken, "", nil
 }
@@ -533,6 +578,10 @@ func (p *Pipeline) finish(ctx context.Context, started time.Time, req tool.Reque
 			LocalOnly: reply.LocalOnly,
 		})
 	}
+	// The reply text and its provenance are display-only: the timeline keeps
+	// them for the authenticated Activity page, and the request log line never
+	// includes them. This is the one place every route records the answer.
+	latency.SetSummary(ctx, reply.Text, reply.LocalOnly, reply.Pending != nil)
 	if latency.FromContext(ctx) != nil {
 		latency.SetRoute(ctx, string(reply.Path), reply.Tool, transcript)
 		latency.SetAttr(ctx, "top_tools", record.top)

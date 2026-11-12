@@ -36,8 +36,11 @@ type Settings struct {
 	APIKeyEnv string
 	// APIKey, when set, resolves the key per request so a stored secret takes
 	// effect without a restart. The stored value wins over APIKeyEnv.
-	APIKey       func() string
-	Model        string
+	APIKey func() string
+	Model  string
+	// ModelFunc, when set, is read before every provider request so a live
+	// settings override applies to the next turn. Model is the fallback.
+	ModelFunc    func() string
 	Headers      map[string]string
 	Routing      map[string]any
 	SystemPrompt string

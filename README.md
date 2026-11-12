@@ -143,6 +143,25 @@ not delayed, during Quiet hours.
 Inside Quiet hours a Timer Ring and its label use `quiet.volume`; an Alarm is
 exempt and keeps its own Ring volume.
 
+A **Reminder** is the same Scheduled-alert machinery with a message instead of a
+Ring. Set it by duration ("remind me in 20 minutes to check the oven") or by
+clock time in the effective `timezone` ("remind me at 5 pm to call mum"); a
+clock time already passed means the next day, so the two forms share one
+future-if-past policy with Alarms. `reminder.set` and `reminder.cancel` are
+available to the Agent path, while `reminder.list` is Local-only because the
+messages can be personal. Reminders are stored in the database and follow the
+same downtime rule as Timers: up to two minutes overdue speaks at startup,
+older ones become one summary Announcement, and a row is deleted in the same
+transaction that opens its alert-history row so a restart never repeats a
+message.
+
+When a Reminder is due, the `sounds.reminder` Cue plays immediately before the
+message as **one** queued Announcement item. It waits for the current reply and
+a pending Confirmation, but inside Quiet hours it still sounds at
+`quiet.volume` instead of joining the held morning summary; ordinary
+Announcements keep waiting. The selected voice and `voice.rate` apply because
+the message uses the shared speaker; there is no model call on the way out.
+
 A Ring waits for the current reply sentence to finish (not the whole reply),
 then takes the one speaker; the reply's next sentence waits for the Ring and
 resumes afterwards, so ringing never cancels an answer. Music will be ducked
@@ -201,8 +220,9 @@ curl -s -X POST localhost:8081/debug/announce \
   -H 'Content-Type: application/json' -d '{"text":"Dinner is ready."}'
 ```
 
-Quiet hours will hold and release the same queue; nothing is spoken while a
-hold is on.
+Quiet hours holds and releases the same queue; ordinary text items wait, while
+a due Reminder is an urgent item that keeps its own slot. It still waits for a
+reply or a pending Confirmation, and its Cue plus message remain one item.
 
 #### Quiet hours
 
@@ -606,11 +626,13 @@ curl -s -X DELETE localhost:8081/api/settings/sounds.error
 
 Length caps are enforced when a sound is assigned and never trim the file:
 `wake` 1.0 s, `reminder`/`error` 3 s, Rings 60 s. A longer sound is rejected
-with the cap in the error. The wake and error Cues are wired, and a Timer or
-Alarm Ring loops `sounds.timer_ring` or `sounds.alarm_ring` through the Ring
-engine: it waits for the current reply sentence, ducks music, speaks the label
-and stops on "stop" or "snooze". A `none` or missing Ring sound falls back to
-the old single spoken line. Reminders do not exist yet.
+with the cap in the error. The wake, error and reminder Cues are wired, and a
+Timer or Alarm Ring loops `sounds.timer_ring` or `sounds.alarm_ring` through the
+Ring engine: it waits for the current reply sentence, ducks music, speaks the
+label and stops on "stop" or "snooze". A `none` or missing Ring sound falls
+back to the old single spoken line. A Reminder plays `sounds.reminder` once
+through the urgent Announcement item, then speaks its message; `none` leaves
+only the message.
 
 ### Latency
 

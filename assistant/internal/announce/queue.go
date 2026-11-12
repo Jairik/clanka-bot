@@ -57,10 +57,13 @@ func WithHoldSummary() Option {
 
 // item is one queued unprompted action: a line to speak, or a sound to play.
 // Both obey the same turn, hold and blocked gates, so a Pi preview cannot cut
-// a reply or a pending Confirmation.
+// a reply or a pending Confirmation. urgent marks a scheduled alert (a
+// Reminder) that must still sound inside Quiet hours; it bypasses only the
+// hold, never a turn or a blocked Confirmation.
 type item struct {
-	text string
-	play func(context.Context) error
+	text   string
+	play   func(context.Context) error
+	urgent bool
 }
 
 // Queue plays Announcements one at a time, in the order they were queued. The
@@ -159,6 +162,26 @@ func (q *Queue) EnqueuePlay(play func(context.Context) error) bool {
 		return false
 	}
 	q.items = append(q.items, item{play: play})
+	q.mu.Unlock()
+	q.notify()
+	return true
+}
+
+// EnqueueAlert queues one scheduled alert whose Cue and spoken text are a
+// single item. A Quiet-hours hold does not delay it, but the current reply, a
+// pending Confirmation and a ringing alert still do. It is never collapsed
+// into the held-text summary, so an alert cannot become part of a morning
+// digest and an audio preview is still a sound rather than a narration.
+func (q *Queue) EnqueueAlert(play func(context.Context) error) bool {
+	if q == nil || play == nil {
+		return false
+	}
+	q.mu.Lock()
+	if q.closed || !q.audio {
+		q.mu.Unlock()
+		return false
+	}
+	q.items = append(q.items, item{play: play, urgent: true})
 	q.mu.Unlock()
 	q.notify()
 	return true
@@ -335,28 +358,60 @@ func (q *Queue) run() {
 }
 
 // blockedWaiting reports that only the blocked predicate keeps a queued item
-// from starting.
+// from starting. An urgent alert ignores a hold, so it is still waiting when
+// the blocked gate is the only thing left.
 func (q *Queue) blockedWaiting() bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if q.closed || q.held || q.turns > 0 || q.playing || len(q.items) == 0 {
+	if q.closed || q.turns > 0 || q.playing || len(q.items) == 0 {
+		return false
+	}
+	if q.held && !q.hasUrgentLocked() {
 		return false
 	}
 	return q.blocked != nil && q.blocked()
 }
 
-// next claims the oldest item when one may start now.
+// hasUrgentLocked reports whether an alert is waiting behind the hold. The
+// caller holds q.mu.
+func (q *Queue) hasUrgentLocked() bool {
+	for _, queued := range q.items {
+		if queued.urgent {
+			return true
+		}
+	}
+	return false
+}
+
+// next claims the oldest item when one may start now. Inside a hold it skips
+// ordinary announcements but takes the first urgent alert, so Quiet hours
+// cannot delay a Reminder.
 func (q *Queue) next() (item, bool) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	if q.closed || q.held || q.turns > 0 || q.playing || len(q.items) == 0 {
+	if q.closed || q.turns > 0 || q.playing || len(q.items) == 0 {
 		return item{}, false
 	}
 	if q.blocked != nil && q.blocked() {
 		return item{}, false
 	}
-	next := q.items[0]
-	q.items = q.items[1:]
+	index := 0
+	if q.held {
+		index = -1
+		for i, queued := range q.items {
+			if queued.urgent {
+				index = i
+				break
+			}
+		}
+		if index < 0 {
+			return item{}, false
+		}
+	}
+	next := q.items[index]
+	copy(q.items[index:], q.items[index+1:])
+	q.items[len(q.items)-1] = item{}
+	q.items = q.items[:len(q.items)-1]
 	q.playing = true
 	q.play, q.cancelPlay = context.WithCancel(q.ctx)
 	return next, true

@@ -135,9 +135,9 @@ func (s *Store) Recover(ctx context.Context, at time.Time) ([]Event, error) {
 	return s.recover(ctx, "", at)
 }
 
-// RecoverKind is Recover scoped to one alert kind. The Timer and Alarm
-// schedulers each own their own pending rows and missed hook, so one kind must
-// not close or report the other kind's open event.
+// RecoverKind is Recover scoped to one alert kind. The Timer, Alarm and
+// Reminder schedulers each own their pending rows, so one kind must not close
+// or report another kind's open event.
 func (s *Store) RecoverKind(ctx context.Context, kind string, at time.Time) ([]Event, error) {
 	return s.recover(ctx, kind, at)
 }

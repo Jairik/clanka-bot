@@ -563,14 +563,173 @@ positives:
     - send me a notification
     - notify my phone that I'm on my way
     - send buy milk to my phone
+  time.in_city:
+    - what time is it in Tokyo
+    - what's the time in Tokyo
+    - what time is it in London
+    - what time is it in Paris
+    - what time is it in New York
+    - what time is it in Los Angeles
+    - what time is it in Berlin
+    - what time is it in Sydney
+    - what time is it in Tokyo Japan
+    - what's the current time in Chicago
+    - tell me the time in Rome
+    - what's the local time in Madrid
+    - time in Tokyo
+    - what time is it in Singapore
+    - what time is it in Mexico City
+    - what's the time in Toronto
+    - what time is it in São Paulo
+    - what time is it in Delhi
+    - current time in Dubai
+    - what time is it in Cape Town
+    - what time is it in Auckland
+  date.countdown:
+    - how many days until Christmas
+    - how many days till Christmas
+    - days until Christmas
+    - how many days until Halloween
+    - how many days till Halloween
+    - how many days until New Year
+    - how many days until New Year's Day
+    - how many days till New Year's Day
+    - countdown to Christmas
+    - countdown to New Year
+    - how many days before Valentine's Day
+    - how many days until Valentine's Day
+    - how many days are there until Christmas
+    - how many days left until Christmas
+    - how many days left till Christmas
+    - how many days until Xmas
+    - how many days until Christmas Day
+    - how many days to Christmas
+    - days till Halloween
+    - countdown to Valentine's Day
+    - how many days until valentines day
+    - days before Christmas
+  calc.evaluate:
+    - what is 15% of 80
+    - what is 20 percent of 150
+    - what's 17 times 24
+    - what is 2 plus 2
+    - calculate 12 plus 7
+    - how much is 100 divided by 4
+    - work out 8 times 9
+    - compute 3 plus 4 times 2
+    - what is 50 minus 18
+    - what's 5 times 12
+    - calculate 7 plus 8
+    - what is 100 minus 15%
+    - what's 25% of 200
+    - how much is 9 times 7
+    - what is 45 divided by 5
+    - calculate 6 plus 6
+    - what's 12 plus 30
+    - what is 3 x 4
+    - compute 10 minus 3
+    - work out 2 plus 3 times 4
+    - what is 99 plus 1
+    - what's 10 percent of 90
+  units.convert:
+    - convert 5 miles to km
+    - what is 5 miles in kilometers
+    - how many kilometers in 5 miles
+    - convert 100 fahrenheit to celsius
+    - how many minutes in a day
+    - convert 1 kilogram to pounds
+    - what is 30 celsius in fahrenheit
+    - convert 2 gallons to liters
+    - how many feet in a mile
+    - convert 10 kilometers to miles
+    - how many cups in a liter
+    - convert 1 pound to grams
+    - what is 72 fahrenheit in celsius
+    - convert 3 hours to minutes
+    - how many seconds in an hour
+    - convert 60 mph to kph
+    - what is 1 acre in square meters
+    - how many ounces in a pound
+    - convert 500 milliliters to cups
+    - how many inches in a foot
+    - convert 10 miles to kilometers
+    - what is 2 liters in gallons
+    - convert 5 feet to meters
+    - how many grams in a kilogram
+  random.flip:
+    - flip a coin
+    - toss a coin
+    - heads or tails
+    - flip a coin for me
+    - coin flip
+    - let's flip a coin
+    - can you flip a coin
+    - flip a coin please
+    - toss a coin for me
+    - flip the coin
+    - do a coin flip
+    - give me heads or tails
+    - heads or tails please
+    - flip a coin to decide
+    - toss a coin to decide
+    - quick coin flip
+    - flip it
+    - toss it
+    - coin toss
+    - give me a coin flip
+    - what's it going to be heads or tails
+  random.roll:
+    - roll a d20
+    - roll a die
+    - roll two dice
+    - roll 2d6
+    - roll a six sided die
+    - roll 3 dice
+    - roll a twenty sided die
+    - roll d20
+    - roll one die
+    - roll some dice
+    - roll a pair of dice
+    - roll 2 dice
+    - roll a d6
+    - roll a d100
+    - roll three six sided dice
+    - roll a ten sided die
+    - roll 4d6
+    - roll a twelve sided die
+    - roll two six sided dice
+    - roll a fair d20
+    - roll an eight sided die
+    - roll a handful of dice
+  random.pick:
+    - pick between pizza and tacos
+    - choose between tea and coffee
+    - pick from pizza, tacos or sushi
+    - "pick one: red or blue"
+    - randomly pick between the red one and the blue one
+    - help me choose between a cat and a dog
+    - pick pizza or tacos
+    - choose a movie or a book
+    - pick between the beach and the mountains
+    - choose between staying in and going out
+    - pick one of pasta or salad
+    - pick from walk or drive
+    - choose between the train and the bus
+    - pick between coffee and tea
+    - choose between italian and mexican food
+    - randomly choose between yes and no
+    - pick between London and Paris
+    - choose between the movie and the concert
+    - pick from chicken, fish or vegetables
+    - pick between hiking and swimming
+    - choose between this one and that one
+    - pick between the cat and the dog
 negatives:
   - what's the capital of France
   - who wrote hamlet
   - how do I make pancakes
   - explain quantum entanglement
   - tell me a joke
-  - what's 17 times 24
-  - convert 10 kilometers to miles
   - who won the world cup in 2018
   - summarize the news
   - will it rain next Tuesday
@@ -607,7 +766,6 @@ negatives:
   - what's the weather like on Mars
   - tell me a story
   - what's the time difference between here and Tokyo
-  - how many minutes in a day
   - what's the date of the next full moon
   - stop the car
   - cancel my subscription
@@ -673,6 +831,31 @@ negatives:
   - how do I set a reminder on my phone
   - remind me how to solve this equation
   - my phone reminded me to call mum
+  # Utility-Tool shaped but not Fast path requests: unsupported arithmetic,
+  # an unknown unit or event, an open-ended choice, or a physical action.
+  - how many days until my birthday
+  - how many days until the weekend
+  - what day is Christmas this year
+  - convert my garage into a bedroom
+  - convert 5 miles to dollars
+  - what's the exchange rate from dollars to euros
+  - how many calories in an apple
+  - calculate the tip on a 60 dollar bill
+  - roll out the red carpet
+  - roll up the window
+  - roll the dough
+  - pick up the groceries
+  - pick a restaurant for dinner
+  - pick a number between 1 and 10
+  - pick a card
+  - choose a password
+  - select all
+  - flip the mattress
+  - flip the page
+  - toss the salad
+  - how many people live in Tokyo
+  - what's the weather in Tokyo
+  - what time is it in the movie
 # Compound requests ask for more than one thing. They are kept separate so
 # the evaluation can report compound handling on its own.
 compounds:
@@ -700,6 +883,14 @@ compounds:
 # matches). Holder capabilities mirror the production declarations: a ringing
 # alert handles stop and cancel, the current reply handles stop, and music
 # handles the transport controls.
+  - what time is it in Tokyo and flip a coin
+  - how many days until Christmas and what's the date
+  - calculate 15% of 80 and convert 5 miles to km
+  - roll a d20 and pick between pizza and tacos
+  - flip a coin then roll a d20
+  - convert 5 miles to km also tell me the weather
+  - what's the time in London and set a timer for five minutes
+  - pick between pizza and tacos and set a timer for five minutes
 focus:
   - utterance: stop
     holders: [ring, reply, music]

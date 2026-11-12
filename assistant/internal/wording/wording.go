@@ -792,9 +792,11 @@ func (m *Manager) syncFiller(ctx context.Context, retry bool) bool {
 		return false
 	}
 	// A normal wake never re-attempts a key that just failed; only the retry
-	// tick does, so a burst of unrelated settings cannot hammer TTS.
+	// tick does, so a burst of unrelated settings cannot hammer TTS. It must
+	// still keep the pending retry alive: the cached audio, if any, belongs to
+	// a different key (the equal-cache case returned above).
 	if attemptedKey == key && !retry {
-		return false
+		return true
 	}
 	filler, err := m.synth(ctx, text)
 	if err != nil {

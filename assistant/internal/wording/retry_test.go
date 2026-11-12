@@ -159,3 +159,35 @@ func TestFillerSynthesisFailureRetriesInTheBackground(t *testing.T) {
 		t.Fatalf("synthesis calls = %d, want a retry after the first failure", got)
 	}
 }
+
+// TestFillerRetrySurvivesAnUnrelatedSettingsWake keeps the S3 retry alive when
+// an unrelated relevant change (a Tool policy write) arrives after the failed
+// synthesis but before the retry tick. That wake cannot satisfy the pending
+// key, so it must not cancel the retry.
+func TestFillerRetrySurvivesAnUnrelatedSettingsWake(t *testing.T) {
+	var calls atomic.Int32
+	synth := func(_ context.Context, text string) (*speech.Filler, error) {
+		if calls.Add(1) == 1 {
+			return nil, errors.New("tts is warming up")
+		}
+		return &speech.Filler{Text: text, PCM: []byte(text)}, nil
+	}
+	initial := &speech.Filler{Text: "One moment.", PCM: []byte("initial")}
+	// A long first retry opens a window for the unrelated wake; production uses
+	// two seconds, which is the same shape.
+	f := newFixtureWith(t, initial, synth, nil, wording.WithRetryBackoff(150*time.Millisecond, 300*time.Millisecond))
+	ctx := context.Background()
+	f.manager.Start(ctx, nil)
+
+	if _, err := f.settings.Set(ctx, wording.FillerKey, "Two moments."); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	waitFor(t, "the first failed synthesis", func() bool { return calls.Load() >= 1 })
+	// An unrelated settings write wakes the worker; it has nothing to apply to
+	// the pending filler key.
+	f.manager.Changed([]string{"tools.test.clock.enabled"})
+	waitFor(t, "the filler retry after the unrelated wake", func() bool {
+		filler := f.manager.Filler()
+		return filler != nil && filler.Text == "Two moments."
+	})
+}

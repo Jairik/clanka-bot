@@ -112,6 +112,22 @@ func TestQueuedAudioResumesWhenTheBlockedGateClears(t *testing.T) {
 	player.waitStarted(t)
 }
 
+// A Quiet-hours hold applies to queued audio exactly as it does to speech.
+func TestQueuedAudioWaitsForAHold(t *testing.T) {
+	queue := announce.New(nil, testLogger(), announce.WithPlayback())
+	defer queue.Close()
+	player := newPlaybackRecorder()
+
+	queue.Hold()
+	if !queue.EnqueuePlay(player.play) {
+		t.Fatal("EnqueuePlay rejected an audio item")
+	}
+	player.expectNoStart(t)
+
+	queue.Release()
+	player.waitStarted(t)
+}
+
 func TestTurnStartedCancelsAPlayingPreview(t *testing.T) {
 	queue := announce.New(newRecordingSpeaker(), testLogger())
 	defer queue.Close()

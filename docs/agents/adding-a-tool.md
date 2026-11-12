@@ -108,6 +108,28 @@ it is meant to stop. `tool.IntentDeclarer` is the static module declaration; the
 conformance suite checks every intent is in the fixed vocabulary. A module that
 never takes Focus omits both.
 
+### If the Tool needs the previous reply
+
+`tool.Deps.LastReply` is the in-memory Last reply with its provenance: the
+reply text, the producing Tool, the routing path and whether the result was
+Local-only. `pipeline.WithLastReply` fills it after every completed turn; a
+blank or cancelled turn leaves the previous record alone. A follow-up Tool such
+as `assistant.repeat` reads it with `Last()`. If a Tool can send the reply off
+the Pi (a Notification), refuse a record whose `LocalOnly` is true and never
+echo its text in the error. If the Tool itself would turn a Local-only result
+into model-visible output, declare the follow-up Tool `LocalOnlyYes`; that is
+the explicit safe choice `assistant.repeat` and `assistant.help` make.
+
+### If the Tool reports system health
+
+`tool.Deps.Status` returns the one bounded `tool.StatusReport` built by
+`internal/status`: Compose service checks, the location check and every Tool
+module's optional `Health`. It is the same snapshot the Dashboard Health page
+renders, so the two can never disagree. Call it per request, keep the spoken
+answer to the check names and states, and do not put free-text details in a
+model-visible `Out`; `system.status` is the reference implementation. A nil
+seam must fail clearly rather than claim everything is fine.
+
 ### If the Tool recovers persisted state
 
 A module that starts a scheduler or recovers rows from SQLite implements the

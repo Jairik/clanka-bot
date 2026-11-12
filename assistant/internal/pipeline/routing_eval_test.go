@@ -19,6 +19,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/agent"
 	"github.com/Jairik/clanka-bot/assistant/internal/embed"
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
+	"github.com/Jairik/clanka-bot/assistant/internal/lastreply"
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	quietcore "github.com/Jairik/clanka-bot/assistant/internal/quiet"
@@ -26,10 +27,12 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/tools/alarm"
+	"github.com/Jairik/clanka-bot/assistant/tools/assistant"
 	"github.com/Jairik/clanka-bot/assistant/tools/audiocontrol"
 	"github.com/Jairik/clanka-bot/assistant/tools/clock"
 	quiettools "github.com/Jairik/clanka-bot/assistant/tools/quiet"
 	"github.com/Jairik/clanka-bot/assistant/tools/reminder"
+	"github.com/Jairik/clanka-bot/assistant/tools/system"
 	"github.com/Jairik/clanka-bot/assistant/tools/timer"
 	"github.com/Jairik/clanka-bot/assistant/tools/voice"
 	"github.com/Jairik/clanka-bot/assistant/tools/weather"
@@ -61,6 +64,9 @@ var routingEvalTools = []string{
 	reminder.SetName,
 	reminder.ListName,
 	reminder.CancelName,
+	assistant.RepeatName,
+	assistant.HelpName,
+	system.Name,
 }
 
 const (
@@ -328,6 +334,20 @@ func evalRegistry(t *testing.T) (*tool.Registry, *timer.Manager, *alarm.Manager,
 	reminderModule := reminder.NewModule()
 	if err := reminderModule.Register(reg, tool.Deps{Clock: func() time.Time { return fixed }}); err != nil {
 		t.Fatalf("register reminder: %v", err)
+	}
+	// The self-describing Tools are real; the repeat store is empty and the
+	// status seam is deterministic so the corpus never opens a socket.
+	if err := assistant.NewModule().Register(reg, tool.Deps{LastReply: lastreply.New()}); err != nil {
+		t.Fatalf("register assistant: %v", err)
+	}
+	if err := system.NewModule().Register(reg, tool.Deps{Status: func(context.Context) tool.StatusReport {
+		return tool.StatusReport{
+			Services: []tool.StatusCheck{{Name: "embed", State: tool.StatusOK}},
+			Location: tool.StatusCheck{Name: "location", State: tool.StatusOK},
+			Modules:  []tool.StatusCheck{{Name: "weather", State: tool.StatusOK}},
+		}
+	}}); err != nil {
+		t.Fatalf("register system: %v", err)
 	}
 	return reg, manager, alarmManager, reminderModule.Manager()
 }

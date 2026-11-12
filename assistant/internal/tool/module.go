@@ -8,6 +8,7 @@ import (
 
 	"github.com/Jairik/clanka-bot/assistant/internal/announce"
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
+	"github.com/Jairik/clanka-bot/assistant/internal/lastreply"
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
 	"github.com/Jairik/clanka-bot/assistant/internal/namematch"
 	"github.com/Jairik/clanka-bot/assistant/internal/quiet"
@@ -77,6 +78,64 @@ type Deps struct {
 	// the Dashboard. The voice Tools read and write it; nil registration is
 	// allowed so the conformance suite can check metadata without a database.
 	Voices *voicelib.Service
+	// LastReply holds the previous completed Assistant reply and its
+	// provenance. assistant.repeat speaks it again and notify.phone (#62)
+	// resolves "that" from it; a Local-only reply must be refused before it
+	// leaves the Pi. Nil means there is no reply to refer to.
+	LastReply *lastreply.Store
+	// Status runs the shared service/module health checks. It is a function
+	// because the Tool is registered before the live module list has finished
+	// registering; a Tool reads it per call. Nil means status is unavailable.
+	Status func(context.Context) StatusReport
+}
+
+// StatusState is one health-check outcome. The string values are stable for
+// logs and the Dashboard's CSS classes.
+type StatusState string
+
+const (
+	StatusOK            StatusState = "ok"
+	StatusError         StatusState = "error"
+	StatusNotConfigured StatusState = "not-configured"
+	StatusTimedOut      StatusState = "timed-out"
+	StatusNoCheck       StatusState = "no-check"
+)
+
+// StatusCheck is one service, location or Tool module health result.
+type StatusCheck struct {
+	Name   string
+	State  StatusState
+	Detail string
+}
+
+// StatusReport is one bounded snapshot of the shared health boundaries.
+type StatusReport struct {
+	CheckedAt time.Time
+	Timeout   time.Duration
+	Services  []StatusCheck
+	Location  StatusCheck
+	Modules   []StatusCheck
+}
+
+// OK reports whether at least one check ran and every check that can fail is
+// healthy. A not-configured service and a module without a check are neutral,
+// not failures, but an empty snapshot is not proof of health either.
+func (r StatusReport) OK() bool {
+	checks := make([]StatusCheck, 0, len(r.Services)+len(r.Modules)+1)
+	checks = append(checks, r.Services...)
+	checks = append(checks, r.Modules...)
+	checks = append(checks, r.Location)
+	ran := 0
+	for _, check := range checks {
+		switch check.State {
+		case StatusOK, StatusError, StatusTimedOut:
+			ran++
+		}
+		if check.State == StatusError || check.State == StatusTimedOut {
+			return false
+		}
+	}
+	return ran > 0
 }
 
 // SecretResolver is the shared seam a module uses to read a declared secret.

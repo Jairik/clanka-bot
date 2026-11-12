@@ -86,7 +86,7 @@ func TestVolumeSetAcceptsZeroPercent(t *testing.T) {
 	if controls.setCalls != 1 || controls.volume != 0 {
 		t.Fatalf("SetVolume calls = %d volume = %d, want one call at 0", controls.setCalls, controls.volume)
 	}
-	if want := "Volume set to 0 percent."; spoken != want {
+	if want := "Muted."; spoken != want {
 		t.Fatalf("Speak = %q, want %q", spoken, want)
 	}
 
@@ -98,8 +98,8 @@ func TestVolumeSetAcceptsZeroPercent(t *testing.T) {
 	if controls.setCalls != 2 || controls.volume != 0 || controls.adjCalls != 0 {
 		t.Fatalf("calls = %d set / %d adjust, want a second absolute set at 0", controls.setCalls, controls.adjCalls)
 	}
-	if spoken, _ := reg.Speak(audiocontrol.VolumeName, result); spoken != "Volume set to 0 percent." {
-		t.Fatalf("Speak = %q, want %q", spoken, "Volume set to 0 percent.")
+	if spoken, _ := reg.Speak(audiocontrol.VolumeName, result); spoken != "Muted." {
+		t.Fatalf("Speak = %q, want %q", spoken, "Muted.")
 	}
 }
 
@@ -129,6 +129,44 @@ func TestVolumeSetExtractsLouderAsAStep(t *testing.T) {
 	}
 	if want := "Volume up."; spoken != want {
 		t.Fatalf("Speak = %q, want %q", spoken, want)
+	}
+}
+
+func TestVolumeSetExtractsQuieterAsANegativeStep(t *testing.T) {
+	controls := &fakeControls{}
+	reg := newRegistry(t, controls)
+
+	spoken := runTool(t, reg, audiocontrol.VolumeName, "quieter")
+	if controls.adjCalls != 1 || controls.delta != -10 {
+		t.Fatalf("AdjustVolume calls = %d delta = %d, want one call at -10", controls.adjCalls, controls.delta)
+	}
+	if want := "Volume down."; spoken != want {
+		t.Fatalf("Speak = %q, want %q", spoken, want)
+	}
+}
+
+func TestVolumeSetMutesThroughTheAudioBackend(t *testing.T) {
+	controls := &fakeControls{}
+	reg := newRegistry(t, controls)
+
+	spoken := runTool(t, reg, audiocontrol.VolumeName, "mute")
+	if controls.setCalls != 1 || controls.volume != 0 || controls.adjCalls != 0 {
+		t.Fatalf("set calls = %d volume = %d adjust = %d, want one absolute set at 0",
+			controls.setCalls, controls.volume, controls.adjCalls)
+	}
+	if want := "Muted."; spoken != want {
+		t.Fatalf("Speak = %q, want %q", spoken, want)
+	}
+}
+
+func TestVolumeSetExtractsUnmuteAsAStepNotAMute(t *testing.T) {
+	controls := &fakeControls{}
+	reg := newRegistry(t, controls)
+
+	runTool(t, reg, audiocontrol.VolumeName, "unmute")
+	if controls.adjCalls != 1 || controls.delta != 10 || controls.setCalls != 0 {
+		t.Fatalf("set calls = %d adjust = %d delta = %d, want one +10 step",
+			controls.setCalls, controls.adjCalls, controls.delta)
 	}
 }
 

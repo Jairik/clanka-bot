@@ -24,6 +24,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/dashboard"
 	"github.com/Jairik/clanka-bot/assistant/internal/embed"
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
+	"github.com/Jairik/clanka-bot/assistant/internal/lastreply"
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
 	"github.com/Jairik/clanka-bot/assistant/internal/namematch"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
@@ -37,6 +38,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/settingsapi"
 	"github.com/Jairik/clanka-bot/assistant/internal/sound"
 	"github.com/Jairik/clanka-bot/assistant/internal/speech"
+	"github.com/Jairik/clanka-bot/assistant/internal/status"
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/internal/toolpolicy"
@@ -224,6 +226,20 @@ func run() error {
 	go locSvc.Watch(ctx)
 	registry := tool.NewRegistry(cfg.Tools.DefaultTimeout.Duration())
 
+	// The previous completed reply stays in memory with its provenance, so
+	// assistant.repeat can say it again and #62's notify.phone can send it
+	// without ever persisting private text.
+	lastReplyStore := lastreply.New()
+	// One bounded health snapshot feeds both the Dashboard Health page and the
+	// system.status Tool, so the two can never use different service lists or
+	// check semantics.
+	systemStatus := status.New(status.Options{
+		Timeout:  cfg.Dashboard.HealthTimeout.Duration(),
+		Services: dashboard.ComposeServiceChecks(cfg),
+		Modules:  toolSet,
+		Location: locSvc,
+	})
+
 	// One sink serves reply playback, the wake chime, timer alerts and the
 	// audio Tools, so audio.stop can cancel whatever the assistant is playing.
 	sink := audio.NewPulseSink(cfg.Playback.Binary, cfg.Playback.Sink)
@@ -345,9 +361,11 @@ func run() error {
 		Names:         names,
 		// The live settings service is created below; a module reads it per
 		// action through this late-bound closure and never snapshots it.
-		Settings: func() *settings.Service { return settingsSvc },
-		Quiet:    quietSvc,
-		Voices:   voiceSvc,
+		Settings:  func() *settings.Service { return settingsSvc },
+		Quiet:     quietSvc,
+		Voices:    voiceSvc,
+		LastReply: lastReplyStore,
+		Status:    systemStatus.Status,
 	}
 	if speechSpeaker != nil {
 		deps.Speaker = speechSpeaker
@@ -623,6 +641,9 @@ func run() error {
 		// Shared Control phrases reach whatever holds Focus; with nothing in
 		// Focus they fall through to the semantic Fast path.
 		pipeline.WithFocus(focusRegistry),
+		// Keep the previous completed reply and its provenance for
+		// assistant.repeat and #62's follow-up Tools.
+		pipeline.WithLastReply(lastReplyStore),
 	}
 	// Compute Tool example vectors from the effective Examples (a stored
 	// override may already exist). A dead embed service only disables semantic
@@ -762,6 +783,7 @@ func run() error {
 			Services:      dashboard.ComposeServiceChecks(cfg),
 			Modules:       toolSet,
 			Location:      locSvc,
+			Status:        systemStatus,
 			Settings:      settingsSvc,
 			ToolPolicy:    toolPolicy,
 			Secrets:       secretsSvc,

@@ -13,6 +13,7 @@ import (
 
 	"github.com/Jairik/clanka-bot/assistant/internal/agent"
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
+	"github.com/Jairik/clanka-bot/assistant/internal/lastreply"
 	"github.com/Jairik/clanka-bot/assistant/internal/latency"
 	"github.com/Jairik/clanka-bot/assistant/internal/phrase"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
@@ -76,6 +77,10 @@ type Reply struct {
 	Path      tool.Path
 	RequestID string
 	Pending   *agent.PendingConfirm
+	// LocalOnly reports that the reply text came from a Local-only Tool. A
+	// follow-up that would send the reply off the Pi (notify.phone) must
+	// refuse it, and the last-reply store keeps the flag as provenance.
+	LocalOnly bool
 	// Unavailable marks an Agent-path failure whose Text is the configured
 	// Unavailable message. The reply session plays the error Cue before it.
 	Unavailable bool
@@ -142,6 +147,14 @@ func WithFocus(registry *focus.Registry) Option {
 	return func(p *Pipeline) { p.focus = registry }
 }
 
+// WithLastReply records every completed final reply with its provenance, so a
+// follow-up Tool such as assistant.repeat or notify.phone can resolve "that"
+// without re-routing the previous turn. The store is in-memory; nil disables
+// the seam. A cancelled or blank turn does not replace the previous record.
+func WithLastReply(store *lastreply.Store) Option {
+	return func(p *Pipeline) { p.lastReply = store }
+}
+
 // DropPending discards a waiting Confirmation. Barge-in (#25) calls it when
 // the wake word interrupts a reply so a stale yes cannot run later.
 func (p *Pipeline) DropPending() (tool.PendingConfirmation, bool) {
@@ -166,6 +179,7 @@ type Pipeline struct {
 
 	confirmation ConfirmationResolver
 	focus        *focus.Registry
+	lastReply    *lastreply.Store
 }
 
 // New builds a pipeline and rejects a Control phrase table that points at
@@ -264,6 +278,11 @@ func (p *Pipeline) HandleEvents(ctx context.Context, req tool.Request, transcrip
 			if reply.Path == "" {
 				reply.Path = tool.PathConfirmation
 			}
+			// Preserve provenance: a confirmed Local-only Tool's result must
+			// not be forwarded off the Pi by a later follow-up.
+			if res.Call != nil && res.Call.LocalOnly {
+				reply.LocalOnly = true
+			}
 			if res.Call != nil {
 				p.recordTurn(transcript, reply.Text, []agent.ToolCall{*res.Call})
 			}
@@ -354,7 +373,17 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 		record.reason = ""
 		reply.Path = tool.PathControlPhrase
 		reply.Tool = name
-		reply.Text, record.failure, reply.Pending = p.callTool(ctx, req, transcript, name, tool.PathControlPhrase, nil)
+		// A phrase such as "quieter" names the Tool exactly but still needs
+		// its direction extracted; without Extract the call has no arguments,
+		// which keeps "louder" as the one-step default it always was.
+		var args json.RawMessage
+		if info, found := p.registry.Info(name); found && info.HasExtract {
+			if extracted, extractedOK := p.registry.Extract(name, transcript); extractedOK {
+				args = extracted
+			}
+		}
+		reply.Text, record.failure, reply.Pending = p.callTool(ctx, req, transcript, name, tool.PathControlPhrase, args)
+		reply.LocalOnly = p.localOnlyTool(name)
 		return reply
 	}
 
@@ -372,6 +401,7 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 			reply.Path = tool.PathFast
 			reply.Tool = match.Tool
 			reply.Text, record.failure, reply.Pending = p.callTool(ctx, req, transcript, match.Tool, tool.PathFast, match.Args)
+			reply.LocalOnly = p.localOnlyTool(match.Tool)
 			return reply
 		}
 	}
@@ -479,11 +509,30 @@ func (p *Pipeline) recordTurn(transcript, spoken string, calls []agent.ToolCall)
 	p.history.Add(agent.Turn{Utterance: transcript, Reply: spoken, Calls: calls})
 }
 
+// localOnlyTool reports whether name is a registered Local-only Tool. Only the
+// Fast/Control/Confirmation paths can execute one; the Agent path never sees
+// them, so an Agent answer is never marked Local-only.
+func (p *Pipeline) localOnlyTool(name string) bool {
+	info, ok := p.registry.Info(name)
+	return ok && info.LocalOnly
+}
+
 // finish writes the single structured request log line. A request timeline
 // owns that line when one is attached, so the stages the spoken session adds
 // after playback are logged together; without one, as in a text-only caller,
 // the pipeline logs the routing-only line itself.
 func (p *Pipeline) finish(ctx context.Context, started time.Time, req tool.Request, transcript string, reply Reply, record routeLog) {
+	// Keep the last completed reply for follow-ups. A cancelled turn (Barge-in
+	// or shutdown) and a blank answer must not replace the last thing the user
+	// actually heard; an error or Unavailable reply was spoken, so it counts.
+	if p.lastReply != nil && ctx.Err() == nil && strings.TrimSpace(reply.Text) != "" {
+		p.lastReply.Record(lastreply.Reply{
+			Text:      reply.Text,
+			Tool:      reply.Tool,
+			Path:      string(reply.Path),
+			LocalOnly: reply.LocalOnly,
+		})
+	}
 	if latency.FromContext(ctx) != nil {
 		latency.SetRoute(ctx, string(reply.Path), reply.Tool, transcript)
 		latency.SetAttr(ctx, "top_tools", record.top)

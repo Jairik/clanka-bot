@@ -49,7 +49,8 @@ func (keywordEmbedder) Embed(_ context.Context, texts []string) ([][]float32, er
 			v[0] = 1
 		case strings.Contains(lower, "left") || strings.Contains(lower, "remaining") || strings.Contains(lower, "until") || strings.Contains(lower, "longer") || strings.Contains(lower, "finish"):
 			v[1] = 1
-		case strings.Contains(lower, "volume") || strings.Contains(lower, "louder") || strings.Contains(lower, "turn it"):
+		case strings.Contains(lower, "volume") || strings.Contains(lower, "louder") ||
+			strings.Contains(lower, "quieter") || strings.Contains(lower, "mute") || strings.Contains(lower, "turn it"):
 			v[2] = 1
 		case strings.Contains(lower, "stop") || strings.Contains(lower, "quiet") || strings.Contains(lower, "pause"):
 			v[3] = 1
@@ -76,10 +77,12 @@ func newToolPipeline(t *testing.T, controls audiocontrol.Controls) (*pipeline.Pi
 	}
 
 	phrases := map[string]string{
-		"stop":   audiocontrol.StopName,
-		"pause":  audiocontrol.StopName,
-		"cancel": timer.CancelName,
-		"louder": audiocontrol.VolumeName,
+		"stop":    audiocontrol.StopName,
+		"pause":   audiocontrol.StopName,
+		"cancel":  timer.CancelName,
+		"louder":  audiocontrol.VolumeName,
+		"quieter": audiocontrol.VolumeName,
+		"mute":    audiocontrol.VolumeName,
 	}
 	router := pipeline.NewSemanticRouter(reg, keywordEmbedder{}, semanticConfig())
 	if err := router.Build(context.Background()); err != nil {
@@ -121,6 +124,16 @@ func TestControlPhrasesReachTheAudioAndTimerTools(t *testing.T) {
 	reply := p.Handle(context.Background(), request(), "louder")
 	if reply.Path != tool.PathControlPhrase || controls.delta != audiocontrol.StepPercent {
 		t.Fatalf("louder reply = %+v delta = %d, want +%d", reply, controls.delta, audiocontrol.StepPercent)
+	}
+
+	reply = p.Handle(context.Background(), request(), "quieter")
+	if reply.Path != tool.PathControlPhrase || controls.delta != -audiocontrol.StepPercent {
+		t.Fatalf("quieter reply = %+v delta = %d, want -%d", reply, controls.delta, audiocontrol.StepPercent)
+	}
+
+	reply = p.Handle(context.Background(), request(), "mute")
+	if reply.Path != tool.PathControlPhrase || controls.volume != 0 {
+		t.Fatalf("mute reply = %+v volume = %d, want 0 through the sink backend", reply, controls.volume)
 	}
 
 	reply = p.Handle(context.Background(), request(), "stop")

@@ -1,0 +1,6 @@
+# The build context is this directory; the image only needs the model and the
+# health check. Training data, venvs and work directories never go in.
+training
+tests
+*.pyc
+__pycache__

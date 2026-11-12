@@ -36,7 +36,7 @@ func TestLiveWeather(t *testing.T) {
 	if err != nil {
 		t.Logf("live weather failed after %v (bounded): %v", elapsed, err)
 		if elapsed > 4*time.Second {
-			t.Fatalf("live failure took %v, want the 2s call / 3s budget bound", elapsed)
+			t.Fatalf("live failure took %v, want the 1.5s call / 2s budget bound", elapsed)
 		}
 		return
 	}

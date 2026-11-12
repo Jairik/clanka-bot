@@ -66,6 +66,47 @@ type routingConfig struct {
 	} `yaml:"semantic"`
 }
 
+// routingBaseline is the checked-in Map 1 accuracy the evaluation must not drop
+// below. Counts, not rounded floats, so the gate is exact.
+type routingBaseline struct {
+	TP                int `yaml:"tp"`
+	FP                int `yaml:"fp"`
+	Positives         int `yaml:"positives"`
+	NegativeMisroutes int `yaml:"negative_misroutes"`
+	CompoundMisroutes int `yaml:"compound_misroutes"`
+}
+
+func (b routingBaseline) precision() float64 {
+	if b.TP+b.FP == 0 {
+		return 0
+	}
+	return float64(b.TP) / float64(b.TP+b.FP)
+}
+
+func (b routingBaseline) recall() float64 {
+	if b.Positives == 0 {
+		return 0
+	}
+	return float64(b.TP) / float64(b.Positives)
+}
+
+func baselinePath() string {
+	return filepath.Join("testdata", "routing_baseline.yaml")
+}
+
+func loadRoutingBaseline(t *testing.T) routingBaseline {
+	t.Helper()
+	raw, err := os.ReadFile(baselinePath())
+	if err != nil {
+		t.Fatalf("read baseline: %v", err)
+	}
+	var baseline routingBaseline
+	if err := yaml.Unmarshal(raw, &baseline); err != nil {
+		t.Fatalf("parse baseline: %v", err)
+	}
+	return baseline
+}
+
 func fixturePath() string {
 	return filepath.Join("testdata", "routing_eval.yaml")
 }
@@ -139,6 +180,29 @@ func TestRoutingEvalFixtureShape(t *testing.T) {
 		if strings.TrimSpace(utterance) == "" {
 			t.Errorf("compound %d is empty", i)
 		}
+	}
+}
+
+// TestRoutingEvalBaselineShape keeps the recorded Map 1 baseline honest
+// without the embed service: it must describe a measurable, non-negative
+// result.
+func TestRoutingEvalBaselineShape(t *testing.T) {
+	baseline := loadRoutingBaseline(t)
+	if baseline.Positives <= 0 {
+		t.Errorf("baseline positives = %d, want a positive count", baseline.Positives)
+	}
+	if baseline.TP < 0 || baseline.FP < 0 {
+		t.Errorf("baseline tp = %d, fp = %d; counts must not be negative", baseline.TP, baseline.FP)
+	}
+	if baseline.TP+baseline.FP == 0 {
+		t.Error("baseline has no predictions; precision would not be measurable")
+	}
+	if baseline.TP > baseline.Positives {
+		t.Errorf("baseline tp = %d, positives = %d; TP cannot exceed positives", baseline.TP, baseline.Positives)
+	}
+	if baseline.NegativeMisroutes < 0 || baseline.CompoundMisroutes < 0 {
+		t.Errorf("baseline misroutes = %d negatives, %d compounds; counts must not be negative",
+			baseline.NegativeMisroutes, baseline.CompoundMisroutes)
 	}
 }
 
@@ -254,6 +318,7 @@ func TestRoutingEvalAgainstMiniLM(t *testing.T) {
 
 	fixture := loadRoutingFixture(t)
 	cfg := loadRoutingConfig(t)
+	baseline := loadRoutingBaseline(t)
 	threshold := envFloat(t, "ROUTING_EVAL_THRESHOLD", cfg.Semantic.Threshold)
 	margin := envFloat(t, "ROUTING_EVAL_MARGIN", cfg.Semantic.Margin)
 	if threshold <= 0 || threshold > 1 {
@@ -397,6 +462,26 @@ func TestRoutingEvalAgainstMiniLM(t *testing.T) {
 	t.Logf("ROUTING_EVAL_COMPOUNDS total=%d misrouted=%d", len(fixture.Compounds), compoundMisrouted)
 	t.Logf("ROUTING_EVAL_TOTAL tp=%d control_tp=%d semantic_tp=%d fp=%d fn=%d precision=%.4f recall=%.4f",
 		total.tp, total.controlTP, total.semanticTP(), total.fp, total.fn, total.precision(), total.recall())
+	t.Logf("ROUTING_EVAL_BASELINE tp=%d fp=%d positives=%d negative_misroutes=%d compound_misroutes=%d precision=%.4f recall=%.4f",
+		baseline.TP, baseline.FP, baseline.Positives, baseline.NegativeMisroutes, baseline.CompoundMisroutes,
+		baseline.precision(), baseline.recall())
+
+	// CI gates on the recorded Map 1 baseline. New positives may raise recall,
+	// but no change may lower it or the precision/misroute counts.
+	if total.precision() < baseline.precision() {
+		t.Errorf("overall precision = %.4f (%d/%d), below the Map 1 baseline %.4f (%d/%d)",
+			total.precision(), total.tp, total.tp+total.fp, baseline.precision(), baseline.TP, baseline.TP+baseline.FP)
+	}
+	if total.recall() < baseline.recall() {
+		t.Errorf("overall recall = %.4f (%d/%d), below the Map 1 baseline %.4f (%d/%d)",
+			total.recall(), total.tp, total.positives, baseline.recall(), baseline.TP, baseline.Positives)
+	}
+	if negativeMisrouted > baseline.NegativeMisroutes {
+		t.Errorf("negatives misrouted = %d, above the Map 1 baseline %d", negativeMisrouted, baseline.NegativeMisroutes)
+	}
+	if compoundMisrouted > baseline.CompoundMisroutes {
+		t.Errorf("compounds misrouted = %d, above the Map 1 baseline %d", compoundMisrouted, baseline.CompoundMisroutes)
+	}
 }
 
 func sumPositives(counts map[string]*evalCounts) int {

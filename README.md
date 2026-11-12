@@ -86,6 +86,45 @@ are bounded (query, count, title, URL and snippet) and the HTTP client keeps
 connections alive between calls. See [`searxng/README.md`](searxng/README.md)
 for the pinned image, worker/server choice and a manual smoke test.
 
+### GitHub
+
+The Agent can answer "any PRs waiting on me", read "what are my GitHub
+notifications", and open an issue after a spoken Confirmation. All three are
+Agent-only Tools: an open-ended GitHub request has no honest semantic Fast path
+route, and an issue write is a `confirm` Tool that the Agent loop arms as a
+one-turn Confirmation. Nothing is sent until the user says a clear yes; "no", an
+unrelated request, or a Barge-in drops the pending call. The create request is
+sent exactly once, with no automatic retry, so a timeout cannot duplicate an
+issue.
+
+The credential is the write-only `GITHUB_TOKEN` secret (Dashboard `/secrets` or
+`.env`). A fine-grained PAT is the intended token: give it access to the
+repositories in `tools.github.allowed_repos` and "Issues: Read and write" for
+`issue_create`; the review-requested search needs no extra fine-grained
+permission. `github.pr_list` asks GitHub for
+`is:open is:pr review-requested:@me` — the "waiting on me" semantics, not every
+open pull request — and needs no identity request of its own.
+
+Notifications are the documented exception: GitHub's notifications endpoints
+only support a classic personal access token with the `notifications` or `repo`
+scope. Fine-grained PATs are not supported by that API, so
+`github.notifications` fails cleanly and names that contract instead of
+pretending otherwise. Use a classic token for that one Tool, or leave it unused;
+the other two work with the fine-grained token. This is a GitHub API limitation,
+not a module switch.
+
+`tools.github.default_repo` (shipped as `Jairik/clanka-bot`) is operator config;
+the Tool code hardcodes no target. `tools.github.allowed_repos` is the write
+allowlist: an issue for any other repository is refused before a request leaves
+the Pi, and an empty list refuses every write. `pr_list` accepts an optional
+repository filter and checks it against the same allowlist. Calls use the
+documented `X-GitHub-Api-Version: 2026-03-10` header, one keep-alive HTTP
+client, bounded response bodies, at most two pages of ten items, and a short
+spoken result. A missing token appears in the module health check and the
+Secrets page; the token, issue title/body, pull-request titles and notification
+titles never enter a log line. GitHub text is labelled to the model as
+untrusted facts.
+
 Agent path replies are spoken as they are generated: the first chunk is flushed
 at a clause boundary or after about twelve words, then each sentence is sent to
 TTS while the rest of the answer is still streaming. The configured

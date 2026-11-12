@@ -85,6 +85,14 @@ authenticated Dashboard's `/secrets` page discovers declarations from the same
 service, so a name added here appears automatically with Replace and Clear
 forms; no page edit is needed.
 
+If the upstream API does not support the credential type the ticket names, do
+not silently widen the declared secret or imply the capability exists. Name the
+contract in the Tool description and return a clean `tool.ToolError` that says
+what is required (for example, `github.notifications` says GitHub only accepts a
+classic token for its notifications API). Keep the module's health check to the
+credential's general validity, so one unsupported endpoint does not make the
+whole module look broken, and record the partial acceptance in the handoff.
+
 ### If the Tool sends a Notification or refers to the previous reply
 
 `tool.Deps.Notify` is the one ntfy service (`Send` and `NotifyMissed`); do not

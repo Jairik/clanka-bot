@@ -80,3 +80,41 @@ func TestNewDashboardRejectsABadHostPattern(t *testing.T) {
 		t.Fatal("New accepted a wildcard host")
 	}
 }
+
+// TestDashboardMountedAPIUsesTheSameHostGuard proves the /api/ mount cannot
+// bypass the Host check: the handler only runs after identity, Host and origin
+// all pass.
+func TestDashboardMountedAPIUsesTheSameHostGuard(t *testing.T) {
+	apiCalls := 0
+	handler := newHandler(t, dashboard.Options{
+		API: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			apiCalls++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		}),
+	})
+
+	hostile := request(http.MethodGet, "/api/settings", owner)
+	hostile.Host = "attacker.example"
+	hostile.Header.Set("Sec-Fetch-Site", "same-origin")
+	if rec := serve(handler, hostile); rec.Code != http.StatusForbidden {
+		t.Fatalf("hostile Host API read = %d, want 403", rec.Code)
+	}
+
+	crossSite := request(http.MethodPost, "/api/settings/x", owner)
+	crossSite.Header.Set("Content-Type", "application/json")
+	crossSite.Header.Set("Origin", "https://evil.example")
+	crossSite.Header.Set("Sec-Fetch-Site", "cross-site")
+	if rec := serve(handler, crossSite); rec.Code != http.StatusForbidden {
+		t.Fatalf("cross-site API write = %d, want 403", rec.Code)
+	}
+
+	ok := request(http.MethodGet, "/api/settings", owner)
+	ok.Header.Set("Sec-Fetch-Site", "same-origin")
+	if rec := serve(handler, ok); rec.Code != http.StatusOK {
+		t.Fatalf("configured-host API read = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if apiCalls != 1 {
+		t.Fatalf("API handler calls = %d, want 1", apiCalls)
+	}
+}

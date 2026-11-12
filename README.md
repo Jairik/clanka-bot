@@ -160,10 +160,11 @@ Compose keeps it on the `assistant-data` volume, so restarts and rebuilds keep
 the data; the file is created mode 0600 and migrations run at startup.
 
 Every setting resolves as **stored override → `config.yaml` → code default**;
-`DELETE` removes the override and the lower layer applies again. The first
-overridable settings are each Tool's `enabled` flag and Permission level. A
-stored Permission may only tighten (`read` → `act` → `confirm`), never loosen,
-and Local-only is code-declared and cannot be overridden.
+`DELETE` removes the override and the lower layer applies again. Overridable
+settings include each Tool's `enabled` flag and Permission level, the wording
+below and the connection-level values. A stored Permission may only tighten
+(`read` → `act` → `confirm`), never loosen, and Local-only is code-declared and
+cannot be overridden.
 
 The JSON API is mounted under `/api/` on the localhost debug listener, never on
 the public health listener. The authenticated Dashboard (#47) mounts the

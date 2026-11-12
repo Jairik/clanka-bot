@@ -98,6 +98,12 @@ var routingEvalTools = []string{
 	spotifytools.NextName,
 	spotifytools.VolumeName,
 	spotifytools.NowPlayingName,
+	spotifytools.PlayPlaylistName,
+	spotifytools.ShuffleName,
+	spotifytools.RepeatName,
+	spotifytools.PreviousName,
+	spotifytools.QueueAddName,
+	spotifytools.LikeName,
 }
 
 const (
@@ -529,7 +535,7 @@ func evalRegistry(t *testing.T) (*tool.Registry, *timer.Manager, *alarm.Manager,
 	// Spotify executes its real handlers against a scripted player, so the
 	// corpus never opens a socket or needs an account. Focus is nil here: the
 	// shared-phrase cases below build their own holders.
-	if err := spotifytools.RegisterTools(reg, spotifytools.NewService(evalSpotifyPlayer{}, nil)); err != nil {
+	if err := spotifytools.RegisterTools(reg, spotifytools.NewService(evalSpotifyPlayer{}, nil).WithLibrary(evalSpotifyPlayer{}, evalPlaylists{}, nil)); err != nil {
 		t.Fatalf("register spotify: %v", err)
 	}
 	return reg, manager, alarmManager, reminderModule.Manager()
@@ -554,6 +560,30 @@ func (evalSpotifyPlayer) NowPlaying(context.Context) (spotifycore.NowPlaying, er
 	return spotifycore.NowPlaying{Track: "Creep", Artists: "Radiohead", Playing: true}, nil
 }
 func (evalSpotifyPlayer) Cap() int { return 0 }
+
+func (evalSpotifyPlayer) PlayPlaylist(_ context.Context, req spotifycore.PlaylistPlay) (spotifycore.Played, error) {
+	return spotifycore.Played{Name: req.Name, Kind: spotifycore.KindPlaylist}, nil
+}
+func (evalSpotifyPlayer) SetShuffle(context.Context, bool) error  { return nil }
+func (evalSpotifyPlayer) SetRepeat(context.Context, string) error { return nil }
+func (evalSpotifyPlayer) Previous(context.Context) error          { return nil }
+func (evalSpotifyPlayer) QueueAdd(_ context.Context, q string) (spotifycore.Queued, error) {
+	return spotifycore.Queued{Name: q}, nil
+}
+func (evalSpotifyPlayer) LikeCurrent(context.Context) (spotifycore.Liked, error) {
+	return spotifycore.Liked{Track: "Creep", Artists: "Radiohead"}, nil
+}
+
+// evalPlaylists is a fixed library; the name matcher has no embedder here, so
+// a name outside it is a spoken "couldn't find", which still routes Fast.
+type evalPlaylists struct{}
+
+func (evalPlaylists) Loaded() bool                  { return true }
+func (evalPlaylists) Refresh(context.Context) error { return nil }
+func (evalPlaylists) Names() []string               { return []string{"Running", "Chill Vibes", "Focus"} }
+func (evalPlaylists) Lookup(name string) (spotifycore.Playlist, bool) {
+	return spotifycore.Playlist{Name: name, URI: "spotify:playlist:" + name}, true
+}
 
 type evalVerdict struct {
 	Tool   string

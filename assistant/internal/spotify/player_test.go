@@ -21,6 +21,10 @@ type fakeWebAPI struct {
 	player   string
 	liked    string
 	failWith int
+	// playlists maps the offset query value to the page body for /me/playlists.
+	playlists map[string]string
+	// playlistErr fails /me/playlists with this status when non-zero.
+	playlistErr int
 }
 
 func (f *fakeWebAPI) handler(t *testing.T) http.HandlerFunc {
@@ -36,6 +40,17 @@ func (f *fakeWebAPI) handler(t *testing.T) http.HandlerFunc {
 			return
 		}
 		switch path {
+		case "/me/playlists":
+			if f.playlistErr != 0 {
+				w.WriteHeader(f.playlistErr)
+				_, _ = w.Write([]byte(`{"error":{"status":500}}`))
+				return
+			}
+			page, ok := f.playlists[r.URL.Query().Get("offset")]
+			if !ok {
+				page = `{"items":[],"next":null}`
+			}
+			_, _ = w.Write([]byte(page))
 		case "/me/player/devices":
 			_, _ = w.Write([]byte(f.devices))
 		case "/search":

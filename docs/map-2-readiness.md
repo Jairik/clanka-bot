@@ -138,8 +138,16 @@ the review pin.
   unset-by-default `music.max_volume` are in; no live Spotify playback, real
   Pulse ducking, speaker or `music.max_volume` value (#70) exists. Ticket stays
   open for live acceptance.
-- **#73** playlists/library: not built; it builds on the #72 `Player`/`Service`
-  seams.
+- **#73** playlists/library: code and fake-tested only (httptest Web API,
+  fake embedder for the name matcher, injected ticker). The playlist cache
+  (startup + 6 h, bounded paging, failed refresh keeps the old list),
+  `spotify.play_playlist`/`shuffle`/`repeat`/`previous`/`queue_add`/`like` and
+  their routing-eval cases are in. `previous` is a plain Tool, not a Focus
+  intent. No live Spotify call, real playlist or spoken run exists; scopes were
+  already sufficient, so no reconnect is needed for a grant made with the #71
+  scope list. Recorded cost: `spotify.next` 13 to 6 TP and `assistant.repeat`
+  14 to 13 TP in the routing eval (see docs/routing-eval.md). Ticket stays open
+  for live acceptance.
 - **#76** Hermes/OpenCode: spike only; no Hermes/Tailscale install and no valid
   standalone Go key.
 - **Live browser/tailnet and final-SHA hosted CI** were not exercised in this

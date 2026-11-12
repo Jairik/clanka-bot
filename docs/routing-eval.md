@@ -9,7 +9,7 @@ misroute from the request log.
 
 - `assistant/internal/pipeline/testdata/routing_eval.yaml` — the labelled
   oracle. It has at least 20 positives for each Fast path Tool (exact counts in
-  the results table), 192 plain
+  the results table), 201 plain
   negatives, and 37 compound requests (exact counts in the results table).
 - `assistant/internal/pipeline/testdata/routing_baseline.yaml` — the recorded
   Map 1 totals the real-MiniLM evaluation must not fall below.
@@ -173,15 +173,21 @@ above the 0.95 precision floor. Run against
 | `random.flip` | 21 | 21 | 0 | 21 | 0 | 0 | 1.00 | 1.00 |
 | `random.roll` | 22 | 22 | 0 | 22 | 0 | 0 | 1.00 | 1.00 |
 | `random.pick` | 22 | 17 | 0 | 17 | 0 | 5 | 1.00 | 0.7727 |
-| `assistant.repeat` | 20 | 14 | 0 | 14 | 0 | 6 | 1.00 | 0.70 |
+| `assistant.repeat` | 20 | 13 | 0 | 13 | 0 | 7 | 1.00 | 0.65 |
 | `assistant.help` | 20 | 15 | 0 | 15 | 0 | 5 | 1.00 | 0.75 |
 | `system.status` | 20 | 10 | 0 | 10 | 0 | 10 | 1.00 | 0.50 |
 | `spotify.play` | 25 | 11 | 0 | 11 | 0 | 14 | 1.00 | 0.44 |
 | `spotify.pause` | 23 | 11 | 0 | 11 | 0 | 12 | 1.00 | 0.4783 |
-| `spotify.next` | 21 | 13 | 0 | 13 | 0 | 8 | 1.00 | 0.6190 |
+| `spotify.next` | 21 | 6 | 0 | 6 | 0 | 15 | 1.00 | 0.2857 |
 | `spotify.volume` | 21 | 4 | 0 | 4 | 0 | 17 | 1.00 | 0.1905 |
 | `spotify.now_playing` | 21 | 12 | 0 | 12 | 0 | 9 | 1.00 | 0.5714 |
-| **Total** | **915** | **608** | **30** | **578** | **0** | **307** | **1.00** | **0.6645** |
+| `spotify.play_playlist` | 22 | 5 | 0 | 5 | 0 | 17 | 1.00 | 0.2273 |
+| `spotify.shuffle` | 20 | 15 | 0 | 15 | 0 | 5 | 1.00 | 0.7500 |
+| `spotify.repeat` | 20 | 8 | 0 | 8 | 0 | 12 | 1.00 | 0.4000 |
+| `spotify.previous` | 20 | 4 | 0 | 4 | 0 | 16 | 1.00 | 0.2000 |
+| `spotify.queue_add` | 20 | 5 | 0 | 5 | 0 | 15 | 1.00 | 0.2500 |
+| `spotify.like` | 20 | 8 | 0 | 8 | 0 | 12 | 1.00 | 0.4000 |
+| **Total** | **1037** | **645** | **30** | **615** | **0** | **392** | **1.00** | **0.6220** |
 
 The five Spotify playback Tools (#72) were added to this table. Their Examples
 share "music"/"song" wording with `audio.stop`, `audio.volume_set` and each
@@ -196,6 +202,31 @@ positives; `audio.stop` no longer lists "pause" or "pause the music" as
 Examples. `audio.stop` went from 8 to 6 TP (recall 0.40 to 0.30) because its
 music-shaped wording is now Spotify's; every other pre-existing Tool, including
 `audio.volume_set` (9 TP), is unchanged.
+
+The six playlist and library Tools (#73: `spotify.play_playlist`, `shuffle`,
+`repeat`, `previous`, `queue_add`, `like`) were added to this table: 122
+positives, 12 new negatives (knowledge and neighbouring requests such as
+"recommend a playlist for studying", "add milk to the shopping list", "shuffle
+the deck of cards", "create a new playlist called road trip"), and the
+three utterances that had been parked as negatives until this ticket ("like
+this song", "go back to the previous song", "repeat this song") moved to
+positives. Overall precision stays 1.00 with no negative or compound
+misroute and every Tool clears the 0.95 floor. Overall recall over the whole
+corpus falls from 0.6645 to 0.6220 because the new Tools start with low recall
+(the 0.23 margin rejects near-duplicate Examples) and because of the costs
+below; it stays above the Map 1 baseline (96/162, 0.5926), which is untouched. Costs to
+existing Tools: `spotify.next` fell from 13 to 6 TP (recall 0.6190 to 0.2857)
+because "previous track"/"go back a song" sit within the 0.23 margin of its
+Examples, and `assistant.repeat` fell from 14 to 13 TP (0.70 to 0.65) because of
+`spotify.repeat`. Those utterances fall to the Agent path, which can call the
+same Tools. Sweeps that kept fewer `spotify.previous` Examples recovered at most
+one `spotify.next` TP while collapsing `previous` to 1 TP, and adding two more
+`next` Examples recovered one; neither was kept. `spotify.play_playlist` recall
+is low because the playlist name dominates the embedding ("play my running
+playlist" vs "play my sleep playlist"), and `spotify.queue_add` likewise
+(song titles). "my <name> playlist" is `play_playlist`; "the playlist <name>"
+still goes to `spotify.play`'s public search. "Play my Discover Weekly
+playlist" moved from a `spotify.play` Example to a `play_playlist` positive.
 
 The numbers above are from the merged tree after #66, #67 and #68: the #57
 per-Alarm overrides, #59 quick-wins, #60 utility Tools, #62 Notifications, #65

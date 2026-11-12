@@ -137,6 +137,8 @@ according to `ring.timer.speak_label`, and keeps ringing until `stop`/`snooze`
 or `ring.timer.max_ring` (default 5 min). `snooze` on a Timer acts as stop.
 Reaching max_ring records the alert as missed in `alert_events`; the
 `Manager.SetMissedHook` seam is where #62 will send the ntfy Notification.
+Inside Quiet hours a Timer Ring and its label use `quiet.volume`; an Alarm is
+exempt and keeps its own Ring volume.
 
 A Ring waits for the current reply sentence to finish (not the whole reply),
 then takes the one speaker; the reply's next sentence waits for the Ring and
@@ -198,6 +200,122 @@ curl -s -X POST localhost:8081/debug/announce \
 Quiet hours will hold and release the same queue; nothing is spoken while a
 hold is on.
 
+#### Quiet hours
+
+Quiet hours is one daily window in the effective `timezone` (an end earlier
+than the start crosses midnight), a timed do-not-disturb period, and an
+`I'm awake` bypass. All three write the same live settings the Dashboard edits:
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `quiet.enabled` | `false` | Turn the daily window on or off |
+| `quiet.start` | `22:30` | Local window start, `HH:MM` |
+| `quiet.end` | `07:00` | Local window end, `HH:MM` |
+| `quiet.volume` | `35` | Absolute reply/Timer/Reminder volume percent |
+| `quiet.dnd_until` | empty | Timed do-not-disturb end, RFC3339 |
+| `quiet.awake_until` | empty | End of a bypassed window, RFC3339 |
+
+Inside it, text Announcements stay queued and are released as **one** summary
+line when the window ends; a model is not called to write it. Dashboard audio
+previews keep their own queue slots and are played, never narrated as text. The
+summary and previews still wait for the current reply, a pending Confirmation
+and a ringing alert, and Barge-in cancels them like any other unprompted sound.
+Notifications are muted through the `quiet.Service.AllowDelivery` hook (#62
+wires ntfy later). Replies, Fillers, the Unavailable cue, Timer Rings and
+Reminders use `quiet.volume` as an **absolute** software gain; the host media
+volume is never changed, so there is nothing to restore. Alarms Ring at their
+normal volume, including a Ring recovered during startup.
+
+Say any of these; each is an `act` Local-only Tool that confirms what changed:
+
+```text
+set quiet hours from 10:30 to 7
+turn off quiet hours
+do not disturb for two hours
+I'm awake
+```
+
+`quiet.set` treats the reversed "from 10:30 to 7" as 10:30 pm to 7 am. `I'm
+awake` clears do-not-disturb and skips only the rest of the current window; the
+daily schedule stays on and holds again the next night. Outside a window it
+just clears do-not-disturb. `turn off quiet hours` disables the schedule and
+clears both overrides. The Dashboard Settings page groups the same six values
+under **Quiet hours**; a saved change applies within a second without a
+request, because one small controller reevaluates at the next boundary or every
+second and never replaces the wording manager's settings observer.
+
+#### Voice library and rate
+
+Voice is a persistent setting, not a per-request choice. The library is the
+Pocket TTS voices warmed in the `tts` image (`TTS_VOICES`, default `alba`) plus
+pre-exported `.safetensors` voice states copied into `voices/` on the separate
+`assistant-voices` volume. Compose mounts that volume read-only into `tts` at
+`/voices`, so `tts` sees only voice states and never the database or secrets;
+files are never baked into an image or committed. `voice.dir` may name another
+volume path, and `voice.tts_dir` is the same folder's path inside `tts`.
+
+Only `.safetensors` is accepted: `.pt`, `.pth` and other pickle-backed torch
+files are refused and never opened. A file is at most 32 MB and is checked in
+two stages, whether it arrives through the Dashboard or a manual copy:
+
+1. A pure-Go header check: six `self_attn/cache` `F32 [2,1,N,16,64]` tensors
+   with `1 <= N <= 400`, six `F32`-paired `I64 [1]` `offset` tensors, and the
+   optional six `pad` tensors (12 or 18 entries), with contiguous in-file data
+   offsets. This is a header parse only; a pickle payload never runs.
+2. A real TTS model smoke test (`voice-validate`) that loads the state and
+   generates audio. The model revision it passed against is recorded.
+
+The Dashboard's **Voices** page at `/voices` uploads a state without shell
+access. The upload is copied to a hidden staging file on the voices volume, the
+header is checked before any model call, and TTS validates that staging file
+with `cache=false` so the temporary path is never kept in the model-process
+cache. Only then is the file renamed into place; the final path's cache entry is
+evicted first, the library rescans, and the recorded revision makes the voice
+selectable. A failure—bad extension, oversize body, malformed header, model
+rejection or a rescan error—leaves no file and no index row, and restores the
+previous export when replacing. Replacement needs the explicit **Replace** tick
+and is atomic; an existing file is never overwritten silently.
+
+The page lists every built-in and custom entry with its status (`Built-in`,
+`Ready`, `Stale`, `Unvalidated`), validation revision and dates. A stale entry
+says to re-export it on the desktop and disables selection and preview until it
+passes again. Each custom entry also has an optional source/consent note: it is
+stored and shown escaped, but recorded only, never enforced. The browser
+preview is an authenticated GET that synthesizes one fixed short phrase at the
+current rate and returns WAV; it never opens the Pi speaker and never changes
+`voice.name`. Selection and the rate form write the same live settings the
+voice Tools use, so the cached Agent Filler is re-synthesized in the background.
+
+`voice.set`, `voice.list`, `voice.current` and `voice.rate` are Local-only
+Tools; `voice.set` resolves the spoken name through the shared name matcher.
+`voice.name` and `voice.rate` are ordinary live settings, so the Dashboard and
+voice write the same stored override:
+
+```sh
+curl -s -X POST localhost:8081/debug/transcript \
+  -H 'Content-Type: application/json' -d '{"text":"use the jarvis voice"}'
+curl -s -X POST localhost:8081/debug/transcript \
+  -H 'Content-Type: application/json' -d '{"text":"what voices do you have"}'
+curl -s -X POST localhost:8081/debug/transcript \
+  -H 'Content-Type: application/json' -d '{"text":"speak faster"}'
+curl -s -X PUT localhost:8081/api/settings/voice.rate \
+  -H 'Content-Type: application/json' -d '{"value":1.2}'
+```
+
+The active voice warm-loads at startup; every other state loads on first use
+and stays cached in the `tts` process. If `tts` starts on a different model
+revision, unchanged custom voices are marked stale. If the active voice is one
+of them, startup falls back to the default built-in and queues exactly one
+Announcement; the stale entry stays listed so it can be re-exported on the
+desktop.
+
+`voice.rate` is a multiplier (`0.5`–`2.0`, default `1.0`). Pocket TTS 4.0.1
+has no native speed control, so the `tts` wrapper resamples its output: faster
+speech also raises pitch, and slower speech lowers it. There is no
+time-stretch; the bounded range keeps the artefact small. Selecting a different
+voice or rate re-synthesizes the cached Agent Filler in the background, so the
+spoken cue never keeps the old voice.
+
 Routing precision is measured against a labelled corpus with the real MiniLM
 model; the floor is 0.95 for every Tool, and ambiguous phrasing goes to the
 Agent path. See [docs/routing-eval.md](docs/routing-eval.md) to run the
@@ -243,6 +361,15 @@ The **Sounds** page at `/sounds` is the upload/library/role/preview surface
 described under Sound library and Cue roles below. Its Ring section renders the
 per-kind Timer and Alarm definitions from the settings service, so a new key
 appears there without a page change.
+
+The **Secrets** page at `/secrets` lists every secret a Tool module or the
+Agent provider declares, with whether it is set, its last four characters
+(hidden for short values), the update time and the active source (`.env` or
+stored). Each row offers Replace and, for a stored value, Clear. The forms are
+write-only: no value is prefilled, echoed after a rejected submission or
+returned anywhere. Clearing a stored value exposes the `.env` bootstrap
+immediately and the page says which source is active. A new module declaration
+appears without a page change.
 
 ```sh
 # List every effective value and the layer it came from.
@@ -337,7 +464,9 @@ same name, and only metadata comes back: whether it is set, the last four
 characters (only for values of at least 12 characters), the update date and the
 active source (`store` or `env`). Values never appear in the settings API,
 logs or error responses. The database file is mode 0600, but it is unencrypted:
-back it up accordingly.
+back it up accordingly. The authenticated Dashboard's `/secrets` page renders
+the same metadata for every declared name with replace and clear forms; it
+never reveals or prefills a value.
 
 ```sh
 # Store or rotate the OpenRouter key. The value is never returned.
@@ -428,8 +557,9 @@ are in [`docs/latency.md`](docs/latency.md). The latest dev-box numbers are in
 ## Tests
 
 ```sh
-make test   # Go tests, Compose checker and shell script tests
-python -m pytest tts/tests stt/tests   # needs `pip install wyoming pytest numpy`
+make test       # Go tests, Compose checker and shell script tests
+make tts-test   # Wyoming/pcm Python tests; needs `pip install wyoming pytest numpy`
+python -m pytest tts/tests stt/tests
 ```
 
 ## Deploying

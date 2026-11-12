@@ -116,6 +116,18 @@
     {{end}}
   </section>
 
+  {{if .Quiet}}
+  <section class="panel" aria-labelledby="quiet-heading">
+    <div class="panel-head">
+      <div>
+        <h2 id="quiet-heading">Quiet hours</h2>
+        <p class="muted">One daily window in the effective timezone. Inside it the Assistant holds Announcements as one summary, mutes Notifications, and speaks replies, Timers and Reminders at the quiet volume. Alarms still Ring normally. A voice request writes the same stored override as these forms, and a saved change applies within a second.</p>
+      </div>
+    </div>
+    {{range .Quiet}}{{template "setting_form" .}}{{end}}
+  </section>
+  {{end}}
+
   {{if .Live}}
   <section class="panel" aria-labelledby="live-heading">
     <div class="panel-head">

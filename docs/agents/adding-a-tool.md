@@ -79,7 +79,10 @@ func (*Module) RequiredSecrets() []string { return []string{"EXAMPLE_API_KEY"} }
 Read it through the shared `tool.Deps.Secrets` resolver (`Get(name)`), which
 returns the stored value first and the `.env` bootstrap second. Never put the
 value in `config.yaml`, a setting, a log line or an error; the secrets API lists
-the declared name with only `set`, `last4`, `updated_at` and `source`.
+the declared name with only `set`, `last4`, `updated_at` and `source`. The
+authenticated Dashboard's `/secrets` page discovers declarations from the same
+service, so a name added here appears automatically with Replace and Clear
+forms; no page edit is needed.
 
 ### If the Tool can hold Focus
 

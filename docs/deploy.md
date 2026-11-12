@@ -200,20 +200,36 @@ The second command is only a local smoke test; from another device use the
 HTTPS `*.ts.net` URL, which carries the real identity.
 
 The Dashboard also mounts the settings/Tool-override API under `/api/`
-(`/api/settings`, `/api/tools`) behind the same identity check. Mutating API
-requests must be same-origin; the debug listener keeps its own localhost-only
-mount of the same handler. The **Tools and settings** page at `/settings`
-edits the same service: Tool enabled/Permission, the wording lists, and any
-other setting the service exposes (including a future sound setting, which
-appears without a page change). Wording settings
+(`/api/settings`, `/api/tools`, `/api/secrets`) behind the same identity check.
+Mutating API requests must be same-origin; the debug listener keeps its own
+localhost-only mount of the same handler. The **Tools and settings** page at
+`/settings` edits the same service: Tool enabled/Permission, the wording lists,
+and any other setting the service exposes (including the sound and voice
+settings, which appear without a page change). Wording settings
 (`tools.<name>.control_phrases`, `tools.<name>.examples`,
-`agent.request_prefixes`, `agent.filler`, `agent.unavailable_message`) and the
-model name (`agent.model`) are marked `live` and apply to the next request or
-in the background. Connection-level settings (`http.addr`, `debug.addr`,
+`agent.request_prefixes`, `agent.filler`, `agent.unavailable_message`), the
+model name (`agent.model`), `voice.name` and `voice.rate` are marked `live` and
+apply to the next request or in the background (a voice/rate change also
+re-synthesizes the cached Agent Filler). Connection-level settings (`http.addr`, `debug.addr`,
 `dashboard.addr`, `tts.addr`, `wakeword.addr`, `stt.addr`, `embed.url`,
 `capture.source`, `playback.sink`) are marked `restart_required`: the override
 is stored, but only the next process start reads it, and the page says so. See
 the README for the curl examples.
+
+The **Voices** page at `/voices` lists built-in and custom Pocket TTS states,
+uploads a `.safetensors` state (at most 32 MB; `.pt`/`.pth` are refused),
+previews one in the browser, chooses the active voice and speech rate, and
+records an optional source/consent note. An upload is staged and header-checked
+before TTS is called, then smoke-tested and published atomically; a rejected
+file leaves the library unchanged. Previews synthesize one short phrase to WAV
+and never play on the Pi speaker or change the active voice. See the README for
+the validation and rollback sequence.
+
+The **Secrets** page at `/secrets` lists every declared secret (Tool modules
+and the active Agent provider) with `set`, `last4`, update time and source
+(`.env` or stored). Replace and Clear post to the same authenticated Dashboard;
+a cleared stored value falls back to `.env` immediately. No value is revealed,
+prefilled or echoed, and a new module declaration appears without a page edit.
 
 The Health page shows the five current Compose services (`embed`, `assistant`,
 `wakeword`, `stt`, `tts`), the resolved location and each Tool module that
@@ -262,11 +278,26 @@ container health field.
 - [ ] Verify: `docker compose ps`, `curl -s localhost:8080/healthz`
 - [ ] The `assistant-data` volume holds the SQLite database (ADR-0003) and the
       `sounds/` sound library (canonical WAVs uploaded or dropped there). It
-      survives container restarts and image rebuilds, and only `assistant`
-      mounts it. It holds settings overrides and
-      unencrypted secrets (API keys, tokens) in a file mode 0600; treat a backup
-      like the secrets it contains. `docker compose down -v` deletes it: back it
-      up first if the settings, sounds or secrets matter.
+      survives container restarts and image rebuilds. `assistant` is its only
+      mounter. It holds settings overrides and unencrypted secrets (API keys,
+      tokens) in a file mode 0600; treat a backup like the secrets it contains.
+- [ ] The separate `assistant-voices` volume holds custom voice states at
+      `/app/data/voices` in `assistant`; `tts` mounts only that volume,
+      read-only, at `/voices`. Only the voices subtree is exposed, never the
+      database or secrets. Back it up with `assistant-data`.
+      `docker compose down -v` deletes both: back them up first if the
+      settings, sounds, voices or secrets matter.
+- [ ] Custom voices: upload pre-exported Pocket TTS `.safetensors` states on
+      the Dashboard's `/voices` page, or copy them into the voices volume for
+      example `docker compose cp ./jarvis.safetensors
+      assistant:/app/data/voices/` and restart `assistant`. Only
+      `.safetensors` is accepted, at most 32 MB; `.pt`/`.pth` pickle files are
+      refused. The Dashboard path stages the file, runs the header check before
+      any model call, smoke-tests it, records the revision it passed against,
+      and publishes it atomically; it also flags a stale state for re-export and
+      records the optional consent note. A manual copy is picked up by a
+      restart, which runs the same checks during the library rescan. The active
+      voice warm-loads; others load on first use.
 - [ ] Reboot once and confirm the stack comes back without a login.
 
 ## Image tags and rollback

@@ -42,12 +42,16 @@ type migration struct {
 // Version 5 is the alert history: a fired Timer deletes its pending row in the
 // same transaction that opens a history row, so an at-most-once fire still
 // leaves a durable fired/ringing/stopped/missed record for crash recovery and
-// the later notification hook (#62). Version 6 holds Alarms: their clock time,
-// repeat rule, next occurrence and an optional pending snooze. A one-off Alarm
-// keeps its row with next_fires_at = 0 until the Ring outcome is known, so a
-// snooze survives a restart; a repeating Alarm advances next_fires_at in the
-// same transaction that opens its history row. sound, volume and ramp_ms are
-// reserved for #57's per-Alarm overrides and stay NULL/empty until then.
+// the later notification hook (#62). Version 6 indexes custom Pocket TTS voice
+// states in voices/: the file, its size/mtime for replacement detection, the
+// model revision it was validated against, staleness, the last validation
+// error and the optional consent note. The active voice and rate are ordinary
+// settings rows. Version 7 holds Alarms: their clock time, repeat rule, next
+// occurrence and an optional pending snooze. A one-off Alarm keeps its row
+// with next_fires_at = 0 until the Ring outcome is known, so a snooze survives
+// a restart; a repeating Alarm advances next_fires_at in the same transaction
+// that opens its history row. sound, volume and ramp_ms are reserved for #57's
+// per-Alarm overrides and stay NULL/empty until then.
 var migrations = []migration{
 	{
 		version: 1,
@@ -125,6 +129,27 @@ var migrations = []migration{
 	},
 	{
 		version: 6,
+		name:    "voices",
+		statements: []string{
+			// file is relative to the voices library. added_at and mod_time are
+			// Unix nanoseconds; validated_at is RFC3339. stale is set when TTS
+			// starts on a different model revision than the one recorded here.
+			`CREATE TABLE voices (
+				name               TEXT PRIMARY KEY,
+				file               TEXT NOT NULL,
+				size               INTEGER NOT NULL,
+				mod_time           INTEGER NOT NULL,
+				added_at           INTEGER NOT NULL,
+				validated_revision TEXT NOT NULL DEFAULT '',
+				validated_at       TEXT NOT NULL DEFAULT '',
+				stale              INTEGER NOT NULL DEFAULT 0,
+				last_error         TEXT NOT NULL DEFAULT '',
+				note               TEXT NOT NULL DEFAULT ''
+			)`,
+		},
+	},
+	{
+		version: 7,
 		name:    "alarms",
 		statements: []string{
 			// hour and minute are the spoken local clock time. schedule is

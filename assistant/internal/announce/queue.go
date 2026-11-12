@@ -47,6 +47,14 @@ func WithPlayback() Option {
 	return func(q *Queue) { q.audio = true }
 }
 
+// WithHoldSummary collapses the held text announcements into one spoken summary
+// on Release. Audio preview items keep their own queue slots and are never
+// narrated as text. Quiet hours installs this on the one Announcement queue;
+// without it, Release keeps the previous one-line-at-a-time behaviour.
+func WithHoldSummary() Option {
+	return func(q *Queue) { q.summarize = true }
+}
+
 // item is one queued unprompted action: a line to speak, or a sound to play.
 // Both obey the same turn, hold and blocked gates, so a Pi preview cannot cut
 // a reply or a pending Confirmation.
@@ -67,6 +75,8 @@ type Queue struct {
 	// audio keeps the worker alive without a speaker so a Dashboard can queue
 	// a Pi preview on a text-only setup (WithPlayback).
 	audio bool
+	// summarize collapses held text announcements on Release (WithHoldSummary).
+	summarize bool
 
 	mu      sync.Mutex
 	items   []item
@@ -193,15 +203,70 @@ func (q *Queue) Hold() {
 	q.mu.Unlock()
 }
 
-// Release lifts a hold and lets the queued announcements play.
+// Release lifts a hold and lets the queued announcements play. With
+// WithHoldSummary, all text items held during the hold are replaced by one
+// summary line placed where the first text item was; audio previews stay
+// separate and play in their original order.
 func (q *Queue) Release() {
 	if q == nil {
 		return
 	}
 	q.mu.Lock()
+	wasHeld := q.held
 	q.held = false
+	if wasHeld && q.summarize {
+		q.collapseTextLocked()
+	}
 	q.mu.Unlock()
 	q.notify()
+}
+
+// collapseTextLocked replaces every pending text item with one summary. The
+// caller holds q.mu. Audio items are copied through untouched so a Dashboard
+// preview is still a sound, not a spoken description of one.
+func (q *Queue) collapseTextLocked() {
+	lines := make([]string, 0, len(q.items))
+	for _, queued := range q.items {
+		if queued.play == nil && queued.text != "" {
+			lines = append(lines, queued.text)
+		}
+	}
+	if len(lines) == 0 {
+		return
+	}
+	summary := summarizeLines(lines)
+	collapsed := make([]item, 0, len(q.items))
+	placed := false
+	for _, queued := range q.items {
+		if queued.play == nil {
+			if !placed {
+				collapsed = append(collapsed, item{text: summary})
+				placed = true
+			}
+			continue
+		}
+		collapsed = append(collapsed, queued)
+	}
+	q.items = collapsed
+}
+
+// summarizeLines builds one meaningful line without a model call. Duplicate
+// lines are dropped; a single held line stays as it was spoken.
+func summarizeLines(lines []string) string {
+	seen := make(map[string]bool, len(lines))
+	unique := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || seen[line] {
+			continue
+		}
+		seen[line] = true
+		unique = append(unique, line)
+	}
+	if len(unique) == 1 {
+		return unique[0]
+	}
+	return "While it was quiet: " + strings.Join(unique, " ")
 }
 
 // Held reports whether a hold is on.

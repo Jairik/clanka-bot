@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/audio"
@@ -33,21 +35,66 @@ type Result struct {
 	AudioTime  time.Duration
 }
 
+// VoiceSettings is one synthesis choice read from the shared settings service:
+// the library voice and the speech-rate multiplier.
+type VoiceSettings struct {
+	Voice wyoming.Voice
+	Rate  float64
+}
+
 // Speaker speaks one reply at a time.
 type Speaker struct {
 	client *wyoming.Client
 	sink   Sink
-	voice  wyoming.Voice
 	logger *slog.Logger
+
+	voiceMu sync.RWMutex
+	voice   wyoming.Voice
+	rate    float64
+	live    func() VoiceSettings
 }
 
 // New builds a Speaker. A nil logger uses the default; an empty voice uses the
-// service's default voice.
+// service's default voice. The rate defaults to 1.0 (normal speed).
 func New(client *wyoming.Client, sink Sink, voice wyoming.Voice, logger *slog.Logger) *Speaker {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Speaker{client: client, sink: sink, voice: voice, logger: logger}
+	return &Speaker{client: client, sink: sink, voice: voice, rate: 1.0, logger: logger}
+}
+
+// BindVoice installs the live voice/rate source. It is late-bound in main
+// because the settings service is created after the Tool registry the Speaker
+// is passed into. Every reply, Filler and alert reads it per synthesis, so a
+// Dashboard or voice write applies without recreating the Speaker.
+func (s *Speaker) BindVoice(source func() VoiceSettings) {
+	if s == nil {
+		return
+	}
+	s.voiceMu.Lock()
+	s.live = source
+	s.voiceMu.Unlock()
+}
+
+// synthesis reads the current voice and rate in one snapshot. A nil or empty
+// live source keeps the constructor's static voice, which is what tests use.
+func (s *Speaker) synthesis() VoiceSettings {
+	s.voiceMu.RLock()
+	live := s.live
+	current := VoiceSettings{Voice: s.voice, Rate: s.rate}
+	s.voiceMu.RUnlock()
+	if live != nil {
+		if settings := live(); strings.TrimSpace(settings.Voice.Name) != "" {
+			if settings.Rate <= 0 {
+				settings.Rate = 1.0
+			}
+			return settings
+		}
+	}
+	if current.Rate <= 0 {
+		current.Rate = 1.0
+	}
+	return current
 }
 
 // SayText speaks text and discards the timing details, satisfying the api seam.
@@ -60,7 +107,8 @@ func (s *Speaker) SayText(ctx context.Context, text string) error {
 // after the whole reply is synthesised. Cancelling ctx stops the audio.
 func (s *Speaker) Say(ctx context.Context, text string) (Result, error) {
 	started := time.Now()
-	stream, err := s.client.Synthesize(ctx, text, s.voice)
+	choice := s.synthesis()
+	stream, err := s.client.Synthesize(ctx, text, choice.Voice, wyoming.WithRate(choice.Rate))
 	if err != nil {
 		return Result{}, err
 	}
@@ -71,6 +119,10 @@ func (s *Speaker) Say(ctx context.Context, text string) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
+	// Quiet hours applies its absolute volume in software here, so the media
+	// sink volume is never touched and needs no restore. The wrapper buffers a
+	// split PCM16 sample at a chunk boundary.
+	writer = newGainWriter(writer, format, GainFrom(ctx))
 
 	// The request's one sound slot is claimed immediately before the first
 	// PCM submission. A Filler racing this hook loses and stays silent; a

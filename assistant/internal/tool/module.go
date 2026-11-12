@@ -10,11 +10,13 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
 	"github.com/Jairik/clanka-bot/assistant/internal/namematch"
+	"github.com/Jairik/clanka-bot/assistant/internal/quiet"
 	"github.com/Jairik/clanka-bot/assistant/internal/ring"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 	"github.com/Jairik/clanka-bot/assistant/internal/sound"
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
 	"github.com/Jairik/clanka-bot/assistant/internal/tz"
+	"github.com/Jairik/clanka-bot/assistant/internal/voicelib"
 	"gopkg.in/yaml.v3"
 )
 
@@ -53,10 +55,10 @@ type Deps struct {
 	// sounds.alarm_ring (#53), and #54 plays the Reminder Cue before
 	// announcing. Nil means no Cue sound.
 	Cues *sound.Service
-	// Ring is the shared Scheduled-alert Ring engine. Timer attaches it
-	// before recovering persisted rows, so even an immediately overdue Timer
-	// Rings instead of falling back to the old spoken alert; #53 reuses the
-	// same engine for Alarms. Nil keeps the spoken fallback.
+	// Ring is the shared Scheduled-alert Ring engine. Timer and Alarm attach it
+	// before their Start hook recovers persisted rows, so even an immediately
+	// overdue alert Rings instead of falling back to the old spoken line. Nil
+	// keeps the spoken fallback.
 	Ring *ring.Engine
 	// Names is the one shared matcher for spoken library names: sounds,
 	// voices and Spotify playlists. It reads the live threshold per lookup and
@@ -67,6 +69,14 @@ type Deps struct {
 	// a module that needs a live setting reads it per action and must not
 	// snapshot it. Nil means only code defaults are available.
 	Settings func() *settings.Service
+	// Quiet is the live Quiet hours service. The Quiet Tools write through it,
+	// and a future Reminder (#54) can use its Speak/Clip helpers so its speech
+	// and Cue obey quiet.volume. Nil means Quiet hours are unavailable.
+	Quiet *quiet.Service
+	// Voices is the persistent voice library and active selection shared with
+	// the Dashboard. The voice Tools read and write it; nil registration is
+	// allowed so the conformance suite can check metadata without a database.
+	Voices *voicelib.Service
 }
 
 // SecretResolver is the shared seam a module uses to read a declared secret.

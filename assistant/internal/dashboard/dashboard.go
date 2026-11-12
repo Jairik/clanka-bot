@@ -15,10 +15,12 @@ import (
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
+	"github.com/Jairik/clanka-bot/assistant/internal/secrets"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 	"github.com/Jairik/clanka-bot/assistant/internal/sound"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/internal/toolpolicy"
+	"github.com/Jairik/clanka-bot/assistant/internal/voicelib"
 	"github.com/Jairik/clanka-bot/assistant/tools"
 )
 
@@ -64,11 +66,22 @@ type Options struct {
 	// either is nil.
 	Settings   *settings.Service
 	ToolPolicy *toolpolicy.Policy
+	// Secrets backs the write-only Secrets page: the same service the Agent
+	// provider and Tool modules resolve values from. Only metadata is rendered.
+	Secrets *secrets.Service
 	// Sounds backs the Sounds page: the library, uploads and previews use the
 	// same service the Cue roles read. PreviewQueue schedules a Pi preview
 	// between turns; without one the handler plays synchronously.
 	Sounds       *sound.Service
 	PreviewQueue PreviewQueue
+	// Voices, VoiceProbe and VoicePreview back the Voice page. The library is
+	// the same service the voice Tools and startup rescan use; the probe is
+	// required for an upload's header check and smoke test; the preview
+	// synthesizes a bounded sample without touching the speaker or the active
+	// setting. Without a TTS service the page is read-only.
+	Voices       *voicelib.Service
+	VoiceProbe   voicelib.Probe
+	VoicePreview VoicePreview
 	// ProxyAllowed overrides the trusted source-address check. Production uses
 	// the default (loopback plus the container's default gateway); tests inject
 	// their own address policy.
@@ -88,8 +101,12 @@ type Handler struct {
 	location      Location
 	settings      *settings.Service
 	tools         *toolpolicy.Policy
+	secrets       *secrets.Service
 	sounds        *sound.Service
 	previews      PreviewQueue
+	voices        *voicelib.Service
+	voiceProbe    voicelib.Probe
+	voicePreview  VoicePreview
 	proxyAllowed  func(net.IP) bool
 	now           func() time.Time
 	templates     *template.Template
@@ -136,8 +153,12 @@ func New(opts Options) (*Handler, error) {
 		location:      opts.Location,
 		settings:      opts.Settings,
 		tools:         opts.ToolPolicy,
+		secrets:       opts.Secrets,
 		sounds:        opts.Sounds,
 		previews:      opts.PreviewQueue,
+		voices:        opts.Voices,
+		voiceProbe:    opts.VoiceProbe,
+		voicePreview:  opts.VoicePreview,
 		proxyAllowed:  opts.ProxyAllowed,
 		now:           now,
 		templates:     templates,
@@ -156,6 +177,9 @@ func New(opts Options) (*Handler, error) {
 	// Every Settings mutation goes through Mutating, so it inherits the
 	// Dashboard identity and the same-origin guard.
 	h.Handle("/settings", h.settingsPage)
+	// The Secrets page lists every declared secret and offers replace/clear.
+	// Both writes go through Mutating for identity and same-origin.
+	h.Handle("/secrets", h.secretsPage)
 	// The Sounds page owns uploads, role assignment, Ring settings and the two
 	// previews. Every write goes through Mutating for identity and same-origin.
 	h.Handle("/sounds", h.soundsPage)
@@ -166,10 +190,22 @@ func New(opts Options) (*Handler, error) {
 	h.Mutating("POST /sounds/values/{key}", h.soundsValueSave)
 	h.Mutating("POST /sounds/values/{key}/reset", h.soundsValueReset)
 	h.Mutating("POST /sounds/preview/{name}", h.soundsPreview)
+	// The Voice page owns upload, selection, rate and the optional source note.
+	// Browser preview is an authenticated GET that synthesizes a bounded WAV
+	// and never changes the persistent active voice.
+	h.Handle("/voices", h.voicesPage)
+	h.Handle("/voices/audio/{name}", h.voicesAudio)
+	h.Mutating("POST /voices/upload", h.voicesUpload)
+	h.Mutating("POST /voices/active/{name}", h.voicesActive)
+	h.Mutating("POST /voices/rate", h.voicesRate)
+	h.Mutating("POST /voices/rate/reset", h.voicesRateReset)
+	h.Mutating("POST /voices/note/{name}", h.voicesNote)
 	h.Mutating("POST /settings/tools/{name}", h.settingsToolSave)
 	h.Mutating("POST /settings/tools/{name}/reset", h.settingsToolReset)
 	h.Mutating("POST /settings/values/{key}", h.settingsValueSave)
 	h.Mutating("POST /settings/values/{key}/reset", h.settingsValueReset)
+	h.Mutating("POST /secrets/{name}", h.secretsSet)
+	h.Mutating("POST /secrets/{name}/clear", h.secretsClear)
 	h.Handle("/", h.index)
 	return h, nil
 }

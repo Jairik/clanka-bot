@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/announce"
+	"github.com/Jairik/clanka-bot/assistant/internal/secrets"
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
 	"github.com/Jairik/clanka-bot/assistant/tools/timer"
 )
@@ -102,6 +103,83 @@ func waitAnnouncement(t *testing.T, rec *announcementRecorder) string {
 	case <-time.After(3 * time.Second):
 		t.Fatal("downtime summary did not play")
 		return ""
+	}
+}
+
+// TestSecretsAndTimersPreserveEachOtherAcrossReopen pins the merged migration
+// ledger: #46's secrets table (version 2) and #51's timers table (version 3)
+// share one database and must both survive a fresh apply and a reopen.
+func TestSecretsAndTimersPreserveEachOtherAcrossReopen(t *testing.T) {
+	const name = "TIMER_MERGE_TEST_SECRET"
+	path := filepath.Join(t.TempDir(), "data", "assistant.db")
+	ctx := context.Background()
+
+	firstStore := openTimerStore(t, path)
+	secretSvc, err := secrets.New(ctx, firstStore.DB(), []string{name})
+	if err != nil {
+		t.Fatalf("secrets.New: %v", err)
+	}
+	if _, err := secretSvc.Set(ctx, name, "secret-value-1234"); err != nil {
+		t.Fatalf("secret Set: %v", err)
+	}
+	first := storedManager(t, firstStore, nil, newRecorder(), nil)
+	if _, err := first.Start("pasta", time.Hour); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	// A fresh database applies both migrations in order.
+	migrations := func(st *store.Store) map[int]string {
+		rows, err := st.DB().Query(`SELECT version, name FROM schema_migrations ORDER BY version`)
+		if err != nil {
+			t.Fatalf("read migrations: %v", err)
+		}
+		defer rows.Close()
+		applied := map[int]string{}
+		for rows.Next() {
+			var version int
+			var name string
+			if err := rows.Scan(&version, &name); err != nil {
+				t.Fatalf("scan migration: %v", err)
+			}
+			applied[version] = name
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("read migrations: %v", err)
+		}
+		return applied
+	}
+	wantVersions := map[int]string{1: "settings", 2: "secrets", 3: "timers"}
+	applied := migrations(firstStore)
+	if len(applied) != len(wantVersions) {
+		t.Fatalf("fresh migrations = %v, want %v", applied, wantVersions)
+	}
+	for version, name := range wantVersions {
+		if applied[version] != name {
+			t.Fatalf("fresh migration %d = %q, want %q", version, applied[version], name)
+		}
+	}
+	first.Close()
+	if err := firstStore.Close(); err != nil {
+		t.Fatalf("first store close: %v", err)
+	}
+
+	// The reopened database must still hold the secret and the Timer.
+	secondStore := openTimerStore(t, path)
+	defer secondStore.Close()
+	reopenedSecrets, err := secrets.New(ctx, secondStore.DB(), []string{name})
+	if err != nil {
+		t.Fatalf("secrets.New after reopen: %v", err)
+	}
+	if value, ok := reopenedSecrets.Get(name); !ok || value != "secret-value-1234" {
+		t.Fatalf("secret after reopen = %q, %v; want the stored value", value, ok)
+	}
+	second := storedManager(t, secondStore, nil, newRecorder(), nil)
+	list := second.List()
+	if len(list) != 1 || list[0].Label != "pasta" {
+		t.Fatalf("timers after reopen = %+v, want the pasta timer", list)
+	}
+	if reopened := migrations(secondStore); len(reopened) != len(applied) {
+		t.Fatalf("reopened migrations = %v, want the %d applied versions", reopened, len(applied))
 	}
 }
 

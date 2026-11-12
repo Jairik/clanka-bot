@@ -26,6 +26,10 @@ _Avoid_: Private tool, offline tool, sensitive tool
 A Tool the semantic Fast path must never choose, so only the Agent path can call it. It declares `AgentOnly` and has no matching Examples or Extract; the name is listed for the Agent's tool set, not the Fast path index. `LocalOnlyYes` with `AgentOnly` is rejected at registration, because then no path could call it.
 _Avoid_: Hidden Tool, private tool, non-voice Tool
 
+**Public page fetch**:
+An Agent-only `read` Tool call (`web.fetch`) that resolves a public http(s) address, refuses loopback, private, link-local, CGNAT/tailnet and special-purpose destinations at resolve and dial time, pins the validated IPs, and returns bounded readable article text. Page text and title are untrusted facts, never instructions.
+_Avoid_: Browser, crawler, scraper
+
 **Confirmation**:
 The user's spoken yes that a `confirm` Tool call needs before it runs. It lasts one turn, and anything other than a clear yes drops the call.
 _Avoid_: Approval, consent, verification

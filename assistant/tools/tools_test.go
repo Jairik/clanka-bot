@@ -220,6 +220,10 @@ tools:
 	if !ok || !info.AgentOnly || info.LocalOnly {
 		t.Fatalf("web.search metadata = %+v, want AgentOnly and not Local-only", info)
 	}
+	fetchInfo, ok := reg.Info(web.FetchName)
+	if !ok || !fetchInfo.AgentOnly || fetchInfo.LocalOnly {
+		t.Fatalf("web.fetch metadata = %+v, want AgentOnly and not Local-only", fetchInfo)
+	}
 }
 
 func TestModuleConfigRejectsUnknownModule(t *testing.T) {

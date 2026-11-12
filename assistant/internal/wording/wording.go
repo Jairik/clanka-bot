@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/phrase"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
@@ -46,6 +47,13 @@ const (
 // ControlPhrasesKey is one Tool's live Control phrase list.
 func ControlPhrasesKey(name string) string { return "tools." + name + ".control_phrases" }
 
+// IntentPhrasesKey is one shared Focus intent's live Control phrase list. An
+// intent has no Tool, so its phrases live under the fixed vocabulary rather
+// than a tools.<name> section.
+func IntentPhrasesKey(intent focus.Intent) string {
+	return "focus." + string(intent) + ".phrases"
+}
+
 // ExamplesKey is one Tool's live semantic Fast path Examples.
 func ExamplesKey(name string) string { return "tools." + name + ".examples" }
 
@@ -63,6 +71,7 @@ type Setup struct {
 	Definitions  []settings.Definition
 	ControlTools []string
 	ExampleTools []string
+	FocusIntents []focus.Intent
 }
 
 // Build validates the config layer and creates the wording settings. It must
@@ -92,48 +101,56 @@ func Build(reg *tool.Registry, cfg Config) (Setup, error) {
 		declared[name] = info
 	}
 
-	// Group config phrases by Tool, applying the same rules the pipeline used
-	// to apply at construction: a known Tool, a Speak renderer, no confirm Tool
-	// and no phrase claimed by two Tools.
+	// Group config phrases by owner, applying the same rules the pipeline used
+	// to apply at construction: a known Tool, a Speak renderer, no confirm Tool,
+	// a known Focus intent, and no phrase claimed by two owners.
 	phrasesByTool := make(map[string][]string, len(cfg.ControlPhrases))
+	phrasesByIntent := make(map[focus.Intent][]string, len(focus.Intents()))
 	owners := make(map[string]string, len(cfg.ControlPhrases))
-	for text, name := range cfg.ControlPhrases {
+	for text, target := range cfg.ControlPhrases {
 		key := phrase.Normalize(text)
 		if key == "" {
 			return Setup{}, fmt.Errorf("wording: control phrase %q is empty", text)
 		}
-		info, ok := declared[name]
+		target = strings.TrimSpace(target)
+		if target == "" {
+			return Setup{}, fmt.Errorf("wording: control phrase %q has no target", text)
+		}
+		owner := target
+		if focus.IsIntentTarget(target) {
+			intent, ok := focus.ParseIntent(target)
+			if !ok {
+				return Setup{}, fmt.Errorf("wording: control phrase %q points at unknown intent %q", text, target)
+			}
+			owner = IntentPhrasesKey(intent)
+			if prev, ok := owners[key]; ok && prev != owner {
+				return Setup{}, fmt.Errorf("wording: control phrase %q maps to both %q and %q", text, prev, owner)
+			}
+			owners[key] = owner
+			phrasesByIntent[intent] = append(phrasesByIntent[intent], text)
+			continue
+		}
+		info, ok := declared[target]
 		if !ok {
-			return Setup{}, fmt.Errorf("wording: control phrase %q points at unknown Tool %q", text, name)
+			return Setup{}, fmt.Errorf("wording: control phrase %q points at unknown Tool %q", text, target)
 		}
 		if !info.HasSpeak {
-			return Setup{}, fmt.Errorf("wording: control phrase %q points at %q, which has no Speak renderer", text, name)
+			return Setup{}, fmt.Errorf("wording: control phrase %q points at %q, which has no Speak renderer", text, target)
 		}
 		if info.Permission == tool.PermissionConfirm {
-			return Setup{}, fmt.Errorf("wording: control phrase %q points at confirm Tool %q", text, name)
+			return Setup{}, fmt.Errorf("wording: control phrase %q points at confirm Tool %q", text, target)
 		}
-		if prev, ok := owners[key]; ok && prev != name {
-			return Setup{}, fmt.Errorf("wording: control phrase %q maps to both %q and %q", text, prev, name)
+		owner = ControlPhrasesKey(target)
+		if prev, ok := owners[key]; ok && prev != owner {
+			return Setup{}, fmt.Errorf("wording: control phrase %q maps to both %q and %q", text, prev, owner)
 		}
-		owners[key] = name
-		phrasesByTool[name] = append(phrasesByTool[name], text)
+		owners[key] = owner
+		phrasesByTool[target] = append(phrasesByTool[target], text)
 	}
-	for name, list := range phrasesByTool {
-		sort.Strings(list)
-		// Two spellings that normalize to the same phrase are one Control
-		// phrase; keep the first in sorted order so the config layer is valid.
-		unique := list[:0]
-		seen := make(map[string]bool, len(list))
-		for _, text := range list {
-			key := phrase.Normalize(text)
-			if seen[key] {
-				continue
-			}
-			seen[key] = true
-			unique = append(unique, text)
-		}
-		phrasesByTool[name] = unique
-	}
+	// Two spellings that normalize to the same phrase are one Control phrase;
+	// keep the first in sorted order so the config layer is valid.
+	dedupePhrases(phrasesByTool)
+	dedupePhrases(phrasesByIntent)
 
 	setup := Setup{ControlTools: []string{}, ExampleTools: []string{}}
 	for _, name := range names {
@@ -161,6 +178,22 @@ func Build(reg *tool.Registry, cfg Config) (Setup, error) {
 		}
 	}
 
+	// Shared Focus intents have no Tool, so each fixed intent gets its own live
+	// phrase list. The pipeline routes a phrase to whatever holds Focus; with
+	// nothing in Focus it falls through to the semantic Fast path.
+	for _, intent := range focus.Intents() {
+		options := []settings.Option{
+			settings.WithDescription("Exact phrases that act on whatever holds Focus for the " + string(intent) + " intent. They apply on the next request."),
+			settings.WithValidator(controlPhraseValidator),
+		}
+		if list := phrasesByIntent[intent]; len(list) > 0 {
+			options = append(options, settings.WithConfig(list))
+		}
+		setup.Definitions = append(setup.Definitions,
+			settings.Strings(IntentPhrasesKey(intent), []string{}, options...))
+	}
+	setup.FocusIntents = focus.Intents()
+
 	setup.Definitions = append(setup.Definitions,
 		settings.Strings(PrefixesKey, []string{},
 			settings.WithConfig(append([]string{}, cfg.RequestPrefixes...)),
@@ -181,9 +214,28 @@ func Build(reg *tool.Registry, cfg Config) (Setup, error) {
 	return setup, nil
 }
 
+// dedupePhrases sorts each group and drops phrases that normalize to one key,
+// so the config layer never contains a duplicate the validator would reject.
+func dedupePhrases[K comparable](groups map[K][]string) {
+	for key, list := range groups {
+		sort.Strings(list)
+		unique := list[:0]
+		seen := make(map[string]bool, len(list))
+		for _, text := range list {
+			normalized := phrase.Normalize(text)
+			if seen[normalized] {
+				continue
+			}
+			seen[normalized] = true
+			unique = append(unique, text)
+		}
+		groups[key] = unique
+	}
+}
+
 // controlPhraseValidator rejects blank entries and duplicates within one
-// Tool's list. A phrase claimed by two Tools is dropped at request time rather
-// than routing to an arbitrary owner.
+// list. A phrase claimed by two owners is dropped at request time rather than
+// routing to an arbitrary owner.
 func controlPhraseValidator(value any) error {
 	list, ok := value.([]string)
 	if !ok {
@@ -244,6 +296,7 @@ type Manager struct {
 	settings     *settings.Service
 	controlTools []string
 	exampleTools []string
+	focusIntents []focus.Intent
 	synth        FillerSynth
 	logger       *slog.Logger
 
@@ -288,6 +341,7 @@ func NewManager(svc *settings.Service, setup Setup, initial *speech.Filler, synt
 		settings:     svc,
 		controlTools: append([]string(nil), setup.ControlTools...),
 		exampleTools: append([]string(nil), setup.ExampleTools...),
+		focusIntents: append([]focus.Intent(nil), setup.FocusIntents...),
 		synth:        synth,
 		logger:       logger,
 		filler:       initial,
@@ -438,10 +492,13 @@ func (m *Manager) sync(ctx context.Context) {
 // so ambiguity falls through to the semantic or Agent path instead of choosing
 // an owner at random.
 func (m *Manager) Routing() pipeline.RoutingWords {
-	keys := make([]string, 0, len(m.controlTools)+1)
+	keys := make([]string, 0, len(m.controlTools)+len(m.focusIntents)+1)
 	keys = append(keys, PrefixesKey)
 	for _, name := range m.controlTools {
 		keys = append(keys, ControlPhrasesKey(name))
+	}
+	for _, intent := range m.focusIntents {
+		keys = append(keys, IntentPhrasesKey(intent))
 	}
 	values := m.settings.GetMany(keys...)
 
@@ -462,14 +519,40 @@ func (m *Manager) Routing() pipeline.RoutingWords {
 			}
 		}
 	}
-	phrases := make(map[string]string, len(claims))
-	for key, owners := range claims {
-		if len(owners) == 1 {
-			phrases[key] = owners[0]
+	for _, intent := range m.focusIntents {
+		value, ok := values[IntentPhrasesKey(intent)]
+		if !ok {
+			continue
+		}
+		list, _ := value.Value.([]string)
+		for _, text := range list {
+			key := phrase.Normalize(text)
+			if key == "" {
+				continue
+			}
+			owner := "intent:" + string(intent)
+			if !contains(claims[key], owner) {
+				claims[key] = append(claims[key], owner)
+			}
 		}
 	}
+	phrases := make(map[string]string, len(claims))
+	intentPhrases := make(map[string]string, len(claims))
+	for key, owners := range claims {
+		if len(owners) != 1 {
+			// A phrase claimed by two owners falls through instead of picking
+			// one at random.
+			continue
+		}
+		owner := owners[0]
+		if intent, ok := strings.CutPrefix(owner, "intent:"); ok {
+			intentPhrases[key] = intent
+			continue
+		}
+		phrases[key] = owner
+	}
 
-	words := pipeline.RoutingWords{ControlPhrases: phrases}
+	words := pipeline.RoutingWords{ControlPhrases: phrases, IntentPhrases: intentPhrases}
 	if value, ok := values[PrefixesKey]; ok {
 		if list, ok := value.Value.([]string); ok {
 			words.RequestPrefixes = list

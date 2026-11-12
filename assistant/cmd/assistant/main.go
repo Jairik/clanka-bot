@@ -23,6 +23,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/connections"
 	"github.com/Jairik/clanka-bot/assistant/internal/dashboard"
 	"github.com/Jairik/clanka-bot/assistant/internal/embed"
+	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	"github.com/Jairik/clanka-bot/assistant/internal/reply"
@@ -169,6 +170,12 @@ func run() error {
 		defer announcements.Close()
 	}
 
+	// One Focus registry routes the shared Control phrases to a ringing alert,
+	// the current reply or music, in that fixed order. It is shared by the
+	// pipeline (routing), the reply session (the current reply) and the Tool
+	// modules that can hold Focus.
+	focusRegistry := focus.New()
+
 	// One module list owns Tool wiring; each module reads its tools.<name>
 	// section and falls back to code defaults. The timezone seam exists before
 	// modules register (they capture Deps), but it only becomes live once the
@@ -181,6 +188,7 @@ func run() error {
 		Store:         st,
 		Secrets:       secretsSvc,
 		Announcements: announcements,
+		Focus:         focusRegistry,
 		Zone:          zone,
 	}
 	if speechSpeaker != nil {
@@ -298,6 +306,9 @@ func run() error {
 		pipeline.WithConfirmationResolver(pipeline.NewConfirmation(registry, logger)),
 		// Control phrases and Agent request prefixes are read per request.
 		pipeline.WithWording(wordingMgr),
+		// Shared Control phrases reach whatever holds Focus; with nothing in
+		// Focus they fall through to the semantic Fast path.
+		pipeline.WithFocus(focusRegistry),
 	}
 	// Compute Tool example vectors from the effective Examples (a stored
 	// override may already exist). A dead embed service only disables semantic
@@ -346,6 +357,9 @@ func run() error {
 	// The Filler is read once per turn from the live source, so a re-synthesized
 	// phrase is heard from the next request onward.
 	sessionOpts = append(sessionOpts, reply.WithFillerSource(wordingMgr))
+	// A speaking reply holds Focus, so a shared "stop" cancels its model stream
+	// and playback rather than the stop request itself.
+	sessionOpts = append(sessionOpts, reply.WithFocus(focusRegistry))
 	session := reply.New(p, speaker, playSink, filler, sessionOpts...)
 
 	// The debug entry is only spoken when a TTS service is configured.
@@ -439,6 +453,7 @@ func run() error {
 		"stt_addr", cfg.STT.Addr,
 		"agent_filler", settingsSvc.String(wording.FillerKey),
 		"tools", len(registry.Names()),
+		"focus_intents", toolSet.FocusIntents(),
 		"embed_model", cfg.Embed.Model,
 		"semantic_tools", semantic.ToolCount(),
 		"location_city", currentCity(locSvc),

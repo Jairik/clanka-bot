@@ -17,6 +17,7 @@ import (
 
 	"github.com/Jairik/clanka-bot/assistant/internal/agent"
 	"github.com/Jairik/clanka-bot/assistant/internal/embed"
+	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
@@ -54,6 +55,17 @@ type routingFixture struct {
 	Positives map[string][]string `yaml:"positives"`
 	Negatives []string            `yaml:"negatives"`
 	Compounds []string            `yaml:"compounds"`
+	Focus     []routingFocusCase  `yaml:"focus"`
+}
+
+// routingFocusCase is one shared-phrase case: the holders present, the intent
+// the utterance must deliver, and which holder must take it. An empty Intent
+// means no holder takes it and the utterance must fall through.
+type routingFocusCase struct {
+	Utterance string   `yaml:"utterance"`
+	Holders   []string `yaml:"holders"`
+	Intent    string   `yaml:"intent"`
+	HandledBy string   `yaml:"handled_by"`
 }
 
 // routingConfig is the subset of assistant/config.yaml the evaluation reads, so
@@ -358,9 +370,13 @@ func TestRoutingEvalAgainstMiniLM(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(&logBuf, nil))
 	runner := newFakeRunner()
 	runner.result = agent.Result{Text: "agent answer"}
+	var focusRegistry focus.Registry
 	p, err := pipeline.New(reg, cfg.ControlPhrases, logger,
 		pipeline.WithSemanticRouter(router),
 		pipeline.WithAgent(runner, nil),
+		// The corpus runs with no Focus holder, which is the production
+		// fall-through case; the Focus cases claim holders per case.
+		pipeline.WithFocus(&focusRegistry),
 	)
 	if err != nil {
 		t.Fatalf("pipeline.New: %v", err)
@@ -438,6 +454,12 @@ func TestRoutingEvalAgainstMiniLM(t *testing.T) {
 			t.Logf("MISS compound utterance=%q reached tool=%s path=%s", utterance, got.Tool, got.Path)
 		}
 	}
+
+	// Focus cases use the same pipeline and phrase table; only the holders
+	// differ. A delivered case must take the Focus path, and a fall-through
+	// case must not.
+	focusDelivered, focusFellThrough := runFocusEvalCases(t, p, &focusRegistry, fixture.Focus, classify)
+	t.Logf("ROUTING_EVAL_FOCUS_TOTAL total=%d delivered=%d fallthrough=%d", len(fixture.Focus), focusDelivered, focusFellThrough)
 
 	var total evalCounts
 	t.Logf("ROUTING_EVAL threshold=%.3f margin=%.3f positives=%d negatives=%d compounds=%d floor=%.3f",

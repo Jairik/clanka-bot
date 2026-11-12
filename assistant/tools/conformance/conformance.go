@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/embed"
+	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
@@ -115,6 +116,7 @@ func inspect(module tool.Module) inspection {
 	}
 	result.problems = append(result.problems, metadataProblems(module, result.registry, result.tools)...)
 	result.problems = append(result.problems, secretProblems(module)...)
+	result.problems = append(result.problems, intentProblems(module)...)
 	return result
 }
 
@@ -155,6 +157,34 @@ func secretProblems(module tool.Module) []string {
 			continue
 		}
 		seen[name] = true
+	}
+	return problems
+}
+
+// intentProblems checks a module's optional Focus-intent declaration. The seam
+// is optional, but a declaration that is set must name only real intents, with
+// no blanks or repeats, and must not be empty.
+func intentProblems(module tool.Module) []string {
+	declarer, ok := module.(tool.IntentDeclarer)
+	if !ok {
+		return nil
+	}
+	declared := declarer.Intents()
+	var problems []string
+	if len(declared) == 0 {
+		return []string{fmt.Sprintf("module %s: Intents() declares no Focus intents; omit the interface or name the intents it handles", module.Name())}
+	}
+	seen := make(map[focus.Intent]bool, len(declared))
+	for i, intent := range declared {
+		if _, ok := focus.ParseIntent(string(intent)); !ok {
+			problems = append(problems, fmt.Sprintf("module %s: Intents[%d] %q is not a Focus intent", module.Name(), i, intent))
+			continue
+		}
+		if seen[intent] {
+			problems = append(problems, fmt.Sprintf("module %s: Intents repeats %q", module.Name(), intent))
+			continue
+		}
+		seen[intent] = true
 	}
 	return problems
 }

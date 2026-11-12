@@ -8,9 +8,12 @@ type Path string
 const (
 	PathConfirmation  Path = "confirmation"
 	PathControlPhrase Path = "control_phrase"
-	PathFast          Path = "fast_path"
-	PathAgent         Path = "agent_path"
-	PathFallthrough   Path = "fallthrough"
+	// PathFocusIntent is a shared Control phrase delivered to whatever held
+	// Focus: a ringing alert, the current reply, or music.
+	PathFocusIntent Path = "focus_intent"
+	PathFast        Path = "fast_path"
+	PathAgent       Path = "agent_path"
+	PathFallthrough Path = "fallthrough"
 )
 
 // Device is the originating device for a request.

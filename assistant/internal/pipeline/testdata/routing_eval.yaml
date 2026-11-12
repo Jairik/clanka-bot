@@ -574,6 +574,76 @@ positives:
     - I'm up now, no more whispering
     - I'm awake, end the quiet please
     - I'm awake, quiet time is over
+  assistant.repeat:
+    # Repeat the last spoken reply, not the current utterance and not a
+    # schedule's repeat rule.
+    - say that again
+    - what did you say
+    - repeat that
+    - can you repeat that
+    - say it again
+    - what was that
+    - I missed that
+    - come again
+    - say that once more
+    - repeat what you just said
+    - could you say that again
+    - what did you just say
+    - say it one more time
+    - I didn't catch that
+    - repeat your last answer
+    - tell me that again
+    - I didn't hear what you said
+    - can you say that again please
+    - what were you saying
+    - run that by me again
+  assistant.help:
+    # Generated from the enabled registry; the wording asks for capabilities,
+    # not a specific Tool.
+    - what can you do
+    - what can you help with
+    - what are your capabilities
+    - what are you able to do
+    - list your tools
+    - what tools do you have
+    - help
+    - tell me what you can do
+    - what can you do for me
+    - what are you capable of
+    - show me your tools
+    - list what you can do
+    - what functions do you have
+    - what can I ask you
+    - what kind of things can you do
+    - what commands do you have
+    - tell me your abilities
+    - what services can you offer
+    - what are the things you can do
+    - give me a list of your tools
+  system.status:
+    # Health and availability questions about the Assistant itself, not the
+    # weather, an alarm or a phone.
+    - are you ok
+    - are you okay
+    - how are you
+    - how are you doing
+    - are you healthy
+    - is everything working
+    - is everything okay
+    - any problems
+    - system status
+    - status report
+    - check your health
+    - check the services
+    - are your services up
+    - is the system running
+    - how are things running
+    - are you still healthy
+    - is anything broken
+    - is the system healthy
+    - do you have any issues
+    - how's the system doing
+
   notify.phone:
     # "That" refers to the previous Assistant reply; the handler resolves it
     # with provenance and refuses a Local-only result.
@@ -904,6 +974,28 @@ negatives:
   - how many people live in Tokyo
   - what's the weather in Tokyo
   - what time is it in the movie
+  # Repeat and self-description shaped, but a request for another action or
+  # another kind of repeat.
+  - repeat the alarm tomorrow
+  - set the alarm to repeat every day
+  - repeat the song
+  - repeat after me
+  - say hello to my mother
+  - tell me a joke
+  - what did I say earlier
+  - help me set a timer
+  - I need help with my alarm
+  - what tools does the alarm use
+  - how are the roads
+  - what's the status of my timer
+  - is my alarm set
+  - is everything on my shopping list
+  - check the weather
+  - are you awake
+  - are you there
+  - are you sure
+  - what can you do about my alarm
+
 # Compound requests ask for more than one thing. They are kept separate so
 # the evaluation can report compound handling on its own.
 compounds:
@@ -925,6 +1017,9 @@ compounds:
   - tell me what voice you use and what time it is
   - set quiet hours from 10 to 7 and set a timer for five minutes
   - do not disturb for two hours and set a timer for five minutes
+  - what can you do and send that to my phone
+  - what can you do and set a timer
+  - are you ok and what time is it
   - send that to my phone and set a timer for five minutes
 # Focus cases: the same shared word must reach whatever holds Focus. Each case
 # names the holders present, the phrase's intent, and which holder wins. An

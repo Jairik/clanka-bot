@@ -79,11 +79,11 @@ embed:
   timeout: 150ms
 
 # Semantic Fast path tuning from the #26 routing evaluation. The corpus is
-# internal/pipeline/testdata/routing_eval.yaml (653 positives, at least 20 per
-# Tool, 119 negatives and 25 compounds) run against
+# internal/pipeline/testdata/routing_eval.yaml (713 positives, at least 20 per
+# Tool, 138 negatives and 28 compounds) run against
 # sentence-transformers/all-MiniLM-L6-v2. At these values every Tool has
 # precision 1.00 against the confirmed 0.95 per-Tool floor, overall recall is
-# 0.70, and no negative or compound reaches the Fast path. Recall is
+# 0.6971, and no negative or compound reaches the Fast path. Recall is
 # deliberately conservative: ambiguous phrasing goes to the Agent path instead
 # of risking a wrong Tool call. See docs/routing-eval.md.
 semantic:
@@ -256,15 +256,18 @@ control_phrases:
   "tell me the time": time.now
   "time": time.now
   # Playback and timer controls are single words, which embed poorly, so they
-  # are matched exactly instead. "louder" calls volume_set with no arguments,
-  # which means one step up. "stop", "pause", "cancel" and "snooze" are shared
-  # intents: they reach a ringing alert, the current reply or music before any
-  # Tool. Snooze on a Timer acts as stop; #53 gives an Alarm its real snooze.
+  # are matched exactly instead. "louder", "quieter" and "mute" still run
+  # volume_set's Extract, so the direction and the zero level come from the
+  # phrase. "stop", "pause", "cancel" and "snooze" are shared intents: they
+  # reach a ringing alert, the current reply or music before any Tool. Snooze
+  # on a Timer acts as stop; #53 gives an Alarm its real snooze.
   "stop": stop
   "pause": pause
   "cancel": cancel
   "snooze": snooze
   "louder": audio.volume_set
+  "quieter": audio.volume_set
+  "mute": audio.volume_set
   # The voice library questions are short and semantically close to each
   # other, so these fixed phrasings route exactly instead of relying on the
   # margin. The paraphrases still exercise the semantic Fast path.

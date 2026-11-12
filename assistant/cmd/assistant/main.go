@@ -39,6 +39,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/settingsapi"
 	"github.com/Jairik/clanka-bot/assistant/internal/sound"
 	"github.com/Jairik/clanka-bot/assistant/internal/speech"
+	"github.com/Jairik/clanka-bot/assistant/internal/status"
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/internal/toolpolicy"
@@ -243,6 +244,16 @@ func run() error {
 	go locSvc.Watch(ctx)
 	registry := tool.NewRegistry(cfg.Tools.DefaultTimeout.Duration())
 
+	// One bounded health snapshot feeds both the Dashboard Health page and the
+	// system.status Tool, so the two can never use different service lists or
+	// check semantics.
+	systemStatus := status.New(status.Options{
+		Timeout:  cfg.Dashboard.HealthTimeout.Duration(),
+		Services: dashboard.ComposeServiceChecks(cfg),
+		Modules:  toolSet,
+		Location: locSvc,
+	})
+
 	// One sink serves reply playback, the wake chime, timer alerts and the
 	// audio Tools, so audio.stop can cancel whatever the assistant is playing.
 	sink := audio.NewPulseSink(cfg.Playback.Binary, cfg.Playback.Sink)
@@ -374,6 +385,7 @@ func run() error {
 		Voices:    voiceSvc,
 		Notify:    notifySvc,
 		LastReply: lastReplyStore,
+		Status:    systemStatus.Status,
 	}
 	if speechSpeaker != nil {
 		deps.Speaker = speechSpeaker
@@ -639,8 +651,8 @@ func run() error {
 		// Shared Control phrases reach whatever holds Focus; with nothing in
 		// Focus they fall through to the semantic Fast path.
 		pipeline.WithFocus(focusRegistry),
-		// Keep the previous reply and its provenance for follow-ups such as
-		// "send that to my phone".
+		// Keep the previous completed reply and its provenance so
+		// assistant.repeat and notify.phone can resolve it.
 		pipeline.WithLastReply(lastReplyStore),
 	}
 	// Compute Tool example vectors from the effective Examples (a stored
@@ -781,6 +793,7 @@ func run() error {
 			Services:      dashboard.ComposeServiceChecks(cfg),
 			Modules:       toolSet,
 			Location:      locSvc,
+			Status:        systemStatus,
 			Settings:      settingsSvc,
 			ToolPolicy:    toolPolicy,
 			Secrets:       secretsSvc,

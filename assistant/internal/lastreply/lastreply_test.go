@@ -1,6 +1,7 @@
 package lastreply_test
 
 import (
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -8,17 +9,11 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/lastreply"
 )
 
-func TestRecordAndLast(t *testing.T) {
+func TestRecordAndLastKeepProvenance(t *testing.T) {
 	store := lastreply.New()
 	if _, ok := store.Last(); ok {
-		t.Fatal("an empty store reported a reply")
+		t.Fatal("a new store has a reply")
 	}
-	if _, ok := (*lastreply.Store)(nil).Last(); ok {
-		t.Fatal("a nil store reported a reply")
-	}
-	// A nil store must accept Record without panicking, so optional wiring is
-	// safe in tests.
-	(*lastreply.Store)(nil).Record(lastreply.Reply{Text: "ignored"})
 
 	at := time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
 	store.Record(lastreply.Reply{
@@ -28,52 +23,68 @@ func TestRecordAndLast(t *testing.T) {
 		LocalOnly: false,
 		At:        at,
 	})
+
 	got, ok := store.Last()
 	if !ok {
-		t.Fatal("Last reported no reply after Record")
+		t.Fatal("Last returned no reply after Record")
 	}
 	if got.Text != "It is 9 o'clock." || got.Tool != "time.now" || got.Path != "fast_path" || got.LocalOnly {
 		t.Fatalf("Last = %+v", got)
 	}
 	if !got.At.Equal(at) {
-		t.Fatalf("At = %v, want %v", got.At, at)
+		t.Errorf("At = %s, want %s", got.At, at)
 	}
 }
 
-func TestBlankRepliesDoNotReplaceTheLastOne(t *testing.T) {
+func TestNilStoreIsSafe(t *testing.T) {
+	var store *lastreply.Store
+	store.Record(lastreply.Reply{Text: "ignored"})
+	if _, ok := store.Last(); ok {
+		t.Fatal("nil store returned a reply")
+	}
+}
+
+func TestBlankRepliesDoNotEraseTheLastOne(t *testing.T) {
 	store := lastreply.New()
-	store.Record(lastreply.Reply{Text: "Keep me."})
+	store.Record(lastreply.Reply{Text: "The first reply."})
 	store.Record(lastreply.Reply{Text: "   \n"})
+	store.Record(lastreply.Reply{})
+
 	got, ok := store.Last()
-	if !ok || got.Text != "Keep me." {
-		t.Fatalf("Last = %+v, %v; want the previous reply", got, ok)
+	if !ok || got.Text != "The first reply." {
+		t.Fatalf("Last = %+v/%v, want the first reply", got, ok)
 	}
 }
 
-func TestRecordDefaultsTheTimestamp(t *testing.T) {
+func TestZeroTimeGetsARecordTimestamp(t *testing.T) {
 	store := lastreply.New()
-	store.Record(lastreply.Reply{Text: "Hello."})
+	before := time.Now().Add(-time.Second)
+	store.Record(lastreply.Reply{Text: "Recorded."})
 	got, _ := store.Last()
-	if got.At.IsZero() {
-		t.Fatal("Record left the timestamp zero")
+	if got.At.IsZero() || got.At.Before(before) {
+		t.Fatalf("At = %s, want a current timestamp", got.At)
 	}
 }
 
-func TestConcurrentRecordAndLast(t *testing.T) {
+// TestConcurrentRecordAndLastAreRaceFree exercises the two public methods
+// together; run with -race to prove the mutex covers both.
+func TestConcurrentRecordAndLastAreRaceFree(t *testing.T) {
 	store := lastreply.New()
 	var wg sync.WaitGroup
 	for i := 0; i < 20; i++ {
-		wg.Add(2)
-		go func() {
+		wg.Add(1)
+		go func(i int) {
 			defer wg.Done()
-			store.Record(lastreply.Reply{Text: "reply"})
-		}()
-		go func() {
-			defer wg.Done()
-			if reply, ok := store.Last(); ok && reply.Text == "" {
-				t.Error("Last returned an empty text")
+			for j := 0; j < 100; j++ {
+				store.Record(lastreply.Reply{Text: fmt.Sprintf("reply %d-%d", i, j)})
+				if reply, ok := store.Last(); ok && reply.Text == "" {
+					t.Errorf("Last returned a blank reply")
+				}
 			}
-		}()
+		}(i)
 	}
 	wg.Wait()
+	if reply, ok := store.Last(); !ok || reply.Text == "" {
+		t.Fatalf("final Last = %+v/%v, want a real reply", reply, ok)
+	}
 }

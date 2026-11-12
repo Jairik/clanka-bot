@@ -1,9 +1,9 @@
 // Package lastreply keeps the most recent Assistant reply in memory so a
-// follow-up request such as "send that to my phone" can refer to it. The record
-// carries the reply's provenance: which Tool produced it and whether that Tool
-// is Local-only. A consumer that leaves the Pi (Notifications) must refuse a
-// reply whose provenance says it is Local-only, so the privacy declaration is
-// never bypassed by a follow-up.
+// follow-up request such as "say that again" or "send that to my phone" can
+// refer to it. The record carries the reply's provenance: which Tool produced
+// it and whether that Tool is Local-only. A consumer that leaves the Pi
+// (Notifications) must refuse a reply whose provenance says it is Local-only,
+// so the privacy declaration is never bypassed by a follow-up.
 package lastreply
 
 import (
@@ -41,7 +41,9 @@ type Store struct {
 func New() *Store { return &Store{} }
 
 // Record stores one reply. An empty or blank reply is ignored so a silent turn
-// does not erase the last thing the user actually heard.
+// does not erase the last thing the user actually heard. The newest non-blank
+// reply wins; concurrent turns are serialised by the mutex, so the last writer
+// is the one a later follow-up sees.
 func (s *Store) Record(reply Reply) {
 	if s == nil || strings.TrimSpace(reply.Text) == "" {
 		return
@@ -55,8 +57,8 @@ func (s *Store) Record(reply Reply) {
 	s.mu.Unlock()
 }
 
-// Last returns the most recent reply and whether one exists. A task that needs
-// the reply text gets a copy, so later turns cannot change it underneath.
+// Last returns the most recent reply and whether one exists. A caller gets a
+// copy, so a later turn cannot change the text underneath it.
 func (s *Store) Last() (Reply, bool) {
 	if s == nil {
 		return Reply{}, false

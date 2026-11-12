@@ -72,6 +72,13 @@ type Tool[In, Out any] struct {
 	Timeout     time.Duration // zero uses the registry default
 	Handler     func(ctx context.Context, in In) (Out, error)
 
+	// AgentOnly marks a Tool the semantic router must never choose: it is
+	// offered to the Agent path only. Examples and Extract exist for the Fast
+	// path and are rejected here, so the exclusion is deliberate rather than a
+	// missing Speak renderer. Speak stays optional for a Tool that renders its
+	// result on another path (for example a confirmed action).
+	AgentOnly bool
+
 	Speak    func(Out) string             // optional Fast path renderer
 	Examples []string                     // optional Fast path sample phrasings
 	Extract  func(text string) (In, bool) // optional Fast path argument filler
@@ -90,6 +97,7 @@ type Info struct {
 	Description  string
 	Permission   Permission
 	LocalOnly    bool
+	AgentOnly    bool
 	Enabled      bool
 	Timeout      time.Duration
 	InputSchema  json.RawMessage
@@ -178,6 +186,16 @@ func Add[In, Out any](r *Registry, t Tool[In, Out]) error {
 	if t.Timeout < 0 {
 		return fmt.Errorf("tool %q: timeout must not be negative", t.Name)
 	}
+	// Agent-only is a routing declaration, not a missing renderer. Reject the
+	// Fast path hooks so a later edit cannot half-add the Tool back to that path.
+	if t.AgentOnly {
+		if len(t.Examples) > 0 {
+			return fmt.Errorf("tool %q: AgentOnly must not declare Examples", t.Name)
+		}
+		if t.Extract != nil {
+			return fmt.Errorf("tool %q: AgentOnly must not declare Extract", t.Name)
+		}
+	}
 
 	inSchema, err := jsonschema.For[In](nil)
 	if err != nil {
@@ -214,6 +232,7 @@ func Add[In, Out any](r *Registry, t Tool[In, Out]) error {
 			Description:  t.Description,
 			Permission:   t.Permission,
 			LocalOnly:    t.LocalOnly == LocalOnlyYes,
+			AgentOnly:    t.AgentOnly,
 			Enabled:      true,
 			Timeout:      timeout,
 			InputSchema:  inJSON,

@@ -20,6 +20,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/api"
 	"github.com/Jairik/clanka-bot/assistant/internal/audio"
 	"github.com/Jairik/clanka-bot/assistant/internal/config"
+	"github.com/Jairik/clanka-bot/assistant/internal/dashboard"
 	"github.com/Jairik/clanka-bot/assistant/internal/embed"
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
@@ -140,7 +141,8 @@ func run() error {
 	if speechSpeaker != nil {
 		deps.Speaker = speechSpeaker
 	}
-	if err := tools.NewSet().RegisterAll(registry, deps, cfg.Tools.Sections); err != nil {
+	moduleSet := tools.NewSet()
+	if err := moduleSet.RegisterAll(registry, deps, cfg.Tools.Sections); err != nil {
 		return fmt.Errorf("register tools: %w", err)
 	}
 
@@ -162,6 +164,9 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("tool settings: %w", err)
 	}
+	// The settings API has no authentication of its own. It is mounted on the
+	// localhost debug listener and, from #47, on the authenticated Dashboard.
+	settingsHandler := settingsapi.New(settingsSvc, toolPolicy, logger)
 
 	provider, err := cfg.Agent.ActiveProvider()
 	if err != nil {
@@ -262,15 +267,44 @@ func run() error {
 			// behaviour is demonstrable without a Reminder.
 			opts = append(opts, api.WithAnnouncements(announcements))
 		}
-		// Settings and Tool-override writes live only on the localhost debug
-		// listener; the health listener never mounts this handler. #47 mounts
-		// the same composable handler behind Tailscale identity.
-		opts = append(opts, api.WithSettings(settingsapi.New(settingsSvc, toolPolicy, logger)))
+		// Settings and Tool-override writes live on the localhost debug
+		// listener and on the authenticated Dashboard. The health listener
+		// never mounts this handler.
+		opts = append(opts, api.WithSettings(settingsHandler))
 		servers = append(servers, &http.Server{
 			Addr:              cfg.Debug.Addr,
 			Handler:           api.NewHandler(p, logger, true, opts...),
 			ReadHeaderTimeout: 5 * time.Second,
 		})
+	}
+
+	// The Dashboard is a separate listener and is absent until a Tailscale
+	// owner is configured. Its source and identity checks live in the handler,
+	// so this listener is never an unauthenticated surface.
+	if cfg.Dashboard.Enabled() {
+		dashboardHandler, err := dashboard.New(dashboard.Options{
+			Owner:         cfg.Dashboard.Owner,
+			Logger:        logger,
+			HealthTimeout: cfg.Dashboard.HealthTimeout.Duration(),
+			Services:      dashboard.ComposeServiceChecks(cfg),
+			Modules:       moduleSet,
+			Location:      locSvc,
+			API:           settingsHandler,
+		})
+		if err != nil {
+			return err
+		}
+		servers = append(servers, &http.Server{
+			Addr:              cfg.Dashboard.Addr,
+			Handler:           dashboardHandler,
+			ReadHeaderTimeout: 5 * time.Second,
+		})
+		logger.Info("dashboard enabled",
+			"addr", cfg.Dashboard.Addr,
+			"owner", cfg.Dashboard.Owner,
+		)
+	} else {
+		logger.Info("dashboard disabled", "reason", "dashboard.owner is empty")
 	}
 
 	logger.Info("assistant started",

@@ -1,0 +1,79 @@
+{{define "content"}}
+<div class="page-head">
+  <p class="eyebrow">Dashboard</p>
+  <h1>Health</h1>
+  <p class="lede">Each Compose service, the resolved location, and every Tool module that declares a check. One refresh is bounded to {{.HealthTimeout}}.</p>
+</div>
+{{template "health_panel" .}}
+{{end}}
+
+{{define "health_panel"}}
+{{/* The panel refreshes itself; htmx swaps this exact section. A minute is
+     frequent enough for a status page without hammering the Tool module checks. */}}
+<section id="health-panel" class="panel" hx-get="/health/panel" hx-trigger="every 60s" hx-swap="outerHTML" aria-live="polite">
+  <div class="panel-head">
+    <div>
+      <h2>Snapshot</h2>
+      <p class="muted">Checked {{.CheckedAt}}</p>
+    </div>
+    <button class="button" type="button" hx-get="/health/panel" hx-target="#health-panel" hx-swap="outerHTML">Refresh</button>
+  </div>
+
+  <h3>Compose services</h3>
+  {{if .Services}}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th scope="col">Service</th><th scope="col">Status</th><th scope="col">Detail</th></tr>
+      </thead>
+      <tbody>
+        {{range .Services}}
+        <tr>
+          <th scope="row">{{.Name}}</th>
+          <td><span class="pill pill-{{.Status}}">{{.StatusLabel}}</span></td>
+          <td class="detail">{{.Detail}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{else}}
+  <p class="muted">No service checks are wired.</p>
+  {{end}}
+
+  <h3>Location</h3>
+  <div class="table-wrap">
+    <table>
+      <tbody>
+        <tr>
+          <th scope="row">{{.Location.Name}}</th>
+          <td><span class="pill pill-{{.Location.Status}}">{{.Location.StatusLabel}}</span></td>
+          <td class="detail">{{.Location.Detail}}</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>Tool modules</h3>
+  {{if .Modules}}
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th scope="col">Module</th><th scope="col">Status</th><th scope="col">Detail</th></tr>
+      </thead>
+      <tbody>
+        {{range .Modules}}
+        <tr>
+          <th scope="row">{{.Name}}</th>
+          <td><span class="pill pill-{{.Status}}">{{.StatusLabel}}</span></td>
+          <td class="detail">{{.Detail}}</td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+  {{else}}
+  <p class="muted">No Tool modules are wired.</p>
+  {{end}}
+</section>
+{{end}}

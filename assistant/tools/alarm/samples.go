@@ -8,10 +8,12 @@ func (*Module) ConformanceSamples() map[string]any {
 	next := time.Date(2026, 11, 12, 7, 0, 0, 0, time.UTC)
 	return map[string]any{
 		SetName: SetOut{
-			ID:          "1",
-			Hour:        7,
-			Schedule:    Daily,
-			NextFiresAt: next,
+			Alarm: Alarm{
+				ID:          "1",
+				Hour:        7,
+				Schedule:    Daily,
+				NextFiresAt: next,
+			},
 		},
 		ListName: ListOut{Alarms: []Alarm{{
 			ID:          "1",
@@ -21,5 +23,16 @@ func (*Module) ConformanceSamples() map[string]any {
 			NextFiresAt: next,
 		}}},
 		CancelName: CancelOut{Cancelled: 1},
+		UpdateName: UpdateOut{
+			Alarm: Alarm{
+				ID:          "1",
+				Hour:        7,
+				Schedule:    Daily,
+				NextFiresAt: next,
+				Sound:       "birds",
+			},
+			Matched: 1,
+			Changed: []string{"sound"},
+		},
 	}
 }

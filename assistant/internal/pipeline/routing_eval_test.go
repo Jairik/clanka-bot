@@ -49,6 +49,7 @@ var routingEvalTools = []string{
 	alarm.SetName,
 	alarm.ListName,
 	alarm.CancelName,
+	alarm.UpdateName,
 	voice.SetName,
 	voice.ListName,
 	voice.CurrentName,

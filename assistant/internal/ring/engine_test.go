@@ -243,6 +243,109 @@ func TestRampRisesFromSilenceAcrossThePass(t *testing.T) {
 	}
 }
 
+// TestPerAlertClipVolumeAndRampOverrideOnlyThatRing proves a Request's Sound,
+// Volume and Ramp are applied to one Ring without changing the kind settings
+// used by the next Ring.
+func TestPerAlertClipVolumeAndRampOverrideOnlyThatRing(t *testing.T) {
+	player := newRecordingPlayer(false)
+	kind := tone(1000, 12, 20000)
+	birds := tone(1000, 8, 10000)
+	engine := engineFor(ring.Settings{
+		MaxRing: 2 * time.Millisecond, Volume: 80, Ramp: 30 * time.Second,
+		Gap: time.Millisecond, SpeakLabel: ring.SpeakNever,
+	}, player, func(deps *ring.Deps) {
+		deps.Clip = func(ring.Kind) (sound.Clip, bool) { return kind, true }
+		deps.ClipName = func(name string) (sound.Clip, bool) {
+			if name == "birds" {
+				return birds, true
+			}
+			return sound.Clip{}, false
+		}
+	})
+
+	volume := 40
+	ramp := time.Duration(0)
+	engine.Ring(context.Background(), ring.Request{
+		Kind: ring.Alarm, Sound: "birds", Volume: &volume, Ramp: &ramp,
+	})
+	first := player.first()
+	if len(first.PCM) != len(birds.PCM) {
+		t.Fatalf("overridden pass has %d bytes, want the birds clip %d", len(first.PCM), len(birds.PCM))
+	}
+	if got := int16(binary.LittleEndian.Uint16(first.PCM)); got != 4000 {
+		t.Fatalf("overridden first sample = %d, want 4000 at 40%% with no ramp", got)
+	}
+
+	// The next Ring has no per-alert overrides: it must use the kind clip and
+	// the kind 30 s ramp again, proving the override was local.
+	player2 := newRecordingPlayer(false)
+	plain := engineFor(ring.Settings{
+		MaxRing: 2 * time.Millisecond, Volume: 80, Ramp: 30 * time.Second,
+		Gap: time.Millisecond, SpeakLabel: ring.SpeakNever,
+	}, player2, func(deps *ring.Deps) {
+		deps.Clip = func(ring.Kind) (sound.Clip, bool) { return kind, true }
+		deps.ClipName = func(string) (sound.Clip, bool) {
+			t.Fatal("ClipName called for a Ring without a per-alert sound")
+			return sound.Clip{}, false
+		}
+	})
+	plain.Ring(context.Background(), ring.Request{Kind: ring.Alarm})
+	if got := player2.first(); len(got.PCM) != len(kind.PCM) {
+		t.Fatalf("plain pass has %d bytes, want the kind clip %d", len(got.PCM), len(kind.PCM))
+	}
+	if got := int16(binary.LittleEndian.Uint16(player2.first().PCM)); got != 0 {
+		t.Fatalf("plain first sample = %d, want the 30 s ramp to start at silence", got)
+	}
+}
+
+// TestPerAlertVolumeZeroMutesAndMissingSoundFallsBack covers the two edge
+// cases a stored value can have: an explicit mute, and a named sound that has
+// disappeared from the library.
+func TestPerAlertVolumeZeroMutesAndMissingSoundFallsBack(t *testing.T) {
+	kind := tone(1000, 8, 20000)
+	player := newRecordingPlayer(false)
+	engine := engineFor(ring.Settings{
+		MaxRing: 2 * time.Millisecond, Volume: 100, Gap: time.Millisecond, SpeakLabel: ring.SpeakNever,
+	}, player, func(deps *ring.Deps) {
+		deps.Clip = func(ring.Kind) (sound.Clip, bool) { return kind, true }
+		deps.ClipName = func(string) (sound.Clip, bool) { return sound.Clip{}, false }
+	})
+	zero := 0
+	engine.Ring(context.Background(), ring.Request{Kind: ring.Alarm, Volume: &zero})
+	if got := peakSample(player.first().PCM); got != 0 {
+		t.Fatalf("explicit 0 volume peak = %d, want silence", got)
+	}
+
+	// A missing named sound keeps the kind clip rather than substituting
+	// another entry.
+	player2 := newRecordingPlayer(false)
+	engine2 := engineFor(ring.Settings{
+		MaxRing: 2 * time.Millisecond, Volume: 100, Gap: time.Millisecond, SpeakLabel: ring.SpeakNever,
+	}, player2, func(deps *ring.Deps) {
+		deps.Clip = func(ring.Kind) (sound.Clip, bool) { return kind, true }
+		deps.ClipName = func(string) (sound.Clip, bool) { return sound.Clip{}, false }
+	})
+	engine2.Ring(context.Background(), ring.Request{Kind: ring.Alarm, Sound: "gone"})
+	if got := player2.first(); len(got.PCM) != len(kind.PCM) {
+		t.Fatalf("missing-sound pass has %d bytes, want the kind clip %d", len(got.PCM), len(kind.PCM))
+	}
+}
+
+// peakSample returns the largest absolute PCM16 sample.
+func peakSample(pcm []byte) int16 {
+	var peak int16
+	for i := 0; i+1 < len(pcm); i += 2 {
+		sample := int16(binary.LittleEndian.Uint16(pcm[i:]))
+		if sample < 0 {
+			sample = -sample
+		}
+		if sample > peak {
+			peak = sample
+		}
+	}
+	return peak
+}
+
 // TestSpeakLabelModes covers start, every_loop and never.
 func TestSpeakLabelModes(t *testing.T) {
 	for _, test := range []struct {

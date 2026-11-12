@@ -43,6 +43,8 @@ func (m *Module) Register(r *tool.Registry, deps tool.Deps) error {
 		Zone:          deps.Zone,
 		Settings:      deps.Settings,
 		Announcements: deps.Announcements,
+		Cues:          deps.Cues,
+		Names:         deps.Names,
 	})
 	// Attach the Ring engine before Start's recovery so an overdue Alarm that
 	// fires immediately at startup already Rings through the shared engine.

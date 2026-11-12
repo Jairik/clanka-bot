@@ -242,6 +242,42 @@ positives:
     - set an alarm for noon
     - set an alarm for midnight
     - please set an alarm for 6:30
+    # Per-Alarm sound phrasings: "with the X sound" is still a create request.
+    - wake me at 7 with the birds sound
+    - wake me up at 6:30 with the birds sound
+    - set an alarm for 7 with the birds sound
+    - set an alarm for 7 am with the birds sound
+    - set an alarm for 6:30 on weekdays with the birds sound
+    - set an alarm for 8 on weekends with the birds sound
+    - set a work alarm for 7:30 with the birds sound
+    - wake me at 7 with the chime sound
+  alarm.update:
+    # Changing an existing Alarm's per-alert overrides. "change"/"update"/
+    # "switch" and "my alarm sound/volume/ramp" keep these apart from a new
+    # alarm.
+    - change my 7 am alarm to the birds sound
+    - change my 7 am alarm to birds
+    - change my alarm sound to the birds sound
+    - change my alarm sound to birds
+    - change my alarm's sound to birds
+    - update my 7 am alarm to the birds sound
+    - update my alarm sound to birds
+    - switch my 7 am alarm to the birds sound
+    - switch my alarm to birds
+    - make my 7 am alarm use the birds sound
+    - make my alarm use birds
+    - use the birds sound for my 7 am alarm
+    - use the birds sound for my alarm
+    - set my alarm sound to birds
+    - set my alarm volume to 40
+    - change my alarm volume to 40
+    - update my alarm volume to 30
+    - change my alarm ramp to 10 seconds
+    - update my alarm ramp to 20 seconds
+    - change my 7 am alarm ramp to 5 seconds
+    - clear my alarm sound
+    - reset my alarm volume
+    - use the default sound for my alarm
   alarm.list:
     - what alarms do I have
     - list my alarms
@@ -524,6 +560,18 @@ negatives:
   - what's the alarm on my phone
   - set a timer for 7 minutes
   - wake up the house
+  # Override-shaped but not a supported change: a sound preview, a time-only
+  # change, a label change, a phone alarm, or a non-alarm playlist.
+  - play the birds sound
+  - what sound does my alarm make
+  - change my alarm tone
+  - change my 7 am alarm to 8 am
+  - change my alarm label to work
+  - delete the birds sound
+  - cancel my alarm sound
+  - change my 7 am alarm
+  - set the alarm volume on my phone
+  - change my playlist to birds
   # Voice-shaped but not a library or rate request: playback, volume, privacy,
   # or a different voice service.
   - play the jarvis song
@@ -563,6 +611,8 @@ compounds:
   - cancel my alarm and set a new one for 7
   - what time is my alarm and what's the weather
   - set an alarm for 7 and turn the volume down
+  - wake me at 7 with the birds sound and turn the volume down
+  - change my alarm sound and set another alarm for 8
   - change your voice to jarvis and speak faster
   - tell me what voice you use and what time it is
   - set quiet hours from 10 to 7 and set a timer for five minutes

@@ -257,6 +257,12 @@ type Manager struct {
 	builtMu sync.Mutex
 	built   map[string][]string
 
+	// changeMu serializes a settings change signal with the final swap, so a
+	// rebuild whose snapshot was superseded in that last window is discarded
+	// instead of being installed.
+	changeMu sync.Mutex
+	version  uint64
+
 	// startMu guards the lifecycle fields below.
 	startMu sync.Mutex
 	router  *pipeline.SemanticRouter
@@ -346,6 +352,9 @@ func (m *Manager) Changed(keys []string) {
 	if m == nil || !m.relevant(keys) {
 		return
 	}
+	m.changeMu.Lock()
+	m.version++
+	m.changeMu.Unlock()
 	select {
 	case m.wake <- struct{}{}:
 	default:
@@ -531,6 +540,10 @@ func (m *Manager) syncExamples(ctx context.Context) {
 	if m.router == nil {
 		return
 	}
+	m.changeMu.Lock()
+	startVersion := m.version
+	m.changeMu.Unlock()
+
 	current := m.Examples()
 	m.builtMu.Lock()
 	built := cloneExamples(m.built)
@@ -543,7 +556,12 @@ func (m *Manager) syncExamples(ctx context.Context) {
 		m.logger.Warn("wording: examples rebuild failed, keeping old vectors", "error", err.Error())
 		return
 	}
-	if !equalExamples(current, m.Examples()) {
+	// Check and swap are atomic with respect to a change signal. A newer
+	// override that arrived at any point up to here makes this set stale; the
+	// signal that accompanies it guarantees another rebuild.
+	m.changeMu.Lock()
+	if m.version != startVersion {
+		m.changeMu.Unlock()
 		m.logger.Info("wording: examples rebuild superseded, discarding stale vectors")
 		return
 	}
@@ -551,6 +569,7 @@ func (m *Manager) syncExamples(ctx context.Context) {
 	m.builtMu.Lock()
 	m.built = current
 	m.builtMu.Unlock()
+	m.changeMu.Unlock()
 	m.logger.Info("wording: examples rebuilt", "tools", set.ToolCount())
 }
 

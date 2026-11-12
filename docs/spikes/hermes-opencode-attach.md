@@ -157,7 +157,9 @@ mark #76 complete on the strength of the fake-provider smoke alone.
 
 The checked-in harness is self-contained. It uses a temporary workspace, a
 fake provider and a loopback `opencode serve`; it does not create a Git
-worktree, change global settings, or print a secret.
+worktree, change global settings, or print a secret. Fake cases keep OpenCode
+config, data, state and cache under that temporary directory via the XDG
+variables; `RUN_REAL=1` deliberately uses the normal auth store.
 
 ```sh
 # Fake-provider success, auth, timeout, cancel and unreachable cases.

@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
-# Repeatable #76 attach harness: private loopback server, fake provider cases,
-# and an optional real OpenCode Go coding run (RUN_REAL=1). It never prints a
-# secret and never changes global OpenCode settings.
+# Repeatable #76 attach harness: loopback server, fake-provider cases and optional RUN_REAL=1; no secret is printed.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -15,6 +13,14 @@ WORK="$BASE/work"
 KEEP="${KEEP:-0}"
 SERVE_PID=""
 FAKE_PID=""
+
+# Keep fake-case state inside the case directory; RUN_REAL uses the real auth store.
+if [[ "${RUN_REAL:-0}" != "1" ]]; then
+  export XDG_CONFIG_HOME="$BASE/xdg-config"
+  export XDG_DATA_HOME="$BASE/xdg-data"
+  export XDG_STATE_HOME="$BASE/xdg-state"
+  export XDG_CACHE_HOME="$BASE/xdg-cache"
+fi
 
 if ! command -v "$BIN" >/dev/null 2>&1; then
   echo "opencode not found: set OPENCODE_BIN" >&2

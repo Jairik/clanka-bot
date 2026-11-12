@@ -74,7 +74,7 @@ type NowPlaying struct {
 
 // Player is the playback control seam over the Web API. It always targets the
 // one librespot device by name so a phone or desktop elsewhere is never
-// driven by accident. #73 adds the playlist and library methods here.
+// driven by accident. The playlist and library methods (#73) are in library.go.
 type Player struct {
 	api        API
 	deviceName string
@@ -302,27 +302,30 @@ func (p *Player) Play(ctx context.Context, req PlayRequest) (Played, error) {
 		out.Name, out.Artist, out.Kind = hit.Name, hit.Artist, hit.Kind
 	}
 
-	// Volume first, so a cap lands before the first note. An explicit level is
-	// clamped; otherwise a device that is already louder than the cap is
-	// lowered to it, because the cap is a ceiling on the music, not only on
-	// the voice command.
-	switch {
-	case req.Volume != nil:
-		out.Volume, out.Capped = p.ClampVolume(*req.Volume)
-		if err := p.putVolume(ctx, d, out.Volume); err != nil {
-			return Played{}, err
-		}
-	case p.Cap() > 0 && d.Volume != nil && *d.Volume > p.Cap():
-		out.Volume, out.Capped = p.Cap(), true
-		if err := p.putVolume(ctx, d, out.Volume); err != nil {
-			return Played{}, err
-		}
+	if err := p.applyStartVolume(ctx, d, req.Volume, &out); err != nil {
+		return Played{}, err
 	}
 
 	if _, err := p.api.Put(ctx, "/me/player/play", deviceQuery(d), body); err != nil {
 		return Played{}, err
 	}
 	return out, nil
+}
+
+// applyStartVolume sets the volume before the first note, so a cap lands
+// before playback. An explicit level is clamped; otherwise a device that is
+// already louder than the cap is lowered to it, because the cap is a ceiling on
+// the music, not only on the voice command. It records the result in out.
+func (p *Player) applyStartVolume(ctx context.Context, d device, requested *int, out *Played) error {
+	switch {
+	case requested != nil:
+		out.Volume, out.Capped = p.ClampVolume(*requested)
+		return p.putVolume(ctx, d, out.Volume)
+	case p.Cap() > 0 && d.Volume != nil && *d.Volume > p.Cap():
+		out.Volume, out.Capped = p.Cap(), true
+		return p.putVolume(ctx, d, out.Volume)
+	}
+	return nil
 }
 
 // hit is one search result chosen to play.

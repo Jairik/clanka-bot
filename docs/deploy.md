@@ -378,6 +378,16 @@ without the other.
       Ducking uses `pactl` against the `librespot` Pulse sink input, so it needs
       the same Pulse socket the Assistant already mounts; none of this has been
       run on a Pi yet.
+- [ ] Playlists (#73, code-complete, live acceptance pending): after Web API
+      connect, say "play my <one of your playlists> playlist on shuffle". The
+      assistant loads your playlists in the background at startup and every 6
+      hours, so a playlist made minutes ago is not found until the next refresh
+      or a restart. Also try "shuffle the music", "repeat this song", "go back a
+      song", "add <song> to the queue" and "like this song". An existing Web
+      API grant already has the needed scopes (`playlist-read-private`,
+      `user-library-modify`, `user-modify-playback-state`) if it was made with
+      the #71 scope list; otherwise click **Connect Web API** again. None of
+      this has run against a real account.
 - [ ] `music.max_volume` (Dashboard Settings) is unset, meaning no cap, until the
       #70 spike gives a value. Set it there once measured; it caps
       `spotify.volume`, a level passed to `spotify.play`, and a louder device at

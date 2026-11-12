@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
+	"github.com/Jairik/clanka-bot/assistant/internal/namematch"
 	"github.com/Jairik/clanka-bot/assistant/internal/spotify"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 )
@@ -25,12 +26,36 @@ type Player interface {
 	Cap() int
 }
 
+// Library is the playlist and library seam behind the #73 Tools.
+// *spotify.Player satisfies it. It is a separate interface so the playback
+// Player seam above keeps its #72 shape.
+type Library interface {
+	PlayPlaylist(ctx context.Context, req spotify.PlaylistPlay) (spotify.Played, error)
+	SetShuffle(ctx context.Context, on bool) error
+	SetRepeat(ctx context.Context, mode string) error
+	Previous(ctx context.Context) error
+	QueueAdd(ctx context.Context, query string) (spotify.Queued, error)
+	LikeCurrent(ctx context.Context) (spotify.Liked, error)
+}
+
+// Playlists is the local playlist cache a spoken name resolves against.
+// *spotify.PlaylistCache satisfies it.
+type Playlists interface {
+	Loaded() bool
+	Refresh(ctx context.Context) error
+	Names() []string
+	Lookup(name string) (spotify.Playlist, bool)
+}
+
 // Service is the state shared by the Spotify Tools: the Player and the one
 // Music Focus claim. Playing music claims Focus at the Music priority, so a
 // Ring or a reply holding higher Focus receives "pause" and "stop" first.
 type Service struct {
-	player Player
-	focus  *focus.Registry
+	player    Player
+	focus     *focus.Registry
+	library   Library
+	playlists Playlists
+	names     *namematch.Matcher
 
 	mu    sync.Mutex
 	claim *focus.Claim
@@ -40,6 +65,18 @@ type Service struct {
 // cannot reach music, but the Tools still work.
 func NewService(player Player, registry *focus.Registry) *Service {
 	return &Service{player: player, focus: registry}
+}
+
+// WithLibrary adds the playlist and library seams for the #73 Tools: the
+// Player's library methods, the playlist cache and the one shared name matcher.
+// A nil matcher resolves exact and normalised names only. It returns the
+// Service so construction reads as one expression.
+func (s *Service) WithLibrary(library Library, playlists Playlists, names *namematch.Matcher) *Service {
+	if names == nil {
+		names = namematch.New(nil, namematch.Config{})
+	}
+	s.library, s.playlists, s.names = library, playlists, names
+	return s
 }
 
 // intents is what music handles while it holds Focus.
@@ -130,6 +167,8 @@ func failureText(err error) string {
 		return "I can't find the speaker in Spotify. Open Spotify on your phone and pick it once."
 	case errors.Is(err, spotify.ErrNothingFound):
 		return "I couldn't find anything to play for that."
+	case errors.Is(err, spotify.ErrNothingPlaying):
+		return "Nothing is playing."
 	case reason == "PREMIUM_REQUIRED":
 		return "Spotify needs a Premium account for that."
 	case status == http.StatusTooManyRequests, errors.Is(err, spotify.ErrUnavailable):

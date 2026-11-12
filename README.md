@@ -234,11 +234,38 @@ which `spotify.volume` sets over the Web API.
 set it limits `spotify.volume`, any level passed to `spotify.play`, and a
 device that is already louder is lowered to it when play starts.
 
+**Playlist and library Tools (#73).** `spotify.play_playlist` ("play my running
+playlist on shuffle"), `spotify.shuffle`, `spotify.repeat` (this song, the
+playlist or album, or off), `spotify.previous`, `spotify.queue_add` and
+`spotify.like` use the same Player, auth client and librespot device as above;
+`play_playlist` also claims music Focus and honours `music.max_volume` like
+`spotify.play`. The assistant keeps a local cache of your playlists (`GET
+/me/playlists`, at most 20 pages of 50), loaded in the background at startup
+and refreshed every 6 hours; startup never waits for it, a failed refresh keeps
+the old list and logs only the HTTP status, and shutdown cancels and joins the
+refresh. A spoken name resolves through the shared name matcher (same threshold
+as sounds and voices; a name that matches nothing, or two playlists equally
+well, is "I couldn't find a playlist called ...", never a guess). A playlist
+created in the last 6 hours is not visible until the next refresh. "my <name>
+playlist" is `play_playlist`; "the playlist <name>" still searches Spotify
+publicly through `spotify.play`. Plain "play" does not touch the shuffle state;
+only an explicit "on shuffle" turns it on. `spotify.like` saves the account's
+current track and says so rather than guess when nothing is playing.
+"previous" is a plain Tool and not a shared Focus intent: the intent vocabulary
+is fixed by the spec (stop, pause, resume, next, cancel, snooze) and "previous"
+means nothing to a Ring or a reply.
+
+Scopes: the #71 request already includes everything #73 needs
+(`playlist-read-private`, `playlist-read-collaborative`, `user-library-modify`
+for like, `user-modify-playback-state`), so `auth.go` is unchanged. A grant made
+with that scope list needs no reconnect; a grant made before it existed must
+click **Connect Web API** again.
+
 Status: code and tests only, exercised against an httptest fake Web API, a fake
 `pactl` and fake Focus holders. No real Spotify account, librespot playback,
 Pulse ducking or speaker has been exercised; those are the open live-acceptance
-items on #72. The playlist-by-name, previous, shuffle, repeat, queue and like
-Tools are #73.
+items on #72, and the same holds for the #73 Tools and the playlist cache (no
+live Spotify call, no real playlist, no spoken test).
 
 
 Agent path replies are spoken as they are generated: the first chunk is flushed

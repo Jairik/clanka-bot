@@ -21,9 +21,11 @@ import (
 type webAPI struct {
 	mu      sync.Mutex
 	calls   []string
+	raw     []string // "METHOD path?query", for the query-string assertions
 	devices string
 	search  string
 	player  string
+	lists   string
 	status  int // non-zero fails every control call
 	server  *httptest.Server
 }
@@ -36,9 +38,12 @@ func newWebAPI(t *testing.T) *webAPI {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		f.calls = append(f.calls, r.Method+" "+r.URL.Path+" "+string(body))
+		f.raw = append(f.raw, r.Method+" "+r.URL.Path+"?"+r.URL.RawQuery)
 		switch r.URL.Path {
 		case "/me/player/devices":
 			_, _ = w.Write([]byte(f.devices))
+		case "/me/playlists":
+			_, _ = w.Write([]byte(f.lists))
 		case "/search":
 			_, _ = w.Write([]byte(f.search))
 		case "/me/player":
@@ -58,6 +63,18 @@ func newWebAPI(t *testing.T) *webAPI {
 	}))
 	t.Cleanup(f.server.Close)
 	return f
+}
+
+// calledQuery reports whether a request's method, path and query contain substr.
+func (f *webAPI) calledQuery(substr string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, c := range f.raw {
+		if strings.Contains(c, substr) {
+			return true
+		}
+	}
+	return false
 }
 
 func (f *webAPI) calledWith(substr string) bool {

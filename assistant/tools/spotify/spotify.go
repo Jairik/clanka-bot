@@ -1,11 +1,12 @@
 // Package spotify is the Spotify Tool domain. #71 landed its shared auth seam
 // (the PKCE Web API grant, the refresh-token secret and the reusable Web API
 // client). #72 adds the playback Tools on that seam: play, pause, next, volume
-// and now_playing, driving the librespot device on the Pi. #73 registers its
-// playlist and library Tools in Register with the same Service.
+// and now_playing, driving the librespot device on the Pi. #73 adds the
+// playlist cache and the playlist and library Tools on the same Service.
 package spotify
 
 import (
+	"context"
 	"log/slog"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
@@ -19,6 +20,7 @@ type Module struct {
 	auth    *spotify.Auth
 	logger  *slog.Logger
 	service *Service
+	cache   *spotify.PlaylistCache
 }
 
 // NewModule builds the Spotify module with the Web API disabled until main
@@ -73,12 +75,13 @@ func (m *Module) registerPlayback(r *tool.Registry, deps tool.Deps) error {
 		return spotify.MaxVolume(svc)
 	}
 	player := spotify.NewPlayer(m.Client(), m.cfg.DeviceName, maxVolume)
-	m.service = NewService(player, deps.Focus)
+	m.cache = spotify.NewPlaylistCache(spotify.PlaylistCacheOptions{API: m.Client(), Logger: deps.Logger})
+	m.service = NewService(player, deps.Focus).WithLibrary(player, m.cache, deps.Names)
 	return RegisterTools(r, m.service)
 }
 
-// RegisterTools adds the playback Tools for one Service. #73 adds its Tools
-// here next to these, over the same Service and Player.
+// RegisterTools adds the playback and the playlist/library Tools for one
+// Service, over the same Player and Focus claim.
 func RegisterTools(r *tool.Registry, svc *Service) error {
 	if err := tool.Add(r, NewPlay(svc)); err != nil {
 		return err
@@ -92,7 +95,42 @@ func RegisterTools(r *tool.Registry, svc *Service) error {
 	if err := tool.Add(r, NewVolume(svc)); err != nil {
 		return err
 	}
-	return tool.Add(r, NewNowPlaying(svc))
+	if err := tool.Add(r, NewNowPlaying(svc)); err != nil {
+		return err
+	}
+	if err := tool.Add(r, NewPlayPlaylist(svc)); err != nil {
+		return err
+	}
+	if err := tool.Add(r, NewShuffle(svc)); err != nil {
+		return err
+	}
+	if err := tool.Add(r, NewRepeat(svc)); err != nil {
+		return err
+	}
+	if err := tool.Add(r, NewPrevious(svc)); err != nil {
+		return err
+	}
+	if err := tool.Add(r, NewQueueAdd(svc)); err != nil {
+		return err
+	}
+	return tool.Add(r, NewLike(svc))
+}
+
+// Start begins the playlist cache refresh: once now, in the background, and
+// every six hours. It never blocks startup and does nothing while the Web API
+// is not configured; the cache then loads on the first playlist request.
+func (m *Module) Start(ctx context.Context) error {
+	if m.cache != nil && m.cfg.Enabled() {
+		m.cache.Start(ctx)
+	}
+	return nil
+}
+
+// Close cancels the playlist refresh and waits for it to stop.
+func (m *Module) Close() {
+	if m.cache != nil {
+		m.cache.Close()
+	}
 }
 
 // Auth is the one Web API auth seam. The Dashboard and the #72/#73 Tools share

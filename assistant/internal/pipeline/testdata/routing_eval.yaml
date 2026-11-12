@@ -896,9 +896,10 @@ positives:
     - is the GLaDOS persona active
     - current persona please
     - which persona am I talking to
-  # Spotify playback (#72). Music plays on the Pi, so these are Fast path
-  # Tools; playlist-by-name, previous, shuffle, repeat, queue and like are #73
-  # and stay in negatives until that ticket builds them.
+  # Spotify playback (#72) and playlists/library (#73). Music plays on the Pi,
+  # so these are Fast path Tools. "my <name> playlist" is play_playlist's (the
+  # user's own library); "the playlist <name>" and artist/album/song requests
+  # stay spotify.play's public search.
   spotify.play:
     - play Radiohead
     - play some Radiohead
@@ -1016,7 +1017,147 @@ positives:
     - what's playing right now
     - what's on spotify right now
     - what's the song that's playing
+  spotify.play_playlist:
+    - play my running playlist
+    - play my running playlist on shuffle
+    - play my workout playlist
+    - play my chill playlist
+    - shuffle my road trip playlist
+    - put on my study playlist
+    - start my gym playlist
+    - play my focus playlist shuffled
+    - play my Discover Weekly playlist
+    - play my sleep playlist
+    - play my party playlist on shuffle
+    - play my cooking playlist
+    - shuffle my workout playlist
+    - put on my chill vibes playlist
+    - play my morning playlist
+    - play my driving playlist with shuffle
+    - start my running playlist on shuffle
+    - play my favorites playlist
+    - play my dinner playlist
+    - put my coding playlist on
+    - play my throwback playlist shuffled
+    - play my lo-fi playlist
+  spotify.shuffle:
+    - shuffle the music
+    - turn shuffle on
+    - turn off shuffle
+    - stop shuffling
+    - shuffle my songs
+    - turn on shuffle
+    - shuffle the songs
+    - enable shuffle
+    - disable shuffle
+    - shuffle the tracks
+    - please shuffle the music
+    - turn shuffle off
+    - shuffle this playlist
+    - shuffle the album
+    - shuffle my music
+    - shuffle these songs
+    - shuffle the queue
+    - stop shuffling the music
+    - unshuffle the music
+    - shuffle off
+  spotify.repeat:
+    - repeat this song
+    - put this song on repeat
+    - repeat the playlist
+    - turn on repeat
+    - turn off repeat
+    - stop repeating the song
+    - repeat this track
+    - repeat the album
+    - set the song on repeat
+    - loop this song
+    - repeat the music
+    - repeat this playlist
+    - turn repeat off
+    - stop repeating
+    - turn repeat on
+    - repeat the current song
+    - put the playlist on repeat
+    - repeat all the songs
+    - stop repeating the playlist
+    - loop the playlist
+  spotify.previous:
+    - go back a song
+    - play the previous song
+    - previous track
+    - go back to the last song
+    - play the last track again
+    - previous song
+    - go to the previous track
+    - go back to the previous song
+    - play the song before this one
+    - back to the last track
+    - skip back a track
+    - go back one song
+    - play the previous track
+    - go to the last song
+    - rewind to the previous song
+    - take me back to the last song
+    - go back to the song before
+    - previous
+    - play the track from before
+    - go back to the last track
+  spotify.queue_add:
+    - add Karma Police to the queue
+    - queue up Creep by Radiohead
+    - put Bohemian Rhapsody next in the queue
+    - add Yellow to my queue
+    - queue up Hey Jude
+    - add Dreams by Fleetwood Mac to the queue
+    - queue Wonderwall
+    - add Black by Pearl Jam to my queue
+    - queue up Smells Like Teen Spirit
+    - add Africa by Toto to the queue
+    - queue a song called Yellow
+    - add Heroes by David Bowie to the queue
+    - queue up Imagine by John Lennon
+    - add Mr Brightside to the queue
+    - queue Take On Me
+    - add Hotel California to my queue
+    - queue up Purple Rain
+    - add Fast Car to the queue
+    - queue up Sweet Child O Mine
+    - add Blackbird to the queue
+  spotify.like:
+    - like this song
+    - save this song to my liked songs
+    - I love this song, save it
+    - heart this track
+    - add this song to my favorites
+    - like this track
+    - save this song
+    - add this song to my liked songs
+    - I like this song, save it
+    - favorite this song
+    - save this track to my library
+    - save this to my liked songs
+    - this song is great, like it
+    - add this track to my liked songs
+    - save the song that's playing
+    - mark this song as liked
+    - like the current song
+    - save this one to my favorites
+    - like the song that's playing
+    - save this song to my liked songs please
 negatives:
+  - what's a good running playlist for a marathon
+  - recommend a playlist for studying
+  - create a new playlist called road trip
+  - delete my running playlist
+  - add milk to the shopping list
+  - shuffle the deck of cards
+  - who made the playlist feature in Spotify
+  - how do I repeat a task every day
+  - is it better to shuffle or play in order
+  - write a song about my cat
+  - like and subscribe
+  - what's the previous president's name
   - what's the capital of France
   - who wrote hamlet
   - how do I make pancakes
@@ -1220,7 +1361,9 @@ negatives:
   - what are my github notifications
   - check my github notifications
   # Spotify neighbours that must not reach the Fast path (#72). Knowledge
-  # questions about music, and the #73 actions that have no Tool yet.
+  # questions about music, and music actions that still have no Tool. "like
+  # this song", "go back to the previous song" and "repeat this song" moved to
+  # the #73 positives when those Tools landed.
   - who sang Bohemian Rhapsody
   - what is the best Radiohead album
   - recommend some songs like Radiohead
@@ -1231,10 +1374,7 @@ negatives:
   - skip to the end of the article
   - when is my next meeting
   - add this song to my playlist
-  - like this song
-  - go back to the previous song
   - shuffle my liked songs
-  - repeat this song
   - queue up another Radiohead song
   - play the video on my phone
   - pause my gym membership

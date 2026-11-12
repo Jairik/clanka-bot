@@ -122,7 +122,7 @@ func NewPlay(svc *Service) tool.Tool[PlayIn, PlayOut] {
 			"play the album OK Computer",
 			"play the song Karma Police",
 			"play my liked songs",
-			"play my Discover Weekly playlist",
+			"play the song Hey Jude",
 			"put on some jazz",
 			"resume the music",
 			"start playing music",

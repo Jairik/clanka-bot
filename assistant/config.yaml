@@ -176,8 +176,12 @@ location:
     timezone: ""
 
 # Exact-match Control phrases, entered just after STT. These are the config.yaml
-# layer of the live `tools.<name>.control_phrases` settings; a stored override
-# applies on the next request.
+# layer of the live wording settings; a stored override applies on the next
+# request. A value names one Tool ("audio.stop") or one shared Focus intent from
+# the fixed list: stop, pause, resume, next, cancel, snooze. An intent goes to
+# whatever holds Focus, in the fixed order ringing Scheduled alert > current
+# reply > playing music; with nothing in Focus the utterance falls through to
+# the semantic Fast path.
 control_phrases:
   "what time is it": time.now
   "what's the time": time.now
@@ -186,10 +190,11 @@ control_phrases:
   "time": time.now
   # Playback and timer controls are single words, which embed poorly, so they
   # are matched exactly instead. "louder" calls volume_set with no arguments,
-  # which means one step up.
-  "stop": audio.stop
-  "pause": audio.stop
-  "cancel": timer.cancel
+  # which means one step up. "stop", "pause" and "cancel" are shared intents:
+  # they reach a ringing alert, the current reply or music before any Tool.
+  "stop": stop
+  "pause": pause
+  "cancel": cancel
   "louder": audio.volume_set
   "what's the weather like": weather.current
   "what is the weather like": weather.current

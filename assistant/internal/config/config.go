@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/tz"
 	"gopkg.in/yaml.v3"
 )
@@ -460,6 +461,31 @@ func (c Config) Validate() error {
 	}
 	if c.Agent.MaxSteps <= 0 {
 		return fmt.Errorf("config: agent.max_steps must be positive")
+	}
+	if err := validateControlPhrases(c.ControlPhrases); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateControlPhrases checks the shared phrase table's shape. A bare value
+// names one of the fixed Focus intents; a dotted value names a Tool, which the
+// pipeline resolves against the registry once it is built.
+func validateControlPhrases(phrases map[string]string) error {
+	for phrase, raw := range phrases {
+		if strings.TrimSpace(phrase) == "" {
+			return fmt.Errorf("config: control_phrases has an empty phrase")
+		}
+		target := strings.TrimSpace(raw)
+		if target == "" {
+			return fmt.Errorf("config: control_phrases.%q has no target", phrase)
+		}
+		if !focus.IsIntentTarget(target) {
+			continue
+		}
+		if _, ok := focus.ParseIntent(target); !ok {
+			return fmt.Errorf("config: control_phrases.%q points at unknown intent %q", phrase, target)
+		}
 	}
 	return nil
 }

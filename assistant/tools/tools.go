@@ -41,6 +41,23 @@ func (s *Set) SecretNames() []string {
 	return tool.SecretNames(s.modules...)
 }
 
+// FocusIntents reports every shared Focus intent a module declares, as
+// "module:intent", in module order. main logs it at startup so the wiring is
+// visible; the conformance suite validates each declaration.
+func (s *Set) FocusIntents() []string {
+	var names []string
+	for _, module := range s.modules {
+		declarer, ok := module.(tool.IntentDeclarer)
+		if !ok {
+			continue
+		}
+		for _, intent := range declarer.Intents() {
+			names = append(names, module.Name()+":"+string(intent))
+		}
+	}
+	return names
+}
+
 // RegisterAll configures each module from its tools.<name> section and adds
 // its Tools. A nil sections map uses the modules' code defaults.
 func (s *Set) RegisterAll(r *tool.Registry, deps tool.Deps, sections map[string]yaml.Node) error {

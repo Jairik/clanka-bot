@@ -283,3 +283,43 @@ compounds:
   - tell me the time then play some music
   - set a timer for 5 minutes and remind me to check the oven
   - stop talking and tell me the time
+# Focus cases: the same shared word must reach whatever holds Focus. Each case
+# names the holders present, the phrase's intent, and which holder wins. An
+# empty handled_by means no present holder declares the intent, so the utterance
+# must fall through to the semantic Fast path (or the Agent path when nothing
+# matches). Holder capabilities mirror the production declarations: a ringing
+# alert handles stop and cancel, the current reply handles stop, and music
+# handles the transport controls.
+focus:
+  - utterance: stop
+    holders: [ring, reply, music]
+    intent: stop
+    handled_by: ring
+  - utterance: stop
+    holders: [reply, music]
+    intent: stop
+    handled_by: reply
+  - utterance: stop
+    holders: [music]
+    intent: stop
+    handled_by: music
+  - utterance: stop
+    holders: []
+    intent: stop
+    handled_by: ""
+  - utterance: pause
+    holders: [reply, music]
+    intent: pause
+    handled_by: music
+  - utterance: pause
+    holders: []
+    intent: pause
+    handled_by: ""
+  - utterance: cancel
+    holders: [ring, reply]
+    intent: cancel
+    handled_by: ring
+  - utterance: cancel
+    holders: []
+    intent: cancel
+    handled_by: ""

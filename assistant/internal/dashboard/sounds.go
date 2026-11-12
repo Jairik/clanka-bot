@@ -448,18 +448,14 @@ func roleOptions(entries []sound.Sound, current string) []soundOption {
 	return options
 }
 
-var ringFields = map[string]bool{
-	"sound": true, "max_ring": true, "snooze": true, "volume": true,
-	"ramp": true, "gap": true, "speak_label": true,
-}
-
 // ringKindFor recognises a per-kind Ring setting without fixing the prefix:
 // #52 may name them ring.timer.*, timer.ring.*, sounds.timer_ring.* and so on.
-// The last segment must be a known Ring field, and one segment must name the
-// kind and one must say ring (or the top-level section must be sounds/alert).
+// Any field after the kind is accepted, so a field added later appears without
+// a page change; one segment must name the kind and one must say ring, or the
+// top-level section must be sounds/alert.
 func ringKindFor(key string) (string, bool) {
 	parts := strings.Split(key, ".")
-	if len(parts) < 3 || !ringFields[parts[len(parts)-1]] {
+	if len(parts) < 3 {
 		return "", false
 	}
 	kind := ""
@@ -483,10 +479,7 @@ func ringKindFor(key string) (string, bool) {
 			hasRing = true
 		}
 	}
-	if !hasRing {
-		return "", false
-	}
-	return kind, true
+	return kind, hasRing
 }
 
 // isRingSettingKey accepts a recognised Ring key, and also any ring.* key so a

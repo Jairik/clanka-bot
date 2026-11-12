@@ -114,6 +114,7 @@ func newSoundsFixture(t *testing.T, previews dashboard.PreviewQueue) *soundsFixt
 		settings.Duration("ring.alarm.ramp", 30*time.Second),
 		settings.Duration("ring.alarm.gap", time.Second),
 		settings.String("ring.alarm.speak_label", "start"),
+		settings.String("ring.timer.future_field", "shown without a page change"),
 		settings.String("unrelated.key", "not a ring setting"),
 	)
 	svc, err := settings.New(ctx, st, defs...)
@@ -208,6 +209,7 @@ func TestSoundsPageListsLibraryRolesAndRingSettings(t *testing.T) {
 		"Sounds", "Upload a sound", "10 MB", "chime", "sounds.wake",
 		"sounds.timer_ring", "sounds.alarm_ring", "sounds.reminder", "sounds.error",
 		"Timer", "Alarm", "ring.timer.max_ring", "ring.alarm.snooze", "5m0s", "9m0s",
+		"ring.timer.future_field", "shown without a page change",
 		"Browser preview", "Play on Pi",
 	} {
 		if !strings.Contains(body, want) {

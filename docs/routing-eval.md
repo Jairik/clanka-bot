@@ -8,7 +8,7 @@ misroute from the request log.
 ## What is checked in
 
 - `assistant/internal/pipeline/testdata/routing_eval.yaml` — the labelled
-  oracle. It has at least 20 positives for each Fast path Tool, 119 plain
+  oracle. It has at least 20 positives for each Fast path Tool, 130 plain
   negatives, and 25 compound requests (exact counts in the results table).
 - `assistant/internal/pipeline/testdata/routing_baseline.yaml` — the recorded
   Map 1 totals the real-MiniLM evaluation must not fall below.
@@ -146,8 +146,11 @@ above the 0.95 precision floor. Run against
 | `alarm.cancel` | 20 | 11 | 0 | 11 | 0 | 9 | 1.00 | 0.5500 |
 | `voice.set` | 20 | 20 | 0 | 20 | 0 | 0 | 1.00 | 1.00 |
 | `voice.list` | 20 | 6 | 4 | 2 | 0 | 14 | 1.00 | 0.30 |
-| `voice.current` | 20 | 8 | 3 | 5 | 0 | 12 | 1.00 | 0.40 |
+| `voice.current` | 20 | 7 | 3 | 4 | 0 | 13 | 1.00 | 0.35 |
 | `voice.rate` | 20 | 16 | 2 | 14 | 0 | 4 | 1.00 | 0.80 |
+| `persona.switch` | 20 | 20 | 0 | 20 | 0 | 0 | 1.00 | 1.00 |
+| `persona.list` | 20 | 17 | 3 | 14 | 0 | 3 | 1.00 | 0.85 |
+| `persona.current` | 20 | 9 | 4 | 5 | 0 | 11 | 1.00 | 0.45 |
 | `quiet.set` | 20 | 20 | 0 | 20 | 0 | 0 | 1.00 | 1.00 |
 | `quiet.off` | 20 | 16 | 2 | 14 | 0 | 4 | 1.00 | 0.80 |
 | `quiet.dnd` | 20 | 20 | 0 | 20 | 0 | 0 | 1.00 | 1.00 |
@@ -161,11 +164,15 @@ above the 0.95 precision floor. Run against
 | `random.flip` | 21 | 21 | 0 | 21 | 0 | 0 | 1.00 | 1.00 |
 | `random.roll` | 22 | 22 | 0 | 22 | 0 | 0 | 1.00 | 1.00 |
 | `random.pick` | 22 | 17 | 0 | 17 | 0 | 5 | 1.00 | 0.7727 |
-| **Total** | **653** | **459** | **23** | **436** | **0** | **194** | **1.00** | **0.7029** |
+| **Total** | **713** | **504** | **30** | **474** | **0** | **209** | **1.00** | **0.7069** |
 
-These numbers are from the merged #53 Alarm, #54 Reminder, #62 Notifications and
-#60 utility Tools tree and include the earlier #34, #44, #51, #55, #61 and #63
-corpus additions.
+These numbers are from the merged #53 Alarm, #54 Reminder, #62 Notifications,
+#60 utility Tools and #65 Persona tree and include the earlier #34, #44, #51,
+#55, #61 and #63 corpus additions. `persona.switch` resolves all 20 positives,
+so "switch to the GLaDOS persona" reaches the Fast path; the list/current
+questions are lexically close to each other, so their short forms are exact
+Control phrases and the paraphrases fall to the Agent path rather than risk the
+wrong read Tool.
 Precision is 1.00 with no negative or compound misroute, and every Tool clears
 the 0.95 floor. `notify.phone`'s positives include demonstrative "send that to
 my phone" wording and explicit-message forms; its phone-shaped negatives and
@@ -182,7 +189,7 @@ is low because the city token dominates the embedding: known phrasings route,
 and an unlisted city reaches the same Tool through the Agent path, which then
 uses the local city table rather than a guess.
 
-Plain negatives: **0 of 119** reached the Fast path, including the utility
+Plain negatives: **0 of 130** reached the Fast path, including the utility
 non-requests such as an unsupported event, a currency conversion, a bare
 "roll out the red carpet" and an open-ended pick. Compounds: **0 of 25**
 reached the Fast path, including mixed utility requests such as calculating a

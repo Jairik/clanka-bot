@@ -101,7 +101,7 @@ func TestNewDashboardRequiresAnOwner(t *testing.T) {
 
 func TestDashboardRejectsRequestsWithoutTheTailscaleLogin(t *testing.T) {
 	handler := newHandler(t, dashboard.Options{})
-	for _, path := range []string{"/", "/health", "/health/panel", "/settings", "/secrets", "/sounds", "/sounds/audio/chime", "/voices", "/voices/audio/alba", "/static/app.css"} {
+	for _, path := range []string{"/", "/health", "/health/panel", "/settings", "/secrets", "/sounds", "/sounds/audio/chime", "/voices", "/voices/audio/alba", "/personas", "/static/app.css"} {
 		t.Run(path, func(t *testing.T) {
 			rec := serve(handler, request(http.MethodGet, path, ""))
 			if rec.Code != http.StatusForbidden {

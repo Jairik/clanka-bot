@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -28,6 +29,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
 	"github.com/Jairik/clanka-bot/assistant/internal/namematch"
 	"github.com/Jairik/clanka-bot/assistant/internal/notify"
+	"github.com/Jairik/clanka-bot/assistant/internal/persona"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	"github.com/Jairik/clanka-bot/assistant/internal/playback"
 	"github.com/Jairik/clanka-bot/assistant/internal/quiet"
@@ -50,6 +52,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/wyoming"
 	"github.com/Jairik/clanka-bot/assistant/tools"
 	"github.com/Jairik/clanka-bot/assistant/tools/alarm"
+	personatools "github.com/Jairik/clanka-bot/assistant/tools/persona"
 	"github.com/Jairik/clanka-bot/assistant/tools/timer"
 )
 
@@ -149,6 +152,14 @@ func run() error {
 		return fmt.Errorf("voice library: %w", err)
 	}
 
+	// The Persona library is the persistent bundle store. It validates against
+	// the same voice library, and the settings service is bound below once its
+	// definitions exist. Creating or listing Personas never opens a model call.
+	personaSvc, err := persona.New(ctx, st, voiceSvc, logger)
+	if err != nil {
+		return fmt.Errorf("persona library: %w", err)
+	}
+
 	// The Cue library indexes built-in sounds and WAV files dropped into the
 	// data volume's sounds/ folder. Cues render to the capture format so the
 	// wake path keeps the endpointing timing it already had (#18).
@@ -200,6 +211,12 @@ func run() error {
 		return err
 	}
 	toolSet := tools.NewSet()
+	// The persona Tools read the one library through this late-bound binding;
+	// the module list stays the single wiring point and the registry does not
+	// import the Persona package.
+	if module, ok := toolSet.Module("persona").(*personatools.Module); ok {
+		module.Bind(personaSvc)
+	}
 	// The declared names are the write-only allowlist: Tool modules first, then
 	// the Agent provider's key. Environment variables with the same names are
 	// the bootstrap; a stored value wins.
@@ -436,6 +453,10 @@ func run() error {
 		Name: baseCfg.TTS.Voice,
 		Rate: baseCfg.Voice.Rate,
 	})...)
+	// The active Persona marker is a live setting. Selecting a Persona writes
+	// it together with voice.name, agent.filler and agent.unavailable_message
+	// in one transaction through this same service.
+	defs = append(defs, personaSvc.Definitions()...)
 	settingsSvc, err = settings.New(ctx, st, defs...)
 	if err != nil {
 		return fmt.Errorf("settings: %w", err)
@@ -471,6 +492,9 @@ func run() error {
 	// rescan records the TTS revision, smoke-tests copied files, and falls back
 	// an unusable active voice before the speaker is bound or a reply starts.
 	voiceSvc.Bind(settingsSvc)
+	// The Persona library now applies selections through the same live settings
+	// service, so a select and the wording/voice observers share one snapshot.
+	personaSvc.Bind(settingsSvc)
 	voiceCtx, cancelVoice := context.WithTimeout(ctx, 5*time.Minute)
 	var voiceProbe voicelib.Probe
 	var voicePreview dashboard.VoicePreview
@@ -494,17 +518,9 @@ func run() error {
 			"The %s voice needs re-exporting for the updated speech model, so I'm using %s.",
 			fallback.From, fallback.To))
 	}
-	if ttsClient != nil {
-		// Warm the active voice now; other voices load on first use and stay
-		// cached in the TTS process.
-		if ref, _, ok := voiceSvc.ActiveSpeech(); ok {
-			warmCtx, cancelWarm := context.WithTimeout(voiceCtx, cfg.TTS.Timeout.Duration())
-			if err := ttsClient.WarmVoice(warmCtx, ref); err != nil {
-				logger.Warn("voice warm-load failed", "voice", ref, "error", err.Error())
-			}
-			cancelWarm()
-		}
-	}
+	// Warm the speaking voice and the active Persona's voice through the one
+	// TTS client. Other voices load on first use and stay cached.
+	warmStartupVoices(voiceCtx, logger, ttsClient, voiceSvc, personaSvc, cfg.TTS.Timeout.Duration())
 	cancelVoice()
 	// Every reply, Filler and alert reads the same live voice/rate snapshot.
 	if speechSpeaker != nil {
@@ -605,11 +621,17 @@ func run() error {
 		Model: provider.Model,
 		// Read the live setting per request, so a Dashboard model change
 		// applies to the next turn without rebuilding the Agent path.
-		ModelFunc:          func() string { return settingsSvc.String(agent.ModelKey) },
-		Headers:            provider.Headers,
-		Routing:            provider.Routing,
-		SystemPrompt:       cfg.Agent.SystemPrompt,
-		SystemPromptFunc:   func() string { return locSvc.SystemPrompt(cfg.Agent.SystemPrompt) },
+		ModelFunc:        func() string { return settingsSvc.String(agent.ModelKey) },
+		Headers:          provider.Headers,
+		Routing:          provider.Routing,
+		SystemPrompt:     cfg.Agent.SystemPrompt,
+		SystemPromptFunc: func() string { return locSvc.SystemPrompt(cfg.Agent.SystemPrompt) },
+		// The personality prompt is read once per turn and added only to the
+		// labelled system part by the one prompt builder (ADR-0002).
+		PersonaFunc: func() agent.Persona {
+			personality := personaSvc.Personality()
+			return agent.Persona{Name: personality.Name, Prompt: personality.Prompt}
+		},
 		UnavailableMessage: baseCfg.Agent.UnavailableMessage,
 		// The live wording is read per failure, so a Dashboard change applies
 		// to the next model failure without rebuilding the Agent path.
@@ -784,6 +806,7 @@ func run() error {
 			Voices:        voiceSvc,
 			VoiceProbe:    voiceProbe,
 			VoicePreview:  voicePreview,
+			Personas:      personaSvc,
 			API:           apiHandler,
 		})
 		if err != nil {
@@ -811,6 +834,8 @@ func run() error {
 		"settings", len(settingsSvc.List()),
 		"sounds", len(cues.List()),
 		"voices", len(voiceSvc.List()),
+		"personas", len(personaSvc.List()),
+		"persona", personaSvc.Personality().Name,
 		"voice", settingsSvc.String(voicelib.KeyName),
 		"voice_rate", settingsSvc.Float(voicelib.KeyRate),
 		"voice_revision", voiceSvc.Revision(),
@@ -902,6 +927,48 @@ func loadAgentFiller(logger *slog.Logger, client *wyoming.Client, voice wyoming.
 	}
 	logger.Info("agent filler cached", "text", filler.Text, "audio_bytes", len(filler.PCM))
 	return filler
+}
+
+// warmStartupVoices warms the active voice and the active Persona's voice once
+// each through the one TTS client. The usual case is one shared ref, so the
+// list is deduplicated. A stale or unknown Persona voice is logged and skipped:
+// voicelib.EnsureActive has already made the speaking voice safe and queued at
+// most one Announcement (#63), so startup never fails and never repeats it.
+func warmStartupVoices(ctx context.Context, logger *slog.Logger, client *wyoming.Client, voices *voicelib.Service, personas *persona.Service, timeout time.Duration) {
+	if client == nil || voices == nil {
+		return
+	}
+	refs := make([]string, 0, 2)
+	seen := make(map[string]bool, 2)
+	add := func(ref string) {
+		ref = strings.TrimSpace(ref)
+		if ref == "" || seen[ref] {
+			return
+		}
+		seen[ref] = true
+		refs = append(refs, ref)
+	}
+	if ref, _, ok := voices.ActiveSpeech(); ok {
+		add(ref)
+	}
+	if personas != nil {
+		ref, err := personas.ActiveVoiceRef()
+		switch {
+		case err == nil:
+			add(ref)
+		case errors.Is(err, persona.ErrNoActivePersona):
+			// No Persona is selected: the active voice above is the whole job.
+		default:
+			logger.Warn("active persona voice not warmed", "error", err.Error())
+		}
+	}
+	for _, ref := range refs {
+		warmCtx, cancel := context.WithTimeout(ctx, timeout)
+		if err := client.WarmVoice(warmCtx, ref); err != nil {
+			logger.Warn("voice warm-load failed", "voice", ref, "error", err.Error())
+		}
+		cancel()
+	}
 }
 
 // currentSpeechVoice resolves the live active voice and rate. The default

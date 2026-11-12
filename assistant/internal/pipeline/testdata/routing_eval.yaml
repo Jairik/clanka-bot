@@ -724,6 +724,72 @@ positives:
     - pick between hiking and swimming
     - choose between this one and that one
     - pick between the cat and the dog
+  persona.switch:
+    # Selecting a stored Persona, not changing a voice or listing the library.
+    - switch to the GLaDOS persona
+    - switch to GLaDOS persona
+    - use the GLaDOS persona
+    - activate the GLaDOS persona
+    - change to the GLaDOS persona
+    - become GLaDOS
+    - be GLaDOS
+    - adopt the GLaDOS persona
+    - put on the GLaDOS persona
+    - switch to the villain persona
+    - use the villain persona
+    - activate the butler persona
+    - change your persona to GLaDOS
+    - set your persona to GLaDOS
+    - can you switch to the GLaDOS persona
+    - please use the GLaDOS persona
+    - switch personas to GLaDOS
+    - I want the GLaDOS persona
+    - make yourself GLaDOS
+    - go into the GLaDOS persona
+  persona.list:
+    # Asking which Personas exist, not selecting one or naming the active one.
+    - what personas do you have
+    - list the personas
+    - show me the persona library
+    - which personas are installed
+    - what persona choices are there
+    - give me the full persona list
+    - enumerate the personas
+    - read out the persona catalogue
+    - what personas are available
+    - which personas can I choose
+    - list every persona
+    - show me all personas
+    - what personas are defined
+    - tell me the personas you know
+    - what's in the persona library
+    - list my personas
+    - show the available personas
+    - what personas are saved
+    - read me the persona names
+    - give me the list of personas
+  persona.current:
+    # Asking which Persona is active right now, not selecting or listing.
+    - which persona are you using
+    - what persona is active
+    - are you in character
+    - tell me your current persona
+    - which personality are you running
+    - is a persona selected
+    - what persona is selected right now
+    - do you have a persona active
+    - who are you right now in character
+    - does a persona define your voice
+    - which character are you
+    - are you playing a character
+    - what's your persona setting
+    - show me the active persona
+    - tell me which persona is loaded
+    - are you using a persona
+    - what personality is active
+    - is the GLaDOS persona active
+    - current persona please
+    - which persona am I talking to
 negatives:
   - what's the capital of France
   - who wrote hamlet
@@ -856,6 +922,19 @@ negatives:
   - how many people live in Tokyo
   - what's the weather in Tokyo
   - what time is it in the movie
+  # Persona-shaped words that are not a library request: a game, a personality
+  # test, a character question, or a different device/Tool owner.
+  - persona 5 is a good game
+  - what characters are in persona 5
+  - what is my personality type
+  - take a personality test
+  - who is GLaDOS
+  - tell me about GLaDOS
+  - switch to Spotify
+  - change the music
+  - activate the kitchen lights
+  - use the force
+  - switch to the news
 # Compound requests ask for more than one thing. They are kept separate so
 # the evaluation can report compound handling on its own.
 compounds:

@@ -12,6 +12,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/tools/calc"
 	"github.com/Jairik/clanka-bot/assistant/tools/clock"
 	"github.com/Jairik/clanka-bot/assistant/tools/notify"
+	"github.com/Jairik/clanka-bot/assistant/tools/persona"
 	"github.com/Jairik/clanka-bot/assistant/tools/quiet"
 	"github.com/Jairik/clanka-bot/assistant/tools/random"
 	"github.com/Jairik/clanka-bot/assistant/tools/reminder"
@@ -42,6 +43,7 @@ func NewSet() *Set {
 		calc.NewModule(),
 		units.NewModule(),
 		random.NewModule(),
+		persona.NewModule(),
 	}}
 }
 

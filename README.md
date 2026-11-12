@@ -432,6 +432,47 @@ time-stretch; the bounded range keeps the artefact small. Selecting a different
 voice or rate re-synthesizes the cached Agent Filler in the background, so the
 spoken cue never keeps the old voice.
 
+#### Personas
+
+A **Persona** bundles a ready voice, a personality prompt and the Agent Filler
+and Unavailable wording under one spoken name. The **Personas** page at
+`/personas` creates and edits the bundle and selects it; `persona.switch`,
+`persona.list` and `persona.current` are Local-only voice Tools, and
+`persona.switch` resolves the spoken name through the shared name matcher. For
+example, after creating a Persona named GLaDOS:
+
+```sh
+curl -s -X POST localhost:8081/debug/transcript \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"switch to the GLaDOS persona"}'
+curl -s -X POST localhost:8081/debug/transcript \
+  -H 'Content-Type: application/json' -d '{"text":"which persona are you using"}'
+```
+
+Selecting writes `voice.name`, `agent.filler`, `agent.unavailable_message` and
+`persona.active` in one settings transaction. Every field and the voice state
+are validated before that write, so a stale, unvalidated or missing voice
+leaves the previous voice and wording untouched rather than applying half a
+Persona. The reply is synthesized after the write, so the spoken confirmation
+already uses the new voice.
+
+The personality prompt never becomes a second request path. The single prompt
+builder reads it once per turn and adds it to the one labelled system message
+(ADR-0002); history and Tool results are unchanged. A switch during a model
+turn cannot rewrite the system part that turn already received. The active
+Persona's voice and the active voice are both warm-loaded at startup through
+the one TTS client (deduplicated when they are the same state); a Persona voice
+that has gone stale is logged and skipped, while #63's single fallback
+Announcement and safe default handle the speaking voice.
+
+Editing an active Persona updates the stored record. Its personality prompt
+applies on the next turn; the stored voice and wording apply when it is
+selected again. If `voice.set`, the Settings page or a manual wording edit
+changes one of those values later, `persona.current` and the Personas page say
+what differs instead of claiming the exact bundle. Clearing the active Persona
+removes only the `persona.active` marker; the applied voice and wording stay as
+they are.
+
 Routing precision is measured against a labelled corpus with the real MiniLM
 model; the floor is 0.95 for every Tool, and ambiguous phrasing goes to the
 Agent path. See [docs/routing-eval.md](docs/routing-eval.md) to run the

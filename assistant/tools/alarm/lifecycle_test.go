@@ -2,6 +2,8 @@ package alarm_test
 
 import (
 	"context"
+	"encoding/binary"
+	"errors"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -306,6 +308,75 @@ func TestSnoozeUsesTheLiveRingSetting(t *testing.T) {
 			t.Fatal("the snooze was never persisted")
 		}
 		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+// TestAlarmRingUsesTheThirtySecondDefaultRamp proves the manager Rings with
+// Kind Alarm and therefore the live Alarm defaults: a 30 s ramp and 80%
+// volume. The captured first pass is nearly silent; a Timer's 0 s ramp would
+// leave the clip at full amplitude.
+func TestAlarmRingUsesTheThirtySecondDefaultRamp(t *testing.T) {
+	ctx := context.Background()
+	st := openStore(t, filepath.Join(t.TempDir(), "data", "assistant.db"))
+	defer st.Close()
+	svc, err := settings.New(ctx, st, ring.Definitions()...)
+	if err != nil {
+		t.Fatalf("settings.New: %v", err)
+	}
+	if got := ring.ReadSettings(svc, ring.Alarm); got.Ramp != 30*time.Second || got.Volume != 80 {
+		t.Fatalf("alarm defaults = %+v, want a 30s ramp at 80%%", got)
+	}
+
+	// Eight mono PCM16 samples at full scale: an audible pass without a ramp.
+	clip := make([]byte, 16)
+	for i := 0; i < 8; i++ {
+		binary.LittleEndian.PutUint16(clip[i*2:], uint16(10000))
+	}
+	passes := make(chan []byte, 1)
+	engine := ring.New(ring.Deps{
+		Focus: focus.New(),
+		Settings: func(kind ring.Kind) ring.Settings {
+			return ring.ReadSettings(svc, kind)
+		},
+		Clip: func(ring.Kind) (sound.Clip, bool) {
+			return sound.Clip{
+				PCM:    clip,
+				Format: audio.Format{Rate: 8000, Width: 2, Channels: 1},
+			}, true
+		},
+		Play: func(_ context.Context, pass sound.Clip) error {
+			passes <- append([]byte(nil), pass.PCM...)
+			return errors.New("captured")
+		},
+		Clock:  &fastClock{now: time.Now()},
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	clock := &fixedClock{now: time.Date(2026, 11, 12, 6, 59, 59, 900_000_000, time.UTC)}
+	manager := newManager(t, clock, nil, nil, nil)
+	manager.SetRingEngine(engine)
+	if err := manager.AttachStore(st, nil); err != nil {
+		t.Fatalf("AttachStore: %v", err)
+	}
+	if _, err := manager.Set(ctx, alarm.SetIn{Hour: 7, Schedule: "daily"}); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	select {
+	case pcm := <-passes:
+		var peak int16
+		for i := 0; i < len(pcm)/2; i++ {
+			sample := int16(binary.LittleEndian.Uint16(pcm[i*2:]))
+			if sample < 0 {
+				sample = -sample
+			}
+			if sample > peak {
+				peak = sample
+			}
+		}
+		if peak >= 100 {
+			t.Fatalf("first-pass peak = %d, want the 30s ramp to suppress it", peak)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the Alarm never played a pass")
 	}
 }
 

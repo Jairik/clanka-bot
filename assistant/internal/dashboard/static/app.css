@@ -178,6 +178,9 @@ h3 { margin: 1.7rem 0 .55rem; font-size: .8rem; letter-spacing: .08em; text-tran
 .pill-source-override { color: var(--warn); }
 .pill-source-config { color: var(--neutral); }
 .pill-source-default { color: var(--muted); }
+.pill-source-store { color: var(--warn); }
+.pill-source-env { color: var(--neutral); }
+.pill-source-none { color: var(--muted); }
 .pill-restart { color: var(--warn); }
 
 .table-wrap { overflow-x: auto; }

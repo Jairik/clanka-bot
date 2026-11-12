@@ -299,7 +299,20 @@ func run() error {
 	// ADR-0004: librespot plays into the same Pulse server, so a reply, a Ring
 	// and the wake word duck its stream locally with pactl, never through the
 	// Web API. One refcounted Ducker serves all three.
-	musicDucker := music.NewDucker(music.NewPulseStreams(cfg.Playback.Binary, ""), music.DefaultDuckPercent, logger)
+	// Without the Web API app there is no music to duck, so the Ducker stays
+	// nil (a no-op that never spawns pactl).
+	var musicDucker *music.Ducker
+	if cfg.Spotify.Enabled() {
+		musicDucker = music.NewDucker(music.NewPulseStreams(cfg.Playback.Binary, ""), music.DefaultDuckPercent, logger)
+		// A crash while ducked, or Pulse's stream-restore remembering the
+		// ducked level, must not leave the music quiet. Best effort: librespot
+		// may not be running yet.
+		resetCtx, cancelReset := context.WithTimeout(ctx, 2*time.Second)
+		if err := musicDucker.Reset(resetCtx); err != nil {
+			logger.Warn("music startup volume reset", "error", err.Error())
+		}
+		cancelReset()
+	}
 
 	// Speech is optional: without a TTS address the debug entry stays text-only.
 	// The Filler audio is synthesized after the settings service resolves the
@@ -784,6 +797,9 @@ func run() error {
 		responder = session
 	}
 
+	// voiceDone closes when the voice loop returns, so shutdown can wait for
+	// its deferred music restore. Nil when the voice loop is off.
+	var voiceDone chan struct{}
 	if cfg.VoiceEnabled() {
 		// Read the wake role per detection so a Dashboard write applies live.
 		// wakeword.chime.enabled stays the master switch it was before #55.
@@ -801,7 +817,9 @@ func run() error {
 		if err != nil {
 			return err
 		}
+		voiceDone = make(chan struct{})
 		go func() {
+			defer close(voiceDone)
 			if err := loop.Run(ctx); err != nil {
 				logger.Error("voice loop stopped", "error", err.Error())
 			}
@@ -939,7 +957,18 @@ func run() error {
 		"location_city", currentCity(locSvc),
 	)
 
-	return serve(ctx, logger, servers)
+	serveErr := serve(ctx, logger, servers)
+	// Cancel the loop and give its deferred music restore a moment to run,
+	// so a shutdown mid-turn does not leave the music ducked.
+	stop()
+	if voiceDone != nil {
+		select {
+		case <-voiceDone:
+		case <-time.After(2 * time.Second):
+			logger.Warn("voice loop did not stop in time")
+		}
+	}
+	return serveErr
 }
 
 // newVoiceLoop wires the microphone path: Pulse capture, Wyoming wake word and

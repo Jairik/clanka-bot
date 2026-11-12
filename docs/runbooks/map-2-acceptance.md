@@ -390,7 +390,15 @@ playing on the Pi. Focus order is ringing alert, then reply, then music
    must take the command first. Music must not pause.
 5. Ducking: during a reply, a Ring, and right after the wake word, music volume
    must drop, then return to its previous level when the turn ends. Listen and
-   note the level.
+   note the level. Ducking runs only when the Spotify Web API app is
+   configured (`spotify.client_id` and redirect URI).
+   Stream-restore check: after a reply, say "pause", then "resume". Music must
+   come back at full level, not the ducked level. Pulse's `module-stream-restore`
+   can remember a stream's last volume for librespot, so also run
+   `pactl list sink-inputs` while music plays and confirm the librespot input
+   reads 100% between turns. The assistant resets librespot's stream to 100% at
+   startup (best effort), so restart the assistant mid-duck once and confirm
+   music is back to full.
 6. `music.max_volume` enforcement: in `/settings`, set `music.max_volume` to a
    low test value (for example `30`). Say "set the music volume to 80". The
    volume must not go above 30. Then clear `music.max_volume` back to unset.

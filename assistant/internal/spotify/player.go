@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
@@ -155,7 +156,7 @@ func (p *Player) Pause(ctx context.Context) error {
 		return err
 	}
 	_, err = p.api.Put(ctx, "/me/player/pause", deviceQuery(d), nil)
-	return err
+	return ignoreRestriction(err)
 }
 
 // Resume continues the Pi's paused playback.
@@ -164,7 +165,33 @@ func (p *Player) Resume(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// The cap is a ceiling on the music, so a resume cannot play above it.
+	if err := p.applyStartVolume(ctx, d, nil, &Played{}); err != nil {
+		return err
+	}
 	_, err = p.api.Put(ctx, "/me/player/play", deviceQuery(d), nil)
+	return ignoreRestriction(err)
+}
+
+// ignoreRestriction treats Spotify's 403 "Restriction violated" (pause while
+// paused, play while playing) as the state the user asked for. Only the
+// documented ALREADY_PAUSED / ALREADY_PLAYING reasons or the "Restriction
+// violated" message count; any other 403 (Premium required, a missing OAuth
+// scope) is a real failure and stays one.
+func ignoreRestriction(err error) error {
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusForbidden {
+		return err
+	}
+	switch apiErr.Reason {
+	case "ALREADY_PAUSED", "ALREADY_PLAYING":
+		return nil
+	case "PREMIUM_REQUIRED":
+		return err
+	}
+	if apiErr.Restricted {
+		return nil
+	}
 	return err
 }
 

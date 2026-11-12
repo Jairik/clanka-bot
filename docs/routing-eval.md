@@ -10,10 +10,15 @@ misroute from the request log.
 - `assistant/internal/pipeline/testdata/routing_eval.yaml` — the labelled
   oracle. It has 20 positives for each of the eight Fast path Tools (160
   total), 48 plain negatives, and 8 compound requests.
+- `assistant/internal/pipeline/testdata/routing_baseline.yaml` — the recorded
+  Map 1 totals the real-MiniLM evaluation must not fall below.
 - `assistant/internal/pipeline/routing_eval_test.go` —
   `TestRoutingEvalFixtureShape` checks the corpus without any service;
+  `TestRoutingEvalBaselineShape` checks the baseline file;
   `TestRoutingEvalAgainstMiniLM` runs every utterance through the real
   pipeline, real Tools and the real MiniLM embed service.
+- `assistant/tools/conformance` — the shared module contract test every Tool
+  module calls once; see "Conformance suite" below.
 - `assistant/config.yaml` — `semantic.threshold` and `semantic.margin` are set
   from the evaluation.
 
@@ -27,8 +32,11 @@ compounds.
 
 The user confirmed a **minimum precision of 0.95 for each Tool** for #26.
 Overall precision does not excuse a weak Tool, so the test enforces the floor
-per Tool. Recall is reported but is not a gate; the Agent path is the safe
-fallback.
+per Tool. Per-Tool recall is reported but is not a floor; the Agent path is the
+safe fallback. The real-MiniLM evaluation also gates the overall Map 1 totals
+in `routing_baseline.yaml`: overall precision and recall may not drop, and no
+negative or compound may start reaching the Fast path. A new Tool ticket may
+raise those totals but never lower them.
 
 A Tool with no Fast path predictions has no measurable precision, so the test
 fails it rather than letting an empty denominator score 1.00. It also reports
@@ -38,15 +46,34 @@ Control-phrase matches: those numbers would say nothing about the semantic
 tuning. The reported per-Tool precision is therefore always computed from
 predictions the router actually made.
 
+## Conformance suite
+
+Every Tool module has one conformance test line:
+
+```go
+// One line wires the shared contract check; the real-model part skips offline.
+func TestModuleConformance(t *testing.T) { conformance.Run(t, NewModule()) }
+```
+
+`Run` registers the production module list with the module under test and
+checks that it registers cleanly, that config defaults validate, that every
+Tool declares a valid Permission and Local-only flag, and that each Speak
+renderer returns non-empty text for a representative output from the module's
+`ConformanceSamples`. It then embeds every Example with the real MiniLM service
+and fails if an Example does not route to its own Tool. The routing part skips
+when `ROUTING_EVAL_EMBED_URL` is unset, so the normal offline suite still
+passes; CI sets it.
+
 ## Running it
 
 The normal suite stays offline: `TestRoutingEvalAgainstMiniLM` skips unless
 `ROUTING_EVAL_EMBED_URL` is set. The explicit integration target is
 `make routing-eval ROUTING_EVAL_EMBED_URL=http://127.0.0.1:18085`; it fails
-when the variable is missing, so the 0.95 per-Tool floor is not silently
-unguarded. To run it against the real model, start only the embed service in an
-isolated Compose project and publish a spare loopback port. Do not reuse
-another stack's project or stop anyone else's containers.
+when the variable is missing, so the 0.95 per-Tool floor and the Map 1
+baseline are not silently unguarded. To run it against the real model, start
+only the embed service in an isolated Compose project and publish a spare
+loopback port. Do not reuse another stack's project or stop anyone else's
+containers.
 
 ```sh
 # Build the same pinned MiniLM image the stack uses, if it is not built yet.
@@ -78,12 +105,18 @@ docker compose -p clanka-routing-eval \
 
 The test prints one `ROUTING_EVAL_TOOL` line per Tool with TP, Control-phrase
 TP, semantic TP, FP, FN, precision and recall, then
-`ROUTING_EVAL_COMPOUNDS`, `ROUTING_EVAL_NEGATIVES` and `ROUTING_EVAL_TOTAL`.
-It fails if any Tool is below the precision floor, made no predictions, or was
-only ever right through a Control phrase. The harness allows a 10s embed
+`ROUTING_EVAL_COMPOUNDS`, `ROUTING_EVAL_NEGATIVES`, `ROUTING_EVAL_TOTAL` and
+`ROUTING_EVAL_BASELINE`. It fails if any Tool is below the precision floor,
+made no predictions, was only ever right through a Control phrase, or if the
+overall result is below the Map 1 baseline. The harness allows a 10s embed
 timeout on purpose: routing quality is under test here, and latency is tracked
 separately (#27). The embeddings are always the real MiniLM output; there are
 no fake or toy vectors in this path.
+
+CI (`.github/workflows/ci.yml`) runs the offline Go suite on every push and
+pull request. A second job builds the pinned embed image, waits for its real
+`/healthz`, then runs the full suite with `ROUTING_EVAL_EMBED_URL` set so the
+conformance Example checks and the baseline gate both run against MiniLM.
 
 ## Chosen values and measured results
 

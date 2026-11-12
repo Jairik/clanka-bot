@@ -58,21 +58,26 @@ func TestConcurrentSetCancelAndFire(t *testing.T) {
 		t.Fatalf("timers = %d after cancelling everything, want 0", got)
 	}
 
-	// A pending Timer cancelled before its deadline never speaks, even while
-	// the scheduler and a ringing cancel are live.
-	before := spoken.Load()
+	// A pending Timer cancelled before its deadline never speaks. A fresh
+	// Manager keeps the first phase's stragglers out of this assertion.
+	var silent atomic.Int64
+	m2 := timer.NewManager(nil, func(context.Context, string) error {
+		silent.Add(1)
+		return nil
+	}, slog.Default())
+	defer m2.Close()
 	for i := 0; i < 10; i++ {
-		tm, err := m.Start("", 50*time.Millisecond)
+		tm, err := m2.Start("", 50*time.Millisecond)
 		if err != nil {
 			t.Fatalf("Start: %v", err)
 		}
-		if _, err := m.CancelTimers(tm.ID); err != nil {
+		if _, err := m2.CancelTimers(tm.ID); err != nil {
 			t.Fatalf("CancelTimers: %v", err)
 		}
 	}
 	time.Sleep(120 * time.Millisecond)
-	if got := spoken.Load(); got != before {
-		t.Fatalf("alerts = %d, want the %d cancelled Timers silent", got-before, 10)
+	if got := silent.Load(); got != 0 {
+		t.Fatalf("alerts = %d, want the 10 cancelled Timers silent", got)
 	}
 }
 

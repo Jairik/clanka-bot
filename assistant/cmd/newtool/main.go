@@ -13,8 +13,11 @@ import (
 	"flag"
 	"fmt"
 	"go/format"
+	"go/parser"
+	"go/token"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -26,6 +29,21 @@ import (
 // It mirrors internal/tool's name rule so a scaffold cannot create a package
 // the registry would later reject at startup.
 var namePattern = regexp.MustCompile(`^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$`)
+
+// majorVersionDir matches a Go module major-version path element, v2 and up.
+var majorVersionDir = regexp.MustCompile(`^v[0-9]+$`)
+
+// reservedModules cannot become package directories under tools/: Go keywords
+// are not package names, main cannot be imported, and vendor and testdata are
+// ignored or treated specially by the Go tool.
+var reservedModules = map[string]bool{
+	"break": true, "case": true, "chan": true, "const": true, "continue": true,
+	"default": true, "defer": true, "else": true, "fallthrough": true, "for": true,
+	"func": true, "go": true, "goto": true, "if": true, "import": true,
+	"interface": true, "map": true, "package": true, "range": true, "return": true,
+	"select": true, "struct": true, "switch": true, "type": true, "var": true,
+	"main": true, "vendor": true, "testdata": true,
+}
 
 // scaffoldName is one parsed `<module>.<operation>` scaffold request.
 type scaffoldName struct {
@@ -115,7 +133,13 @@ func parseName(raw string) (scaffoldName, error) {
 	if !namePattern.MatchString(raw) {
 		return scaffoldName{}, fmt.Errorf("name %q must be <module>.<tool> in lowercase snake_case, e.g. greeting.hello", raw)
 	}
+	if strings.Contains(raw, "__") {
+		return scaffoldName{}, fmt.Errorf("name %q must not contain %q", raw, "__")
+	}
 	module, operation, _ := strings.Cut(raw, ".")
+	if reservedModules[module] {
+		return scaffoldName{}, fmt.Errorf("module %q cannot be a Go package under tools/; choose another module", module)
+	}
 	words := strings.ReplaceAll(operation, "_", " ")
 	return scaffoldName{
 		Module:    module,
@@ -151,6 +175,11 @@ func checkExisting(root string, name scaffoldName, toolsSource []byte) error {
 	if bytes.Contains(toolsSource, []byte(name.Module+".NewModule()")) {
 		return fmt.Errorf("module %s is already wired in tools/tools.go", name.Module)
 	}
+	if imported, err := importCollision(toolsSource, name.Module); err != nil {
+		return fmt.Errorf("read imports of tools/tools.go: %w", err)
+	} else if imported != "" {
+		return fmt.Errorf("module %s would collide with the %q import in tools/tools.go; choose another module", name.Module, imported)
+	}
 	taken, err := toolNameTaken(filepath.Join(root, "tools"), name.Canonical)
 	if err != nil {
 		return err
@@ -159,6 +188,40 @@ func checkExisting(root string, name scaffoldName, toolsSource []byte) error {
 		return fmt.Errorf("Tool %s is already declared in a module", name.Canonical)
 	}
 	return nil
+}
+
+// importCollision reports the existing import whose package name would collide
+// with the new module's package identifier in tools.go. Parsing the imports
+// keeps this honest when the module list gains or drops a dependency.
+func importCollision(source []byte, module string) (string, error) {
+	file, err := parser.ParseFile(token.NewFileSet(), "tools.go", source, parser.ImportsOnly)
+	if err != nil {
+		return "", err
+	}
+	for _, spec := range file.Imports {
+		importPath, err := strconv.Unquote(spec.Path.Value)
+		if err != nil {
+			return "", err
+		}
+		name := path.Base(importPath)
+		// A module path can carry a version suffix on its last element
+		// (gopkg.in/yaml.v3 is package yaml), so trim the suffix before
+		// comparing package identifiers.
+		if dot := strings.LastIndex(name, "."); dot >= 0 {
+			name = name[:dot]
+		}
+		// A major-version directory (…/openai-go/v3) holds the parent's package.
+		if majorVersionDir.MatchString(name) {
+			name = path.Base(path.Dir(importPath))
+		}
+		if spec.Name != nil {
+			name = spec.Name.Name
+		}
+		if name == module {
+			return importPath, nil
+		}
+	}
+	return "", nil
 }
 
 // toolNameTaken scans the module sources for the canonical name as a string

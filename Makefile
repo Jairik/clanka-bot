@@ -37,6 +37,8 @@ test: ## Run the assistant, deployment and mic-check test suites.
 check: ## Check compose and Dockerfile deployment conventions.
 	bash scripts/check-compose.sh
 
+# make exports the command-line `name` variable; the generator reads it from
+# the environment so the value never becomes shell text.
 new-tool: ## Scaffold a Tool module: make new-tool name=<module>.<tool>
 	@test -n "$$name" || { \
 		echo "usage: make new-tool name=<module>.<tool>" >&2; \

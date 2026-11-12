@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -229,5 +230,102 @@ func TestHoldKeepsAnnouncementsQueuedUntilRelease(t *testing.T) {
 	expectPhrases(t, speaker, "A held reminder.")
 	if queue.Held() {
 		t.Fatal("Held() = true after Release()")
+	}
+}
+
+// TestUrgentAlertBypassesTheHold proves the Quiet-hours Reminder seam: an
+// urgent alert sounds while ordinary announcements stay held.
+func TestUrgentAlertBypassesTheHold(t *testing.T) {
+	speaker := newRecordingSpeaker()
+	queue := announce.New(speaker, testLogger())
+	t.Cleanup(queue.Close)
+
+	queue.Hold()
+	queue.Enqueue("A held announcement.")
+	queue.EnqueueAlert(func(context.Context) error {
+		return speaker.SayText(context.Background(), "Your reminder: check the oven.")
+	})
+
+	expectPhrases(t, speaker, "Your reminder: check the oven.")
+	expectSilence(t, speaker)
+	if queue.Len() != 1 {
+		t.Fatalf("queue holds %d items, want the ordinary one held", queue.Len())
+	}
+	queue.Release()
+	expectPhrases(t, speaker, "A held announcement.")
+}
+
+// TestUrgentAlertWaitsForTheTurn keeps the priority order: Quiet hours do not
+// let a Reminder interrupt a reply.
+func TestUrgentAlertWaitsForTheTurn(t *testing.T) {
+	speaker := newRecordingSpeaker()
+	queue := announce.New(speaker, testLogger())
+	t.Cleanup(queue.Close)
+
+	queue.Hold()
+	queue.TurnStarted()
+	queue.EnqueueAlert(func(context.Context) error {
+		return speaker.SayText(context.Background(), "Your reminder: check the oven.")
+	})
+	expectSilence(t, speaker)
+
+	queue.TurnFinished()
+	expectPhrases(t, speaker, "Your reminder: check the oven.")
+}
+
+// TestUrgentAlertWaitsForABlockedConfirmation keeps a pending Confirmation
+// ahead of an urgent alert without lifting the Quiet hold.
+func TestUrgentAlertWaitsForABlockedConfirmation(t *testing.T) {
+	speaker := newRecordingSpeaker()
+	var blocked atomic.Bool
+	blocked.Store(true)
+	queue := announce.New(speaker, testLogger(), announce.WithBlocked(func() bool { return blocked.Load() }))
+	t.Cleanup(queue.Close)
+
+	queue.Hold()
+	queue.EnqueueAlert(func(context.Context) error {
+		return speaker.SayText(context.Background(), "Your reminder: check the oven.")
+	})
+	expectSilence(t, speaker)
+
+	blocked.Store(false)
+	// The blocked predicate is opaque, so the worker rechecks it.
+	expectPhrasesWithTimeout(t, speaker, 2*time.Second, "Your reminder: check the oven.")
+}
+
+// TestUrgentAlertIsNotCollapsedIntoTheHeldSummary keeps a Reminder out of the
+// morning digest: only ordinary text items are summarised.
+func TestUrgentAlertIsNotCollapsedIntoTheHeldSummary(t *testing.T) {
+	speaker := newRecordingSpeaker()
+	queue := announce.New(speaker, testLogger(), announce.WithHoldSummary())
+	t.Cleanup(queue.Close)
+
+	queue.Hold()
+	queue.Enqueue("The bins go out tonight.")
+	queue.EnqueueAlert(func(context.Context) error {
+		return speaker.SayText(context.Background(), "Your reminder: check the oven.")
+	})
+	queue.Enqueue("The wash is done.")
+
+	expectPhrases(t, speaker, "Your reminder: check the oven.")
+	queue.Release()
+	expectPhrases(t, speaker, "While it was quiet: The bins go out tonight. The wash is done.")
+}
+
+// expectPhrasesWithTimeout is expectPhrases with a caller-chosen bound for a
+// gate that only rechecks on a timer.
+func expectPhrasesWithTimeout(t *testing.T, speaker *recordingSpeaker, timeout time.Duration, want ...string) {
+	t.Helper()
+	got := make([]string, 0, len(want))
+	for range want {
+		select {
+		case phrase := <-speaker.saidCh:
+			got = append(got, phrase)
+		case <-time.After(timeout):
+			t.Fatalf("spoken = %q, want %q", got, want)
+		}
+	}
+	if !equal(got, want) {
+		t.Fatalf("spoken = %q, want %q", got, want)
 	}
 }

@@ -27,6 +27,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/tools/audiocontrol"
 	"github.com/Jairik/clanka-bot/assistant/tools/clock"
 	quiettools "github.com/Jairik/clanka-bot/assistant/tools/quiet"
+	"github.com/Jairik/clanka-bot/assistant/tools/reminder"
 	"github.com/Jairik/clanka-bot/assistant/tools/timer"
 	"github.com/Jairik/clanka-bot/assistant/tools/voice"
 	"github.com/Jairik/clanka-bot/assistant/tools/weather"
@@ -52,6 +53,9 @@ var routingEvalTools = []string{
 	quiettools.OffName,
 	quiettools.DNDName,
 	quiettools.AwakeName,
+	reminder.SetName,
+	reminder.ListName,
+	reminder.CancelName,
 }
 
 const (
@@ -242,7 +246,7 @@ func (*evalAudio) Stop(context.Context) error              { return nil }
 // evalRegistry wires the real Tools with test-safe dependencies. Weather gets
 // a local upstream so every weather positive executes the handler, but no
 // request leaves the machine.
-func evalRegistry(t *testing.T) (*tool.Registry, *timer.Manager) {
+func evalRegistry(t *testing.T) (*tool.Registry, *timer.Manager, *reminder.Manager) {
 	t.Helper()
 	reg := tool.NewRegistry(5 * time.Second)
 	fixed := time.Date(2026, 11, 11, 15, 4, 0, 0, time.UTC)
@@ -306,7 +310,13 @@ func evalRegistry(t *testing.T) (*tool.Registry, *timer.Manager) {
 	if err := quiettools.NewModule().Register(reg, tool.Deps{Quiet: quietService, Clock: func() time.Time { return fixed }}); err != nil {
 		t.Fatalf("register quiet: %v", err)
 	}
-	return reg, manager
+	// Reminders are scheduled in memory; each evaluation utterance cancels
+	// them so list/cancel stay deterministic and no 20-minute callback leaks.
+	reminderModule := reminder.NewModule()
+	if err := reminderModule.Register(reg, tool.Deps{Clock: func() time.Time { return fixed }}); err != nil {
+		t.Fatalf("register reminder: %v", err)
+	}
+	return reg, manager, reminderModule.Manager()
 }
 
 type evalVerdict struct {
@@ -387,7 +397,7 @@ func TestRoutingEvalAgainstMiniLM(t *testing.T) {
 	}
 	floor := routingEvalPrecisionFloor
 
-	reg, manager := evalRegistry(t)
+	reg, manager, reminderManager := evalRegistry(t)
 	router := pipeline.NewSemanticRouter(reg, embed.NewClient(embedURL, "sentence-transformers/all-MiniLM-L6-v2"), pipeline.SemanticConfig{
 		Threshold: threshold,
 		Margin:    margin,
@@ -427,6 +437,7 @@ func TestRoutingEvalAgainstMiniLM(t *testing.T) {
 		// Timers must not outlive their utterance, and every call starts from
 		// an empty manager so timer.list and timer.cancel are deterministic.
 		manager.Cancel("")
+		reminderManager.Cancel("")
 
 		reason := ""
 		var top []pipeline.ToolScore

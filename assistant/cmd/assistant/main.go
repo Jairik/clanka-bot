@@ -351,6 +351,15 @@ func run() error {
 	if err := toolSet.RegisterAll(registry, deps, cfg.Tools.Sections); err != nil {
 		return fmt.Errorf("register tools: %w", err)
 	}
+	// Modules with a scheduler implement the optional Closer hook. Shutdown
+	// runs in reverse registration order and before the store closes, so a
+	// pending write can finish. This is deliberately generic: #53 can add its
+	// own lifecycle without another hardcoded block in main.
+	for _, module := range toolSet.Modules() {
+		if closer, ok := module.(tool.Closer); ok {
+			defer closer.Close()
+		}
+	}
 
 	// Tool enable/disable, Permission overrides and the user-facing wording all
 	// share the three layers. Definitions are built before the policy is

@@ -132,6 +132,18 @@ func (s *Store) Finish(ctx context.Context, id int64, state State, endedBy strin
 // history is honest and a later notification hook can act on it. It returns
 // the events it closed.
 func (s *Store) Recover(ctx context.Context, at time.Time) ([]Event, error) {
+	return s.recover(ctx, "", at)
+}
+
+// RecoverKind resolves only one kind's open events. The scheduler modules each
+// recover their own table, so a Timer startup cannot close a Reminder that is
+// waiting for the speaker and report it as a missed Timer.
+func (s *Store) RecoverKind(ctx context.Context, kind string, at time.Time) ([]Event, error) {
+	return s.recover(ctx, kind, at)
+}
+
+// recover closes the open events, optionally filtered to one kind.
+func (s *Store) recover(ctx context.Context, kind string, at time.Time) ([]Event, error) {
 	if s == nil || s.db == nil {
 		return nil, nil
 	}
@@ -139,10 +151,15 @@ func (s *Store) Recover(ctx context.Context, at time.Time) ([]Event, error) {
 	if err != nil {
 		return nil, fmt.Errorf("alertstore: begin recovery: %w", err)
 	}
-	rows, err := tx.QueryContext(ctx,
-		`SELECT id, kind, source_id, label, duration_ms, fires_at, fired_at, state, ended_by
-		 FROM alert_events WHERE state IN (?, ?) ORDER BY id`,
-		string(StateFired), string(StateRinging))
+	query := `SELECT id, kind, source_id, label, duration_ms, fires_at, fired_at, state, ended_by
+		 FROM alert_events WHERE state IN (?, ?)`
+	args := []any{string(StateFired), string(StateRinging)}
+	if kind != "" {
+		query += ` AND kind = ?`
+		args = append(args, kind)
+	}
+	query += ` ORDER BY id`
+	rows, err := tx.QueryContext(ctx, query, args...)
 	if err != nil {
 		tx.Rollback()
 		return nil, fmt.Errorf("alertstore: read open events: %w", err)

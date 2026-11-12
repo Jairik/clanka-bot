@@ -55,7 +55,9 @@ func (m *Manager) recover() error {
 	// A previous process may have crashed while an alert was fired or ringing.
 	// Resolve those open history rows first: they are missed, and the hook can
 	// tell #62. They are never rung again, preserving at-most-once delivery.
-	open, err := m.history.Recover(ctx, m.now())
+	// Only Timer rows are stopped here, so a concurrently recovered Reminder is
+	// not reported as a missed Timer.
+	open, err := m.history.RecoverKind(ctx, "timer", m.now())
 	if err != nil {
 		return err
 	}

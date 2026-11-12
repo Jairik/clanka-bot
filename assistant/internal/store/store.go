@@ -46,7 +46,9 @@ type migration struct {
 // states in voices/: the file, its size/mtime for replacement detection, the
 // model revision it was validated against, staleness, the last validation
 // error and the optional consent note. The active voice and rate are ordinary
-// settings rows.
+// settings rows. Version 8 holds Reminders: a message and the duration or clock
+// time it is due. Version 7 is reserved for the Alarm table (#53), so both
+// tickets keep unique, contiguous versions in either merge order.
 var migrations = []migration{
 	{
 		version: 1,
@@ -141,6 +143,24 @@ var migrations = []migration{
 				last_error         TEXT NOT NULL DEFAULT '',
 				note               TEXT NOT NULL DEFAULT ''
 			)`,
+		},
+	},
+	{
+		version: 8,
+		name:    "reminders",
+		statements: []string{
+			// message is the thing to say once when the Reminder is due. kind is
+			// duration or clock; duration_ms is zero for a clock time. The row is
+			// deleted in the same transaction that opens its alert history row.
+			`CREATE TABLE reminders (
+				id          INTEGER PRIMARY KEY AUTOINCREMENT,
+				message     TEXT NOT NULL,
+				kind        TEXT NOT NULL DEFAULT 'duration',
+				duration_ms INTEGER NOT NULL DEFAULT 0,
+				fires_at    INTEGER NOT NULL,
+				created_at  INTEGER NOT NULL
+			)`,
+			`CREATE INDEX reminders_fires_at ON reminders (fires_at)`,
 		},
 	},
 }

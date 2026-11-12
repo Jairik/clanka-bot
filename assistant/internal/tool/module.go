@@ -125,6 +125,14 @@ type IntentDeclarer interface {
 	Intents() []focus.Intent
 }
 
+// Closer is a Module's optional shutdown hook. main calls it once after the
+// registry stops taking requests, so a module with a scheduler can stop its
+// callbacks and finish a durable write before the database closes. Modules
+// without background work omit it.
+type Closer interface {
+	Close()
+}
+
 // SecretNames collects every secret declared by the modules, in module order,
 // with duplicate names collapsed. Blank declarations are omitted here and
 // rejected by the conformance suite.

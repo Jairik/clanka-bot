@@ -120,6 +120,55 @@ func TestRecoverClosesOnlyOpenEvents(t *testing.T) {
 	}
 }
 
+// TestRecoverKindLeavesAnotherSchedulerAlone proves the per-kind recovery seam:
+// a Timer startup must not close a Reminder that is waiting for the speaker.
+func TestRecoverKindLeavesAnotherSchedulerAlone(t *testing.T) {
+	ctx := context.Background()
+	history, st := openHistory(t)
+	at := time.UnixMilli(1_700_000_100_000)
+	timer := insertEvent(t, st.DB(), history, alertstore.Event{
+		Kind: "timer", SourceID: "timer", FiresAt: at, FiredAt: at, State: alertstore.StateFired,
+	})
+	reminder := insertEvent(t, st.DB(), history, alertstore.Event{
+		Kind: "reminder", SourceID: "reminder", FiresAt: at, FiredAt: at, State: alertstore.StateFired,
+	})
+
+	recovered, err := history.RecoverKind(ctx, "timer", at.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("RecoverKind: %v", err)
+	}
+	if len(recovered) != 1 || recovered[0].Kind != "timer" || recovered[0].ID != timer {
+		t.Fatalf("recovered = %+v, want only the timer row", recovered)
+	}
+	state := eventState(t, history, reminder)
+	if state != alertstore.StateFired {
+		t.Fatalf("reminder state = %q, want it still open", state)
+	}
+	if _, err := history.RecoverKind(ctx, "reminder", at.Add(2*time.Minute)); err != nil {
+		t.Fatalf("RecoverKind reminder: %v", err)
+	}
+	state = eventState(t, history, reminder)
+	if state != alertstore.StateMissed {
+		t.Fatalf("reminder after its own recovery = %q, want missed", state)
+	}
+}
+
+// eventState reads one row's state through List.
+func eventState(t *testing.T, history *alertstore.Store, id int64) alertstore.State {
+	t.Helper()
+	events, err := history.List(context.Background(), 20)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	for _, event := range events {
+		if event.ID == id {
+			return event.State
+		}
+	}
+	t.Fatalf("event %d not found", id)
+	return ""
+}
+
 // insertEvent writes one event in its own transaction, as the scheduler does.
 func insertEvent(t *testing.T, db *sql.DB, history *alertstore.Store, event alertstore.Event) int64 {
 	t.Helper()

@@ -98,6 +98,13 @@ type Manager struct {
 	wg      sync.WaitGroup
 	seq     int
 	entries map[string]*entry
+
+	// active holds one cancellable Ring context per fired Timer, keyed by the
+	// id its history row uses, so a cancel can end a Ring after the pending row
+	// and live entry are already gone. ringCancelled distinguishes a dashboard
+	// cancel from a shutdown for the history outcome.
+	active        map[string]context.CancelFunc
+	ringCancelled map[string]bool
 }
 
 // MissedAlert is the notification hook payload for a Timer that ran to
@@ -132,13 +139,15 @@ func NewManagerText(now func() time.Time, say func(ctx context.Context, text str
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Manager{
-		now:       now,
-		say:       say,
-		logger:    logger,
-		alertText: alertText,
-		ctx:       ctx,
-		cancel:    cancel,
-		entries:   make(map[string]*entry),
+		now:           now,
+		say:           say,
+		logger:        logger,
+		alertText:     alertText,
+		ctx:           ctx,
+		cancel:        cancel,
+		entries:       make(map[string]*entry),
+		active:        make(map[string]context.CancelFunc),
+		ringCancelled: make(map[string]bool),
 	}
 }
 
@@ -331,8 +340,28 @@ func (m *Manager) fire(id string) {
 		}
 	}
 
+	// One cancellable context per fired Timer lets a page or voice cancel end
+	// a Ring whose pending row and live entry are already gone.
+	ringCtx, ringCancel := context.WithCancel(rootCtx)
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		ringCancel()
+		m.finishEvent(eventID, alertstore.StateInterrupted, "shutdown")
+		return
+	}
+	m.active[timer.ID] = ringCancel
+	m.mu.Unlock()
+	defer func() {
+		ringCancel()
+		m.mu.Lock()
+		delete(m.active, timer.ID)
+		delete(m.ringCancelled, timer.ID)
+		m.mu.Unlock()
+	}()
+
 	if engine != nil {
-		result := engine.Ring(rootCtx, ring.Request{
+		result := engine.Ring(ringCtx, ring.Request{
 			Kind:         ring.Timer,
 			ID:           timer.ID,
 			Label:        timer.Label,
@@ -341,24 +370,42 @@ func (m *Manager) fire(id string) {
 			FallbackText: fallbackText(fallback, timer),
 			OnStart:      func() { m.markRinging(eventID) },
 		})
+		if m.releaseRing(timer.ID) {
+			result = ring.Result{Played: result.Played, Outcome: ring.OutcomeStopped, EndedBy: "cancel"}
+		}
 		m.finishRing(eventID, timer, result)
 		return
 	}
 
 	m.markRinging(eventID)
-	endedBy, _ := m.alert(timer, ringFn, say, focusRegistry)
+	endedBy, _ := m.alert(ringCtx, timer, ringFn, say, focusRegistry)
+	if m.releaseRing(timer.ID) {
+		endedBy = "cancel"
+	}
 	m.finishEvent(eventID, alertstore.StateStopped, endedBy)
+}
+
+// releaseRing removes the active Ring for id and reports whether a cancel
+// asked for it, so a cancelled Ring records stopped/cancel instead of a
+// shutdown.
+func (m *Manager) releaseRing(id string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.active, id)
+	cancelled := m.ringCancelled[id]
+	delete(m.ringCancelled, id)
+	return cancelled
 }
 
 // alert hands one firing Timer to the raw #55 Ring seam, then falls back to the
 // single spoken line. While either sounds it holds Focus at Ring priority.
-func (m *Manager) alert(timer Timer, ringFn func(context.Context, Timer) bool, say func(ctx context.Context, text string) error, focusRegistry *focus.Registry) (endedBy string, rang bool) {
+func (m *Manager) alert(parent context.Context, timer Timer, ringFn func(context.Context, Timer) bool, say func(ctx context.Context, text string) error, focusRegistry *focus.Registry) (endedBy string, rang bool) {
 	m.logger.Info("timer fired", "timer_id", timer.ID, "label", timer.Label)
 	if ringFn == nil && say == nil {
 		m.logger.Warn("timer alert dropped: speech is not configured", "timer_id", timer.ID)
 		return "dropped", false
 	}
-	ctx, cancel := context.WithTimeout(m.ctx, alertTimeout)
+	ctx, cancel := context.WithTimeout(parent, alertTimeout)
 	defer cancel()
 	var holder *alertHolder
 	if focusRegistry != nil {
@@ -590,7 +637,28 @@ func (m *Manager) CancelTimers(id string) (int, error) {
 		}
 		ids = append(ids, key)
 	}
-	return m.cancelLocked(ids, "timer_id", id)
+	cancelled, err := m.cancelLocked(ids, "timer_id", id)
+	if err != nil {
+		return cancelled, err
+	}
+	if id != "" {
+		if cancel := m.active[id]; cancel != nil {
+			// A fired Timer has no pending row or live entry; mark the Ring so
+			// its history row records stopped/cancel, then end it now.
+			m.ringCancelled[id] = true
+			cancel()
+			cancelled++
+			m.logger.Info("timer ring cancelled", "timer_id", id)
+		}
+		return cancelled, nil
+	}
+	for activeID, cancel := range m.active {
+		m.ringCancelled[activeID] = true
+		cancel()
+		cancelled++
+		m.logger.Info("timer ring cancelled", "timer_id", activeID)
+	}
+	return cancelled, nil
 }
 
 // CancelLabel stops every timer with the given label and reports how many.

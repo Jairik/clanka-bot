@@ -625,6 +625,19 @@ described under Sound library and Cue roles below. Its Ring section renders the
 per-kind Timer and Alarm definitions from the settings service, so a new key
 appears there without a page change.
 
+The **Scheduled alerts** page at `/alerts` lists every active Timer, Alarm and
+Reminder with its next fire time, label or message and kind, in the live
+timezone. Cancel stops one alert through its own manager id, so a ringing
+Alarm stops only that Ring. Each Alarm has an editor for its sound, volume and
+ramp overrides: a blank field keeps the current value, `0` is an explicit mute
+or no-ramp, and Default (or the reset button) clears the field back to
+`sounds.alarm_ring` and `ring.alarm.*` as NULL, never 0. The page calls the
+same `alarm.Manager.Update` as `alarm.update`, so voice and Dashboard cannot
+disagree. It also shows the newest missed Alerts and Timers from the shared
+local history (no pending row is required), bounded to the recent window.
+Forms work without JavaScript, use htmx for a same-page fragment, and every
+write needs the Dashboard identity plus a same-origin request.
+
 The **Secrets** page at `/secrets` lists every secret a Tool module or the
 Agent provider declares, with whether it is set, its last four characters
 (hidden for short values), the update time and the active source (`.env` or

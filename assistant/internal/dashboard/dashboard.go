@@ -20,6 +20,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/sound"
 	"github.com/Jairik/clanka-bot/assistant/internal/status"
 	"github.com/Jairik/clanka-bot/assistant/internal/toolpolicy"
+	"github.com/Jairik/clanka-bot/assistant/internal/tz"
 	"github.com/Jairik/clanka-bot/assistant/internal/voicelib"
 )
 
@@ -74,6 +75,14 @@ type Options struct {
 	Voices       *voicelib.Service
 	VoiceProbe   voicelib.Probe
 	VoicePreview VoicePreview
+	// ToolModules is the one wired Tool module list. The Scheduled alerts page
+	// reaches the Timer, Alarm and Reminder managers through it instead of
+	// adding three per-domain manager fields, so it cannot wire a second
+	// registry that disagrees with the voice Tools.
+	ToolModules ModuleProvider
+	// Zone supplies the live timezone for displaying and cancelling alerts.
+	// Nil means UTC; the page reads it per render, never snapshots it.
+	Zone *tz.Service
 	// Personas backs the Persona page: the same library and atomic selection
 	// the persona Tools use. The page is read-only when it is nil.
 	Personas *persona.Service
@@ -99,6 +108,9 @@ type Handler struct {
 	voices       *voicelib.Service
 	voiceProbe   voicelib.Probe
 	voicePreview VoicePreview
+	toolModules  ModuleProvider
+	zone         *tz.Service
+	now          func() time.Time
 	personas     *persona.Service
 	proxyAllowed func(net.IP) bool
 	templates    *template.Template
@@ -157,6 +169,9 @@ func New(opts Options) (*Handler, error) {
 		voices:       opts.Voices,
 		voiceProbe:   opts.VoiceProbe,
 		voicePreview: opts.VoicePreview,
+		toolModules:  opts.ToolModules,
+		zone:         opts.Zone,
+		now:          now,
 		personas:     opts.Personas,
 		proxyAllowed: opts.ProxyAllowed,
 		templates:    templates,
@@ -210,6 +225,13 @@ func New(opts Options) (*Handler, error) {
 	h.Mutating("POST /settings/tools/{name}/reset", h.settingsToolReset)
 	h.Mutating("POST /settings/values/{key}", h.settingsValueSave)
 	h.Mutating("POST /settings/values/{key}/reset", h.settingsValueReset)
+	// The Scheduled alerts page lists every active Timer, Alarm and Reminder,
+	// cancels one by its manager id, and edits the per-Alarm Ring overrides.
+	// Every write goes through Mutating for identity and same-origin.
+	h.Handle("/alerts", h.alertsPage)
+	h.Mutating("POST /alerts/{kind}/{id}/cancel", h.alertCancel)
+	h.Mutating("POST /alerts/alarms/{id}", h.alertAlarmUpdate)
+	h.Mutating("POST /alerts/alarms/{id}/reset", h.alertAlarmReset)
 	h.Mutating("POST /secrets/{name}", h.secretsSet)
 	h.Mutating("POST /secrets/{name}/clear", h.secretsClear)
 	h.Handle("/", h.index)

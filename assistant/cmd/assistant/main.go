@@ -824,8 +824,12 @@ func run() error {
 			Voices:        voiceSvc,
 			VoiceProbe:    voiceProbe,
 			VoicePreview:  voicePreview,
-			Personas:      personaSvc,
-			API:           apiHandler,
+			// One module list reaches the Timer, Alarm and Reminder managers
+			// for the Scheduled alerts page; no second registry is created.
+			ToolModules: toolSet,
+			Zone:        zone,
+			Personas:    personaSvc,
+			API:         apiHandler,
 		})
 		if err != nil {
 			return err

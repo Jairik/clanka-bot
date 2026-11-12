@@ -14,6 +14,7 @@
     <div class="brand">assistant<span>·</span>dashboard</div>
     <nav aria-label="Dashboard">
       <a href="/health" {{if eq .Page "health"}}aria-current="page"{{end}}>Health</a>
+      <a href="/alerts" {{if eq .Page "alerts"}}aria-current="page"{{end}}>Alerts</a>
       <a href="/sounds" {{if eq .Page "sounds"}}aria-current="page"{{end}}>Sounds</a>
       <a href="/voices" {{if eq .Page "voices"}}aria-current="page"{{end}}>Voices</a>
       <a href="/personas" {{if eq .Page "personas"}}aria-current="page"{{end}}>Personas</a>

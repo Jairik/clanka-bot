@@ -88,6 +88,30 @@ func TestQueuedAudioWaitsForABlockedConfirmation(t *testing.T) {
 	player.waitStarted(t)
 }
 
+// A blocked predicate can clear without a queue event, such as a Ring that
+// times out while a preview waits; the preview must still start on its own.
+func TestQueuedAudioResumesWhenTheBlockedGateClears(t *testing.T) {
+	var mu sync.Mutex
+	blocked := true
+	queue := announce.New(nil, testLogger(), announce.WithPlayback(), announce.WithBlocked(func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return blocked
+	}))
+	defer queue.Close()
+	player := newPlaybackRecorder()
+
+	if !queue.EnqueuePlay(player.play) {
+		t.Fatal("EnqueuePlay rejected an audio item")
+	}
+	player.expectNoStart(t)
+
+	mu.Lock()
+	blocked = false
+	mu.Unlock()
+	player.waitStarted(t)
+}
+
 func TestTurnStartedCancelsAPlayingPreview(t *testing.T) {
 	queue := announce.New(newRecordingSpeaker(), testLogger())
 	defer queue.Close()
@@ -134,5 +158,24 @@ func TestEnqueuePlayRejectedAfterClose(t *testing.T) {
 	queue.Close()
 	if queue.EnqueuePlay(func(context.Context) error { return nil }) {
 		t.Fatal("EnqueuePlay accepted an item after Close")
+	}
+}
+
+// Close must join the worker even while an opaque gate keeps an item queued,
+// so a shutdown never leaves the playback goroutine behind.
+func TestCloseStopsABlockedWorker(t *testing.T) {
+	queue := announce.New(nil, testLogger(), announce.WithPlayback(), announce.WithBlocked(func() bool { return true }))
+	if !queue.EnqueuePlay(func(context.Context) error { return nil }) {
+		t.Fatal("EnqueuePlay rejected an audio item")
+	}
+	closed := make(chan struct{})
+	go func() {
+		queue.Close()
+		close(closed)
+	}()
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not stop the blocked worker")
 	}
 }

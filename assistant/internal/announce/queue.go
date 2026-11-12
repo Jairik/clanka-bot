@@ -10,7 +10,12 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
+	"time"
 )
+
+// blockedRecheck bounds how long a queued item waits for an opaque blocked
+// predicate to clear without a queue event, such as a Ring that times out.
+const blockedRecheck = 250 * time.Millisecond
 
 // Speaker speaks one line of unprompted speech. speech.Speaker satisfies it.
 type Speaker interface {
@@ -232,11 +237,6 @@ func (q *Queue) Close() {
 func (q *Queue) run() {
 	defer close(q.done)
 	for {
-		select {
-		case <-q.ctx.Done():
-			return
-		case <-q.wake:
-		}
 		for {
 			next, ok := q.next()
 			if !ok {
@@ -244,7 +244,31 @@ func (q *Queue) run() {
 			}
 			q.playItem(next)
 		}
+		// Every other gate wakes the queue when it changes. The blocked
+		// predicate is opaque, so recheck it while it is the only reason to
+		// wait; a Ring ending without a turn must still resume a preview.
+		var recheck <-chan time.Time
+		if q.blockedWaiting() {
+			recheck = time.After(blockedRecheck)
+		}
+		select {
+		case <-q.ctx.Done():
+			return
+		case <-q.wake:
+		case <-recheck:
+		}
 	}
+}
+
+// blockedWaiting reports that only the blocked predicate keeps a queued item
+// from starting.
+func (q *Queue) blockedWaiting() bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	if q.closed || q.held || q.turns > 0 || q.playing || len(q.items) == 0 {
+		return false
+	}
+	return q.blocked != nil && q.blocked()
 }
 
 // next claims the oldest item when one may start now.

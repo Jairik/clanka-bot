@@ -20,9 +20,13 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
+	quietcore "github.com/Jairik/clanka-bot/assistant/internal/quiet"
+	"github.com/Jairik/clanka-bot/assistant/internal/settings"
+	"github.com/Jairik/clanka-bot/assistant/internal/store"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/tools/audiocontrol"
 	"github.com/Jairik/clanka-bot/assistant/tools/clock"
+	quiettools "github.com/Jairik/clanka-bot/assistant/tools/quiet"
 	"github.com/Jairik/clanka-bot/assistant/tools/timer"
 	"github.com/Jairik/clanka-bot/assistant/tools/voice"
 	"github.com/Jairik/clanka-bot/assistant/tools/weather"
@@ -44,6 +48,10 @@ var routingEvalTools = []string{
 	voice.ListName,
 	voice.CurrentName,
 	voice.RateName,
+	quiettools.SetName,
+	quiettools.OffName,
+	quiettools.DNDName,
+	quiettools.AwakeName,
 }
 
 const (
@@ -278,6 +286,25 @@ func evalRegistry(t *testing.T) (*tool.Registry, *timer.Manager) {
 	// eval owns no database or voice files.
 	if err := voice.NewModule().Register(reg, tool.Deps{}); err != nil {
 		t.Fatalf("register voice: %v", err)
+	}
+	// Quiet hours needs a real settings service and store; the corpus executes
+	// the handlers, so the window and volume writes must be real.
+	st, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "data", "assistant.db"))
+	if err != nil {
+		t.Fatalf("open eval store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	quietSettings, err := settings.New(context.Background(), st, quietcore.Definitions(quietcore.DefaultConfig())...)
+	if err != nil {
+		t.Fatalf("quiet settings: %v", err)
+	}
+	quietService := quietcore.New(quietcore.Options{
+		Reader: quietSettings,
+		Now:    func() time.Time { return fixed },
+	})
+	quietService.BindWriter(quietSettings)
+	if err := quiettools.NewModule().Register(reg, tool.Deps{Quiet: quietService, Clock: func() time.Time { return fixed }}); err != nil {
+		t.Fatalf("register quiet: %v", err)
 	}
 	return reg, manager
 }

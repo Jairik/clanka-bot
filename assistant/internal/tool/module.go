@@ -10,6 +10,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
 	"github.com/Jairik/clanka-bot/assistant/internal/namematch"
+	"github.com/Jairik/clanka-bot/assistant/internal/quiet"
 	"github.com/Jairik/clanka-bot/assistant/internal/ring"
 	"github.com/Jairik/clanka-bot/assistant/internal/sound"
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
@@ -62,6 +63,10 @@ type Deps struct {
 	// voices and Spotify playlists. It reads the live threshold per lookup and
 	// never forces a guess; nil means a module cannot resolve spoken names.
 	Names *namematch.Matcher
+	// Quiet is the live Quiet hours service. The Quiet Tools write through it,
+	// and a future Reminder (#54) can use its Speak/Clip helpers so its speech
+	// and Cue obey quiet.volume. Nil means Quiet hours are unavailable.
+	Quiet *quiet.Service
 	// Voices is the persistent voice library and active selection shared with
 	// the Dashboard. The voice Tools read and write it; nil registration is
 	// allowed so the conformance suite can check metadata without a database.

@@ -307,6 +307,94 @@ positives:
     - slow down a little
     - return to your normal speaking rate
     - can you slow down your voice
+  quiet.set:
+    # The daily window: two clock times, including the common reversed
+    # "from 10:30 to 7" phrasing that means 10:30 pm to 7 am.
+    - set quiet hours from 10:30 to 7
+    - set quiet hours from 11 pm to 6 am
+    - set quiet hours from 9 at night to 6 in the morning
+    - set my quiet hours from 10 pm to 7 am
+    - quiet hours from 11:30 pm until 6:30 am
+    - quiet hours from 10 at night to 7 in the morning
+    - change quiet hours to 10 pm to 7 am
+    - make quiet hours from 10:30 to 7
+    - set the quiet window from 9 pm to 6 am
+    - quiet hours should run from 11 to 7
+    - configure quiet hours from 10 pm until 7 am
+    - start quiet hours at 10 pm and end at 7
+    - quiet hours every night from 10:30 to 7
+    - I want quiet hours from 11 pm to 7 am
+    - set quiet time from 10:30 pm to 7 am
+    - quiet hours begin at 10 and end at 6
+    - change my quiet hours to 11 pm to 6 am
+    - set nightly quiet hours from 10:30 to 7
+    - quiet hours from 9 in the evening to 6 in the morning
+    - quiet hours from 10:30 in the evening to 7 in the morning
+  quiet.off:
+    - turn off quiet hours
+    - disable quiet hours
+    - quiet hours off
+    - stop quiet hours
+    - turn quiet hours off
+    - cancel quiet hours
+    - end quiet hours
+    - quiet hours are over
+    - I don't want quiet hours anymore
+    - remove quiet hours
+    - switch off quiet hours
+    - quiet hours aren't needed
+    - get rid of quiet hours
+    - deactivate quiet hours
+    - turn off the quiet window
+    - no more quiet hours
+    - quiet hours should be disabled
+    - stop the quiet schedule
+    - turn off nightly quiet hours
+    - disable my quiet hours
+  quiet.dnd:
+    # A timed do-not-disturb period, distinct from the daily window.
+    - do not disturb for two hours
+    - do not disturb for 30 minutes
+    - turn on do not disturb for an hour
+    - mute everything for an hour
+    - dnd for 45 minutes
+    - be quiet for the next two hours
+    - do not disturb me for 90 minutes
+    - silence things for 20 minutes
+    - quiet down for the next hour
+    - hold everything for two hours
+    - set do not disturb for 15 minutes
+    - turn on dnd for two hours
+    - pause notifications for 10 minutes
+    - keep things quiet for 30 minutes
+    - I need quiet for the next two hours
+    - turn on do not disturb mode for 1 hour
+    - start do not disturb for 3 hours
+    - give me two hours of quiet
+    - mute the house for an hour
+    - do not disturb for 20 minutes
+  quiet.awake:
+    # Ending only the current window, not the schedule.
+    - I'm awake
+    - I am awake
+    - I'm up
+    - I am up now
+    - I'm awake now
+    - I'm already awake
+    - I'm up for the day
+    - I'm awake, you can talk normally
+    - I'm awake and up
+    - I'm awake, stop whispering
+    - stop whispering, I'm awake
+    - I'm awake, speak normally
+    - I'm awake, no need to whisper
+    - awake now
+    - I'm awake, normal volume please
+    - I'm awake, you can be loud again
+    - I'm awake, back to normal
+    - I'm up now, no more whispering
+    - I'm awake, end the quiet please
+    - I'm awake, quiet time is over
 negatives:
   - what's the capital of France
   - who wrote hamlet
@@ -375,6 +463,18 @@ negatives:
   - change the voice memo settings on my phone
   - speak after the tone
   - make the music louder
+  - what are my quiet hours
+  - why is my phone on do not disturb
+  - do not disturb is enabled on my phone
+  - sleep mode on my phone
+  - I woke up at 7 this morning
+  - set an alarm for 7 am
+  - remind me to be quiet at 10
+  - play some quiet music
+  - turn down the volume
+  - good night
+  - how many hours until morning
+  - set quiet hours
 # Compound requests ask for more than one thing. They are kept separate so
 # the evaluation can report compound handling on its own.
 compounds:
@@ -388,6 +488,8 @@ compounds:
   - stop talking and tell me the time
   - change your voice to jarvis and speak faster
   - tell me what voice you use and what time it is
+  - set quiet hours from 10 to 7 and set a timer for five minutes
+  - do not disturb for two hours and set a timer for five minutes
 # Focus cases: the same shared word must reach whatever holds Focus. Each case
 # names the holders present, the phrase's intent, and which holder wins. An
 # empty handled_by means no present holder declares the intent, so the utterance

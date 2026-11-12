@@ -13,6 +13,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/agent"
 	"github.com/Jairik/clanka-bot/assistant/internal/dashboard"
 	"github.com/Jairik/clanka-bot/assistant/internal/namematch"
+	quietcore "github.com/Jairik/clanka-bot/assistant/internal/quiet"
 	"github.com/Jairik/clanka-bot/assistant/internal/ring"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
@@ -94,6 +95,9 @@ func newSettingsFixture(t *testing.T) *settingsFixture {
 	// The per-kind Ring settings are ordinary live settings; #48's page must
 	// expose them dynamically, including the Timer/Alarm split.
 	defs = append(defs, ring.Definitions()...)
+	// Quiet hours is grouped into its own Dashboard panel, but it is the same
+	// live settings service as every other value.
+	defs = append(defs, quietcore.Definitions(quietcore.DefaultConfig())...)
 	svc, err := settings.New(ctx, st, defs...)
 	if err != nil {
 		t.Fatalf("settings.New: %v", err)
@@ -518,4 +522,31 @@ func pageSection(t *testing.T, body, id string) string {
 		}
 	}
 	return section[:end]
+}
+
+func TestSettingsQuietHoursPanelSavesTheSameOverride(t *testing.T) {
+	f := newSettingsFixture(t)
+	rec := f.get("/settings")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Quiet hours") || !strings.Contains(body, `id="setting-quiet.volume"`) {
+		t.Fatalf("the Quiet hours panel is missing: %s", body)
+	}
+	resp := f.post("/settings/values/quiet.volume", url.Values{"value": {"40"}})
+	if resp.Code != http.StatusSeeOther {
+		t.Fatalf("save status = %d, body = %s", resp.Code, resp.Body.String())
+	}
+	value, _ := f.settings.Get(quietcore.VolumeKey)
+	if value.Value != 40 || value.Source != settings.SourceOverride {
+		t.Fatalf("quiet.volume = %+v, want a stored Dashboard override", value)
+	}
+	resp = f.post("/settings/values/quiet.start", url.Values{"value": {"21:15"}})
+	if resp.Code != http.StatusSeeOther {
+		t.Fatalf("start save status = %d, body = %s", resp.Code, resp.Body.String())
+	}
+	if got := f.settings.String(quietcore.StartKey); got != "21:15" {
+		t.Fatalf("quiet.start = %q, want the Dashboard value", got)
+	}
 }

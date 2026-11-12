@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
+	"github.com/Jairik/clanka-bot/assistant/internal/quiet"
 	"github.com/Jairik/clanka-bot/assistant/internal/tz"
 	"gopkg.in/yaml.v3"
 )
@@ -91,7 +92,11 @@ type Config struct {
 	// Sounds is the config layer for the five fixed Cue roles. Each value is a
 	// built-in name, a WAV file in data/sounds, a volume path, or none. Empty
 	// leaves the built-in chime; a stored override wins.
-	Sounds         Sounds            `yaml:"sounds"`
+	Sounds Sounds `yaml:"sounds"`
+	// Quiet is the config layer for the live Quiet hours settings. The daily
+	// window is evaluated in the effective timezone; the Dashboard and the
+	// quiet.* Tools write the same stored overrides.
+	Quiet          Quiet             `yaml:"quiet"`
 	ControlPhrases map[string]string `yaml:"control_phrases"`
 	Embed          struct {
 		URL     string   `yaml:"url"`
@@ -177,6 +182,13 @@ type AgentHistory struct {
 	Quiet Duration `yaml:"quiet"`
 }
 
+// Quiet is the config layer for the daily Quiet hours window and its absolute
+// volume. It is the quiet package's typed config, so the YAML layer and the
+// settings definitions cannot drift. Start and end are local clock strings such
+// as "22:30"; an end earlier than the start crosses midnight. A stored
+// Dashboard or voice override wins.
+type Quiet = quiet.Config
+
 // Voice configures the custom voice-state library. Files are pre-exported
 // Pocket TTS .safetensors states; the folder is mounted read-only into tts and
 // never baked into an image.
@@ -250,6 +262,7 @@ func Default() Config {
 	cfg.Semantic.Margin = 0.08
 	cfg.Semantic.Joiners = []string{"and", "then", "also"}
 	cfg.NameMatch.Threshold = 0.60
+	cfg.Quiet = Quiet{Enabled: false, Start: "22:30", End: "07:00", Volume: 35}
 	cfg.TTS.Voice = "alba"
 	cfg.TTS.Timeout = Duration(30 * time.Second)
 	// Custom voice states live beside the database on the data volume. Compose
@@ -473,6 +486,12 @@ func (c Config) Validate() error {
 	}
 	if c.NameMatch.Threshold <= 0 || c.NameMatch.Threshold > 1 {
 		return fmt.Errorf("config: name_match.threshold must be in (0, 1]")
+	}
+	if err := quiet.ValidateWindow(c.Quiet.Start, c.Quiet.End); err != nil {
+		return fmt.Errorf("config: quiet: %w", err)
+	}
+	if c.Quiet.Volume < 0 || c.Quiet.Volume > 100 {
+		return fmt.Errorf("config: quiet.volume must be between 0 and 100")
 	}
 	if c.TTS.Addr != "" {
 		if c.TTS.Timeout.Duration() <= 0 {

@@ -137,6 +137,8 @@ according to `ring.timer.speak_label`, and keeps ringing until `stop`/`snooze`
 or `ring.timer.max_ring` (default 5 min). `snooze` on a Timer acts as stop.
 Reaching max_ring records the alert as missed in `alert_events`; the
 `Manager.SetMissedHook` seam is where #62 will send the ntfy Notification.
+Inside Quiet hours a Timer Ring and its label use `quiet.volume`; an Alarm is
+exempt and keeps its own Ring volume.
 
 A Ring waits for the current reply sentence to finish (not the whole reply),
 then takes the one speaker; the reply's next sentence waits for the Ring and
@@ -181,6 +183,50 @@ curl -s -X POST localhost:8081/debug/announce \
 
 Quiet hours will hold and release the same queue; nothing is spoken while a
 hold is on.
+
+#### Quiet hours
+
+Quiet hours is one daily window in the effective `timezone` (an end earlier
+than the start crosses midnight), a timed do-not-disturb period, and an
+`I'm awake` bypass. All three write the same live settings the Dashboard edits:
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `quiet.enabled` | `false` | Turn the daily window on or off |
+| `quiet.start` | `22:30` | Local window start, `HH:MM` |
+| `quiet.end` | `07:00` | Local window end, `HH:MM` |
+| `quiet.volume` | `35` | Absolute reply/Timer/Reminder volume percent |
+| `quiet.dnd_until` | empty | Timed do-not-disturb end, RFC3339 |
+| `quiet.awake_until` | empty | End of a bypassed window, RFC3339 |
+
+Inside it, text Announcements stay queued and are released as **one** summary
+line when the window ends; a model is not called to write it. Dashboard audio
+previews keep their own queue slots and are played, never narrated as text. The
+summary and previews still wait for the current reply, a pending Confirmation
+and a ringing alert, and Barge-in cancels them like any other unprompted sound.
+Notifications are muted through the `quiet.Service.AllowDelivery` hook (#62
+wires ntfy later). Replies, Fillers, the Unavailable cue, Timer Rings and
+Reminders use `quiet.volume` as an **absolute** software gain; the host media
+volume is never changed, so there is nothing to restore. Alarms Ring at their
+normal volume, including a Ring recovered during startup.
+
+Say any of these; each is an `act` Local-only Tool that confirms what changed:
+
+```text
+set quiet hours from 10:30 to 7
+turn off quiet hours
+do not disturb for two hours
+I'm awake
+```
+
+`quiet.set` treats the reversed "from 10:30 to 7" as 10:30 pm to 7 am. `I'm
+awake` clears do-not-disturb and skips only the rest of the current window; the
+daily schedule stays on and holds again the next night. Outside a window it
+just clears do-not-disturb. `turn off quiet hours` disables the schedule and
+clears both overrides. The Dashboard Settings page groups the same six values
+under **Quiet hours**; a saved change applies within a second without a
+request, because one small controller reevaluates at the next boundary or every
+second and never replaces the wording manager's settings observer.
 
 #### Voice library and rate
 

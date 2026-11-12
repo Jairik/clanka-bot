@@ -8,8 +8,8 @@ misroute from the request log.
 ## What is checked in
 
 - `assistant/internal/pipeline/testdata/routing_eval.yaml` — the labelled
-  oracle. It has at least 20 positives for each Fast path Tool (266 total), 63
-  plain negatives, and 10 compound requests.
+  oracle. It has at least 20 positives for each of the seventeen Fast path Tools
+  (346 total), 75 plain negatives, and 12 compound requests.
 - `assistant/internal/pipeline/testdata/routing_baseline.yaml` — the recorded
   Map 1 totals the real-MiniLM evaluation must not fall below.
 - `assistant/internal/pipeline/routing_eval_test.go` —
@@ -133,44 +133,39 @@ above the 0.95 precision floor. Run against
 | `time.now` | 20 | 13 | 5 | 8 | 0 | 7 | 1.00 | 0.65 |
 | `date.today` | 20 | 18 | 0 | 18 | 0 | 2 | 1.00 | 0.90 |
 | `weather.current` | 20 | 11 | 4 | 7 | 0 | 9 | 1.00 | 0.55 |
-| `audio.volume_set` | 20 | 15 | 1 | 14 | 0 | 5 | 1.00 | 0.75 |
-| `audio.stop` | 20 | 10 | 0 | 10 | 0 | 10 | 1.00 | 0.50 |
-| `timer.set` | 26 | 12 | 0 | 12 | 0 | 14 | 1.00 | 0.4615 |
+| `audio.volume_set` | 20 | 12 | 1 | 11 | 0 | 8 | 1.00 | 0.60 |
+| `audio.stop` | 20 | 9 | 0 | 9 | 0 | 11 | 1.00 | 0.45 |
+| `timer.set` | 26 | 11 | 0 | 11 | 0 | 15 | 1.00 | 0.4231 |
 | `timer.cancel` | 20 | 15 | 0 | 15 | 0 | 5 | 1.00 | 0.75 |
 | `timer.remaining` | 20 | 9 | 0 | 9 | 0 | 11 | 1.00 | 0.45 |
 | `timer.list` | 20 | 12 | 0 | 12 | 0 | 8 | 1.00 | 0.60 |
-| **Total** | **186** | **115** | **10** | **105** | **0** | **71** | **1.00** | **0.6183** |
+| `voice.set` | 20 | 20 | 0 | 20 | 0 | 0 | 1.00 | 1.00 |
+| `voice.list` | 20 | 6 | 4 | 2 | 0 | 14 | 1.00 | 0.30 |
+| `voice.current` | 20 | 8 | 3 | 5 | 0 | 12 | 1.00 | 0.40 |
+| `voice.rate` | 20 | 16 | 2 | 14 | 0 | 4 | 1.00 | 0.80 |
+| `quiet.set` | 20 | 20 | 0 | 20 | 0 | 0 | 1.00 | 1.00 |
+| `quiet.off` | 20 | 16 | 2 | 14 | 0 | 4 | 1.00 | 0.80 |
+| `quiet.dnd` | 20 | 20 | 0 | 20 | 0 | 0 | 1.00 | 1.00 |
+| `quiet.awake` | 20 | 20 | 2 | 18 | 0 | 0 | 1.00 | 1.00 |
+| **Total** | **346** | **236** | **23** | **213** | **0** | **110** | **1.00** | **0.6821** |
 
-These are the numbers after the #34 fix in the final fix pass, updated for #44
-and #51. The router now trims trailing sentence punctuation and collapses
-whitespace before embedding, so the two observed STT forms
-(`Set a timer for ten minutes.`, `Set a timer for ten seconds.`) pass;
-`timer.set` TP rose from 8 to 10 without changing threshold or margin. #44 moved
-the `stop`, `pause` and `cancel` Control phrases to shared Focus intents and
-added `audio.stop`/`timer.cancel` Examples for the bare words; with no holder
-those phrases now reach the same Tools through the semantic router. #51 added
-`timer.remaining` and more `timer.set`/`timer.list` positives. The total is now
-115/186 (recall 0.6183) with precision 1.00 and no negative or compound
-misroute, while the per-Tool precision floor and the Map 1 baseline gate stayed
-unchanged. The raw `ROUTING_EVAL_*` lines are in
-[`prototype-run/routing-eval-after-fixes.txt`](prototype-run/routing-eval-after-fixes.txt)
-for the pre-#44/#51 run.
+These numbers are from the #61 Quiet hours tree after the #63 voice merge and
+include the earlier #34, #44 and #51 corpus additions. Precision is 1.00 with
+no negative or compound misroute, and every Tool clears the 0.95 floor. The
+voice recall stays deliberately conservative for list/current questions; the
+Agent path answers them. Four natural `quiet.off` phrasings ("disable quiet
+hours", "switch off quiet hours", "get rid of quiet hours", "turn off nightly
+quiet hours") fall to the Agent path because the `quiet.set` vectors are close;
+recall is not a floor, and adding more near duplicates would not make the split
+more reliable. The other conservative Tools are the timer/list confusions
+described below.
 
-#63 added the four voice Tools and 80 positive voice utterances. The final run
-on the merged corpus is 165/266 (recall 0.6203) with precision 1.00, 0 of 63
-plain negatives and 0 of 10 compounds misrouted. `voice.set` resolves every
-positive; `voice.list`/`voice.current` are conservative because their
-paraphrases are close to each other, so their common exact phrasings are also
-Control phrases and the rest fall to the Agent path rather than guess. Per-Tool
-precision stays at 1.00 and each voice Tool has semantic true positives, so no
-Tool clears the floor only through Control phrases.
-
-Plain negatives: **0 of 63** reached the Fast path. Compounds: **0 of 10**
-reached the Fast path. Every Tool was exercised by the semantic router at
-least five times, so no Tool cleared the floor only because the Control phrase
-table happened to cover its positives. The timer and list confusions are the
-main reason recall is conservative; those requests go to the Agent path rather
-than risking a wrong timer action.
+Plain negatives: **0 of 75** reached the Fast path. Compounds: **0 of 12**
+reached the Fast path. Every Tool is exercised by the semantic router at least
+five times, so no Tool clears the floor only because the Control phrase table
+happened to cover its positives. The timer and list confusions are the main
+reason recall is conservative; those requests go to the Agent path rather than
+risking a wrong timer action.
 
 ### Focus cases
 

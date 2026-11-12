@@ -154,4 +154,5 @@ the review pin.
 2. Confirm the loopback smoke (`curl -H 'Tailscale-User-Login: …'
    http://127.0.0.1:8082/health`) and then the HTTPS `*.ts.net` URL.
 3. Run the Pi hardware/audio and provider gates on real hardware before closing
-   the open tickets above.
+   the open tickets above. The step-by-step runbook for these gates is
+   [docs/runbooks/map-2-acceptance.md](runbooks/map-2-acceptance.md).

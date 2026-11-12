@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -28,6 +29,39 @@ func TestNewAppliesKeepAliveDefaults(t *testing.T) {
 	}
 	if transport.IdleConnTimeout == 0 || transport.ResponseHeaderTimeout == 0 {
 		t.Fatal("connection and header timeouts must be bounded")
+	}
+}
+
+func TestNewHonoursNoProxyAndCustomDial(t *testing.T) {
+	t.Setenv("HTTP_PROXY", "http://proxy.invalid:3128")
+	t.Setenv("HTTPS_PROXY", "http://proxy.invalid:3128")
+	called := false
+	client := httpclient.New(httpclient.Options{
+		Timeout: time.Second,
+		NoProxy: true,
+		DialContext: func(context.Context, string, string) (net.Conn, error) {
+			called = true
+			return nil, fmt.Errorf("custom dial")
+		},
+	})
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("Transport = %T, want *http.Transport", client.Transport)
+	}
+	// A proxy would connect on the caller's behalf, so the SSRF dial policy
+	// must see the real destination even when the environment names one.
+	if transport.Proxy != nil {
+		t.Fatal("NoProxy left an environment proxy in the transport")
+	}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://example.test/", nil)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	if _, err := client.Do(req); err == nil {
+		t.Fatal("request succeeded, want the custom dial error")
+	}
+	if !called {
+		t.Fatal("the custom DialContext was not used")
 	}
 }
 

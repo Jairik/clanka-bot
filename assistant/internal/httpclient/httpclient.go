@@ -5,8 +5,10 @@
 package httpclient
 
 import (
+	"context"
 	"net"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -26,6 +28,14 @@ type Options struct {
 	DialTimeout           time.Duration
 	TLSHandshakeTimeout   time.Duration
 	ResponseHeaderTimeout time.Duration
+	// DialContext, when set, replaces the default net.Dialer. A caller that
+	// must vet the destination (web.fetch's SSRF policy) pins the literal IP
+	// here instead of letting the resolver run a second, unvetted lookup.
+	DialContext func(ctx context.Context, network, address string) (net.Conn, error)
+	// NoProxy disables HTTP_PROXY/HTTPS_PROXY lookup. A proxy would connect to
+	// its own destination, so a caller's dial-time address policy would never
+	// see the real host.
+	NoProxy bool
 }
 
 const (
@@ -65,12 +75,22 @@ func New(opts Options) *http.Client {
 		opts.ResponseHeaderTimeout = opts.Timeout
 	}
 
+	dialer := &net.Dialer{
+		Timeout:   opts.DialTimeout,
+		KeepAlive: 30 * time.Second,
+	}
+	dial := opts.DialContext
+	if dial == nil {
+		dial = dialer.DialContext
+	}
+	var proxy func(*http.Request) (*url.URL, error)
+	if !opts.NoProxy {
+		proxy = http.ProxyFromEnvironment
+	}
+
 	transport := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
-		DialContext: (&net.Dialer{
-			Timeout:   opts.DialTimeout,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
+		Proxy:                 proxy,
+		DialContext:           dial,
 		ForceAttemptHTTP2:     true,
 		MaxIdleConns:          opts.MaxIdleConns,
 		MaxIdleConnsPerHost:   opts.MaxIdleConnsPerHost,

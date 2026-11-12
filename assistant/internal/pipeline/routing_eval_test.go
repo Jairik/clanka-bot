@@ -478,9 +478,9 @@ func evalRegistry(t *testing.T) (*tool.Registry, *timer.Manager, *alarm.Manager,
 	if err := personaModule.Register(reg, tool.Deps{Voices: personaVoices}); err != nil {
 		t.Fatalf("register persona: %v", err)
 	}
-	// web.search is AgentOnly and must never be indexed by the semantic
-	// router; registering it proves the ToolCount check below is scoped to the
-	// Fast path rather than to every Agent-visible Tool.
+	// web.search and web.fetch are AgentOnly and must never be indexed by the
+	// semantic router; registering the module proves the ToolCount check below
+	// is scoped to the Fast path rather than to every Agent-visible Tool.
 	if err := web.NewModule().Register(reg, tool.Deps{}); err != nil {
 		t.Fatalf("register web: %v", err)
 	}

@@ -390,6 +390,22 @@ func (s *Service) Find(name string) (Sound, bool) {
 	return Sound{}, false
 }
 
+// File returns the on-disk WAV for a volume library sound, plus its mtime for
+// conditional requests. The built-in chime has no file; callers fall back to
+// Audio for it. Serving the file directly keeps a long browser preview out of
+// memory.
+func (s *Service) File(name string) (string, time.Time, bool) {
+	entry, ok := s.Find(name)
+	if !ok || entry.Builtin || entry.Path == "" {
+		return "", time.Time{}, false
+	}
+	info, err := os.Stat(entry.Path)
+	if err != nil || !info.Mode().IsRegular() {
+		return "", time.Time{}, false
+	}
+	return entry.Path, info.ModTime(), true
+}
+
 // Audio returns one library sound as a canonical WAV for browser playback.
 // The built-in chime has no file, so it is encoded from the in-memory PCM.
 func (s *Service) Audio(name string) ([]byte, Sound, error) {

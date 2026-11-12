@@ -9,6 +9,7 @@ import (
 	"mime"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -293,15 +294,33 @@ func (h *Handler) soundsAudio(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	data, entry, err := h.sounds.Audio(r.PathValue("name"))
+	name := r.PathValue("name")
+	// A volume WAV is served from disk, so even a long preview streams with
+	// Range support and bounded memory. Only the built-in chime is encoded.
+	if path, modTime, ok := h.sounds.File(name); ok {
+		file, err := os.Open(path)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		defer file.Close()
+		setSoundHeaders(w, name)
+		http.ServeContent(w, r, name+".wav", modTime, file)
+		return
+	}
+	data, entry, err := h.sounds.Audio(name)
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
-	filename := entry.Name + ".wav"
+	setSoundHeaders(w, entry.Name)
+	http.ServeContent(w, r, entry.Name+".wav", entry.AddedAt, bytes.NewReader(data))
+}
+
+// setSoundHeaders marks a library response as inline canonical audio.
+func setSoundHeaders(w http.ResponseWriter, name string) {
 	w.Header().Set("Content-Type", "audio/wav")
-	w.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": filename}))
-	http.ServeContent(w, r, filename, entry.AddedAt, bytes.NewReader(data))
+	w.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": name + ".wav"}))
 }
 
 // soundsReady guards the page and every form route against an unwired service.

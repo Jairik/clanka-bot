@@ -198,6 +198,12 @@ func TestFindAudioAndPlayNameUseLibraryNamesOnly(t *testing.T) {
 	if entry.Name != "birds" {
 		t.Fatalf("entry = %+v", entry)
 	}
+	if path, modTime, ok := f.sounds.File("birds"); !ok || path != entry.Path || modTime.IsZero() {
+		t.Fatalf("File = %q, %v, %v", path, modTime, ok)
+	}
+	if _, _, ok := f.sounds.File("chime"); ok {
+		t.Fatal("File returned a disk path for the built-in chime")
+	}
 	if err := f.sounds.PlayName(context.Background(), "birds"); err != nil {
 		t.Fatalf("PlayName: %v", err)
 	}

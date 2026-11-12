@@ -20,6 +20,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/api"
 	"github.com/Jairik/clanka-bot/assistant/internal/audio"
 	"github.com/Jairik/clanka-bot/assistant/internal/config"
+	"github.com/Jairik/clanka-bot/assistant/internal/connections"
 	"github.com/Jairik/clanka-bot/assistant/internal/dashboard"
 	"github.com/Jairik/clanka-bot/assistant/internal/embed"
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
@@ -32,6 +33,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/internal/toolpolicy"
 	"github.com/Jairik/clanka-bot/assistant/internal/voice"
+	"github.com/Jairik/clanka-bot/assistant/internal/wording"
 	"github.com/Jairik/clanka-bot/assistant/internal/wyoming"
 	"github.com/Jairik/clanka-bot/assistant/tools"
 )
@@ -55,6 +57,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// Keep the loaded config untouched for settings layers. cfg itself is
+	// updated with effective connection values below, because those are read
+	// once at startup.
+	baseCfg := cfg
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
@@ -77,6 +83,21 @@ func run() error {
 			logger.Error("store close", "error", err.Error())
 		}
 	}()
+
+	// Connection-level settings (devices, Wyoming endpoints, ports) are read
+	// here, once. A stored override is persisted and reported as
+	// restart-required; applying it would need a new device or listener, so
+	// this startup resolution is the only place it takes effect.
+	connSettings, err := settings.New(ctx, st, connections.Definitions(config.Default(), cfg)...)
+	if err != nil {
+		return fmt.Errorf("connection settings: %w", err)
+	}
+	connections.Apply(&cfg, connSettings)
+	// Re-check the combination after overrides, so a restart cannot settle on
+	// an invalid device/endpoint set.
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("connection settings: %w", err)
+	}
 
 	// Resolve the place once before serving so the first request has it; Watch
 	// keeps it fresh every 24h. The prompt reads the service per request.
@@ -105,16 +126,16 @@ func run() error {
 	playSink := speech.NewSerialSink(sink)
 
 	// Speech is optional: without a TTS address the debug entry stays text-only.
-	// The Filler is synthesized once here, from the config read at startup, so a
-	// phrase change is picked up by a restart rather than live.
+	// The Filler audio is synthesized after the settings service resolves the
+	// live wording, so a stored override applies at startup.
 	var speechSpeaker *speech.Speaker
-	var filler *speech.Filler
+	var ttsClient *wyoming.Client
+	var ttsVoice wyoming.Voice
 	if cfg.TTS.Addr != "" {
-		client := wyoming.NewClient(cfg.TTS.Addr, wyoming.WithTimeout(cfg.TTS.Timeout.Duration()))
-		checkTTSService(logger, client, cfg.TTS.Addr)
-		wantVoice := wyoming.Voice{Name: cfg.TTS.Voice}
-		speechSpeaker = speech.New(client, playSink, wantVoice, logger)
-		filler = loadAgentFiller(logger, client, wantVoice, cfg.Agent.Filler, cfg.TTS.Timeout.Duration())
+		ttsClient = wyoming.NewClient(cfg.TTS.Addr, wyoming.WithTimeout(cfg.TTS.Timeout.Duration()))
+		checkTTSService(logger, ttsClient, cfg.TTS.Addr)
+		ttsVoice = wyoming.Voice{Name: cfg.TTS.Voice}
+		speechSpeaker = speech.New(ttsClient, playSink, ttsVoice, logger)
 	}
 
 	// One Announcement queue owns unprompted speech: it waits for the current
@@ -146,17 +167,28 @@ func run() error {
 		return fmt.Errorf("register tools: %w", err)
 	}
 
-	// Tool enable/disable and Permission overrides are the first settings to
-	// use the three layers. The policy is installed before semantic routing
-	// builds its example vectors, so a disabled Tool is never offered.
-	toolDefs, err := toolpolicy.Definitions(registry, toolpolicy.Config{
-		Disabled:    cfg.Tools.Disabled,
-		Permissions: cfg.Tools.Permissions,
+	// Tool enable/disable, Permission overrides and the user-facing wording all
+	// share the three layers. Definitions are built before the policy is
+	// installed, while registry.Info still returns the code declarations.
+	wordingSetup, err := wording.Build(registry, wording.Config{
+		ControlPhrases:     baseCfg.ControlPhrases,
+		RequestPrefixes:    baseCfg.Agent.RequestPrefixes,
+		Filler:             baseCfg.Agent.Filler,
+		UnavailableMessage: baseCfg.Agent.UnavailableMessage,
 	})
 	if err != nil {
 		return err
 	}
-	settingsSvc, err := settings.New(ctx, st, toolDefs...)
+	toolDefs, err := toolpolicy.Definitions(registry, toolpolicy.Config{
+		Disabled:    baseCfg.Tools.Disabled,
+		Permissions: baseCfg.Tools.Permissions,
+	})
+	if err != nil {
+		return err
+	}
+	defs := append(connections.Definitions(config.Default(), baseCfg), wordingSetup.Definitions...)
+	defs = append(defs, toolDefs...)
+	settingsSvc, err := settings.New(ctx, st, defs...)
 	if err != nil {
 		return fmt.Errorf("settings: %w", err)
 	}
@@ -167,6 +199,25 @@ func run() error {
 	// The settings API has no authentication of its own. It is mounted on the
 	// localhost debug listener and, from #47, on the authenticated Dashboard.
 	settingsHandler := settingsapi.New(settingsSvc, toolPolicy, logger)
+
+	// The Filler is cached from the effective wording, not the raw config: a
+	// stored override applies on the first request after a restart. Later text
+	// changes re-synthesize in the background through the wording manager.
+	var filler *speech.Filler
+	var synthFiller wording.FillerSynth
+	if ttsClient != nil {
+		filler = loadAgentFiller(logger, ttsClient, ttsVoice, settingsSvc.String(wording.FillerKey), cfg.TTS.Timeout.Duration())
+		synthFiller = func(ctx context.Context, text string) (*speech.Filler, error) {
+			ctx, cancel := context.WithTimeout(ctx, cfg.TTS.Timeout.Duration())
+			defer cancel()
+			return speech.SynthesizeFiller(ctx, ttsClient, ttsVoice, text)
+		}
+	}
+	wordingMgr, err := wording.NewManager(settingsSvc, wordingSetup, filler, synthFiller, logger)
+	if err != nil {
+		return err
+	}
+	defer wordingMgr.Close()
 
 	provider, err := cfg.Agent.ActiveProvider()
 	if err != nil {
@@ -180,41 +231,56 @@ func run() error {
 		Routing:            provider.Routing,
 		SystemPrompt:       cfg.Agent.SystemPrompt,
 		SystemPromptFunc:   func() string { return locSvc.SystemPrompt(cfg.Agent.SystemPrompt) },
-		UnavailableMessage: cfg.Agent.UnavailableMessage,
-		FirstTokenTimeout:  cfg.Agent.FirstTokenTimeout.Duration(),
-		RequestTimeout:     cfg.Agent.RequestTimeout.Duration(),
-		MaxSteps:           cfg.Agent.MaxSteps,
-		HistoryTurns:       cfg.Agent.History.Turns,
-		HistoryQuiet:       cfg.Agent.History.Quiet.Duration(),
+		UnavailableMessage: baseCfg.Agent.UnavailableMessage,
+		// The live wording is read per failure, so a Dashboard change applies
+		// to the next model failure without rebuilding the Agent path.
+		UnavailableMessageFunc: wordingMgr.UnavailableMessage,
+		FirstTokenTimeout:      cfg.Agent.FirstTokenTimeout.Duration(),
+		RequestTimeout:         cfg.Agent.RequestTimeout.Duration(),
+		MaxSteps:               cfg.Agent.MaxSteps,
+		HistoryTurns:           cfg.Agent.History.Turns,
+		HistoryQuiet:           cfg.Agent.History.Quiet.Duration(),
 	}, registry, logger)
 	if err != nil {
 		return err
 	}
 
 	opts := []pipeline.Option{
-		pipeline.WithAgent(agentPath, cfg.Agent.RequestPrefixes),
+		pipeline.WithAgent(agentPath, baseCfg.Agent.RequestPrefixes),
 		pipeline.WithHistory(agentPath.History()),
 		// Spoken Confirmation for confirm Tools, enforced by the registry.
 		pipeline.WithConfirmationResolver(pipeline.NewConfirmation(registry, logger)),
+		// Control phrases and Agent request prefixes are read per request.
+		pipeline.WithWording(wordingMgr),
 	}
-	// Compute Tool example vectors once; a dead embed service only disables
-	// semantic matching, leaving Control phrases and the Agent path working.
+	// Compute Tool example vectors from the effective Examples (a stored
+	// override may already exist). A dead embed service only disables semantic
+	// matching, leaving Control phrases and the Agent path working.
 	semantic := pipeline.NewSemanticRouter(registry, embed.NewClient(cfg.Embed.URL, cfg.Embed.Model), pipeline.SemanticConfig{
 		Threshold: cfg.Semantic.Threshold,
 		Margin:    cfg.Semantic.Margin,
 		Joiners:   cfg.Semantic.Joiners,
 		Timeout:   cfg.Embed.Timeout.Duration(),
 	})
+	semantic.SetExamplesSource(wordingMgr)
+	initialExamples := wordingMgr.Examples()
 	buildCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	err = semantic.Build(buildCtx)
+	exampleSet, err := semantic.BuildSet(buildCtx, initialExamples)
 	cancel()
+	var liveRouter *pipeline.SemanticRouter
 	if err != nil {
 		logger.Warn("semantic routing disabled", "embed_url", cfg.Embed.URL, "error", err.Error())
 	} else {
+		semantic.Swap(exampleSet)
+		wordingMgr.MarkExamplesBuilt(initialExamples)
 		opts = append(opts, pipeline.WithSemanticRouter(semantic))
+		liveRouter = semantic
 	}
+	// The worker only watches wording changes; the startup build above is the
+	// initial state. A nil router still lets the Filler reload.
+	wordingMgr.Start(ctx, liveRouter)
 
-	p, err := pipeline.New(registry, cfg.ControlPhrases, logger, opts...)
+	p, err := pipeline.New(registry, baseCfg.ControlPhrases, logger, opts...)
 	if err != nil {
 		return err
 	}
@@ -231,6 +297,9 @@ func run() error {
 		// plays between turns and once a pending Confirmation resolves.
 		sessionOpts = append(sessionOpts, reply.WithAnnouncements(announcements))
 	}
+	// The Filler is read once per turn from the live source, so a re-synthesized
+	// phrase is heard from the next request onward.
+	sessionOpts = append(sessionOpts, reply.WithFillerSource(wordingMgr))
 	session := reply.New(p, speaker, playSink, filler, sessionOpts...)
 
 	// The debug entry is only spoken when a TTS service is configured.
@@ -321,7 +390,7 @@ func run() error {
 		"voice", cfg.VoiceEnabled(),
 		"wakeword_addr", cfg.Wakeword.Addr,
 		"stt_addr", cfg.STT.Addr,
-		"agent_filler", cfg.Agent.Filler,
+		"agent_filler", settingsSvc.String(wording.FillerKey),
 		"tools", len(registry.Names()),
 		"embed_model", cfg.Embed.Model,
 		"semantic_tools", semantic.ToolCount(),

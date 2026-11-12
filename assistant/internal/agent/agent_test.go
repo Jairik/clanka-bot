@@ -704,3 +704,34 @@ func TestConfirmProposalRunsSiblingCalls(t *testing.T) {
 		t.Fatalf("provider calls = %d, want the turn to stop after the confirm", fake.requestCount())
 	}
 }
+
+func TestUnavailableMessageFuncAppliesToTheNextFailure(t *testing.T) {
+	fake := newFakeProvider(t, textReply("unused"))
+	fake.status = 500
+	settings := testSettings(fake.start().URL)
+	current := "First unavailable message."
+	settings.UnavailableMessageFunc = func() string { return current }
+	a := newTestAgent(t, settings, nil, nil)
+
+	result := a.Run(context.Background(), tool.Request{ID: "req-live-1"}, "hello", nil)
+	if result.Text != "First unavailable message." {
+		t.Fatalf("first failure = %q", result.Text)
+	}
+	if !result.Unavailable {
+		t.Error("first result.Unavailable = false")
+	}
+
+	current = "Second unavailable message."
+	result = a.Run(context.Background(), tool.Request{ID: "req-live-2"}, "hello", nil)
+	if result.Text != "Second unavailable message." {
+		t.Fatalf("second failure = %q, want the changed wording", result.Text)
+	}
+
+	// An empty resolver result falls back to the required static value rather
+	// than speaking nothing.
+	current = " "
+	result = a.Run(context.Background(), tool.Request{ID: "req-live-3"}, "hello", nil)
+	if result.Text != settings.UnavailableMessage {
+		t.Fatalf("empty resolver result = %q, want the static fallback", result.Text)
+	}
+}

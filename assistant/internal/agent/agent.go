@@ -39,11 +39,14 @@ type Settings struct {
 	// request so refreshed location data is used.
 	SystemPromptFunc   func() string
 	UnavailableMessage string
-	FirstTokenTimeout  time.Duration
-	RequestTimeout     time.Duration
-	MaxSteps           int
-	HistoryTurns       int
-	HistoryQuiet       time.Duration
+	// UnavailableMessageFunc, when set, is read for each failure so a stored
+	// wording override applies without rebuilding the Agent path.
+	UnavailableMessageFunc func() string
+	FirstTokenTimeout      time.Duration
+	RequestTimeout         time.Duration
+	MaxSteps               int
+	HistoryTurns           int
+	HistoryQuiet           time.Duration
 }
 
 // PendingConfirm is a confirm Tool call the model asked for, armed in the
@@ -70,7 +73,7 @@ type Agent struct {
 	history     *History
 	logger      *slog.Logger
 	maxSteps    int
-	unavailable string
+	unavailable func() string
 }
 
 // New builds the Agent path. History defaults mirror the prototype settings so
@@ -107,6 +110,17 @@ func New(settings Settings, registry *tool.Registry, logger *slog.Logger) (*Agen
 	if settings.SystemPromptFunc != nil {
 		prompt = NewPromptBuilderFunc(settings.SystemPromptFunc)
 	}
+	// Resolve the Unavailable wording per failure. The static value stays the
+	// required fallback, so a resolver that returns nothing cannot silence the
+	// error path.
+	unavailable := func() string {
+		if settings.UnavailableMessageFunc != nil {
+			if text := settings.UnavailableMessageFunc(); strings.TrimSpace(text) != "" {
+				return text
+			}
+		}
+		return settings.UnavailableMessage
+	}
 	return &Agent{
 		provider:    newProvider(settings),
 		registry:    registry,
@@ -114,7 +128,7 @@ func New(settings Settings, registry *tool.Registry, logger *slog.Logger) (*Agen
 		history:     NewHistory(settings.HistoryTurns, settings.HistoryQuiet, nil),
 		logger:      logger,
 		maxSteps:    settings.MaxSteps,
-		unavailable: settings.UnavailableMessage,
+		unavailable: unavailable,
 	}, nil
 }
 
@@ -331,7 +345,7 @@ func (a *Agent) failure(ctx context.Context, req tool.Request, err error) Result
 		return Result{Text: FirstTokenTimeoutMessage, TimedOut: true}
 	case errors.Is(err, errRequestTimeout):
 		a.logger.Error("agent request timeout", "request_id", req.ID)
-		return Result{Text: a.unavailable, Unavailable: true}
+		return Result{Text: a.unavailable(), Unavailable: true}
 	}
 	status := 0
 	var providerErr *providerError
@@ -340,7 +354,7 @@ func (a *Agent) failure(ctx context.Context, req tool.Request, err error) Result
 	}
 	// The status code is logged; the user hears only the configured message.
 	a.logger.Error("agent request failed", "request_id", req.ID, "status", status, "error", err.Error())
-	return Result{Text: a.unavailable, Unavailable: true}
+	return Result{Text: a.unavailable(), Unavailable: true}
 }
 
 func errorPayload(message string) json.RawMessage {

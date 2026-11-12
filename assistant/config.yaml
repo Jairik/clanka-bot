@@ -152,7 +152,9 @@ location:
     region: ""
     timezone: ""
 
-# Exact-match Control phrases, entered just after STT.
+# Exact-match Control phrases, entered just after STT. These are the config.yaml
+# layer of the live `tools.<name>.control_phrases` settings; a stored override
+# applies on the next request.
 control_phrases:
   "what time is it": time.now
   "what's the time": time.now
@@ -188,11 +190,14 @@ agent:
         # are forced in code (ADR-0002), not configurable here.
         sort: latency
   # Spoken cue played the moment a request goes to the Agent path. It is
-  # synthesized once at startup and cached, so it is heard instantly. Empty is a
-  # startup error; a config change needs a restart, which rebuilds the cache.
+  # synthesized once at startup and cached, so it is heard instantly. This is
+  # the config layer of the live `agent.filler` setting: an override re-synthesizes
+  # the cached audio in the background and keeps serving the old clip until ready.
   filler: "One moment."
+  # Config layer of the live `agent.unavailable_message` setting.
   unavailable_message: "Sorry, I can't answer that right now."
-  # Typed prefixes that skip the Fast path entirely.
+  # Typed prefixes that skip the Fast path entirely. Config layer of the live
+  # `agent.request_prefixes` setting; a stored override applies next request.
   request_prefixes:
     - ask the agent
     - agent

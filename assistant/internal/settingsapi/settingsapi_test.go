@@ -75,6 +75,10 @@ func newFixture(t *testing.T) *apiFixture {
 		t.Fatalf("Definitions: %v", err)
 	}
 	defs = append(defs, settings.String("agent.filler", "One moment.", settings.WithConfig("Just a second.")))
+	defs = append(defs, settings.String("http.addr", ":8080",
+		settings.WithConfig(":8080"),
+		settings.WithKind(settings.RestartRequired),
+	))
 	svc, err := settings.New(ctx, st, defs...)
 	if err != nil {
 		t.Fatalf("settings.New: %v", err)
@@ -306,5 +310,28 @@ func TestGenericSettingsHandlerWorksWithoutAToolPolicy(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("GET /tools status = %d, want 404 without a policy", resp.StatusCode)
+	}
+}
+
+func TestSettingsEndpointMarksLiveAndRestartRequiredSettings(t *testing.T) {
+	f := newFixture(t)
+
+	_, body := f.request(t, http.MethodGet, "/settings", nil)
+	live := settingByName(t, body, "agent.filler")
+	if live["kind"] != string(settings.Live) {
+		t.Errorf("agent.filler kind = %v, want %q", live["kind"], settings.Live)
+	}
+	restart := settingByName(t, body, "http.addr")
+	if restart["kind"] != string(settings.RestartRequired) {
+		t.Errorf("http.addr kind = %v, want %q", restart["kind"], settings.RestartRequired)
+	}
+
+	// The single-setting route reports the same metadata.
+	resp, body := f.request(t, http.MethodGet, "/settings/http.addr", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET status = %d", resp.StatusCode)
+	}
+	if body["kind"] != string(settings.RestartRequired) || body["value"] != ":8080" {
+		t.Fatalf("http.addr = %#v", body)
 	}
 }

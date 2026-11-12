@@ -262,6 +262,12 @@ and the active Agent provider) with `set`, `last4`, update time and source
 a cleared stored value falls back to `.env` immediately. No value is revealed,
 prefilled or echoed, and a new module declaration appears without a page edit.
 
+GitHub uses two secrets there: `GITHUB_TOKEN` (fine-grained PAT, issues and pull
+requests) and the optional `GITHUB_NOTIFICATIONS_TOKEN` (classic PAT, only the
+`notifications` scope, used solely by `github.notifications`). Leaving the
+second one unset is not an error; the Health page shows `github notifications`
+as not configured and the other GitHub Tools stay healthy.
+
 The **Scheduled alerts** page at `/alerts` lists every active Timer, Alarm and
 Reminder with its next fire time, label or message and kind in the live
 timezone. Cancel stops one alert by its manager id (a ringing Alarm stops only

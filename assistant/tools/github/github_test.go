@@ -714,7 +714,7 @@ func TestNotificationsReportsTheFineGrainedContractHonestly(t *testing.T) {
 		{
 			name:   "bad token",
 			status: http.StatusUnauthorized,
-			want:   "rejected the token",
+			want:   "rejected the notifications token",
 		},
 		{
 			name:   "server error",
@@ -857,8 +857,8 @@ func TestMissingTokenIsClearInTheToolsHealthAndSecretUI(t *testing.T) {
 	module := testConfig(t, map[string]any{"base_url": "https://api.github.test"})
 	reg, _ := registerModule(t, module, fixedSecret(""))
 
-	if got := module.RequiredSecrets(); len(got) != 1 || got[0] != SecretName {
-		t.Fatalf("RequiredSecrets = %v, want [%s]", got, SecretName)
+	if got := module.RequiredSecrets(); len(got) != 2 || got[0] != SecretName || got[1] != NotificationsSecretName {
+		t.Fatalf("RequiredSecrets = %v, want [%s %s]", got, SecretName, NotificationsSecretName)
 	}
 	if err := module.Health(context.Background()); err == nil || !strings.Contains(err.Error(), SecretName) {
 		t.Fatalf("Health = %v, want a missing %s error", err, SecretName)
@@ -1097,5 +1097,153 @@ func TestModuleDoesNotReadTheEnvironmentDirectly(t *testing.T) {
 	}
 	if got := tool.FailureMessage(err); !strings.Contains(got, SecretName) {
 		t.Fatalf("failure = %q, want a missing %s line", got, SecretName)
+	}
+}
+
+// namedSecrets resolves each secret by name, so a test can prove which token a
+// request carried.
+func namedSecrets(values map[string]string) secretFunc {
+	return func(name string) (string, bool) {
+		value, ok := values[name]
+		return value, ok && value != ""
+	}
+}
+
+const (
+	fineToken    = "github_pat_fine_dummy"
+	classicToken = "ghp_classic_dummy"
+)
+
+func TestEachToolUsesOnlyItsOwnToken(t *testing.T) {
+	fake := &fakeGitHub{handler: func(w http.ResponseWriter, r *http.Request, _ []byte) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/notifications":
+			fmt.Fprint(w, `[]`)
+		case "/search/issues":
+			fmt.Fprint(w, `{"total_count":0,"items":[]}`)
+		case "/repos/acme/widgets/issues":
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{"number":7,"title":"T","html_url":"https://github.test/acme/widgets/issues/7"}`)
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	}}
+	server := fake.start(t)
+	reg, logs := registerModule(t, testConfig(t, map[string]any{"base_url": server.URL}),
+		namedSecrets(map[string]string{SecretName: fineToken, NotificationsSecretName: classicToken}))
+
+	if _, err := reg.Execute(context.Background(), NotificationsName, nil); err != nil {
+		t.Fatalf("notifications: %v", err)
+	}
+	if _, err := reg.Execute(context.Background(), PRListName, nil); err != nil {
+		t.Fatalf("pr_list: %v", err)
+	}
+	armIssue(t, reg, `{"title":"T"}`)
+	if _, _, err := reg.ExecutePending(context.Background()); err != nil {
+		t.Fatalf("issue_create: %v", err)
+	}
+
+	want := map[string]string{
+		"/notifications":             "Bearer " + classicToken,
+		"/search/issues":             "Bearer " + fineToken,
+		"/repos/acme/widgets/issues": "Bearer " + fineToken,
+	}
+	seen := 0
+	for _, req := range fake.snapshot() {
+		seen++
+		if got := req.Header.Get("Authorization"); got != want[req.Path] {
+			t.Errorf("%s Authorization = %q, want %q", req.Path, got, want[req.Path])
+		}
+	}
+	if seen != 3 {
+		t.Fatalf("requests = %d, want 3", seen)
+	}
+	if strings.Contains(logs.String(), fineToken) || strings.Contains(logs.String(), classicToken) {
+		t.Fatal("a token reached the log")
+	}
+}
+
+func TestNotificationsNeverFallBackToTheFineGrainedToken(t *testing.T) {
+	fake := &fakeGitHub{handler: func(w http.ResponseWriter, r *http.Request, _ []byte) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/user" {
+			fmt.Fprint(w, `{"login":"octocat"}`)
+			return
+		}
+		fmt.Fprint(w, `{"total_count":0,"items":[]}`)
+	}}
+	server := fake.start(t)
+	module := testConfig(t, map[string]any{"base_url": server.URL})
+	reg, _ := registerModule(t, module, namedSecrets(map[string]string{SecretName: fineToken}))
+
+	_, err := reg.Execute(context.Background(), NotificationsName, nil)
+	if err == nil {
+		t.Fatal("notifications succeeded without the classic token")
+	}
+	say := tool.FailureMessage(err)
+	for _, want := range []string{NotificationsSecretName, "classic", "notifications scope"} {
+		if !strings.Contains(say, want) {
+			t.Errorf("failure %q lacks %q", say, want)
+		}
+	}
+	if got := fake.count(http.MethodGet, "/notifications"); got != 0 {
+		t.Fatalf("/notifications requests = %d, want 0: the fine-grained token must not reach it", got)
+	}
+
+	// The missing optional secret leaves issue and PR use healthy.
+	if err := module.Health(context.Background()); err != nil {
+		t.Fatalf("Health = %v, want nil with only the optional secret missing", err)
+	}
+	if _, err := reg.Execute(context.Background(), PRListName, nil); err != nil {
+		t.Fatalf("pr_list: %v", err)
+	}
+}
+
+func TestNotificationsTokenHealthIsSeparate(t *testing.T) {
+	fake := &fakeGitHub{handler: func(w http.ResponseWriter, r *http.Request, _ []byte) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/user":
+			fmt.Fprint(w, `{"login":"octocat"}`)
+		case r.URL.Path == "/notifications" && r.Header.Get("Authorization") == "Bearer "+classicToken:
+			fmt.Fprint(w, `[]`)
+		case r.URL.Path == "/notifications":
+			http.Error(w, "bad", http.StatusUnauthorized)
+		default:
+			t.Errorf("unexpected %s", r.URL.Path)
+		}
+	}}
+	server := fake.start(t)
+	check := func(values map[string]string) tool.AuxHealth {
+		module := testConfig(t, map[string]any{"base_url": server.URL})
+		registerModule(t, module, namedSecrets(values))
+		got := module.AuxHealth(context.Background())
+		if len(got) != 1 {
+			t.Fatalf("AuxHealth = %+v, want one entry", got)
+		}
+		return got[0]
+	}
+
+	missing := check(map[string]string{SecretName: fineToken})
+	if missing.State != tool.StatusNotConfigured || !strings.Contains(missing.Detail, NotificationsSecretName) ||
+		!strings.Contains(missing.Detail, "classic") {
+		t.Fatalf("missing = %+v", missing)
+	}
+	if got := len(fake.snapshot()); got != 0 {
+		t.Fatalf("requests with no classic token = %d, want 0", got)
+	}
+	ok := check(map[string]string{SecretName: fineToken, NotificationsSecretName: classicToken})
+	if ok.State != tool.StatusOK {
+		t.Fatalf("ok = %+v", ok)
+	}
+	bad := check(map[string]string{SecretName: fineToken, NotificationsSecretName: "ghp_wrong_dummy"})
+	if bad.State != tool.StatusError || strings.Contains(bad.Detail, "ghp_wrong_dummy") {
+		t.Fatalf("bad = %+v", bad)
+	}
+	for _, req := range fake.snapshot() {
+		if req.Method != http.MethodGet {
+			t.Fatalf("health made a %s request; it must stay read-only", req.Method)
+		}
 	}
 }

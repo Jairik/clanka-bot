@@ -52,6 +52,10 @@ const (
 var (
 	// errMissingToken means the declared GITHUB_TOKEN secret has no value.
 	errMissingToken = errors.New("github: GITHUB_TOKEN is not configured")
+	// errMissingNotificationsToken means the optional classic-token secret has
+	// no value. The notifications Tool stops here: it never substitutes the
+	// fine-grained GITHUB_TOKEN, so that token is never sent to /notifications.
+	errMissingNotificationsToken = errors.New("github: GITHUB_NOTIFICATIONS_TOKEN is not configured")
 	// errTokenRejected means GitHub answered 401 for the stored token.
 	errTokenRejected = errors.New("github: GitHub rejected the token")
 	// errForbidden means GitHub refused the request, usually a permission gap.
@@ -62,8 +66,9 @@ var (
 	errRateLimited = errors.New("github: GitHub rate limit reached")
 	// errNotificationsClassicOnly is the verified provider contract: GitHub's
 	// notifications endpoints only support a classic personal access token.
-	// Fine-grained PATs are not accepted for that API, so the Tool must say so
-	// instead of implying that a fine-grained token can drive it.
+	// Fine-grained PATs are not accepted for that API, so a refusal means the
+	// stored token is not classic or lacks the notifications scope, and the Tool
+	// says exactly that.
 	errNotificationsClassicOnly = errors.New("github: notifications endpoints require a classic personal access token")
 )
 
@@ -91,24 +96,34 @@ func (e *transportError) Error() string {
 }
 func (e *transportError) Unwrap() error { return e.Err }
 
+// credential is one secret resolver plus the error returned when it is unset.
+// Each request names the credential it uses; there is no fallback between them.
+type credential struct {
+	get     func() (string, bool)
+	missing error
+}
+
 // client is one reusable GitHub REST caller. It owns one keep-alive HTTP client
 // and resolves the token per request, so a Dashboard secret rotation applies to
-// the next call without a restart.
+// the next call without a restart. The fine-grained token serves issues, search
+// and health; the classic token serves only the notifications endpoints.
 type client struct {
 	baseURL string
 	http    *http.Client
-	token   func() (string, bool)
+	token   credential
+	classic credential
 }
 
 // newClient builds the module's one GitHub client.
-func newClient(baseURL string, timeout time.Duration, token func() (string, bool)) *client {
+func newClient(baseURL string, timeout time.Duration, token, classic func() (string, bool)) *client {
 	httpClient := httpclient.New(httpclient.Options{Timeout: timeout})
 	// These endpoints never need a redirect, and not following one keeps the bearer token on the configured origin.
 	httpClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &client{
 		baseURL: strings.TrimRight(baseURL, "/"),
 		http:    httpClient,
-		token:   token,
+		token:   credential{get: token, missing: errMissingToken},
+		classic: credential{get: classic, missing: errMissingNotificationsToken},
 	}
 }
 
@@ -116,10 +131,10 @@ func newClient(baseURL string, timeout time.Duration, token func() (string, bool
 // a retry after a POST timeout could create a duplicate issue, and a retry on a
 // read would still spend the user's rate limit twice. It also never includes
 // the response body in an error.
-func (c *client) do(ctx context.Context, method, path string, query url.Values, body, out any) (*http.Response, error) {
-	token, ok := c.token()
+func (c *client) do(ctx context.Context, cred credential, method, path string, query url.Values, body, out any) (*http.Response, error) {
+	token, ok := cred.get()
 	if !ok {
-		return nil, errMissingToken
+		return nil, cred.missing
 	}
 	endpoint := c.baseURL + path
 	if len(query) > 0 {
@@ -194,7 +209,7 @@ func (c *client) Login(ctx context.Context) (string, error) {
 	var user struct {
 		Login string `json:"login"`
 	}
-	if _, err := c.do(ctx, http.MethodGet, "/user", nil, nil, &user); err != nil {
+	if _, err := c.do(ctx, c.token, http.MethodGet, "/user", nil, nil, &user); err != nil {
 		return "", authError(err)
 	}
 	if strings.TrimSpace(user.Login) == "" {
@@ -229,7 +244,7 @@ func (c *client) createIssue(ctx context.Context, repo, title, body string) (iss
 		HTMLURL string `json:"html_url"`
 	}
 	path := "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(name) + "/issues"
-	if _, err := c.do(ctx, http.MethodPost, path, nil, request, &response); err != nil {
+	if _, err := c.do(ctx, c.token, http.MethodPost, path, nil, request, &response); err != nil {
 		return issue{}, createError(err)
 	}
 	return issue{
@@ -271,7 +286,7 @@ func (c *client) reviewRequestedPRs(ctx context.Context, repo string, limit int)
 				} `json:"user"`
 			} `json:"items"`
 		}
-		resp, err := c.do(ctx, http.MethodGet, "/search/issues", next, nil, &response)
+		resp, err := c.do(ctx, c.token, http.MethodGet, "/search/issues", next, nil, &response)
 		if err != nil {
 			return 0, nil, searchError(err)
 		}
@@ -302,11 +317,11 @@ func (c *client) reviewRequestedPRs(ctx context.Context, repo string, limit int)
 	return total, prs, nil
 }
 
-// unreadNotifications lists unread notification threads. The notifications REST
-// API only supports a classic personal access token (verified against the
-// current official docs); a 401/403/404/410 is mapped to the explicit contract
-// error rather than a generic failure. The call is read-only: this Tool never
-// marks anything as read.
+// unreadNotifications lists unread notification threads with the classic token
+// only (never the fine-grained one). The notifications REST API only supports a
+// classic personal access token (verified against the current official docs); a
+// 403/404/410 is mapped to the explicit contract error rather than a generic
+// failure. The call is read-only: this Tool never marks anything as read.
 func (c *client) unreadNotifications(ctx context.Context, limit int) ([]Notification, error) {
 	next := url.Values{}
 	next.Set("all", "false")
@@ -327,7 +342,7 @@ func (c *client) unreadNotifications(ctx context.Context, limit int) ([]Notifica
 				FullName string `json:"full_name"`
 			} `json:"repository"`
 		}
-		resp, err := c.do(ctx, http.MethodGet, "/notifications", next, nil, &response)
+		resp, err := c.do(ctx, c.classic, http.MethodGet, "/notifications", next, nil, &response)
 		if err != nil {
 			return nil, notificationsError(err)
 		}
@@ -483,4 +498,18 @@ func truncate(text string, max int) string {
 // collapse turns GitHub text into one line for the Agent prompt.
 func collapse(text string) string {
 	return strings.Join(strings.Fields(text), " ")
+}
+
+// probeNotifications is the notifications-token health check: one read-only
+// request for a single unread thread, which proves the classic token and its
+// scope without touching any thread's state.
+func (c *client) probeNotifications(ctx context.Context) error {
+	query := url.Values{}
+	query.Set("all", "false")
+	query.Set("per_page", "1")
+	var ignored []json.RawMessage
+	if _, err := c.do(ctx, c.classic, http.MethodGet, "/notifications", query, nil, &ignored); err != nil {
+		return notificationsError(err)
+	}
+	return nil
 }

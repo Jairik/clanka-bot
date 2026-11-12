@@ -207,7 +207,11 @@ func (s *Source) checkModules(ctx context.Context) []tool.StatusCheck {
 			return timedOutModules(names, s.timeout)
 		}
 		byName := make(map[string]error, len(health))
+		separate := make(map[string]tool.StatusCheck)
 		for _, item := range health {
+			if item.Check != nil {
+				separate[item.Module] = *item.Check
+			}
 			byName[item.Module] = item.Err
 			if !known[item.Module] {
 				known[item.Module] = true
@@ -224,6 +228,11 @@ func (s *Source) checkModules(ctx context.Context) []tool.StatusCheck {
 		views := make([]tool.StatusCheck, 0, len(names))
 		for _, name := range names {
 			err, checked := byName[name]
+			if check, ok := separate[name]; ok {
+				check.Detail = shorten(check.Detail)
+				views = append(views, check)
+				continue
+			}
 			switch {
 			case !checked:
 				views = append(views, tool.StatusCheck{Name: name, State: tool.StatusNoCheck, Detail: "No health check declared."})

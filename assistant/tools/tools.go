@@ -152,17 +152,23 @@ func (s *Set) StartAll(ctx context.Context) error {
 func (s *Set) Health(ctx context.Context) []Health {
 	results := make([]Health, 0, len(s.modules))
 	for _, module := range s.modules {
-		checker, ok := module.(tool.HealthChecker)
-		if !ok {
-			continue
+		if checker, ok := module.(tool.HealthChecker); ok {
+			results = append(results, Health{Module: module.Name(), Err: checker.Health(ctx)})
 		}
-		results = append(results, Health{Module: module.Name(), Err: checker.Health(ctx)})
+		if aux, ok := module.(tool.AuxHealthChecker); ok {
+			for _, item := range aux.AuxHealth(ctx) {
+				check := tool.StatusCheck{Name: item.Name, State: item.State, Detail: item.Detail}
+				results = append(results, Health{Module: item.Name, Check: &check})
+			}
+		}
 	}
 	return results
 }
 
-// Health is one module's health-check result.
+// Health is one module's health-check result. Check, when set, is a separately
+// named result (an optional capability) that carries its own state; Err is nil.
 type Health struct {
 	Module string
 	Err    error
+	Check  *tool.StatusCheck
 }

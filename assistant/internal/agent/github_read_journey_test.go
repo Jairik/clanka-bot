@@ -15,13 +15,16 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// githubJourneySecrets supplies the module's one declared token to the real
+// githubJourneySecrets supplies the module's two declared tokens to the real
 // resolver seam; the fake GitHub never sees a real credential.
 type githubJourneySecrets struct{}
 
 func (githubJourneySecrets) Get(name string) (string, bool) {
 	if name == github.SecretName {
-		return "ghp_agent_journey_token", true
+		return "github_pat_agent_journey_token", true
+	}
+	if name == github.NotificationsSecretName {
+		return "ghp_agent_journey_classic_token", true
 	}
 	return "", false
 }

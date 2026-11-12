@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/openai/openai-go/v3"
@@ -14,11 +15,20 @@ import (
 // on purpose: no personal data is loaded ahead of a request (ADR-0002).
 const DefaultSystemPrompt = "You are a concise voice assistant. Answer briefly and naturally, and use the provided tools when they help. If a request needs information you do not have, say so."
 
+// Persona is the active personality prompt. It is read once per turn and added
+// only to the labelled system part of the request, never to history or a Tool
+// result (ADR-0002).
+type Persona struct {
+	Name   string
+	Prompt string
+}
+
 // PromptBuilder assembles every Agent path request. It is the only code that
 // turns history and Tool results into messages, so privacy filtering lives in
 // one place (ADR-0002).
 type PromptBuilder struct {
-	system func() string
+	system  func() string
+	persona func() Persona
 }
 
 // NewPromptBuilder builds a prompt builder. An empty system prompt falls back
@@ -41,12 +51,23 @@ func NewPromptBuilderFunc(system func() string) *PromptBuilder {
 	}}
 }
 
+// WithPersona installs the active Persona source. Messages reads it once when
+// it builds the request, so a switch during a model turn cannot change the
+// system part the model already received. The prompt stays inside the one
+// labelled system message; no other request part is added.
+func (b *PromptBuilder) WithPersona(source func() Persona) *PromptBuilder {
+	if b != nil {
+		b.persona = source
+	}
+	return b
+}
+
 // Messages builds the labelled parts of a request: the system prompt, the
 // shared history, and the current utterance. A turn that touched a Local-only
 // Tool is dropped whole, utterance included.
 func (b *PromptBuilder) Messages(utterance string, history []Turn) []openai.ChatCompletionMessageParamUnion {
 	messages := make([]openai.ChatCompletionMessageParamUnion, 0, 1+2*len(history)+1)
-	messages = append(messages, openai.SystemMessage(b.system()))
+	messages = append(messages, openai.SystemMessage(b.systemPart()))
 	for _, turn := range history {
 		if turn.localOnly() {
 			continue
@@ -56,6 +77,26 @@ func (b *PromptBuilder) Messages(utterance string, history []Turn) []openai.Chat
 	}
 	messages = append(messages, openai.UserMessage(utterance))
 	return messages
+}
+
+// systemPart builds the one system message. The base prompt and the active
+// Persona are resolved once here; the Persona is labelled so the model can tell
+// instructions from history and Tool output. An empty prompt adds nothing.
+func (b *PromptBuilder) systemPart() string {
+	text := b.system()
+	if b.persona == nil {
+		return text
+	}
+	snapshot := b.persona()
+	prompt := strings.TrimSpace(snapshot.Prompt)
+	if prompt == "" {
+		return text
+	}
+	name := strings.TrimSpace(snapshot.Name)
+	if name == "" {
+		return text + "\n\nPersona instructions:\n" + prompt
+	}
+	return text + fmt.Sprintf("\n\nPersona instructions for %q:\n", name) + prompt
 }
 
 // turnContent renders a recorded turn: the spoken reply plus compact Tool-call

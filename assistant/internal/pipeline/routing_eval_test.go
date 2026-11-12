@@ -22,18 +22,22 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/lastreply"
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
 	corenotify "github.com/Jairik/clanka-bot/assistant/internal/notify"
+	personacore "github.com/Jairik/clanka-bot/assistant/internal/persona"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	quietcore "github.com/Jairik/clanka-bot/assistant/internal/quiet"
 	"github.com/Jairik/clanka-bot/assistant/internal/secrets"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
+	"github.com/Jairik/clanka-bot/assistant/internal/voicelib"
+	"github.com/Jairik/clanka-bot/assistant/internal/wording"
 	"github.com/Jairik/clanka-bot/assistant/tools/alarm"
 	"github.com/Jairik/clanka-bot/assistant/tools/assistant"
 	"github.com/Jairik/clanka-bot/assistant/tools/audiocontrol"
 	"github.com/Jairik/clanka-bot/assistant/tools/calc"
 	"github.com/Jairik/clanka-bot/assistant/tools/clock"
 	notifytools "github.com/Jairik/clanka-bot/assistant/tools/notify"
+	personatools "github.com/Jairik/clanka-bot/assistant/tools/persona"
 	quiettools "github.com/Jairik/clanka-bot/assistant/tools/quiet"
 	"github.com/Jairik/clanka-bot/assistant/tools/random"
 	"github.com/Jairik/clanka-bot/assistant/tools/reminder"
@@ -66,6 +70,9 @@ var routingEvalTools = []string{
 	voice.ListName,
 	voice.CurrentName,
 	voice.RateName,
+	personatools.SwitchName,
+	personatools.ListName,
+	personatools.CurrentName,
 	quiettools.SetName,
 	quiettools.OffName,
 	quiettools.DNDName,
@@ -423,6 +430,51 @@ func evalRegistry(t *testing.T) (*tool.Registry, *timer.Manager, *alarm.Manager,
 		if err := module.Register(reg, tool.Deps{}); err != nil {
 			t.Fatalf("register %s: %v", module.Name(), err)
 		}
+	}
+	// Persona Tools need a real library and settings service, but no TTS: the
+	// built-in voice is ready without a model call, and Create/Select only
+	// touch the test SQLite file.
+	personaStore, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "persona", "assistant.db"))
+	if err != nil {
+		t.Fatalf("open persona store: %v", err)
+	}
+	t.Cleanup(func() { _ = personaStore.Close() })
+	personaVoices, err := voicelib.New(context.Background(), personaStore, voicelib.Config{
+		Dir:      filepath.Join(t.TempDir(), "voices"),
+		TTSDir:   "/voices",
+		Default:  "alba",
+		Builtins: []string{"alba"},
+		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("persona voice library: %v", err)
+	}
+	personaService, err := personacore.New(context.Background(), personaStore, personaVoices, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("persona service: %v", err)
+	}
+	personaDefs := []settings.Definition{
+		settings.String(voicelib.KeyName, "alba", settings.WithConfig("alba")),
+		settings.String(wording.FillerKey, wording.DefaultFiller, settings.WithConfig(wording.DefaultFiller)),
+		settings.String(wording.UnavailableKey, wording.DefaultUnavailableMessage, settings.WithConfig(wording.DefaultUnavailableMessage)),
+	}
+	personaDefs = append(personaDefs, personaService.Definitions()...)
+	personaSettings, err := settings.New(context.Background(), personaStore, personaDefs...)
+	if err != nil {
+		t.Fatalf("persona settings: %v", err)
+	}
+	personaVoices.Bind(personaSettings)
+	personaService.Bind(personaSettings)
+	if _, err := personaService.Create(context.Background(), personacore.Input{
+		Name: "GLaDOS", Voice: "alba", Personality: "You are GLaDOS, dry and precise.",
+		Filler: "Processing.", Unavailable: "The chamber is offline.",
+	}); err != nil {
+		t.Fatalf("seed persona: %v", err)
+	}
+	personaModule := personatools.NewModule()
+	personaModule.Bind(personaService)
+	if err := personaModule.Register(reg, tool.Deps{Voices: personaVoices}); err != nil {
+		t.Fatalf("register persona: %v", err)
 	}
 	return reg, manager, alarmManager, reminderModule.Manager()
 }

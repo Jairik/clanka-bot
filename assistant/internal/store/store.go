@@ -52,8 +52,11 @@ type migration struct {
 // a restart; a repeating Alarm advances next_fires_at in the same transaction
 // that opens its history row. sound, volume and ramp_ms are reserved for #57's
 // per-Alarm overrides and stay NULL/empty until then. Version 8 holds Reminders:
-// a message and the duration or clock time it is due. The versions stay
-// contiguous in either merge order.
+// a message and the duration or clock time it is due. Version 9 holds Personas:
+// a named bundle of voice, personality prompt, Agent Filler and Unavailable
+// wording. The active Persona is an ordinary settings row, and selecting one
+// writes the bundle through the settings service in one transaction. The
+// versions stay contiguous in either merge order.
 var migrations = []migration{
 	{
 		version: 1,
@@ -192,6 +195,26 @@ var migrations = []migration{
 				created_at  INTEGER NOT NULL
 			)`,
 			`CREATE INDEX reminders_fires_at ON reminders (fires_at)`,
+		},
+	},
+	{
+		version: 9,
+		name:    "personas",
+		statements: []string{
+			// name is the spoken key; the NOCASE collation rejects a case-only
+			// duplicate. voice names a library entry and is re-checked for
+			// readiness on every selection. personality is the only field that
+			// reaches the Agent path, inside the one labelled system part.
+			// created_at and updated_at are RFC3339.
+			`CREATE TABLE personas (
+				name        TEXT PRIMARY KEY COLLATE NOCASE,
+				voice       TEXT NOT NULL,
+				personality TEXT NOT NULL,
+				filler      TEXT NOT NULL,
+				unavailable TEXT NOT NULL,
+				created_at  TEXT NOT NULL,
+				updated_at  TEXT NOT NULL
+			)`,
 		},
 	},
 }

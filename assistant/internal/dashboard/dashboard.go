@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/persona"
 	"github.com/Jairik/clanka-bot/assistant/internal/secrets"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 	"github.com/Jairik/clanka-bot/assistant/internal/sound"
@@ -73,6 +74,9 @@ type Options struct {
 	Voices       *voicelib.Service
 	VoiceProbe   voicelib.Probe
 	VoicePreview VoicePreview
+	// Personas backs the Persona page: the same library and atomic selection
+	// the persona Tools use. The page is read-only when it is nil.
+	Personas *persona.Service
 	// ProxyAllowed overrides the trusted source-address check. Production uses
 	// the default (loopback plus the container's default gateway); tests inject
 	// their own address policy.
@@ -95,6 +99,7 @@ type Handler struct {
 	voices       *voicelib.Service
 	voiceProbe   voicelib.Probe
 	voicePreview VoicePreview
+	personas     *persona.Service
 	proxyAllowed func(net.IP) bool
 	templates    *template.Template
 	mux          *http.ServeMux
@@ -152,6 +157,7 @@ func New(opts Options) (*Handler, error) {
 		voices:       opts.Voices,
 		voiceProbe:   opts.VoiceProbe,
 		voicePreview: opts.VoicePreview,
+		personas:     opts.Personas,
 		proxyAllowed: opts.ProxyAllowed,
 		templates:    templates,
 		mux:          http.NewServeMux(),
@@ -192,6 +198,14 @@ func New(opts Options) (*Handler, error) {
 	h.Mutating("POST /voices/rate", h.voicesRate)
 	h.Mutating("POST /voices/rate/reset", h.voicesRateReset)
 	h.Mutating("POST /voices/note/{name}", h.voicesNote)
+	// The Persona page creates, edits and selects one bundle. Selection writes
+	// voice, Filler, Unavailable wording and the active marker in one settings
+	// transaction; every write goes through Mutating for identity and origin.
+	h.Handle("/personas", h.personasPage)
+	h.Mutating("POST /personas", h.personasCreate)
+	h.Mutating("POST /personas/{name}", h.personasUpdate)
+	h.Mutating("POST /personas/{name}/select", h.personasSelect)
+	h.Mutating("POST /personas/active/reset", h.personasClear)
 	h.Mutating("POST /settings/tools/{name}", h.settingsToolSave)
 	h.Mutating("POST /settings/tools/{name}/reset", h.settingsToolReset)
 	h.Mutating("POST /settings/values/{key}", h.settingsValueSave)

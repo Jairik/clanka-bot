@@ -1,6 +1,8 @@
 // Package timer implements the timer.set, timer.cancel, timer.remaining and
 // timer.list Tools. Timers are persisted in the one SQLite store when the
-// module receives one, and survive a restart (ADR-0003).
+// module receives one, and survive a restart (ADR-0003). When a Timer fires it
+// Rings through internal/ring: a looping Cue with a durable fired/ringing/
+// stopped/missed history row.
 package timer
 
 import (
@@ -17,9 +19,11 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/alertstore"
 	"github.com/Jairik/clanka-bot/assistant/internal/announce"
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/parse"
+	"github.com/Jairik/clanka-bot/assistant/internal/ring"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 )
 
@@ -41,11 +45,13 @@ const (
 	CancelText = "Timer cancelled."
 )
 
-// alertIntents is the fixed set a ringing timer alert handles. A Timer's
-// "snooze" is #52 Ring behaviour, so it is deliberately absent here.
-func alertIntents() []focus.Intent { return []focus.Intent{focus.Stop, focus.Cancel} }
+// alertIntents is the fixed set a ringing Timer handles. "snooze" on a Timer
+// acts as stop, so the same holder consumes it; #53 gives an Alarm the real
+// snooze behaviour.
+func alertIntents() []focus.Intent { return []focus.Intent{focus.Stop, focus.Cancel, focus.Snooze} }
 
-// alertTimeout bounds one alert so a stuck TTS service cannot leak a goroutine.
+// alertTimeout bounds one spoken fallback alert so a stuck TTS service cannot
+// leak a goroutine. A Ring bounds itself with its max_ring setting.
 const alertTimeout = 30 * time.Second
 
 // Timer is one running or recently set timer.
@@ -74,13 +80,37 @@ type Manager struct {
 	alertText string
 
 	db            *sql.DB
+	history       *alertstore.Store
 	announcements *announce.Queue
 	focus         *focus.Registry
 	ring          func(context.Context, Timer) bool
+	ringEngine    *ring.Engine
+	missed        func(MissedAlert)
 	closed        bool
 
+	// ctx is cancelled by Close so an active Ring and queued alert callbacks
+	// stop promptly. It is not a deadline: the Ring owns max_ring.
+	ctx    context.Context
+	cancel context.CancelFunc
+
+	// wg tracks an in-flight fire so Close can wait for its history row and
+	// let the caller close the database afterwards.
+	wg      sync.WaitGroup
 	seq     int
 	entries map[string]*entry
+}
+
+// MissedAlert is the notification hook payload for a Timer that ran to
+// max_ring, expired in downtime or was still ringing after a crash. #62 wires
+// ntfy through SetMissedHook; this package only reports the fact.
+type MissedAlert struct {
+	Kind            string
+	Label           string
+	DurationSeconds int
+	FiresAt         time.Time
+	FiredAt         time.Time
+	EndedAt         time.Time
+	Reason          string
 }
 
 // NewManager builds an empty manager with the default alert phrase. A nil now
@@ -100,18 +130,49 @@ func NewManagerText(now func() time.Time, say func(ctx context.Context, text str
 	if strings.TrimSpace(alertText) == "" {
 		alertText = AlertText
 	}
-	return &Manager{now: now, say: say, logger: logger, alertText: alertText, entries: make(map[string]*entry)}
+	ctx, cancel := context.WithCancel(context.Background())
+	return &Manager{
+		now:       now,
+		say:       say,
+		logger:    logger,
+		alertText: alertText,
+		ctx:       ctx,
+		cancel:    cancel,
+		entries:   make(map[string]*entry),
+	}
 }
 
-// SetRing installs the Ring callback that runs when a Timer fires. It reports
-// whether it handled the alert; returning false keeps the configured spoken
-// line. The context is cancelled by a Focus stop or cancel, so a looping Ring
-// can stop its sound. #52 replaces that single line with the Ring engine; this
-// seam exists so the Manager does not grow a second fire path meanwhile.
+// SetRing installs the raw #55 Ring callback that runs when a Timer fires. It
+// reports whether it handled the alert; returning false keeps the configured
+// spoken line. The context is cancelled by a Focus stop, cancel or Timer
+// snooze, so a looping Ring can stop its sound.
+//
+// This callback is not serialised with another fire; the production path is
+// SetRingEngine, which owns the one-speaker queue and Focus. A custom callback
+// that plays audio must serialise itself.
 func (m *Manager) SetRing(ring func(context.Context, Timer) bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.ring = ring
+}
+
+// SetRingEngine attaches the #52 Ring engine. It takes precedence over a raw
+// SetRing callback: the engine owns serialisation, Focus, the reply boundary,
+// music ducking and max_ring, and Manager records the Ring lifecycle around
+// it. SetRing stays available for a lightweight custom alert and the #55
+// contract tests.
+func (m *Manager) SetRingEngine(engine *ring.Engine) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ringEngine = engine
+}
+
+// SetMissedHook installs the later Notification seam (#62). It is called after
+// the missed state is durable, with the alert's identity and reason.
+func (m *Manager) SetMissedHook(hook func(MissedAlert)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.missed = hook
 }
 
 // WithFocus makes a ringing alert hold Focus, so a shared "stop" or "cancel"
@@ -124,29 +185,50 @@ func (m *Manager) WithFocus(registry *focus.Registry) *Manager {
 	return m
 }
 
-// alertHolder is the ringing alert's Focus holder. It handles stop and cancel
-// by cancelling the alert's speech or Ring context; the stop turn says the line.
+// alertHolder is the fallback spoken alert's Focus holder. It handles stop,
+// cancel and snooze by cancelling the speech; the stop turn says the line. The
+// Ring engine has its own equivalent holder so it can report the exact reason.
 type alertHolder struct {
 	cancel context.CancelFunc
 	done   atomic.Bool
+
+	mu     sync.Mutex
+	reason string
 }
 
 func (h *alertHolder) Intents() []focus.Intent { return alertIntents() }
 
 func (h *alertHolder) HandleIntent(_ context.Context, intent focus.Intent) (string, bool) {
 	switch intent {
-	case focus.Stop, focus.Cancel:
+	case focus.Stop, focus.Cancel, focus.Snooze:
 	default:
 		return "", false
 	}
 	if !h.done.CompareAndSwap(false, true) {
 		return "", false
 	}
+	h.mu.Lock()
+	switch intent {
+	case focus.Cancel:
+		h.reason = "cancel"
+	case focus.Snooze:
+		h.reason = "snooze"
+	default:
+		h.reason = "stop"
+	}
+	h.mu.Unlock()
 	h.cancel()
 	if intent == focus.Cancel {
 		return CancelText, true
 	}
 	return StopText, true
+}
+
+// endedBy reports the intent that stopped the fallback alert, if any.
+func (h *alertHolder) endedBy() string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.reason
 }
 
 // Set starts an unlabelled timer and returns it. It is the original in-memory
@@ -192,16 +274,31 @@ func (m *Manager) Start(label string, d time.Duration) (Timer, error) {
 
 	m.entries[timer.ID] = &entry{
 		timer: timer,
-		stop:  time.AfterFunc(d, func() { m.fire(timer.ID) }),
+		stop:  time.AfterFunc(d, func() { m.runFire(timer.ID) }),
 	}
 	m.logger.Info("timer set", "timer_id", timer.ID, "duration_s", timer.DurationSeconds, "label", timer.Label)
 	return timer, nil
 }
 
-// fire removes the timer, deletes its persisted row, then speaks its alert.
-// The row goes first so a restart cannot fire the same timer twice. While the
-// alert sounds it holds Focus at Ring priority, so "stop" or "cancel" reaches
-// it before the current reply or music.
+// runFire registers one callback with Close's wait group. It is the only path
+// from an AfterFunc into fire, so a shutdown can wait for the final history
+// write before the database closes.
+func (m *Manager) runFire(id string) {
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return
+	}
+	m.wg.Add(1)
+	m.mu.Unlock()
+	defer m.wg.Done()
+	m.fire(id)
+}
+
+// fire removes the timer, atomically replaces its pending row with an open
+// alert-history row, then Rings it. The delete happens in the same transaction
+// as the history insert, so a crash can never fire the same Timer twice and
+// still leaves a record that it fired.
 func (m *Manager) fire(id string) {
 	m.mu.Lock()
 	e, ok := m.entries[id]
@@ -210,36 +307,62 @@ func (m *Manager) fire(id string) {
 		return
 	}
 	delete(m.entries, id)
-	ring := m.ring
+	ringFn := m.ring
+	engine := m.ringEngine
 	say := m.say
 	focusRegistry := m.focus
 	db := m.db
+	rootCtx := m.ctx
+	fallback := m.alertText
 	m.mu.Unlock()
 
+	timer := e.timer
+	eventID := int64(0)
 	if db != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), storeTimeout)
-		if err := m.deleteRows(ctx, []string{id}); err != nil {
-			m.logger.Error("timer delete after fire", "timer_id", id, "error", err.Error())
-		}
+		var err error
+		eventID, err = m.beginFire(ctx, timer)
 		cancel()
+		if err != nil {
+			// A history failure must not drop the alert. The pending row is
+			// left behind only when the transaction rolled back; the manager
+			// still sounds the Timer once now.
+			m.logger.Error("timer fire history", "timer_id", timer.ID, "error", err.Error())
+		}
 	}
 
-	m.alert(e.timer, ring, say, focusRegistry)
-}
-
-// alert hands one firing Timer to the Ring seam, then falls back to the single
-// spoken line. While either sounds, the alert holds Focus at Ring priority so a
-// shared "stop" or "cancel" cancels the sound instead of the current reply.
-func (m *Manager) alert(timer Timer, ring func(context.Context, Timer) bool, say func(ctx context.Context, text string) error, focusRegistry *focus.Registry) {
-	m.logger.Info("timer fired", "timer_id", timer.ID, "label", timer.Label)
-	if ring == nil && say == nil {
-		m.logger.Warn("timer alert dropped: speech is not configured", "timer_id", timer.ID)
+	if engine != nil {
+		result := engine.Ring(rootCtx, ring.Request{
+			Kind:         ring.Timer,
+			ID:           timer.ID,
+			Label:        timer.Label,
+			Duration:     time.Duration(timer.DurationSeconds) * time.Second,
+			FiresAt:      timer.FiresAt,
+			FallbackText: fallbackText(fallback, timer),
+			OnStart:      func() { m.markRinging(eventID) },
+		})
+		m.finishRing(eventID, timer, result)
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), alertTimeout)
+
+	m.markRinging(eventID)
+	endedBy, _ := m.alert(timer, ringFn, say, focusRegistry)
+	m.finishEvent(eventID, alertstore.StateStopped, endedBy)
+}
+
+// alert hands one firing Timer to the raw #55 Ring seam, then falls back to the
+// single spoken line. While either sounds it holds Focus at Ring priority.
+func (m *Manager) alert(timer Timer, ringFn func(context.Context, Timer) bool, say func(ctx context.Context, text string) error, focusRegistry *focus.Registry) (endedBy string, rang bool) {
+	m.logger.Info("timer fired", "timer_id", timer.ID, "label", timer.Label)
+	if ringFn == nil && say == nil {
+		m.logger.Warn("timer alert dropped: speech is not configured", "timer_id", timer.ID)
+		return "dropped", false
+	}
+	ctx, cancel := context.WithTimeout(m.ctx, alertTimeout)
 	defer cancel()
+	var holder *alertHolder
 	if focusRegistry != nil {
-		holder := &alertHolder{cancel: cancel}
+		holder = &alertHolder{cancel: cancel}
 		claim := focusRegistry.Claim(focus.Ring, holder)
 		defer func() {
 			// Finish before releasing so a racing intent declines rather than
@@ -248,21 +371,144 @@ func (m *Manager) alert(timer Timer, ring func(context.Context, Timer) bool, say
 			claim.Release()
 		}()
 	}
-	if ring != nil && ring(ctx, timer) {
+	reason := func(fallback string) string {
+		if holder != nil {
+			if ended := holder.endedBy(); ended != "" {
+				return ended
+			}
+		}
+		return fallback
+	}
+	if ringFn != nil && ringFn(ctx, timer) {
 		m.logger.Info("timer rung", "timer_id", timer.ID, "label", timer.Label)
-		return
+		return reason("rung"), true
 	}
 	if say == nil {
 		m.logger.Warn("timer alert dropped: speech is not configured", "timer_id", timer.ID)
-		return
+		return reason("dropped"), false
 	}
-	text := m.alertText
-	if timer.Label != "" {
-		text = capitalize(timer.Label) + " timer is done."
-	}
+	text := fallbackText(m.alertText, timer)
 	if err := say(ctx, text); err != nil && ctx.Err() == nil {
 		m.logger.Error("timer alert", "timer_id", timer.ID, "error", err.Error())
 	}
+	return reason("spoken"), true
+}
+
+// fallbackText is the short spoken line used when there is no Ring sound.
+func fallbackText(alertText string, timer Timer) string {
+	if timer.Label != "" {
+		return capitalize(timer.Label) + " timer is done."
+	}
+	return alertText
+}
+
+// beginFire deletes the pending Timer row and inserts its open history row in
+// one transaction. The row id is zero for an in-memory Manager.
+func (m *Manager) beginFire(ctx context.Context, timer Timer) (int64, error) {
+	if m.db == nil {
+		return 0, nil
+	}
+	tx, err := m.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("timer: begin fire: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM timers WHERE id = ?`, timer.ID); err != nil {
+		tx.Rollback()
+		return 0, fmt.Errorf("timer: delete fired timer %s: %w", timer.ID, err)
+	}
+	event := alertstore.Event{
+		Kind:       "timer",
+		SourceID:   timer.ID,
+		Label:      timer.Label,
+		DurationMS: int64(timer.DurationSeconds) * int64(time.Second/time.Millisecond),
+		FiresAt:    timer.FiresAt,
+		FiredAt:    m.now(),
+		State:      alertstore.StateFired,
+	}
+	id, err := m.history.InsertTx(ctx, tx, event)
+	if err != nil {
+		tx.Rollback()
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("timer: commit fire: %w", err)
+	}
+	return id, nil
+}
+
+// markRinging records that the alert now owns the speaker.
+func (m *Manager) markRinging(eventID int64) {
+	if eventID <= 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), storeTimeout)
+	defer cancel()
+	if err := m.history.MarkRinging(ctx, eventID, m.now()); err != nil {
+		m.logger.Error("timer history ringing", "event_id", eventID, "error", err.Error())
+	}
+}
+
+// finishRing records the Ring engine's outcome and fires the missed hook.
+func (m *Manager) finishRing(eventID int64, timer Timer, result ring.Result) {
+	state := alertstore.StateStopped
+	switch result.Outcome {
+	case ring.OutcomeMissed:
+		state = alertstore.StateMissed
+	case ring.OutcomeInterrupted:
+		state = alertstore.StateInterrupted
+	}
+	endedBy := result.EndedBy
+	if endedBy == "" {
+		endedBy = "stopped"
+	}
+	if !result.Played && state == alertstore.StateStopped {
+		endedBy = "unavailable"
+	}
+	m.finishEvent(eventID, state, endedBy)
+	if state == alertstore.StateMissed {
+		m.notifyMissed(timer, "max_ring")
+	}
+}
+
+// finishEvent closes one open history row. A zero id is the in-memory case.
+func (m *Manager) finishEvent(eventID int64, state alertstore.State, endedBy string) {
+	if eventID <= 0 {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), storeTimeout)
+	defer cancel()
+	if err := m.history.Finish(ctx, eventID, state, endedBy, m.now()); err != nil {
+		m.logger.Error("timer history finish", "event_id", eventID, "state", state, "error", err.Error())
+	}
+}
+
+// notifyMissed reports one max_ring alert. The history row is already durable
+// when this runs; #62 can send its Notification from this hook.
+func (m *Manager) notifyMissed(timer Timer, reason string) {
+	m.notifyMissedEvent(alertstore.Event{
+		Kind:       "timer",
+		SourceID:   timer.ID,
+		Label:      timer.Label,
+		DurationMS: int64(timer.DurationSeconds) * int64(time.Second/time.Millisecond),
+		FiresAt:    timer.FiresAt,
+		FiredAt:    timer.FiresAt,
+		EndedAt:    m.now(),
+	}, reason)
+}
+
+// History returns the newest alert-history rows, including missed and stopped
+// alerts from previous runs. It is the read seam for tests and the later
+// Dashboard/Notification work.
+func (m *Manager) History(limit int) ([]alertstore.Event, error) {
+	m.mu.Lock()
+	history := m.history
+	m.mu.Unlock()
+	if history == nil {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), storeTimeout)
+	defer cancel()
+	return history.List(ctx, limit)
 }
 
 // capitalize upper-cases the first rune of a spoken label without cutting a
@@ -387,16 +633,23 @@ func (m *Manager) cancelLocked(ids []string, attr, value string) (int, error) {
 	return len(ids), nil
 }
 
-// Close stops every callback without deleting the persisted rows. It models a
-// clean process shutdown: a restart recovers the Timers.
+// Close stops every callback and cancels an active Ring without deleting the
+// persisted rows. It waits for an in-flight fire to record its outcome, so the
+// caller may close the database afterwards. It models a clean process
+// shutdown: pending Timers are recovered on restart, while an interrupted Ring
+// is recorded as such.
 func (m *Manager) Close() {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.closed = true
+	if m.cancel != nil {
+		m.cancel()
+	}
 	for id, e := range m.entries {
 		e.stop.Stop()
 		delete(m.entries, id)
 	}
+	m.mu.Unlock()
+	m.wg.Wait()
 }
 
 // SetIn asks for a timer length and an optional label.

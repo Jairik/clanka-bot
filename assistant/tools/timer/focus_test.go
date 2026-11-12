@@ -15,15 +15,15 @@ import (
 )
 
 // TestModuleDeclaresTheIntentsItsAlertHandles is the module-level contract for
-// downstream Focus work: the timer module takes "stop" and "cancel" while its
-// alert is sounding, and nothing else.
+// downstream Focus work: the timer module takes "stop", "cancel" and "snooze"
+// while its alert is sounding, and nothing else.
 func TestModuleDeclaresTheIntentsItsAlertHandles(t *testing.T) {
 	declarer, ok := tool.Module(timer.NewModule()).(tool.IntentDeclarer)
 	if !ok {
 		t.Fatal("timer module does not declare its Focus intents")
 	}
 	got := declarer.Intents()
-	want := []focus.Intent{focus.Stop, focus.Cancel}
+	want := []focus.Intent{focus.Stop, focus.Cancel, focus.Snooze}
 	if len(got) != len(want) {
 		t.Fatalf("Intents() = %v, want %v", got, want)
 	}
@@ -119,7 +119,8 @@ func TestRingingAlertHandlesCancel(t *testing.T) {
 }
 
 // TestRingingAlertLeavesOtherIntentsToTheNextHolder keeps the declaration
-// honest: "snooze" on a Timer belongs to Ring behaviour (#52), not this alert.
+// honest: "pause" is not something a Timer alert can do, so it reaches the
+// next holder rather than being swallowed.
 func TestRingingAlertLeavesOtherIntentsToTheNextHolder(t *testing.T) {
 	var registry focus.Registry
 	alert := newBlockingAlert()
@@ -131,27 +132,27 @@ func TestRingingAlertLeavesOtherIntentsToTheNextHolder(t *testing.T) {
 	music := &musicHolder{}
 	claim := registry.Claim(focus.Music, music)
 	defer claim.Release()
-	if text, handled := registry.HandleIntent(context.Background(), focus.Snooze); !handled || text != "Music snoozed." {
-		t.Fatalf("snooze = %q, %v; want the next holder to take it", text, handled)
+	if text, handled := registry.HandleIntent(context.Background(), focus.Pause); !handled || text != "Music paused." {
+		t.Fatalf("pause = %q, %v; want the next holder to take it", text, handled)
 	}
-	if !music.snoozed {
-		t.Fatal("snooze did not fall through to music")
+	if !music.paused {
+		t.Fatal("pause did not fall through to music")
 	}
 }
 
 // musicHolder is the lower-priority holder in the fall-through test.
 type musicHolder struct {
-	snoozed bool
+	paused bool
 }
 
-func (m *musicHolder) Intents() []focus.Intent { return []focus.Intent{focus.Snooze} }
+func (m *musicHolder) Intents() []focus.Intent { return []focus.Intent{focus.Pause} }
 
 func (m *musicHolder) HandleIntent(_ context.Context, intent focus.Intent) (string, bool) {
-	if intent != focus.Snooze {
+	if intent != focus.Pause {
 		return "", false
 	}
-	m.snoozed = true
-	return "Music snoozed.", true
+	m.paused = true
+	return "Music paused.", true
 }
 
 // TestPipelineStopReachesARingingTimer ties the phrase table, Focus and the

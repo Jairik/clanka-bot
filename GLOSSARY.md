@@ -124,6 +124,10 @@ _Avoid_: Name, tag, title
 The repeating sound a Timer or Alarm makes when it goes off, until it is stopped, snoozed or times out.
 _Avoid_: Alert sound
 
+**Missed alert**:
+A Ring that reached its `max_ring` without stop or snooze. It stays in the alert history and is what a Notification reports.
+_Avoid_: Ignored alarm, expired timer
+
 **Cue**:
 A non-speech sound the Assistant plays for a fixed role, such as on wake detection or as a Ring. Which sound fills each role is the user's choice.
 _Avoid_: Chime, earcon, beep, notification sound

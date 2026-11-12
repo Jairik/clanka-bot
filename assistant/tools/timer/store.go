@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/alertstore"
 	"github.com/Jairik/clanka-bot/assistant/internal/announce"
 	"github.com/Jairik/clanka-bot/assistant/internal/parse"
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
@@ -21,13 +22,14 @@ const overdueGrace = 2 * time.Minute
 // local, so a slow query means it is wedged, not busy.
 const storeTimeout = 5 * time.Second
 
-// AttachStore makes the Manager durable. It loads the Timers a previous run
-// left behind, applies the downtime rule, then schedules the future ones.
+// AttachStore makes the Manager durable. It first resolves any alert a
+// previous process left open as missed, then loads the Timers a previous run
+// left behind, applies the downtime rule, and schedules the future ones.
 // Announcements receives the single summary for Timers that expired long
 // before startup; it may be nil, in which case that summary is only logged.
 //
-// A Timer row is deleted before its alert is spoken. A crash during the alert
-// can therefore lose it, but a restart can never fire it twice.
+// The pending Timer row is deleted in the same transaction that opens its
+// history row, so a restart can never fire it twice and still knows it fired.
 func (m *Manager) AttachStore(st *store.Store, announcements *announce.Queue) error {
 	if st == nil || st.DB() == nil {
 		return nil // in-memory Manager; existing callers and tests stay valid
@@ -38,6 +40,7 @@ func (m *Manager) AttachStore(st *store.Store, announcements *announce.Queue) er
 		return errors.New("timer: store is already attached")
 	}
 	m.db = st.DB()
+	m.history = alertstore.New(st.DB())
 	m.announcements = announcements
 	m.mu.Unlock()
 	return m.recover()
@@ -48,6 +51,19 @@ func (m *Manager) AttachStore(st *store.Store, announcements *announce.Queue) er
 func (m *Manager) recover() error {
 	ctx, cancel := context.WithTimeout(context.Background(), storeTimeout)
 	defer cancel()
+
+	// A previous process may have crashed while an alert was fired or ringing.
+	// Resolve those open history rows first: they are missed, and the hook can
+	// tell #62. They are never rung again, preserving at-most-once delivery.
+	open, err := m.history.Recover(ctx, m.now())
+	if err != nil {
+		return err
+	}
+	for _, event := range open {
+		m.logger.Warn("timer ring interrupted by restart; recorded missed",
+			"event_id", event.ID, "label", event.Label, "fires_at", event.FiresAt)
+		m.notifyMissedEvent(event, "restart")
+	}
 
 	rows, err := m.db.QueryContext(ctx,
 		`SELECT id, label, duration_ms, fires_at FROM timers ORDER BY fires_at, id`)
@@ -95,14 +111,18 @@ func (m *Manager) recover() error {
 			FiresAt:         saved.firesAt,
 		}
 		if !saved.firesAt.After(now) {
-			// Remove the row first: whichever path fires next cannot repeat it.
-			if err := m.deleteRows(ctx, []string{saved.id}); err != nil {
-				return err
-			}
 			if overdue := now.Sub(saved.firesAt); overdue > overdueGrace {
+				// Too old to ring: remove the pending row and record one
+				// durable missed history row in the same transaction.
+				if err := m.retireMissed(ctx, savedTimer, now, "downtime"); err != nil {
+					return err
+				}
 				missed = append(missed, savedTimer)
 				continue
 			}
+			// Within the grace window: ring now. The row stays until the fire
+			// transaction replaces it with the history row, so a crash before
+			// the callback cannot lose the Timer without a record.
 			m.schedule(savedTimer, 0)
 			continue
 		}
@@ -128,9 +148,62 @@ func (m *Manager) schedule(saved Timer, delay time.Duration) {
 	}
 	m.entries[id] = &entry{
 		timer: saved,
-		stop:  time.AfterFunc(delay, func() { m.fire(id) }),
+		stop:  time.AfterFunc(delay, func() { m.runFire(id) }),
 	}
 	m.mu.Unlock()
+}
+
+// retireMissed deletes an overdue pending row and writes its missed history row
+// in one transaction, then reports it to the notification hook. An in-memory
+// Manager cannot reach here because recover only runs with a store.
+func (m *Manager) retireMissed(ctx context.Context, timer Timer, endedAt time.Time, reason string) error {
+	tx, err := m.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("timer: begin downtime retire: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM timers WHERE id = ?`, timer.ID); err != nil {
+		tx.Rollback()
+		return fmt.Errorf("timer: delete overdue timer %s: %w", timer.ID, err)
+	}
+	event := alertstore.Event{
+		Kind:       "timer",
+		SourceID:   timer.ID,
+		Label:      timer.Label,
+		DurationMS: int64(timer.DurationSeconds) * int64(time.Second/time.Millisecond),
+		FiresAt:    timer.FiresAt,
+		FiredAt:    timer.FiresAt,
+		State:      alertstore.StateMissed,
+		EndedAt:    endedAt,
+		EndedBy:    reason,
+	}
+	if _, err := m.history.InsertTx(ctx, tx, event); err != nil {
+		tx.Rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("timer: commit downtime retire: %w", err)
+	}
+	m.notifyMissedEvent(event, reason)
+	return nil
+}
+
+// notifyMissedEvent reports one already-persisted missed history row.
+func (m *Manager) notifyMissedEvent(event alertstore.Event, reason string) {
+	m.mu.Lock()
+	hook := m.missed
+	m.mu.Unlock()
+	if hook == nil {
+		return
+	}
+	hook(MissedAlert{
+		Kind:            event.Kind,
+		Label:           event.Label,
+		DurationSeconds: int(time.Duration(event.DurationMS) * time.Millisecond / time.Second),
+		FiresAt:         event.FiresAt,
+		FiredAt:         event.FiredAt,
+		EndedAt:         event.EndedAt,
+		Reason:          reason,
+	})
 }
 
 // announceMissed queues the one summary Announcement for Timers that expired

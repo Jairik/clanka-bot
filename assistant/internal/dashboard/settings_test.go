@@ -12,6 +12,7 @@ import (
 
 	"github.com/Jairik/clanka-bot/assistant/internal/agent"
 	"github.com/Jairik/clanka-bot/assistant/internal/dashboard"
+	"github.com/Jairik/clanka-bot/assistant/internal/ring"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
@@ -83,6 +84,11 @@ func newSettingsFixture(t *testing.T) *settingsFixture {
 		settings.String("timezone", "", settings.WithConfig("Europe/London")),
 		// A future sound setting must appear without a hardcoded page list.
 		settings.String("sounds.wake", "builtin/wake.wav", settings.WithConfig("builtin/wake.wav")),
+	)
+	// The per-kind Ring settings are ordinary live settings; #48's page must
+	// expose them dynamically, including the Timer/Alarm split.
+	defs = append(defs, ring.Definitions()...)
+	defs = append(defs,
 		settings.String("http.addr", "127.0.0.1:8080",
 			settings.WithKind(settings.RestartRequired),
 			settings.WithConfig("127.0.0.1:8080")),
@@ -202,6 +208,12 @@ func TestSettingsPageRendersFutureSettingsFromTheServiceList(t *testing.T) {
 	}
 	if !strings.Contains(body, "/settings/values/sounds.wake") {
 		t.Error("future setting has no generated form action")
+	}
+	// The Ring settings are per kind and appear from the same service list.
+	for _, key := range []string{"ring.timer.max_ring", "ring.alarm.ramp", "ring.timer.volume", "ring.alarm.speak_label"} {
+		if !strings.Contains(body, key) || !strings.Contains(body, "/settings/values/"+key) {
+			t.Errorf("Ring setting %q does not appear dynamically", key)
+		}
 	}
 }
 

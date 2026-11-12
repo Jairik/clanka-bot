@@ -149,7 +149,7 @@ func TestSecretsAndTimersPreserveEachOtherAcrossReopen(t *testing.T) {
 		}
 		return applied
 	}
-	wantVersions := map[int]string{1: "settings", 2: "secrets", 3: "timers", 4: "sounds"}
+	wantVersions := map[int]string{1: "settings", 2: "secrets", 3: "timers", 4: "sounds", 5: "alert_events"}
 	applied := migrations(firstStore)
 	if len(applied) != len(wantVersions) {
 		t.Fatalf("fresh migrations = %v, want %v", applied, wantVersions)

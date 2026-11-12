@@ -311,7 +311,10 @@ tools:
 // one module list reports the shared intents each module can handle.
 func TestFocusIntentsListsTheModuleDeclarations(t *testing.T) {
 	got := tools.NewSet().FocusIntents()
-	want := []string{"timer:stop", "timer:cancel", "timer:snooze"}
+	want := []string{
+		"timer:stop", "timer:cancel", "timer:snooze",
+		"alarm:stop", "alarm:cancel", "alarm:snooze",
+	}
 	if len(got) != len(want) {
 		t.Fatalf("FocusIntents() = %v, want %v", got, want)
 	}

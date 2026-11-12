@@ -32,11 +32,11 @@ func openSettings(t *testing.T) *settings.Service {
 // ramp 0 s, Alarm ramp 30 s, 1 s gap, label at the start.
 func TestDefaultsPerKind(t *testing.T) {
 	timer := ring.Defaults(ring.Timer)
-	if timer.MaxRing != 5*time.Minute || timer.Volume != 80 || timer.Ramp != 0 || timer.Gap != time.Second || timer.SpeakLabel != ring.SpeakStart {
+	if timer.MaxRing != 5*time.Minute || timer.Volume != 80 || timer.Ramp != 0 || timer.Gap != time.Second || timer.SpeakLabel != ring.SpeakStart || timer.Snooze != 0 {
 		t.Fatalf("timer defaults = %+v", timer)
 	}
 	alarm := ring.Defaults(ring.Alarm)
-	if alarm.MaxRing != 5*time.Minute || alarm.Volume != 80 || alarm.Ramp != 30*time.Second || alarm.Gap != time.Second || alarm.SpeakLabel != ring.SpeakStart {
+	if alarm.MaxRing != 5*time.Minute || alarm.Volume != 80 || alarm.Ramp != 30*time.Second || alarm.Gap != time.Second || alarm.SpeakLabel != ring.SpeakStart || alarm.Snooze != 9*time.Minute {
 		t.Fatalf("alarm defaults = %+v", alarm)
 	}
 }
@@ -91,6 +91,8 @@ func TestDefinitionsValidateEveryField(t *testing.T) {
 		{ring.Key(ring.Timer, "ramp"), `"-1s"`, "must not be negative"},
 		{ring.Key(ring.Timer, "gap"), `"-1s"`, "must not be negative"},
 		{ring.Key(ring.Timer, "speak_label"), `"sometimes"`, "start, every_loop or never"},
+		{ring.Key(ring.Alarm, "snooze"), `"0s"`, "between 1s and 1h"},
+		{ring.Key(ring.Alarm, "snooze"), `"2h"`, "between 1s and 1h"},
 	}
 	for _, test := range cases {
 		_, err := svc.SetJSON(ctx, test.key, []byte(test.value))
@@ -110,6 +112,8 @@ func TestDefinitionsValidateEveryField(t *testing.T) {
 		{ring.Key(ring.Timer, "ramp"), `"0s"`},
 		{ring.Key(ring.Timer, "gap"), `"0s"`},
 		{ring.Key(ring.Timer, "speak_label"), `"every_loop"`},
+		{ring.Key(ring.Alarm, "snooze"), `"1s"`},
+		{ring.Key(ring.Alarm, "snooze"), `"1h"`},
 	} {
 		if _, err := svc.SetJSON(ctx, test.key, []byte(test.value)); err != nil {
 			t.Errorf("%s=%s rejected: %v", test.key, test.value, err)
@@ -134,5 +138,18 @@ func TestSettingsKeysListThePerKindSurface(t *testing.T) {
 	}
 	if got := ring.SoundKey(ring.Alarm); got != "sounds.alarm_ring" {
 		t.Fatalf("alarm sound key = %q", got)
+	}
+	alarmKeys := ring.SettingsKeys(ring.Alarm)
+	wantAlarm := []string{
+		"sounds.alarm_ring",
+		"ring.alarm.max_ring",
+		"ring.alarm.snooze",
+		"ring.alarm.volume",
+		"ring.alarm.ramp",
+		"ring.alarm.gap",
+		"ring.alarm.speak_label",
+	}
+	if strings.Join(alarmKeys, ",") != strings.Join(wantAlarm, ",") {
+		t.Fatalf("alarm keys = %v, want %v", alarmKeys, wantAlarm)
 	}
 }

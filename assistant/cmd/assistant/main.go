@@ -44,6 +44,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/wording"
 	"github.com/Jairik/clanka-bot/assistant/internal/wyoming"
 	"github.com/Jairik/clanka-bot/assistant/tools"
+	"github.com/Jairik/clanka-bot/assistant/tools/alarm"
 	"github.com/Jairik/clanka-bot/assistant/tools/timer"
 )
 
@@ -278,6 +279,9 @@ func run() error {
 		Cues:          cues,
 		Ring:          ringEngine,
 		Names:         names,
+		// The live settings service is created below; a module reads it per
+		// action through this late-bound closure and never snapshots it.
+		Settings: func() *settings.Service { return settingsSvc },
 	}
 	if speechSpeaker != nil {
 		deps.Speaker = speechSpeaker
@@ -338,9 +342,10 @@ func run() error {
 	// overlapping a reply.
 	cues.Bind(settingsSvc, playSink)
 
-	// The Timer module already attached ringEngine before its recovery. Only
-	// the missed hook and shutdown wait remain to wire here; #62 replaces the
-	// log-only hook with its ntfy Notification.
+	// Install the missed hooks and shutdown waits before StartAll: a row that
+	// recovery finds open or overdue must reach the hook, and Close must wait
+	// for the final history write. #62 replaces these log-only hooks with its
+	// ntfy Notification.
 	if module, ok := toolSet.Module("timer").(*timer.Module); ok {
 		if manager := module.Manager(); manager != nil {
 			manager.SetMissedHook(func(alert timer.MissedAlert) {
@@ -352,6 +357,25 @@ func run() error {
 			})
 			defer manager.Close()
 		}
+	}
+	if module, ok := toolSet.Module("alarm").(*alarm.Module); ok {
+		if manager := module.Manager(); manager != nil {
+			manager.SetMissedHook(func(alert alarm.MissedAlert) {
+				logger.Warn("alarm missed",
+					"label", alert.Label,
+					"reason", alert.Reason,
+					"fires_at", alert.FiresAt,
+					"ended_at", alert.EndedAt)
+			})
+			defer manager.Close()
+		}
+	}
+	// Start persisted schedules only now: the effective settings, Cues, Zone
+	// and Ring engine are bound, so the first recovered Timer or Alarm Ring
+	// obeys stored settings instead of the code defaults. One module-list hook
+	// keeps this out of per-domain main wiring.
+	if err := toolSet.StartAll(ctx); err != nil {
+		return fmt.Errorf("start tools: %w", err)
 	}
 	if zone.IsUTC() {
 		// UTC is a safe default, not a guess: warn once so a silent one-hour

@@ -11,6 +11,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
 	"github.com/Jairik/clanka-bot/assistant/internal/namematch"
 	"github.com/Jairik/clanka-bot/assistant/internal/ring"
+	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 	"github.com/Jairik/clanka-bot/assistant/internal/sound"
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
 	"github.com/Jairik/clanka-bot/assistant/internal/tz"
@@ -61,6 +62,11 @@ type Deps struct {
 	// voices and Spotify playlists. It reads the live threshold per lookup and
 	// never forces a guess; nil means a module cannot resolve spoken names.
 	Names *namematch.Matcher
+	// Settings returns the live settings service once main has created it. It
+	// is a function because Tool modules register before the service exists;
+	// a module that needs a live setting reads it per action and must not
+	// snapshot it. Nil means only code defaults are available.
+	Settings func() *settings.Service
 }
 
 // SecretResolver is the shared seam a module uses to read a declared secret.
@@ -113,6 +119,15 @@ type SecretDeclarer interface {
 // at runtime declares the same set.
 type IntentDeclarer interface {
 	Intents() []focus.Intent
+}
+
+// Startable is a Module's optional post-registration hook. main calls it after
+// the live settings, Cues, Zone and Ring seams are bound, so a module that
+// recovers persisted schedules starts them with the effective configuration
+// instead of the code defaults. It must run once, after Register and before
+// serving; a module without persisted state omits it.
+type Startable interface {
+	Start(ctx context.Context) error
 }
 
 // SecretNames collects every secret declared by the modules, in module order,

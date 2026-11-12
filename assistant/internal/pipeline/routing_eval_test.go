@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -21,6 +22,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
+	"github.com/Jairik/clanka-bot/assistant/tools/alarm"
 	"github.com/Jairik/clanka-bot/assistant/tools/audiocontrol"
 	"github.com/Jairik/clanka-bot/assistant/tools/clock"
 	"github.com/Jairik/clanka-bot/assistant/tools/timer"
@@ -39,6 +41,9 @@ var routingEvalTools = []string{
 	timer.CancelName,
 	timer.RemainingName,
 	timer.ListName,
+	alarm.SetName,
+	alarm.ListName,
+	alarm.CancelName,
 }
 
 const (
@@ -229,7 +234,7 @@ func (*evalAudio) Stop(context.Context) error              { return nil }
 // evalRegistry wires the real Tools with test-safe dependencies. Weather gets
 // a local upstream so every weather positive executes the handler, but no
 // request leaves the machine.
-func evalRegistry(t *testing.T) (*tool.Registry, *timer.Manager) {
+func evalRegistry(t *testing.T) (*tool.Registry, *timer.Manager, *alarm.Manager) {
 	t.Helper()
 	reg := tool.NewRegistry(5 * time.Second)
 	fixed := time.Date(2026, 11, 11, 15, 4, 0, 0, time.UTC)
@@ -268,7 +273,15 @@ func evalRegistry(t *testing.T) (*tool.Registry, *timer.Manager) {
 	if err := timer.Register(reg, manager); err != nil {
 		t.Fatalf("register timer: %v", err)
 	}
-	return reg, manager
+	alarmManager := alarm.NewManager(alarm.Options{
+		Now:    func() time.Time { return fixed },
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	t.Cleanup(alarmManager.Close)
+	if err := alarm.Register(reg, alarmManager); err != nil {
+		t.Fatalf("register alarm: %v", err)
+	}
+	return reg, manager, alarmManager
 }
 
 type evalVerdict struct {
@@ -349,7 +362,7 @@ func TestRoutingEvalAgainstMiniLM(t *testing.T) {
 	}
 	floor := routingEvalPrecisionFloor
 
-	reg, manager := evalRegistry(t)
+	reg, manager, alarms := evalRegistry(t)
 	router := pipeline.NewSemanticRouter(reg, embed.NewClient(embedURL, "sentence-transformers/all-MiniLM-L6-v2"), pipeline.SemanticConfig{
 		Threshold: threshold,
 		Margin:    margin,
@@ -386,9 +399,10 @@ func TestRoutingEvalAgainstMiniLM(t *testing.T) {
 		t.Helper()
 		logBuf.Reset()
 		reply := p.Handle(ctx, request(), utterance)
-		// Timers must not outlive their utterance, and every call starts from
-		// an empty manager so timer.list and timer.cancel are deterministic.
+		// Timers and Alarms must not outlive their utterance, and every call
+		// starts from empty managers so list and cancel are deterministic.
 		manager.Cancel("")
+		alarms.CancelAll()
 
 		reason := ""
 		var top []pipeline.ToolScore

@@ -153,17 +153,33 @@ Ring settings are live and per kind:
 | `ring.<kind>.ramp` | 0s | 30s |
 | `ring.<kind>.gap` | 1s | 1s |
 | `ring.<kind>.speak_label` | `start` | `start` |
+| `ring.<kind>.snooze` | — | 9m |
 
 `volume` is absolute: it scales the Cue PCM and is independent of the media
 volume. The sound itself is the per-kind Cue role from the Sound library,
 `sounds.timer_ring` or `sounds.alarm_ring`; there is no second sound key. The
 same settings service the Dashboard writes through is read again at each Ring,
-so a change applies to the next fire. Alarms (#53) reuse the same engine and
-settings; Alarm snooze is deferred to that ticket.
+so a change applies to the next fire. Timers and Alarms share the engine and
+the per-kind settings.
+
+Alarms are clock-time Scheduled alerts and survive a restart. "Wake me at 7"
+sets a one-off (today, or tomorrow when 7 has already passed); "set an alarm
+for 6:30 on weekdays" repeats Monday to Friday, and weekends or chosen weekdays
+("on monday and thursday") work too. `alarm.list` is Local-only because labels
+can be private; "cancel my 7 am alarm" removes the matching Alarm. Each
+schedule is interpreted in the live `timezone` setting. A spring-forward wall
+time that does not exist fires after the jump (02:30 becomes 03:30), and a
+fall-back wall time that happens twice fires at its first occurrence. Alarms
+use the same Ring engine as a Timer, with a 30 s ramp by default. "snooze"
+re-rings after `ring.alarm.snooze` (default 9 min) without disturbing the
+repeat schedule; "stop" ends the current Ring, and a repeating Alarm schedules
+its next occurrence. On startup, an Alarm up to two minutes overdue fires now;
+older ones are recorded missed and summarised in one Announcement, and a
+repeating Alarm then schedules its next occurrence.
 
 The Control phrases `stop`, `pause`, `cancel`, `snooze` and `louder` are matched
 exactly, so they answer without waiting on the embed service. `stop`, `pause`,
-`cancel` and `snooze` are shared Focus intents: they act on a ringing Timer
+`cancel` and `snooze` are shared Focus intents: they act on a ringing alert
 first, then the current reply, then playing music. With nothing in Focus they
 fall through to the semantic Fast path, so `cancel` still reaches
 `timer.cancel` and `louder` still steps the volume up.
@@ -388,12 +404,11 @@ curl -s -X DELETE localhost:8081/api/settings/sounds.error
 
 Length caps are enforced when a sound is assigned and never trim the file:
 `wake` 1.0 s, `reminder`/`error` 3 s, Rings 60 s. A longer sound is rejected
-with the cap in the error. The wake and error Cues are wired, and a Timer Ring
-loops `sounds.timer_ring` through the Ring engine: it waits for the current
-reply sentence, ducks music, speaks the label and stops on "stop" or "snooze".
-An Alarm will use the same engine and `sounds.alarm_ring` (#53); a `none` or
-missing Ring sound falls back to the old single spoken line. Reminders do not
-exist yet.
+with the cap in the error. The wake and error Cues are wired, and a Timer or
+Alarm Ring loops `sounds.timer_ring` or `sounds.alarm_ring` through the Ring
+engine: it waits for the current reply sentence, ducks music, speaks the label
+and stops on "stop" or "snooze". A `none` or missing Ring sound falls back to
+the old single spoken line. Reminders do not exist yet.
 
 ### Latency
 

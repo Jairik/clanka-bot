@@ -164,7 +164,7 @@ positives:
     - cancel that timer
     - please cancel the timer
     - stop my timer
-    - cancel the alarm
+    - cancel my kitchen timer
     - cancel the current timer
     - turn off the timer
     - end the timer
@@ -217,6 +217,74 @@ positives:
     - when is the egg timer done
     - how long until the pasta timer goes off
     - how long does the tea timer have left
+  alarm.set:
+    # Clock-time Alarms, one-off and repeating. The noun and the wake phrasing
+    # keep these apart from the duration Timers.
+    - wake me at 7
+    - wake me up at 7
+    - wake me at 6:30
+    - set an alarm for 7 am
+    - set an alarm for 7am
+    - set an alarm for 6:30
+    - set an alarm for 6:30 on weekdays
+    - set an alarm for 8 on weekends
+    - set an alarm for 7 every day
+    - set an alarm for 6:45 on monday
+    - set an alarm for 7 on tuesdays and thursdays
+    - wake me at 7 tomorrow
+    - set an alarm for 5:30 in the morning
+    - set my alarm for 9
+    - can you wake me at 7
+    - set an alarm for 6:30 am on weekdays
+    - set an alarm for 8:15 on weekends
+    - wake me up at 7:30 tomorrow
+    - set a work alarm for 7:30
+    - set an alarm for noon
+    - set an alarm for midnight
+    - please set an alarm for 6:30
+  alarm.list:
+    - what alarms do I have
+    - list my alarms
+    - show me my alarms
+    - what alarms are set
+    - do I have any alarms
+    - when is my next alarm
+    - what alarm is set
+    - tell me my alarms
+    - which alarms are set
+    - show all my alarms
+    - what alarms are active
+    - are there any alarms set
+    - give me my alarms
+    - how many alarms do I have
+    - when does my alarm go off
+    - what is my next alarm
+    - list all alarms
+    - check my alarms
+    - which alarm is next
+    - tell me the alarms I have
+    - what alarms will go off
+  alarm.cancel:
+    - cancel my 7 am alarm
+    - cancel the alarm
+    - cancel my alarm
+    - delete my alarm
+    - remove the 6:30 alarm
+    - cancel my work alarm
+    - cancel the 7 am alarm
+    - turn off my alarm
+    - get rid of my alarm
+    - clear my alarm
+    - cancel my 6:30 alarm
+    - delete the alarm
+    - remove my alarm
+    - cancel my alarm for 7
+    - cancel the alarm at 6:30
+    - cancel my wake up alarm
+    - turn off the 7 am alarm
+    - delete my 8 o'clock alarm
+    - cancel the alarm I set for 6:30
+    - cancel my 6:45 alarm
 negatives:
   - what's the capital of France
   - who wrote hamlet
@@ -231,7 +299,6 @@ negatives:
   - what's the stock price of Apple
   - write an email to my boss
   - play some jazz music
-  - set an alarm for 7am tomorrow
   - remind me to call mom at noon
   - turn on the lights
   - order a pizza
@@ -272,6 +339,13 @@ negatives:
   - timer for the pasta
   - how long is left on the oven
   - what's the timer setting
+  # Alarm-shaped but not a new Alarm: a sound preview, a volume change for a
+  # later per-Alarm override, or a phone alarm the assistant does not own.
+  - play the alarm sound
+  - turn up the alarm volume
+  - what's the alarm on my phone
+  - set a timer for 7 minutes
+  - wake up the house
 # Compound requests ask for more than one thing. They are kept separate so
 # the evaluation can report compound handling on its own.
 compounds:
@@ -283,6 +357,10 @@ compounds:
   - tell me the time then play some music
   - set a timer for 5 minutes and remind me to check the oven
   - stop talking and tell me the time
+  - set an alarm for 7 and a timer for 10 minutes
+  - cancel my alarm and set a new one for 7
+  - what time is my alarm and what's the weather
+  - set an alarm for 7 and turn the volume down
 # Focus cases: the same shared word must reach whatever holds Focus. Each case
 # names the holders present, the phrase's intent, and which holder wins. An
 # empty handled_by means no present holder declares the intent, so the utterance
@@ -322,4 +400,12 @@ focus:
   - utterance: cancel
     holders: []
     intent: cancel
+    handled_by: ""
+  - utterance: snooze
+    holders: [ring]
+    intent: snooze
+    handled_by: ring
+  - utterance: snooze
+    holders: []
+    intent: snooze
     handled_by: ""

@@ -8,8 +8,8 @@ misroute from the request log.
 ## What is checked in
 
 - `assistant/internal/pipeline/testdata/routing_eval.yaml` — the labelled
-  oracle. It has at least 20 positives for each of the seventeen Fast path Tools
-  (346 total), 75 plain negatives, and 12 compound requests.
+  oracle. It has at least 20 positives for each of the twenty-three Fast path Tools
+  (477 total), 89 plain negatives, and 16 compound requests.
 - `assistant/internal/pipeline/testdata/routing_baseline.yaml` — the recorded
   Map 1 totals the real-MiniLM evaluation must not fall below.
 - `assistant/internal/pipeline/routing_eval_test.go` —
@@ -126,19 +126,22 @@ conformance Example checks and the baseline gate both run against MiniLM.
 Threshold `0.71`, margin `0.23`, from the shipped `config.yaml`. This is the
 lowest threshold/margin pair found in the sweep that kept every Tool at or
 above the 0.95 precision floor. Run against
-`sentence-transformers/all-MiniLM-L6-v2` (the production model) on 2026-11-11:
+`sentence-transformers/all-MiniLM-L6-v2` (the production model) on 2026-11-12:
 
 | Tool | Positives | TP | Control TP | Semantic TP | FP | FN | Precision | Recall |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | `time.now` | 20 | 13 | 5 | 8 | 0 | 7 | 1.00 | 0.65 |
-| `date.today` | 20 | 18 | 0 | 18 | 0 | 2 | 1.00 | 0.90 |
+| `date.today` | 20 | 17 | 0 | 17 | 0 | 3 | 1.00 | 0.85 |
 | `weather.current` | 20 | 11 | 4 | 7 | 0 | 9 | 1.00 | 0.55 |
 | `audio.volume_set` | 20 | 12 | 1 | 11 | 0 | 8 | 1.00 | 0.60 |
 | `audio.stop` | 20 | 9 | 0 | 9 | 0 | 11 | 1.00 | 0.45 |
 | `timer.set` | 26 | 11 | 0 | 11 | 0 | 15 | 1.00 | 0.4231 |
-| `timer.cancel` | 20 | 15 | 0 | 15 | 0 | 5 | 1.00 | 0.75 |
+| `timer.cancel` | 20 | 14 | 0 | 14 | 0 | 6 | 1.00 | 0.70 |
 | `timer.remaining` | 20 | 9 | 0 | 9 | 0 | 11 | 1.00 | 0.45 |
 | `timer.list` | 20 | 12 | 0 | 12 | 0 | 8 | 1.00 | 0.60 |
+| `alarm.set` | 22 | 13 | 0 | 13 | 0 | 9 | 1.00 | 0.5909 |
+| `alarm.list` | 21 | 13 | 0 | 13 | 0 | 8 | 1.00 | 0.6190 |
+| `alarm.cancel` | 20 | 11 | 0 | 11 | 0 | 9 | 1.00 | 0.5500 |
 | `voice.set` | 20 | 20 | 0 | 20 | 0 | 0 | 1.00 | 1.00 |
 | `voice.list` | 20 | 6 | 4 | 2 | 0 | 14 | 1.00 | 0.30 |
 | `voice.current` | 20 | 8 | 3 | 5 | 0 | 12 | 1.00 | 0.40 |
@@ -147,25 +150,31 @@ above the 0.95 precision floor. Run against
 | `quiet.off` | 20 | 16 | 2 | 14 | 0 | 4 | 1.00 | 0.80 |
 | `quiet.dnd` | 20 | 20 | 0 | 20 | 0 | 0 | 1.00 | 1.00 |
 | `quiet.awake` | 20 | 20 | 2 | 18 | 0 | 0 | 1.00 | 1.00 |
-| **Total** | **346** | **236** | **23** | **213** | **0** | **110** | **1.00** | **0.6821** |
+| `reminder.set` | 24 | 13 | 0 | 13 | 0 | 11 | 1.00 | 0.5417 |
+| `reminder.list` | 22 | 12 | 0 | 12 | 0 | 10 | 1.00 | 0.5455 |
+| `reminder.cancel` | 22 | 12 | 0 | 12 | 0 | 10 | 1.00 | 0.5455 |
+| **Total** | **477** | **308** | **23** | **285** | **0** | **169** | **1.00** | **0.6457** |
 
-These numbers are from the #61 Quiet hours tree after the #63 voice merge and
-include the earlier #34, #44 and #51 corpus additions. Precision is 1.00 with
-no negative or compound misroute, and every Tool clears the 0.95 floor. The
-voice recall stays deliberately conservative for list/current questions; the
-Agent path answers them. Four natural `quiet.off` phrasings ("disable quiet
-hours", "switch off quiet hours", "get rid of quiet hours", "turn off nightly
-quiet hours") fall to the Agent path because the `quiet.set` vectors are close;
-recall is not a floor, and adding more near duplicates would not make the split
-more reliable. The other conservative Tools are the timer/list confusions
-described below.
+These numbers are from the merged #53 Alarm and #54 Reminder tree and include
+the earlier #34, #44, #51, #55, #61 and #63 corpus additions. Precision is 1.00 with no negative or compound misroute, and every
+Tool clears the 0.95 floor. Reminder recall is conservative because the
+set/list/cancel Examples are kept lexically distinct so no pair sits inside the
+0.23 margin: "list my reminders" and "delete my reminder" are ~0.22 apart from
+the other Reminder Tool, which is just under the shipped 0.23 margin. Those
+variants fall to the Agent path rather than risk a wrong Reminder action; the
+Agent can call `reminder.set`/`reminder.cancel`, while `reminder.list` is
+Local-only, so a list variant that lacks a strong phrasing is better served by
+the Scheduled alerts page (#58) than guessed. The voice and quiet recall notes
+below are unchanged.
 
-Plain negatives: **0 of 75** reached the Fast path. Compounds: **0 of 12**
-reached the Fast path. Every Tool is exercised by the semantic router at least
-five times, so no Tool clears the floor only because the Control phrase table
-happened to cover its positives. The timer and list confusions are the main
-reason recall is conservative; those requests go to the Agent path rather than
-risking a wrong timer action.
+Plain negatives: **0 of 89** reached the Fast path, including the new
+reminder-shaped non-requests (no time, no message, a statement about another
+device, or a knowledge question). Compounds: **0 of 16** reached the Fast path.
+Every Tool is exercised by the semantic router at least five times, so no Tool
+clears the floor only because the Control phrase table happened to cover its
+positives. The timer and list confusions are the main reason recall is
+conservative; those requests go to the Agent path rather than risking a wrong
+timer action.
 
 ### Focus cases
 

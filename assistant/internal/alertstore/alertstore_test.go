@@ -156,6 +156,45 @@ func TestRecoverKindLeavesOtherKindsOpen(t *testing.T) {
 	}
 }
 
+// TestRecoverKindKeepsAReminderOpen proves the third scheduler gets the same
+// isolation: a Timer startup must not close a Reminder waiting for the queue.
+func TestRecoverKindKeepsAReminderOpen(t *testing.T) {
+	ctx := context.Background()
+	history, st := openHistory(t)
+	at := time.UnixMilli(1_700_000_100_000)
+	reminderID := insertEvent(t, st.DB(), history, alertstore.Event{
+		Kind: "reminder", SourceID: "reminder", FiresAt: at, FiredAt: at, State: alertstore.StateFired,
+	})
+	if _, err := history.RecoverKind(ctx, "timer", at.Add(time.Minute)); err != nil {
+		t.Fatalf("RecoverKind timer: %v", err)
+	}
+	if state := eventState(t, history, reminderID); state != alertstore.StateFired {
+		t.Fatalf("reminder state = %q, want it left open", state)
+	}
+	if _, err := history.RecoverKind(ctx, "reminder", at.Add(2*time.Minute)); err != nil {
+		t.Fatalf("RecoverKind reminder: %v", err)
+	}
+	if state := eventState(t, history, reminderID); state != alertstore.StateMissed {
+		t.Fatalf("reminder after its own recovery = %q, want missed", state)
+	}
+}
+
+// eventState reads one row's state through List.
+func eventState(t *testing.T, history *alertstore.Store, id int64) alertstore.State {
+	t.Helper()
+	events, err := history.List(context.Background(), 20)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	for _, event := range events {
+		if event.ID == id {
+			return event.State
+		}
+	}
+	t.Fatalf("event %d not found", id)
+	return ""
+}
+
 // insertEvent writes one event in its own transaction, as the scheduler does.
 func insertEvent(t *testing.T, db *sql.DB, history *alertstore.Store, event alertstore.Event) int64 {
 	t.Helper()

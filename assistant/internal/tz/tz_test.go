@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 	"github.com/Jairik/clanka-bot/assistant/internal/settingsapi"
@@ -190,5 +191,23 @@ func TestNameReportsTheEffectiveZone(t *testing.T) {
 	}
 	if !unbound.IsUTC() {
 		t.Fatal("unbound IsUTC = false")
+	}
+}
+
+// TestResolveWallSharesTheDSTPolicy pins the one wall-clock resolver Alarm and
+// Reminder use: a spring-forward gap fires after the jump, and a fall-back
+// overlap uses the first occurrence.
+func TestResolveWallSharesTheDSTPolicy(t *testing.T) {
+	loc, err := tz.Load("America/New_York")
+	if err != nil || loc == nil {
+		t.Fatalf("Load(New York) = %v, %v", loc, err)
+	}
+	gap := tz.ResolveWall(2026, time.March, 8, 2, 30, loc)
+	if want := time.Date(2026, time.March, 8, 7, 30, 0, 0, time.UTC); !gap.Equal(want) {
+		t.Errorf("gap = %s, want %s (03:30 EDT)", gap, want)
+	}
+	overlap := tz.ResolveWall(2026, time.November, 1, 1, 30, loc)
+	if want := time.Date(2026, time.November, 1, 5, 30, 0, 0, time.UTC); !overlap.Equal(want) {
+		t.Errorf("overlap = %s, want the first occurrence %s", overlap, want)
 	}
 }

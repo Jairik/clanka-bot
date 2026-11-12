@@ -217,6 +217,81 @@ positives:
     - when is the egg timer done
     - how long until the pasta timer goes off
     - how long does the tea timer have left
+  reminder.set:
+    # A message is required: "remind me in ten minutes" alone stays a timer
+    # request, while these all name what to say.
+    - remind me in 20 minutes to check the oven
+    - remind me at 5 pm to call mum
+    - remind me to take the bins out in ten minutes
+    - set a reminder for 30 minutes to stretch
+    - remind me at 7:30 to leave for work
+    - remind me tomorrow at 9 am to call the dentist
+    - can you remind me to water the plants at 6 pm
+    - remind me in an hour to switch the laundry
+    - remind me to check the oven in 20 minutes
+    - set a reminder for 10 minutes to check the pasta
+    - remind me at 6:30 to feed the cat
+    - remind me tomorrow at 7 am to take my pills
+    - remind me in 45 minutes to take the cake out
+    - remind me at noon to eat lunch
+    - remind me at midnight to put the bins out
+    - set a reminder for two hours to call the plumber
+    - remind me in 90 seconds to check the rice
+    - remind me at 8 pm to call my sister
+    - i need a reminder to leave for the station at 4:30
+    - remind me at 10 am to send the invoice
+    - remind me in 15 minutes that the oven is on
+    - set a reminder for tomorrow at 6 am to go for a run
+    - remind me to phone the vet at 3 pm
+    - please remind me in five minutes to check the soup
+  reminder.list:
+    # Enumerating the reminders. "When is my reminder" has no remaining Tool,
+    # so the corpus uses true list phrasings.
+    - what reminders do I have
+    - list my reminders
+    - show me my reminders
+    - what reminders are set
+    - do I have any reminders
+    - which reminders do I have
+    - tell me my reminders
+    - what's on my reminder list
+    - list all reminders
+    - are any reminders set
+    - how many reminders do I have
+    - show all my reminders
+    - what reminders are active
+    - give me my reminders
+    - what reminders have I got
+    - which reminders are active
+    - are there any reminders
+    - show me all of the reminders
+    - what reminders are on my list
+    - read out my reminders
+    - do I have any reminders set
+    - what are my reminders
+  reminder.cancel:
+    - cancel the reminder
+    - cancel my reminder
+    - cancel the oven reminder
+    - delete my reminder
+    - remove the reminder
+    - cancel the reminder to call mum
+    - forget the reminder about the dentist
+    - cancel all reminders
+    - cancel the reminder for the oven
+    - get rid of the reminder
+    - clear my reminders
+    - cancel the dentist reminder
+    - delete the reminder about the bins
+    - remove all reminders
+    - cancel that reminder
+    - cancel the reminder to take my pills
+    - delete every reminder
+    - forget my reminder
+    - cancel the laundry reminder
+    - clear all reminders
+    - stop the oven reminder
+    - cancel the reminder about the invoice
   alarm.set:
     # Clock-time Alarms, one-off and repeating. The noun and the wake phrasing
     # keep these apart from the duration Timers.
@@ -548,6 +623,19 @@ negatives:
   - good night
   - how many hours until morning
   - set quiet hours
+  # Reminder-shaped but not a Fast path request: no message, no time, a
+  # statement, or another device's reminder store.
+  - remind me to buy milk
+  - remind me at 5
+  - set a reminder
+  - set a reminder for 10 minutes
+  - reminder that the meeting is at noon
+  - reminder app settings
+  - I set a reminder on my phone
+  - what reminders does my phone have
+  - how do I set a reminder on my phone
+  - remind me how to solve this equation
+  - my phone reminded me to call mum
 # Compound requests ask for more than one thing. They are kept separate so
 # the evaluation can report compound handling on its own.
 compounds:

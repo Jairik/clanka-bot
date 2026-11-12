@@ -14,6 +14,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/sound"
 	"github.com/Jairik/clanka-bot/assistant/internal/speech"
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
+	"github.com/Jairik/clanka-bot/assistant/internal/tz"
 )
 
 // fakeClock is the thread-safe injected clock the window tests advance.
@@ -460,4 +461,33 @@ func sampleAt(pcm []byte, index int) int16 {
 		return 0
 	}
 	return int16(uint16(pcm[index*2]) | uint16(pcm[index*2+1])<<8)
+}
+
+func TestTimezoneSettingChangeReevaluatesTheWindow(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "data", "assistant.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	defs := append(quiet.Definitions(quiet.Config{Enabled: true, Start: "22:30", End: "07:00", Volume: 35}), tz.Definition(""))
+	svc, err := settings.New(ctx, st, defs...)
+	if err != nil {
+		t.Fatalf("settings.New: %v", err)
+	}
+	zone := tz.New("", nil)
+	zone.Bind(svc)
+	clock := &fakeClock{now: utc(2026, 11, 12, 14, 0)}
+	service := quiet.New(quiet.Options{Reader: svc, Now: clock.Now, Location: zone.Location})
+	if service.IsQuiet() {
+		t.Fatal("14:00 UTC is quiet before the timezone change")
+	}
+	if _, err := svc.Set(ctx, tz.Key, "Asia/Tokyo"); err != nil {
+		t.Fatalf("set timezone: %v", err)
+	}
+	// 14:00 UTC is 23:00 in Tokyo; the same instant is now inside the window
+	// without rebuilding the service or reading a request first.
+	if !service.IsQuiet() {
+		t.Fatalf("status after timezone change = %+v, want quiet", service.Status())
+	}
 }

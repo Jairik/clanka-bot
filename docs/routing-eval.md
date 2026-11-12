@@ -8,7 +8,7 @@ misroute from the request log.
 ## What is checked in
 
 - `assistant/internal/pipeline/testdata/routing_eval.yaml` — the labelled
-  oracle. It has at least 20 positives for each of the sixteen Fast path Tools
+  oracle. It has at least 20 positives for each of the seventeen Fast path Tools
   (346 total), 75 plain negatives, and 12 compound requests.
 - `assistant/internal/pipeline/testdata/routing_baseline.yaml` — the recorded
   Map 1 totals the real-MiniLM evaluation must not fall below.

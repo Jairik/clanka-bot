@@ -802,7 +802,11 @@ func run() error {
 			Voices:        voiceSvc,
 			VoiceProbe:    voiceProbe,
 			VoicePreview:  voicePreview,
-			API:           apiHandler,
+			// One module list reaches the Timer, Alarm and Reminder managers
+			// for the Scheduled alerts page; no second registry is created.
+			ToolModules: toolSet,
+			Zone:        zone,
+			API:         apiHandler,
 		})
 		if err != nil {
 			return err

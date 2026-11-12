@@ -231,6 +231,16 @@ and the active Agent provider) with `set`, `last4`, update time and source
 a cleared stored value falls back to `.env` immediately. No value is revealed,
 prefilled or echoed, and a new module declaration appears without a page edit.
 
+The **Scheduled alerts** page at `/alerts` lists every active Timer, Alarm and
+Reminder with its next fire time, label or message and kind in the live
+timezone. Cancel stops one alert by its manager id (a ringing Alarm stops only
+that Ring). Each Alarm exposes its sound, volume and ramp overrides: blank keeps
+the current value, `0` is an explicit value, and Default clears the field back
+to `sounds.alarm_ring` / `ring.alarm.*` as NULL. The same page shows the newest
+missed alerts from the shared local history, including a fired row with no
+pending schedule. Every write needs the Dashboard identity and a same-origin
+request; the forms work without JavaScript.
+
 Notifications use the public ntfy.sh by default (`notify.url`). The ntfy topic
 is generated once into that secrets table on first use, so it is never in
 `config.yaml`; to connect a phone without reading the database, set

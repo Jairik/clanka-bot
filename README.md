@@ -208,9 +208,9 @@ default. `alarm.update` changes only those overrides; it does not move the
 time, label or repeat. "clear my alarm sound" or "reset my alarm volume"
 returns that field to the kind default. The overrides live in the Alarm row, so
 they survive a restart and a snooze, and the Ring engine applies them to that
-one Ring without changing `ring.alarm.*` or another Alarm. The Dashboard
-Scheduled alerts page writes the same row through `alarm.Manager.Update`, so
-voice and the page cannot disagree.
+one Ring without changing `ring.alarm.*` or another Alarm. The Scheduled
+alerts page (#58) uses the same `alarm.Manager.Update` write, so voice and the
+page cannot disagree.
 
 The Control phrases `stop`, `pause`, `cancel`, `snooze` and `louder` are matched
 exactly, so they answer without waiting on the embed service. `stop`, `pause`,

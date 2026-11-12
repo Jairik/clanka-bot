@@ -154,31 +154,67 @@ class PocketTtsEngine:
         _LOGGER.info("voice %s warm", name)
         return name
 
-    def validate_voice(self, path: str) -> str:
-        """Load a copied state and prove it generates audio.
+    def validate_voice(self, path: str, cache: bool = True) -> str:
+        """Load one state and prove it generates audio.
 
         The caller holds the server lock. The path must resolve inside
-        voice_dir; only .safetensors files are accepted. The state stays cached
-        after a successful smoke test.
+        voice_dir; only .safetensors files are accepted. With cache=True the
+        state stays cached for later synthesis (a rescan of a published file).
+        With cache=False the state is loaded only for the smoke test and never
+        added to the cache: an upload validates a hidden staging path and then
+        renames it, so caching that temporary key would leak it forever.
         """
         resolved = self._allowed_state_path(path)
-        state = self.state_for(str(resolved))
+        key = str(resolved)
+        if self._model is None:
+            raise RuntimeError("model is not loaded")
+        if cache:
+            state = self.state_for(key)
+        else:
+            state = self._model.get_state_for_audio_prompt(key)
         # Drain the short smoke phrase. Stopping after the first chunk can leave
         # PyTorch's decoder thread alive, so the validation consumes the whole
         # generation (a few hundred milliseconds on CPU) and returns cleanly.
         chunks = 0
         bytes_out = 0
-        for chunk in self._model.generate_audio_stream(
-            model_state=state,
-            text_to_generate="Voice check.",
-        ):
-            if chunk is not None:
-                chunks += 1
-                bytes_out += len(chunk)
+        try:
+            for chunk in self._model.generate_audio_stream(
+                model_state=state,
+                text_to_generate="Voice check.",
+            ):
+                if chunk is not None:
+                    chunks += 1
+                    bytes_out += len(chunk)
+        finally:
+            # Even a failed smoke test must not leave a staging key behind.
+            if not cache:
+                self._states.pop(key, None)
         if chunks == 0 or bytes_out == 0:
             raise RuntimeError("voice state produced no audio")
-        _LOGGER.info("voice state validated: %s", resolved.name)
+        _LOGGER.info("voice state validated: %s (cached=%s)", resolved.name, cache)
         return self.revision
+
+    def forget_voice(self, voice: Optional[str]) -> str:
+        """Drop one cached state by built-in name or absolute state path.
+
+        A replacement upload calls this after the rename and before the final
+        validation. Without it the path-keyed cache would keep serving the old
+        bytes even though the file on disk changed.
+        """
+        name = voice or self.default_voice
+        if os.path.isabs(name):
+            target = str(Path(name).resolve())
+            for key in list(self._states):
+                try:
+                    resolved = str(Path(key).resolve())
+                except OSError:
+                    resolved = key
+                if key == name or resolved == target:
+                    del self._states[key]
+        else:
+            self._states.pop(name, None)
+        _LOGGER.info("voice cache cleared: %s", name)
+        return name
 
     def _allowed_state_path(self, raw: str) -> Path:
         root = self.voice_dir.resolve()

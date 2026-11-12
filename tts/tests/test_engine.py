@@ -42,6 +42,32 @@ def test_validate_voice_loads_and_generates_without_torch(tmp_path):
     assert engine._model.state_calls == [str(state)]
 
 
+def test_validate_voice_can_probe_without_caching(tmp_path):
+    state = tmp_path / ".upload-123.safetensors"
+    state.write_bytes(b"not parsed by the fake model")
+    engine = engine_with_model(tmp_path)
+    assert engine.validate_voice(str(state), cache=False) == "test-revision"
+    # The staging path is not left in the process cache.
+    assert engine._states == {}
+    # A published file still caches when the ordinary rescan path validates it.
+    published = tmp_path / "jarvis.safetensors"
+    published.write_bytes(b"not parsed by the fake model")
+    assert engine.validate_voice(str(published)) == "test-revision"
+    assert str(published) in engine._states
+
+
+def test_forget_voice_clears_a_cached_state(tmp_path):
+    state = tmp_path / "jarvis.safetensors"
+    state.write_bytes(b"not parsed by the fake model")
+    engine = engine_with_model(tmp_path)
+    engine.warm_voice(str(state))
+    assert str(state) in engine._states
+    engine.forget_voice(str(state))
+    assert str(state) not in engine._states
+    engine.warm_voice(str(state))
+    assert len(engine._model.state_calls) == 2
+
+
 def test_validate_voice_rejects_paths_outside_the_voice_dir(tmp_path):
     outside = tmp_path.parent / "outside.safetensors"
     outside.write_bytes(b"x")

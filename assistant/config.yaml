@@ -111,8 +111,10 @@ tts:
 # Custom voice states: pre-exported Pocket TTS .safetensors files in one folder
 # on the voices volume. Only that folder is mounted read-only into tts and is
 # never baked into an image or committed. Only .safetensors is accepted (no
-# .pt/.pth/pickle), at most 32 MB; a file is usable after a library rescan
-# smoke-tests it against the running model revision.
+# .pt/.pth/pickle), at most 32 MB. The Dashboard's /voices page stages and
+# uploads one file, or a manual copy is picked up by the next restart; either
+# way a file is usable only after the library smoke-tests it against the
+# running model revision. A stale entry is flagged for re-export on the desktop.
 voice:
   # Empty means data.dir/voices. A relative path resolves under data.dir; an
   # absolute path names a volume path, so files can be copied in headlessly.

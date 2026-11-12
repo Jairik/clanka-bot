@@ -150,6 +150,12 @@ func (s *Service) scanFiles(now time.Time) ([]scanResult, error) {
 		if entry.IsDir() {
 			continue
 		}
+		// Upload staging (.upload-*.safetensors) and replacement backups
+		// (.replace-*.bak) are hidden so a scan can never index a file that is
+		// about to be renamed or removed.
+		if strings.HasPrefix(entry.Name(), ".") {
+			continue
+		}
 		extension := strings.ToLower(filepath.Ext(entry.Name()))
 		if extension != ".safetensors" {
 			// A .pt/.pth/.bin state is a pickle-backed torch file. The voice

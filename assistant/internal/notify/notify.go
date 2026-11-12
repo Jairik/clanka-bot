@@ -360,6 +360,7 @@ func (s *Service) Topic(ctx context.Context) (string, error) {
 		return "", errors.New("notify: secrets store is not available")
 	}
 	if value, ok := s.secrets.Get(TopicSecret); ok {
+		value = strings.TrimSpace(value)
 		if validTopic(value) {
 			return value, nil
 		}
@@ -370,6 +371,7 @@ func (s *Service) Topic(ctx context.Context) (string, error) {
 	s.topicMu.Lock()
 	defer s.topicMu.Unlock()
 	if value, ok := s.secrets.Get(TopicSecret); ok {
+		value = strings.TrimSpace(value)
 		if validTopic(value) {
 			return value, nil
 		}

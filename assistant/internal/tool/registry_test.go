@@ -109,6 +109,18 @@ func TestRegistrationRejectsInvalidTools(t *testing.T) {
 		{"missing handler", func(tl *tool.Tool[echoIn, echoOut]) { tl.Handler = nil }},
 		{"bad permission", func(tl *tool.Tool[echoIn, echoOut]) { tl.Permission = "admin" }},
 		{"negative timeout", func(tl *tool.Tool[echoIn, echoOut]) { tl.Timeout = -time.Second }},
+		{"agent only with examples", func(tl *tool.Tool[echoIn, echoOut]) {
+			tl.AgentOnly = true
+			tl.Examples = []string{"echo hi"}
+		}},
+		{"agent only with extract", func(tl *tool.Tool[echoIn, echoOut]) {
+			tl.AgentOnly = true
+			tl.Extract = func(text string) (echoIn, bool) { return echoIn{Text: text}, true }
+		}},
+		{"agent only and local only", func(tl *tool.Tool[echoIn, echoOut]) {
+			tl.AgentOnly = true
+			tl.LocalOnly = tool.LocalOnlyYes
+		}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -118,6 +130,23 @@ func TestRegistrationRejectsInvalidTools(t *testing.T) {
 				t.Fatal("Add succeeded, want error")
 			}
 		})
+	}
+}
+
+func TestAgentOnlyIsExposedButNotOnTheFastPath(t *testing.T) {
+	reg := tool.NewRegistry(time.Second)
+	tl := echoTool()
+	tl.AgentOnly = true
+	tl.Examples = nil
+	if err := tool.Add(reg, tl); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	info, ok := reg.Info("test.echo")
+	if !ok {
+		t.Fatal("Info did not find the Agent-only Tool")
+	}
+	if !info.AgentOnly || info.HasExtract || len(info.Examples) != 0 {
+		t.Fatalf("Agent-only metadata = %+v, want AgentOnly with no Fast path routing hooks", info)
 	}
 }
 

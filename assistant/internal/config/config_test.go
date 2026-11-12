@@ -3,6 +3,7 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,6 +38,8 @@ semantic:
   threshold: 0.75
   margin: 0.1
   joiners: ["and", "then"]
+name_match:
+  threshold: 0.66
 agent:
   request_prefixes: ["ask the agent", "hey agent"]
 `)
@@ -76,6 +79,9 @@ agent:
 	}
 	if len(cfg.Semantic.Joiners) != 2 || cfg.Semantic.Joiners[0] != "and" {
 		t.Errorf("Semantic.Joiners = %v", cfg.Semantic.Joiners)
+	}
+	if cfg.NameMatch.Threshold != 0.66 {
+		t.Errorf("NameMatch.Threshold = %v, want 0.66", cfg.NameMatch.Threshold)
 	}
 	if len(cfg.Agent.RequestPrefixes) != 2 || cfg.Agent.RequestPrefixes[1] != "hey agent" {
 		t.Errorf("Agent.RequestPrefixes = %v", cfg.Agent.RequestPrefixes)
@@ -117,8 +123,93 @@ func TestLoadAppliesDefaultsForOmittedFields(t *testing.T) {
 	if len(cfg.Semantic.Joiners) == 0 {
 		t.Error("Semantic.Joiners is empty")
 	}
+	if cfg.NameMatch.Threshold != 0.60 {
+		t.Errorf("NameMatch.Threshold = %v, want 0.60", cfg.NameMatch.Threshold)
+	}
 	if len(cfg.Agent.RequestPrefixes) == 0 {
 		t.Error("Agent.RequestPrefixes is empty")
+	}
+}
+
+func TestLoadDefaultsTheDashboardToDisabled(t *testing.T) {
+	cfg, err := config.Load(writeConfig(t, "{}\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Dashboard.Owner != "" {
+		t.Errorf("Dashboard.Owner = %q, want empty", cfg.Dashboard.Owner)
+	}
+	if cfg.Dashboard.Enabled() {
+		t.Error("Dashboard.Enabled() = true, want false without an owner")
+	}
+	if cfg.Dashboard.Addr != "127.0.0.1:8082" {
+		t.Errorf("Dashboard.Addr = %q, want 127.0.0.1:8082", cfg.Dashboard.Addr)
+	}
+	if cfg.Dashboard.HealthTimeout.Duration() != 3*time.Second {
+		t.Errorf("Dashboard.HealthTimeout = %s, want 3s", cfg.Dashboard.HealthTimeout.Duration())
+	}
+}
+
+func TestLoadEnablesTheDashboardWithALoopbackOrContainerAddress(t *testing.T) {
+	for _, addr := range []string{"127.0.0.1:8082", "[::1]:8082", "localhost:8082", ":8082", "0.0.0.0:8082"} {
+		t.Run(addr, func(t *testing.T) {
+			cfg, err := config.Load(writeConfig(t, "dashboard:\n  owner: alice@example.com\n  addr: \""+addr+"\"\n"))
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if !cfg.Dashboard.Enabled() {
+				t.Error("Dashboard.Enabled() = false, want true")
+			}
+			if cfg.Dashboard.Addr != addr {
+				t.Errorf("Dashboard.Addr = %q, want %q", cfg.Dashboard.Addr, addr)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsADashboardOnALANAddress(t *testing.T) {
+	_, err := config.Load(writeConfig(t, "dashboard:\n  owner: alice@example.com\n  addr: \"192.168.1.10:8082\"\n"))
+	if err == nil {
+		t.Fatal("Load succeeded, want a loopback-only Dashboard error")
+	}
+	if !strings.Contains(err.Error(), "dashboard.addr") {
+		t.Errorf("error = %v, want dashboard.addr", err)
+	}
+}
+
+func TestLoadRejectsMalformedDashboardSettings(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"no address", "dashboard:\n  owner: alice@example.com\n  addr: \"\"\n"},
+		{"missing port", "dashboard:\n  owner: alice@example.com\n  addr: \"127.0.0.1\"\n"},
+		{"bad port", "dashboard:\n  owner: alice@example.com\n  addr: \"127.0.0.1:http\"\n"},
+		{"owner with spaces", "dashboard:\n  owner: \"alice @ example.com\"\n"},
+		{"zero health timeout", "dashboard:\n  owner: alice@example.com\n  health_timeout: 0s\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := config.Load(writeConfig(t, tt.body)); err == nil {
+				t.Fatal("Load succeeded, want error")
+			}
+		})
+	}
+}
+
+func TestLoadAppliesDashboardEnvironmentOverrides(t *testing.T) {
+	t.Setenv("ASSISTANT_DASHBOARD_OWNER", "alice@example.com")
+	t.Setenv("ASSISTANT_DASHBOARD_ADDR", ":7082")
+
+	cfg, err := config.Load(writeConfig(t, "{}\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Dashboard.Owner != "alice@example.com" {
+		t.Errorf("Dashboard.Owner = %q", cfg.Dashboard.Owner)
+	}
+	if cfg.Dashboard.Addr != ":7082" {
+		t.Errorf("Dashboard.Addr = %q", cfg.Dashboard.Addr)
 	}
 }
 
@@ -158,6 +249,80 @@ func TestLoadAppliesEnvironmentOverrides(t *testing.T) {
 	}
 }
 
+func TestLoadReadsDataAndToolOverrideSettings(t *testing.T) {
+	path := writeConfig(t, `
+data:
+  dir: "/var/lib/assistant"
+tools:
+  disabled: ["weather.current", "timer.list"]
+  permissions:
+    "timer.set": confirm
+  weather:
+    timeout: 500ms
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Data.Dir != "/var/lib/assistant" {
+		t.Errorf("Data.Dir = %q", cfg.Data.Dir)
+	}
+	if len(cfg.Tools.Disabled) != 2 || cfg.Tools.Disabled[0] != "weather.current" {
+		t.Errorf("Tools.Disabled = %v", cfg.Tools.Disabled)
+	}
+	if got := cfg.Tools.Permissions["timer.set"]; got != "confirm" {
+		t.Errorf("Tools.Permissions[timer.set] = %q", got)
+	}
+	if _, ok := cfg.Tools.Sections["weather"]; !ok {
+		t.Error("Tools.Sections lost the weather module section")
+	}
+	for _, leaked := range []string{"disabled", "permissions"} {
+		if _, ok := cfg.Tools.Sections[leaked]; ok {
+			t.Errorf("Tools.Sections captured the %q setting as a module", leaked)
+		}
+	}
+}
+
+func TestLoadDefaultsTheDataDir(t *testing.T) {
+	cfg, err := config.Load(writeConfig(t, "{}\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Data.Dir != "data" {
+		t.Errorf("Data.Dir = %q, want the code default data", cfg.Data.Dir)
+	}
+}
+
+func TestLoadAppliesDataDirEnvironmentOverride(t *testing.T) {
+	t.Setenv("ASSISTANT_DATA_DIR", "/srv/assistant")
+	cfg, err := config.Load(writeConfig(t, "{}\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Data.Dir != "/srv/assistant" {
+		t.Errorf("Data.Dir = %q", cfg.Data.Dir)
+	}
+}
+
+func TestLoadRejectsInvalidToolOverrideSettings(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"empty data dir", "data:\n  dir: \"  \"\n"},
+		{"empty disabled name", "tools:\n  disabled: [\"\"]\n"},
+		{"unknown permission", "tools:\n  permissions:\n    weather.current: admin\n"},
+		{"empty permission tool", "tools:\n  permissions:\n    \"\": act\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := config.Load(writeConfig(t, tt.body)); err == nil {
+				t.Fatal("Load succeeded, want error")
+			}
+		})
+	}
+}
+
 func TestLoadRejectsInvalidSettings(t *testing.T) {
 	tests := []struct {
 		name string
@@ -173,6 +338,8 @@ func TestLoadRejectsInvalidSettings(t *testing.T) {
 		{"threshold above one", "semantic:\n  threshold: 1.5\n"},
 		{"negative margin", "semantic:\n  margin: -0.1\n"},
 		{"margin of one", "semantic:\n  margin: 1.0\n"},
+		{"zero name match threshold", "name_match:\n  threshold: 0\n"},
+		{"name match threshold above one", "name_match:\n  threshold: 1.5\n"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

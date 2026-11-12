@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -17,13 +18,36 @@ import (
 
 	"github.com/Jairik/clanka-bot/assistant/internal/agent"
 	"github.com/Jairik/clanka-bot/assistant/internal/embed"
+	"github.com/Jairik/clanka-bot/assistant/internal/focus"
+	"github.com/Jairik/clanka-bot/assistant/internal/lastreply"
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
+	corenotify "github.com/Jairik/clanka-bot/assistant/internal/notify"
+	personacore "github.com/Jairik/clanka-bot/assistant/internal/persona"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
+	quietcore "github.com/Jairik/clanka-bot/assistant/internal/quiet"
+	"github.com/Jairik/clanka-bot/assistant/internal/secrets"
+	"github.com/Jairik/clanka-bot/assistant/internal/settings"
+	"github.com/Jairik/clanka-bot/assistant/internal/store"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
+	"github.com/Jairik/clanka-bot/assistant/internal/voicelib"
+	"github.com/Jairik/clanka-bot/assistant/internal/wording"
+	"github.com/Jairik/clanka-bot/assistant/tools/alarm"
+	"github.com/Jairik/clanka-bot/assistant/tools/assistant"
 	"github.com/Jairik/clanka-bot/assistant/tools/audiocontrol"
+	"github.com/Jairik/clanka-bot/assistant/tools/calc"
 	"github.com/Jairik/clanka-bot/assistant/tools/clock"
+	"github.com/Jairik/clanka-bot/assistant/tools/github"
+	notifytools "github.com/Jairik/clanka-bot/assistant/tools/notify"
+	personatools "github.com/Jairik/clanka-bot/assistant/tools/persona"
+	quiettools "github.com/Jairik/clanka-bot/assistant/tools/quiet"
+	"github.com/Jairik/clanka-bot/assistant/tools/random"
+	"github.com/Jairik/clanka-bot/assistant/tools/reminder"
+	"github.com/Jairik/clanka-bot/assistant/tools/system"
 	"github.com/Jairik/clanka-bot/assistant/tools/timer"
+	"github.com/Jairik/clanka-bot/assistant/tools/units"
+	"github.com/Jairik/clanka-bot/assistant/tools/voice"
 	"github.com/Jairik/clanka-bot/assistant/tools/weather"
+	"github.com/Jairik/clanka-bot/assistant/tools/web"
 	"gopkg.in/yaml.v3"
 )
 
@@ -31,12 +55,42 @@ import (
 var routingEvalTools = []string{
 	clock.Name,
 	clock.DateName,
+	clock.CityName,
+	clock.CountdownName,
 	weather.Name,
 	audiocontrol.VolumeName,
 	audiocontrol.StopName,
 	timer.SetName,
 	timer.CancelName,
+	timer.RemainingName,
 	timer.ListName,
+	alarm.SetName,
+	alarm.ListName,
+	alarm.CancelName,
+	alarm.UpdateName,
+	voice.SetName,
+	voice.ListName,
+	voice.CurrentName,
+	voice.RateName,
+	personatools.SwitchName,
+	personatools.ListName,
+	personatools.CurrentName,
+	quiettools.SetName,
+	quiettools.OffName,
+	quiettools.DNDName,
+	quiettools.AwakeName,
+	reminder.SetName,
+	reminder.ListName,
+	reminder.CancelName,
+	assistant.RepeatName,
+	assistant.HelpName,
+	system.Name,
+	notifytools.Name,
+	calc.Name,
+	units.Name,
+	random.FlipName,
+	random.RollName,
+	random.PickName,
 }
 
 const (
@@ -53,6 +107,17 @@ type routingFixture struct {
 	Positives map[string][]string `yaml:"positives"`
 	Negatives []string            `yaml:"negatives"`
 	Compounds []string            `yaml:"compounds"`
+	Focus     []routingFocusCase  `yaml:"focus"`
+}
+
+// routingFocusCase is one shared-phrase case: the holders present, the intent
+// the utterance must deliver, and which holder must take it. An empty Intent
+// means no holder takes it and the utterance must fall through.
+type routingFocusCase struct {
+	Utterance string   `yaml:"utterance"`
+	Holders   []string `yaml:"holders"`
+	Intent    string   `yaml:"intent"`
+	HandledBy string   `yaml:"handled_by"`
 }
 
 // routingConfig is the subset of assistant/config.yaml the evaluation reads, so
@@ -64,6 +129,47 @@ type routingConfig struct {
 		Margin    float64  `yaml:"margin"`
 		Joiners   []string `yaml:"joiners"`
 	} `yaml:"semantic"`
+}
+
+// routingBaseline is the checked-in Map 1 accuracy the evaluation must not drop
+// below. Counts, not rounded floats, so the gate is exact.
+type routingBaseline struct {
+	TP                int `yaml:"tp"`
+	FP                int `yaml:"fp"`
+	Positives         int `yaml:"positives"`
+	NegativeMisroutes int `yaml:"negative_misroutes"`
+	CompoundMisroutes int `yaml:"compound_misroutes"`
+}
+
+func (b routingBaseline) precision() float64 {
+	if b.TP+b.FP == 0 {
+		return 0
+	}
+	return float64(b.TP) / float64(b.TP+b.FP)
+}
+
+func (b routingBaseline) recall() float64 {
+	if b.Positives == 0 {
+		return 0
+	}
+	return float64(b.TP) / float64(b.Positives)
+}
+
+func baselinePath() string {
+	return filepath.Join("testdata", "routing_baseline.yaml")
+}
+
+func loadRoutingBaseline(t *testing.T) routingBaseline {
+	t.Helper()
+	raw, err := os.ReadFile(baselinePath())
+	if err != nil {
+		t.Fatalf("read baseline: %v", err)
+	}
+	var baseline routingBaseline
+	if err := yaml.Unmarshal(raw, &baseline); err != nil {
+		t.Fatalf("parse baseline: %v", err)
+	}
+	return baseline
 }
 
 func fixturePath() string {
@@ -142,6 +248,29 @@ func TestRoutingEvalFixtureShape(t *testing.T) {
 	}
 }
 
+// TestRoutingEvalBaselineShape keeps the recorded Map 1 baseline honest
+// without the embed service: it must describe a measurable, non-negative
+// result.
+func TestRoutingEvalBaselineShape(t *testing.T) {
+	baseline := loadRoutingBaseline(t)
+	if baseline.Positives <= 0 {
+		t.Errorf("baseline positives = %d, want a positive count", baseline.Positives)
+	}
+	if baseline.TP < 0 || baseline.FP < 0 {
+		t.Errorf("baseline tp = %d, fp = %d; counts must not be negative", baseline.TP, baseline.FP)
+	}
+	if baseline.TP+baseline.FP == 0 {
+		t.Error("baseline has no predictions; precision would not be measurable")
+	}
+	if baseline.TP > baseline.Positives {
+		t.Errorf("baseline tp = %d, positives = %d; TP cannot exceed positives", baseline.TP, baseline.Positives)
+	}
+	if baseline.NegativeMisroutes < 0 || baseline.CompoundMisroutes < 0 {
+		t.Errorf("baseline misroutes = %d negatives, %d compounds; counts must not be negative",
+			baseline.NegativeMisroutes, baseline.CompoundMisroutes)
+	}
+}
+
 // evalAudio records audio Tool calls without touching a real sink.
 type evalAudio struct{}
 
@@ -149,10 +278,29 @@ func (*evalAudio) SetVolume(context.Context, int) error    { return nil }
 func (*evalAudio) AdjustVolume(context.Context, int) error { return nil }
 func (*evalAudio) Stop(context.Context) error              { return nil }
 
+// evalNotifyReader supplies the notify settings without a second settings
+// service; the corpus only needs the fake ntfy URL.
+type evalNotifyReader struct {
+	values map[string]settings.Value
+}
+
+func (r evalNotifyReader) Get(key string) (settings.Value, bool) {
+	value, ok := r.values[key]
+	return value, ok
+}
+
+// evalNotifySecrets keeps the generated topic in memory for one eval run.
+type evalNotifySecrets struct{}
+
+func (evalNotifySecrets) Get(string) (string, bool) { return "", false }
+func (evalNotifySecrets) Set(_ context.Context, name, value string) (secrets.Metadata, error) {
+	return secrets.Metadata{Name: name, Set: true, Source: secrets.SourceStore}, nil
+}
+
 // evalRegistry wires the real Tools with test-safe dependencies. Weather gets
 // a local upstream so every weather positive executes the handler, but no
 // request leaves the machine.
-func evalRegistry(t *testing.T) (*tool.Registry, *timer.Manager) {
+func evalRegistry(t *testing.T) (*tool.Registry, *timer.Manager, *alarm.Manager, *reminder.Manager) {
 	t.Helper()
 	reg := tool.NewRegistry(5 * time.Second)
 	fixed := time.Date(2026, 11, 11, 15, 4, 0, 0, time.UTC)
@@ -162,6 +310,14 @@ func evalRegistry(t *testing.T) (*tool.Registry, *timer.Manager) {
 	}
 	if err := clock.RegisterDate(reg, func() time.Time { return fixed }); err != nil {
 		t.Fatalf("register date: %v", err)
+	}
+	if err := clock.RegisterCity(reg, func() time.Time { return fixed }); err != nil {
+		t.Fatalf("register city time: %v", err)
+	}
+	// The UTC fallback makes the countdown deterministic; the timezone-setting
+	// path is covered by the clock package's own tests.
+	if err := clock.RegisterCountdown(reg, func() time.Time { return fixed }, nil); err != nil {
+		t.Fatalf("register countdown: %v", err)
 	}
 
 	geo := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -191,13 +347,156 @@ func evalRegistry(t *testing.T) (*tool.Registry, *timer.Manager) {
 	if err := timer.Register(reg, manager); err != nil {
 		t.Fatalf("register timer: %v", err)
 	}
-	return reg, manager
+	// The voice Tools fail their handlers without a library, but routing only
+	// needs their metadata and Extract; a nil service is deliberate here so the
+	// eval owns no database or voice files.
+	if err := voice.NewModule().Register(reg, tool.Deps{}); err != nil {
+		t.Fatalf("register voice: %v", err)
+	}
+	// Quiet hours needs a real settings service and store; the corpus executes
+	// the handlers, so the window and volume writes must be real.
+	st, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "data", "assistant.db"))
+	if err != nil {
+		t.Fatalf("open eval store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	quietSettings, err := settings.New(context.Background(), st, quietcore.Definitions(quietcore.DefaultConfig())...)
+	if err != nil {
+		t.Fatalf("quiet settings: %v", err)
+	}
+	quietService := quietcore.New(quietcore.Options{
+		Reader: quietSettings,
+		Now:    func() time.Time { return fixed },
+	})
+	quietService.BindWriter(quietSettings)
+	if err := quiettools.NewModule().Register(reg, tool.Deps{Quiet: quietService, Clock: func() time.Time { return fixed }}); err != nil {
+		t.Fatalf("register quiet: %v", err)
+	}
+	alarmManager := alarm.NewManager(alarm.Options{
+		Now:    func() time.Time { return fixed },
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	t.Cleanup(alarmManager.Close)
+	if err := alarm.Register(reg, alarmManager); err != nil {
+		t.Fatalf("register alarm: %v", err)
+	}
+	// Reminders are scheduled in memory; each evaluation utterance cancels
+	// them so list/cancel stay deterministic and no 20-minute callback leaks.
+	reminderModule := reminder.NewModule()
+	if err := reminderModule.Register(reg, tool.Deps{Clock: func() time.Time { return fixed }}); err != nil {
+		t.Fatalf("register reminder: %v", err)
+	}
+	// The self-describing Tools are real; the repeat store is empty and the
+	// status seam is deterministic so the corpus never opens a socket.
+	if err := assistant.NewModule().Register(reg, tool.Deps{LastReply: lastreply.New()}); err != nil {
+		t.Fatalf("register assistant: %v", err)
+	}
+	if err := system.NewModule().Register(reg, tool.Deps{Status: func(context.Context) tool.StatusReport {
+		return tool.StatusReport{
+			Services: []tool.StatusCheck{{Name: "embed", State: tool.StatusOK}},
+			Location: tool.StatusCheck{Name: "location", State: tool.StatusOK},
+			Modules:  []tool.StatusCheck{{Name: "weather", State: tool.StatusOK}},
+		}
+	}}); err != nil {
+		t.Fatalf("register system: %v", err)
+	}
+	// notify.phone executes the real handler for its positives. A fake ntfy
+	// server keeps every publish local and the topic in memory.
+	ntfy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		_, _ = io.WriteString(w, `{"id":"eval"}`)
+	}))
+	t.Cleanup(ntfy.Close)
+	notifyService, err := corenotify.New(corenotify.Options{
+		Reader: evalNotifyReader{values: map[string]settings.Value{
+			corenotify.URLKey:          {Key: corenotify.URLKey, Value: ntfy.URL},
+			corenotify.MissedAlertsKey: {Key: corenotify.MissedAlertsKey, Value: true},
+		}},
+		Secrets: evalNotifySecrets{},
+		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Config:  corenotify.DefaultConfig(),
+	})
+	if err != nil {
+		t.Fatalf("notify service: %v", err)
+	}
+	if err := notifytools.NewModule().Register(reg, tool.Deps{
+		Notify:    notifyService,
+		LastReply: lastreply.New(),
+	}); err != nil {
+		t.Fatalf("register notify: %v", err)
+	}
+	// The utility Tools execute their real handlers in the evaluation. They
+	// have no external dependencies: calc and units are pure, and random uses
+	// crypto/rand without a network or seed.
+	for _, module := range []tool.Module{calc.NewModule(), units.NewModule(), random.NewModule()} {
+		if err := module.Register(reg, tool.Deps{}); err != nil {
+			t.Fatalf("register %s: %v", module.Name(), err)
+		}
+	}
+	// Persona Tools need a real library and settings service, but no TTS: the
+	// built-in voice is ready without a model call, and Create/Select only
+	// touch the test SQLite file.
+	personaStore, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "persona", "assistant.db"))
+	if err != nil {
+		t.Fatalf("open persona store: %v", err)
+	}
+	t.Cleanup(func() { _ = personaStore.Close() })
+	personaVoices, err := voicelib.New(context.Background(), personaStore, voicelib.Config{
+		Dir:      filepath.Join(t.TempDir(), "voices"),
+		TTSDir:   "/voices",
+		Default:  "alba",
+		Builtins: []string{"alba"},
+		Logger:   slog.New(slog.NewTextHandler(io.Discard, nil)),
+	})
+	if err != nil {
+		t.Fatalf("persona voice library: %v", err)
+	}
+	personaService, err := personacore.New(context.Background(), personaStore, personaVoices, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("persona service: %v", err)
+	}
+	personaDefs := []settings.Definition{
+		settings.String(voicelib.KeyName, "alba", settings.WithConfig("alba")),
+		settings.String(wording.FillerKey, wording.DefaultFiller, settings.WithConfig(wording.DefaultFiller)),
+		settings.String(wording.UnavailableKey, wording.DefaultUnavailableMessage, settings.WithConfig(wording.DefaultUnavailableMessage)),
+	}
+	personaDefs = append(personaDefs, personaService.Definitions()...)
+	personaSettings, err := settings.New(context.Background(), personaStore, personaDefs...)
+	if err != nil {
+		t.Fatalf("persona settings: %v", err)
+	}
+	personaVoices.Bind(personaSettings)
+	personaService.Bind(personaSettings)
+	if _, err := personaService.Create(context.Background(), personacore.Input{
+		Name: "GLaDOS", Voice: "alba", Personality: "You are GLaDOS, dry and precise.",
+		Filler: "Processing.", Unavailable: "The chamber is offline.",
+	}); err != nil {
+		t.Fatalf("seed persona: %v", err)
+	}
+	personaModule := personatools.NewModule()
+	personaModule.Bind(personaService)
+	if err := personaModule.Register(reg, tool.Deps{Voices: personaVoices}); err != nil {
+		t.Fatalf("register persona: %v", err)
+	}
+	// web.search is AgentOnly and must never be indexed by the semantic
+	// router; registering it proves the ToolCount check below is scoped to the
+	// Fast path rather than to every Agent-visible Tool.
+	if err := web.NewModule().Register(reg, tool.Deps{}); err != nil {
+		t.Fatalf("register web: %v", err)
+	}
+	// The GitHub Tools are AgentOnly for the same reason. The empty Deps means
+	// no secret and no handler execution; only their metadata is present.
+	if err := github.NewModule().Register(reg, tool.Deps{}); err != nil {
+		t.Fatalf("register github: %v", err)
+	}
+	return reg, manager, alarmManager, reminderModule.Manager()
 }
 
 type evalVerdict struct {
 	Tool   string
 	Path   tool.Path
 	Reason string
+	Top    []pipeline.ToolScore
 }
 
 type evalCounts struct {
@@ -254,6 +553,7 @@ func TestRoutingEvalAgainstMiniLM(t *testing.T) {
 
 	fixture := loadRoutingFixture(t)
 	cfg := loadRoutingConfig(t)
+	baseline := loadRoutingBaseline(t)
 	threshold := envFloat(t, "ROUTING_EVAL_THRESHOLD", cfg.Semantic.Threshold)
 	margin := envFloat(t, "ROUTING_EVAL_MARGIN", cfg.Semantic.Margin)
 	if threshold <= 0 || threshold > 1 {
@@ -270,7 +570,7 @@ func TestRoutingEvalAgainstMiniLM(t *testing.T) {
 	}
 	floor := routingEvalPrecisionFloor
 
-	reg, manager := evalRegistry(t)
+	reg, manager, alarms, reminderManager := evalRegistry(t)
 	router := pipeline.NewSemanticRouter(reg, embed.NewClient(embedURL, "sentence-transformers/all-MiniLM-L6-v2"), pipeline.SemanticConfig{
 		Threshold: threshold,
 		Margin:    margin,
@@ -291,9 +591,13 @@ func TestRoutingEvalAgainstMiniLM(t *testing.T) {
 	logger := slog.New(slog.NewJSONHandler(&logBuf, nil))
 	runner := newFakeRunner()
 	runner.result = agent.Result{Text: "agent answer"}
+	var focusRegistry focus.Registry
 	p, err := pipeline.New(reg, cfg.ControlPhrases, logger,
 		pipeline.WithSemanticRouter(router),
 		pipeline.WithAgent(runner, nil),
+		// The corpus runs with no Focus holder, which is the production
+		// fall-through case; the Focus cases claim holders per case.
+		pipeline.WithFocus(&focusRegistry),
 	)
 	if err != nil {
 		t.Fatalf("pipeline.New: %v", err)
@@ -303,20 +607,25 @@ func TestRoutingEvalAgainstMiniLM(t *testing.T) {
 		t.Helper()
 		logBuf.Reset()
 		reply := p.Handle(ctx, request(), utterance)
-		// Timers must not outlive their utterance, and every call starts from
-		// an empty manager so timer.list and timer.cancel are deterministic.
+		// Timers and Alarms must not outlive their utterance, and every call
+		// starts from empty managers so list and cancel are deterministic.
 		manager.Cancel("")
+		alarms.CancelAll()
+		reminderManager.Cancel("")
 
 		reason := ""
+		var top []pipeline.ToolScore
 		if line := strings.TrimSpace(logBuf.String()); line != "" {
 			var record struct {
-				Reason string `json:"fallthrough_reason"`
+				Reason string               `json:"fallthrough_reason"`
+				Top    []pipeline.ToolScore `json:"top_tools"`
 			}
 			if err := json.Unmarshal([]byte(line), &record); err == nil {
 				reason = record.Reason
+				top = record.Top
 			}
 		}
-		return evalVerdict{Tool: reply.Tool, Path: reply.Path, Reason: reason}
+		return evalVerdict{Tool: reply.Tool, Path: reply.Path, Reason: reason, Top: top}
 	}
 
 	counts := make(map[string]*evalCounts, len(routingEvalTools))
@@ -341,7 +650,7 @@ func TestRoutingEvalAgainstMiniLM(t *testing.T) {
 					other.fp++
 				}
 			}
-			t.Logf("MISS positive tool=%s utterance=%q got_tool=%s path=%s reason=%s", name, utterance, got.Tool, got.Path, got.Reason)
+			t.Logf("MISS positive tool=%s utterance=%q got_tool=%s path=%s reason=%s top=%v", name, utterance, got.Tool, got.Path, got.Reason, got.Top)
 		}
 	}
 
@@ -368,6 +677,12 @@ func TestRoutingEvalAgainstMiniLM(t *testing.T) {
 			t.Logf("MISS compound utterance=%q reached tool=%s path=%s", utterance, got.Tool, got.Path)
 		}
 	}
+
+	// Focus cases use the same pipeline and phrase table; only the holders
+	// differ. A delivered case must take the Focus path, and a fall-through
+	// case must not.
+	focusDelivered, focusFellThrough := runFocusEvalCases(t, p, &focusRegistry, fixture.Focus, classify)
+	t.Logf("ROUTING_EVAL_FOCUS_TOTAL total=%d delivered=%d fallthrough=%d", len(fixture.Focus), focusDelivered, focusFellThrough)
 
 	var total evalCounts
 	t.Logf("ROUTING_EVAL threshold=%.3f margin=%.3f positives=%d negatives=%d compounds=%d floor=%.3f",
@@ -397,6 +712,26 @@ func TestRoutingEvalAgainstMiniLM(t *testing.T) {
 	t.Logf("ROUTING_EVAL_COMPOUNDS total=%d misrouted=%d", len(fixture.Compounds), compoundMisrouted)
 	t.Logf("ROUTING_EVAL_TOTAL tp=%d control_tp=%d semantic_tp=%d fp=%d fn=%d precision=%.4f recall=%.4f",
 		total.tp, total.controlTP, total.semanticTP(), total.fp, total.fn, total.precision(), total.recall())
+	t.Logf("ROUTING_EVAL_BASELINE tp=%d fp=%d positives=%d negative_misroutes=%d compound_misroutes=%d precision=%.4f recall=%.4f",
+		baseline.TP, baseline.FP, baseline.Positives, baseline.NegativeMisroutes, baseline.CompoundMisroutes,
+		baseline.precision(), baseline.recall())
+
+	// CI gates on the recorded Map 1 baseline. New positives may raise recall,
+	// but no change may lower it or the precision/misroute counts.
+	if total.precision() < baseline.precision() {
+		t.Errorf("overall precision = %.4f (%d/%d), below the Map 1 baseline %.4f (%d/%d)",
+			total.precision(), total.tp, total.tp+total.fp, baseline.precision(), baseline.TP, baseline.TP+baseline.FP)
+	}
+	if total.recall() < baseline.recall() {
+		t.Errorf("overall recall = %.4f (%d/%d), below the Map 1 baseline %.4f (%d/%d)",
+			total.recall(), total.tp, total.positives, baseline.recall(), baseline.TP, baseline.Positives)
+	}
+	if negativeMisrouted > baseline.NegativeMisroutes {
+		t.Errorf("negatives misrouted = %d, above the Map 1 baseline %d", negativeMisrouted, baseline.NegativeMisroutes)
+	}
+	if compoundMisrouted > baseline.CompoundMisroutes {
+		t.Errorf("compounds misrouted = %d, above the Map 1 baseline %d", compoundMisrouted, baseline.CompoundMisroutes)
+	}
 }
 
 func sumPositives(counts map[string]*evalCounts) int {

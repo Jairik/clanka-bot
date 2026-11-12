@@ -32,20 +32,27 @@ services:
     # Run as the host user so the read-only Pulse socket and cookie are usable.
     user: "${ASSISTANT_UID:-1000}:${ASSISTANT_GID:-1000}"
     ports:
-      # Both ports are published on the host loopback only.
+      # All three ports are published on the host loopback only.
       - "127.0.0.1:${ASSISTANT_HTTP_PORT:-8080}:8080"
       - "127.0.0.1:${ASSISTANT_DEBUG_PORT:-8081}:8081"
+      - "127.0.0.1:${ASSISTANT_DASHBOARD_PORT:-8082}:8082"
     environment:
       # The health listener binds all interfaces because Docker healthchecks
-      # reach it through 127.0.0.1. The debug listener must bind all interfaces
-      # too: a container-bound 127.0.0.1 is unreachable through Docker's
-      # published-port DNAT. The host publication above is loopback-only, and
-      # the debug handler itself accepts only loopback or this container's
-      # default gateway, so sibling containers get 403.
+      # reach it through 127.0.0.1. The debug and Dashboard listeners must bind
+      # all interfaces too: a container-bound 127.0.0.1 is unreachable through
+      # Docker's published-port DNAT. The host publications above are
+      # loopback-only, and both handlers accept only loopback or this
+      # container's default gateway, so sibling containers get 403.
       ASSISTANT_HTTP_ADDR: ":8080"
       ASSISTANT_DEBUG_ADDR: ":8081"
+      ASSISTANT_DASHBOARD_ADDR: ":8082"
+      # Empty keeps the Dashboard off. Set it to the owner's Tailscale login;
+      # tailscale serve on the host proxies to 127.0.0.1:8082 (docs/deploy.md).
+      ASSISTANT_DASHBOARD_OWNER: ${ASSISTANT_DASHBOARD_OWNER:-}
       ASSISTANT_EMBED_URL: "http://embed:8085"
       ASSISTANT_TTS_ADDR: "tts:10200"
+      # ADR-0003: the one SQLite database lives on the assistant-data volume.
+      ASSISTANT_DATA_DIR: "/app/data"
       ASSISTANT_PULSE_SINK: ${ASSISTANT_PULSE_SINK:-}
       # Voice input: one named Pulse source and the two Wyoming services.
       ASSISTANT_PULSE_SOURCE: ${ASSISTANT_PULSE_SOURCE:-}
@@ -58,10 +65,23 @@ services:
       PULSE_SERVER: "unix:/run/pulse/native"
       PULSE_COOKIE: "/pulse-cookie/cookie"
       HOME: /tmp
-      # Secrets stay in .env; config.yaml names these variables.
+      # Secrets bootstrap from .env; the write-only store in the database wins
+      # when the Dashboard stores the same name. config.yaml names these vars.
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      # Optional ntfy bootstrap. The topic is generated once into the secrets
+      # table when this is empty; set it before first use to connect a phone.
+      # NTFY_TOKEN must be issued by the ntfy server, never generated locally.
+      NTFY_TOPIC: ${NTFY_TOPIC:-}
+      NTFY_TOKEN: ${NTFY_TOKEN:-}
       TZ: ${TZ:-UTC}
     volumes:
+      # The one SQLite database (ADR-0003). Only assistant mounts this volume;
+      # restarting or rebuilding a service keeps it.
+      - assistant-data:/app/data
+      # Voice states are their own volume, nested under data.dir, so only this
+      # subtree can ever be mounted into tts. The database and secrets stay on
+      # assistant-data and are never exposed to another service.
+      - assistant-voices:/app/data/voices
       # Host PipeWire through its PulseAudio-compatible socket and cookie.
       - ${XDG_RUNTIME_DIR:-/run/user/1000}/pulse:/run/pulse:ro
       - ${HOME}/.config/pulse:/pulse-cookie:ro
@@ -73,6 +93,8 @@ services:
       wakeword:
         condition: service_healthy
       stt:
+        condition: service_healthy
+      web-search:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
@@ -145,9 +167,16 @@ services:
       TTS_LANGUAGE: ${TTS_LANGUAGE:-english}
       TTS_VOICES: ${TTS_VOICES:-${TTS_VOICE:-alba}}
       TTS_VOICE: ${TTS_VOICE:-alba}
+      # Custom pre-exported Pocket TTS voice states. The assistant writes them
+      # to the voices volume; tts only reads this subtree.
+      TTS_VOICE_DIR: "/voices"
       TZ: ${TZ:-UTC}
     # No Pulse mount and no weights volume: model services do computation only
-    # (ADR-0001) and the image already carries the weights.
+    # (ADR-0001) and the image already carries the weights. Only the voices
+    # volume is mounted read-only, so tts can never read the database or the
+    # secrets that share assistant-data.
+    volumes:
+      - assistant-voices:/voices:ro
     expose:
       - "10200"
     healthcheck:
@@ -157,3 +186,46 @@ services:
       timeout: 5s
       retries: 12
       start_period: 180s
+
+  # SearXNG behind the Agent-path web.search Tool. Internal-only: Compose
+  # publishes no host port, runs no valkey and mounts no database. Two Granian
+  # workers, limiter off, three fast engines and a 1.5 s engine timeout live in
+  # searxng/config/settings.yml; JSON output is enabled for the Tool.
+  web-search:
+    build:
+      context: ./searxng
+    image: clanka/web-search:${GIT_SHA:-dev}
+    restart: unless-stopped
+    # Run as the image's searxng user (977). The config mount is read-only and
+    # the image-owned /var/cache/searxng stays writable for engine metadata.
+    user: "977:977"
+    environment:
+      # Official Granian worker option, not the retired uWSGI variables.
+      # Two workers is the assistant's Pi-sized bound.
+      GRANIAN_WORKERS: "2"
+      SEARXNG_BASE_URL: "http://web-search:8080/"
+      # Internal hashing key, not an authentication secret. The settings file
+      # carries the same safe value; set this on a host that rotates secrets.
+      SEARXNG_SECRET: ${SEARXNG_SECRET:-clanka-internal-search}
+    volumes:
+      # Settings only. No cache/data volume: this instance stores no history
+      # and shares no volume with the assistant (ADR-0003).
+      - ./searxng/config:/etc/searxng:ro
+    expose:
+      - "8080"
+    healthcheck:
+      # The official image ships wget. /healthz is SearXNG's documented probe.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+
+volumes:
+  # Named so the database survives `docker compose down`, rebuilds and deploys.
+  # Only assistant mounts assistant-data.
+  assistant-data:
+  # Voice states are isolated in their own volume: assistant mounts it
+  # read-write under data.dir, tts mounts the same subtree read-only at /voices.
+  # This is ADR-0003's one cross-service data exception, narrowed to voices.
+  assistant-voices:

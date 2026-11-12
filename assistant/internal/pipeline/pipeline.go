@@ -5,12 +5,15 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/agent"
+	"github.com/Jairik/clanka-bot/assistant/internal/focus"
+	"github.com/Jairik/clanka-bot/assistant/internal/lastreply"
 	"github.com/Jairik/clanka-bot/assistant/internal/latency"
 	"github.com/Jairik/clanka-bot/assistant/internal/phrase"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
@@ -18,6 +21,10 @@ import (
 
 // PlaceholderReply is returned when no path exists yet for a transcript.
 const PlaceholderReply = "I don't know how to do that yet."
+
+// reasonNoFocus reports a shared Control phrase that no Focus holder took, so
+// it fell through to the semantic Fast path.
+const reasonNoFocus = "no_focus"
 
 // AgentRunner is the Agent path as the pipeline sees it. The method set is
 // kept small so routing work (#19) can swap in a stub.
@@ -70,6 +77,13 @@ type Reply struct {
 	Path      tool.Path
 	RequestID string
 	Pending   *agent.PendingConfirm
+	// LocalOnly reports that the reply text came from a Local-only Tool. A
+	// follow-up that would send the reply off the Pi (notify.phone) must
+	// refuse it, and the last-reply store keeps the flag as provenance.
+	LocalOnly bool
+	// Unavailable marks an Agent-path failure whose Text is the configured
+	// Unavailable message. The reply session plays the error Cue before it.
+	Unavailable bool
 }
 
 // Option configures a Pipeline without changing the constructor signature.
@@ -94,9 +108,51 @@ func WithSemanticRouter(router *SemanticRouter) Option {
 	return func(p *Pipeline) { p.semantic = router }
 }
 
+// RoutingWords is the wording one request routes with. The fields come from
+// one settings snapshot, so a batch update cannot pair an old Control phrase
+// table with new prefixes.
+type RoutingWords struct {
+	// ControlPhrases maps a normalized phrase to a canonical Tool name.
+	ControlPhrases map[string]string
+	// IntentPhrases maps a normalized phrase to one shared Focus intent. A
+	// phrase in both maps is dropped by the live wording source, so it falls
+	// through instead of choosing an owner at random.
+	IntentPhrases map[string]string
+	// RequestPrefixes are the Agent request prefixes, in any order.
+	RequestPrefixes []string
+}
+
+// Wording is the live wording source. It is read once per request, after the
+// pending-Confirmation stage, so a changed phrase or prefix applies to the
+// next request without rebuilding the pipeline.
+type Wording interface {
+	Routing() RoutingWords
+}
+
+// WithWording makes Control phrases and Agent request prefixes live. Without
+// it the values passed to New are fixed for the process lifetime.
+func WithWording(w Wording) Option {
+	return func(p *Pipeline) { p.wording = w }
+}
+
 // WithConfirmationResolver wires the pending-Confirmation stage.
 func WithConfirmationResolver(resolver ConfirmationResolver) Option {
 	return func(p *Pipeline) { p.confirmation = resolver }
+}
+
+// WithFocus enables shared Control-phrase intents. A phrase mapped to an
+// intent is offered to whatever holds Focus; when nothing does, the utterance
+// falls through to the semantic Fast path like any other request.
+func WithFocus(registry *focus.Registry) Option {
+	return func(p *Pipeline) { p.focus = registry }
+}
+
+// WithLastReply records every completed final reply with its provenance, so a
+// follow-up Tool such as assistant.repeat or notify.phone can resolve "that"
+// without re-routing the previous turn. The store is in-memory; nil disables
+// the seam. A cancelled or blank turn does not replace the previous record.
+func WithLastReply(store *lastreply.Store) Option {
+	return func(p *Pipeline) { p.lastReply = store }
 }
 
 // DropPending discards a waiting Confirmation. Barge-in (#25) calls it when
@@ -111,19 +167,25 @@ func (p *Pipeline) DropPending() (tool.PendingConfirmation, bool) {
 
 // Pipeline routes one transcript at a time. It is safe for concurrent use.
 type Pipeline struct {
-	registry *tool.Registry
-	phrases  map[string]string
-	logger   *slog.Logger
-	agent    AgentRunner
-	prefixes []string
-	history  *agent.History
-	semantic *SemanticRouter
+	registry      *tool.Registry
+	phrases       map[string]string
+	intentPhrases map[string]string
+	logger        *slog.Logger
+	agent         AgentRunner
+	prefixes      []string
+	history       *agent.History
+	semantic      *SemanticRouter
+	wording       Wording
 
 	confirmation ConfirmationResolver
+	focus        *focus.Registry
+	lastReply    *lastreply.Store
 }
 
 // New builds a pipeline and rejects a Control phrase table that points at
-// unknown Tools or Tools without a Speak renderer.
+// unknown Tools, Tools without a Speak renderer, or unknown Focus intents. A
+// phrase value without a dot names one of the fixed intents; a canonical
+// "module.tool" value names one Tool.
 func New(reg *tool.Registry, phrases map[string]string, logger *slog.Logger, opts ...Option) (*Pipeline, error) {
 	if reg == nil {
 		return nil, fmt.Errorf("pipeline: registry is required")
@@ -132,27 +194,47 @@ func New(reg *tool.Registry, phrases map[string]string, logger *slog.Logger, opt
 		logger = slog.Default()
 	}
 	normalized := make(map[string]string, len(phrases))
+	intents := make(map[string]string, len(phrases))
+	// Reject conflicting spellings before target validation, so map order
+	// cannot choose between an ambiguity error and an unknown-target error.
+	targets := make(map[string]string, len(phrases))
 	for phrase, name := range phrases {
 		key := NormalizePhrase(phrase)
 		if key == "" {
 			return nil, fmt.Errorf("pipeline: control phrase %q is empty", phrase)
 		}
-		if prev, exists := normalized[key]; exists && prev != name {
-			return nil, fmt.Errorf("pipeline: control phrase %q maps to both %q and %q", phrase, prev, name)
+		target := strings.TrimSpace(name)
+		if target == "" {
+			return nil, fmt.Errorf("pipeline: control phrase %q has no target", phrase)
 		}
-		info, ok := reg.Info(name)
+		if prev, exists := targets[key]; exists && prev != target {
+			return nil, fmt.Errorf("pipeline: control phrase %q maps to both %q and %q", phrase, prev, target)
+		}
+		targets[key] = target
+	}
+	for phrase, name := range phrases {
+		key := NormalizePhrase(phrase)
+		target := strings.TrimSpace(name)
+		if focus.IsIntentTarget(target) {
+			if _, ok := focus.ParseIntent(target); !ok {
+				return nil, fmt.Errorf("pipeline: control phrase %q points at unknown intent %q", phrase, target)
+			}
+			intents[key] = target
+			continue
+		}
+		info, ok := reg.Info(target)
 		if !ok {
-			return nil, fmt.Errorf("pipeline: control phrase %q points at unknown tool %q", phrase, name)
+			return nil, fmt.Errorf("pipeline: control phrase %q points at unknown tool %q", phrase, target)
 		}
 		if !info.HasSpeak {
-			return nil, fmt.Errorf("pipeline: control phrase %q points at %q, which has no Speak renderer", phrase, name)
+			return nil, fmt.Errorf("pipeline: control phrase %q points at %q, which has no Speak renderer", phrase, target)
 		}
 		if info.Permission == tool.PermissionConfirm {
-			return nil, fmt.Errorf("pipeline: control phrase %q points at confirm tool %q", phrase, name)
+			return nil, fmt.Errorf("pipeline: control phrase %q points at confirm tool %q", phrase, target)
 		}
-		normalized[key] = name
+		normalized[key] = target
 	}
-	p := &Pipeline{registry: reg, phrases: normalized, logger: logger}
+	p := &Pipeline{registry: reg, phrases: normalized, intentPhrases: intents, logger: logger}
 	for _, opt := range opts {
 		opt(p)
 	}
@@ -195,6 +277,11 @@ func (p *Pipeline) HandleEvents(ctx context.Context, req tool.Request, transcrip
 			reply.RequestID = req.ID
 			if reply.Path == "" {
 				reply.Path = tool.PathConfirmation
+			}
+			// Preserve provenance: a confirmed Local-only Tool's result must
+			// not be forwarded off the Pi by a later follow-up.
+			if res.Call != nil && res.Call.LocalOnly {
+				reply.LocalOnly = true
 			}
 			if res.Call != nil {
 				p.recordTurn(transcript, reply.Text, []agent.ToolCall{*res.Call})
@@ -241,8 +328,16 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 	reply := Reply{Path: tool.PathFallthrough, RequestID: req.ID, Text: PlaceholderReply}
 	normalized := NormalizePhrase(transcript)
 
+	// Live wording is read once, from one snapshot, after the Confirmation
+	// stage and before either routing step that uses it.
+	phrases, intentPhrases, prefixes := p.phrases, p.intentPhrases, p.prefixes
+	if p.wording != nil {
+		words := p.wording.Routing()
+		phrases, intentPhrases, prefixes = words.ControlPhrases, words.IntentPhrases, words.RequestPrefixes
+	}
+
 	// 2. Agent request prefix goes straight to the Agent path.
-	if rest, ok := agent.MatchRequestPrefix(transcript, p.prefixes); ok {
+	if rest, ok := agent.MatchRequestPrefix(transcript, prefixes); ok {
 		markRouting()
 		record.reason = ""
 		reply.Path = tool.PathAgent
@@ -256,13 +351,39 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 		return reply
 	}
 
-	// 3. Control phrase is an exact match and must not wait on embeddings.
-	if name, ok := p.phrases[normalized]; ok {
+	// 3. Control phrase is an exact match and must not wait on embeddings. A
+	// phrase may name one Tool, or a shared Focus intent that acts on whatever
+	// currently holds Focus. With nothing in Focus the intent falls through to
+	// the semantic Fast path below, exactly like an unmatched utterance.
+	if target, ok := intentPhrases[normalized]; ok {
+		intent, valid := focus.ParseIntent(target)
+		if valid {
+			if text, handled := p.focusIntent(ctx, intent); handled {
+				markRouting()
+				record.reason = ""
+				reply.Path = tool.PathFocusIntent
+				reply.Text = text
+				return reply
+			}
+			// Keep the honest reason unless the semantic router replaces it.
+			record.reason = reasonNoFocus
+		}
+	} else if name, ok := phrases[normalized]; ok {
 		markRouting()
 		record.reason = ""
 		reply.Path = tool.PathControlPhrase
 		reply.Tool = name
-		reply.Text, record.failure = p.callTool(ctx, req, transcript, name, tool.PathControlPhrase, nil)
+		// A phrase such as "quieter" names the Tool exactly but still needs
+		// its direction extracted; without Extract the call has no arguments,
+		// which keeps "louder" as the one-step default it always was.
+		var args json.RawMessage
+		if info, found := p.registry.Info(name); found && info.HasExtract {
+			if extracted, extractedOK := p.registry.Extract(name, transcript); extractedOK {
+				args = extracted
+			}
+		}
+		reply.Text, record.failure, reply.Pending = p.callTool(ctx, req, transcript, name, tool.PathControlPhrase, args)
+		reply.LocalOnly = p.localOnlyTool(name)
 		return reply
 	}
 
@@ -279,7 +400,8 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 			record.reason = ""
 			reply.Path = tool.PathFast
 			reply.Tool = match.Tool
-			reply.Text, record.failure = p.callTool(ctx, req, transcript, match.Tool, tool.PathFast, match.Args)
+			reply.Text, record.failure, reply.Pending = p.callTool(ctx, req, transcript, match.Tool, tool.PathFast, match.Args)
+			reply.LocalOnly = p.localOnlyTool(match.Tool)
 			return reply
 		}
 	}
@@ -297,6 +419,15 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 	return reply
 }
 
+// focusIntent offers one shared intent to whatever holds Focus. It reports
+// false when the seam is absent or no holder handles the intent.
+func (p *Pipeline) focusIntent(ctx context.Context, intent focus.Intent) (string, bool) {
+	if p.focus == nil {
+		return "", false
+	}
+	return p.focus.HandleIntent(ctx, intent)
+}
+
 func (p *Pipeline) callAgent(ctx context.Context, req tool.Request, transcript string, events Events, reply *Reply) {
 	// The path is known before the model call, so the filler can start now.
 	if events.AgentPath != nil {
@@ -306,6 +437,7 @@ func (p *Pipeline) callAgent(ctx context.Context, req tool.Request, transcript s
 	reply.Path = tool.PathAgent
 	reply.Text = result.Text
 	reply.Pending = result.Pending
+	reply.Unavailable = result.Unavailable
 	// A spoken Unavailable message is still a reply, but the model call
 	// failed; the raw request line must say so rather than look like success.
 	switch {
@@ -326,22 +458,33 @@ func (p *Pipeline) callAgent(ctx context.Context, req tool.Request, transcript s
 	reply.Tool = strings.Join(names, ",")
 }
 
-func (p *Pipeline) callTool(ctx context.Context, req tool.Request, transcript, name string, path tool.Path, args json.RawMessage) (string, string) {
+func (p *Pipeline) callTool(ctx context.Context, req tool.Request, transcript, name string, path tool.Path, args json.RawMessage) (string, string, *tool.PendingConfirmation) {
 	toolStarted := time.Now()
 	defer func() { latency.AddStage(ctx, latency.StageToolExecute, time.Since(toolStarted)) }()
 
 	req.Path = path
 	result, err := p.registry.Execute(tool.WithRequest(ctx, req), name, args)
 	if err != nil {
-		return tool.FailureMessage(err), err.Error()
+		// A live Permission override can raise a Fast path Tool to confirm.
+		// Arm the same one-turn Confirmation the Agent path uses, so the next
+		// "yes" runs it instead of the user hearing a generic failure.
+		var required *tool.ConfirmationRequiredError
+		if errors.As(err, &required) {
+			pending, proposeErr := p.registry.Propose(name, args)
+			if proposeErr == nil {
+				return pending.Summary, "", &pending
+			}
+			err = proposeErr
+		}
+		return tool.FailureMessage(err), err.Error(), nil
 	}
 	spoken, ok := p.registry.Speak(name, result)
 	if !ok {
 		err := fmt.Errorf("tool %q has no Speak renderer", name)
-		return tool.DefaultFailureMessage, err.Error()
+		return tool.DefaultFailureMessage, err.Error(), nil
 	}
 	p.recordToolTurn(transcript, spoken, name, result)
-	return spoken, ""
+	return spoken, "", nil
 }
 
 // recordToolTurn keeps a successful Fast path turn in the shared history,
@@ -366,11 +509,30 @@ func (p *Pipeline) recordTurn(transcript, spoken string, calls []agent.ToolCall)
 	p.history.Add(agent.Turn{Utterance: transcript, Reply: spoken, Calls: calls})
 }
 
+// localOnlyTool reports whether name is a registered Local-only Tool. Only the
+// Fast/Control/Confirmation paths can execute one; the Agent path never sees
+// them, so an Agent answer is never marked Local-only.
+func (p *Pipeline) localOnlyTool(name string) bool {
+	info, ok := p.registry.Info(name)
+	return ok && info.LocalOnly
+}
+
 // finish writes the single structured request log line. A request timeline
 // owns that line when one is attached, so the stages the spoken session adds
 // after playback are logged together; without one, as in a text-only caller,
 // the pipeline logs the routing-only line itself.
 func (p *Pipeline) finish(ctx context.Context, started time.Time, req tool.Request, transcript string, reply Reply, record routeLog) {
+	// Keep the last completed reply for follow-ups. A cancelled turn (Barge-in
+	// or shutdown) and a blank answer must not replace the last thing the user
+	// actually heard; an error or Unavailable reply was spoken, so it counts.
+	if p.lastReply != nil && ctx.Err() == nil && strings.TrimSpace(reply.Text) != "" {
+		p.lastReply.Record(lastreply.Reply{
+			Text:      reply.Text,
+			Tool:      reply.Tool,
+			Path:      string(reply.Path),
+			LocalOnly: reply.LocalOnly,
+		})
+	}
 	if latency.FromContext(ctx) != nil {
 		latency.SetRoute(ctx, string(reply.Path), reply.Tool, transcript)
 		latency.SetAttr(ctx, "top_tools", record.top)

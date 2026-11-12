@@ -25,7 +25,7 @@ from wyoming.tts import (
     SynthesizeStopped,
 )
 
-from engine import PocketTtsEngine
+from engine import MAX_RATE, MIN_RATE, PocketTtsEngine
 from pcm import to_pcm16
 
 _LOGGER = logging.getLogger("tts")
@@ -89,6 +89,17 @@ class TtsServer:
         )
         return Info(tts=[program]).event()
 
+    def voice_info_event(self) -> Event:
+        """The revision and built-in voices the assistant's library indexes."""
+        return Event(
+            type="voice-info-result",
+            data={
+                "revision": getattr(self.engine, "revision", "unknown"),
+                "voices": list(getattr(self.engine, "voices", [])),
+                "dir": str(getattr(self.engine, "voice_dir", "")),
+            },
+        )
+
 
 class _Session:
     """Per-connection state, including the streaming-text buffer."""
@@ -98,6 +109,7 @@ class _Session:
         self.writer = writer
         self.streaming = False
         self.voice: Optional[str] = None
+        self.rate = 1.0
         self.text = ""
         self.sent_audio = False
 
@@ -106,13 +118,45 @@ class _Session:
             await self.write(self.server.info_event())
             return True
 
+        # Voice-library protocol. These events are ours, not part of upstream
+        # Wyoming; the assistant calls them before and during a library scan.
+        if event.type == "voice-info":
+            await self.write(self.server.voice_info_event())
+            return True
+
+        if event.type == "voice-validate":
+            # cache=False is used by uploads: the state is validated from a
+            # temporary path and must not stay in the process cache after the
+            # file is renamed.
+            cache = event.data.get("cache", True) is not False
+            await self.validate_voice(str(event.data.get("path", "")), cache)
+            return True
+
+        if event.type == "voice-warm":
+            await self.warm_voice(str(event.data.get("voice", "")))
+            return True
+
+        if event.type == "voice-forget":
+            await self.forget_voice(str(event.data.get("voice", "")))
+            return True
+
         if Synthesize.is_type(event.type):
             request = Synthesize.from_event(event)
-            await self.synthesize(request.text, voice_name(request.voice))
+            try:
+                rate = request_rate(event)
+            except ValueError as exc:
+                await self.error(str(exc))
+                return True
+            await self.synthesize(request.text, voice_name(request.voice), rate)
             return True
 
         if SynthesizeStart.is_type(event.type):
             request = SynthesizeStart.from_event(event)
+            try:
+                self.rate = request_rate(event)
+            except ValueError as exc:
+                await self.error(str(exc))
+                return True
             self.streaming = True
             self.voice = voice_name(request.voice)
             self.text = ""
@@ -127,13 +171,13 @@ class _Session:
             # Flush complete sentences now; the rest waits for more text.
             complete, self.text = split_complete_sentences(self.text)
             for segment in complete:
-                await self.synthesize(segment, self.voice)
+                await self.synthesize(segment, self.voice, self.rate)
             return True
 
         if SynthesizeStop.is_type(event.type):
             if self.streaming:
                 if self.text.strip():
-                    await self.synthesize(self.text, self.voice)
+                    await self.synthesize(self.text, self.voice, self.rate)
                 if not self.sent_audio:
                     # The protocol expects final audio before synthesize-stopped.
                     await self.write_start()
@@ -145,7 +189,7 @@ class _Session:
         # Unknown events are ignored, as the protocol expects.
         return True
 
-    async def synthesize(self, text: str, voice: Optional[str]) -> None:
+    async def synthesize(self, text: str, voice: Optional[str], rate: float = 1.0) -> None:
         text = text.strip()
         if not text:
             await self.error("text is required")
@@ -158,7 +202,7 @@ class _Session:
                 await self.error(str(exc))
                 return
 
-            rate = int(self.server.engine.sample_rate)
+            sample_rate = int(self.server.engine.sample_rate)
             await self.write_start()
             queue: asyncio.Queue = asyncio.Queue()
             loop = asyncio.get_running_loop()
@@ -172,7 +216,7 @@ class _Session:
                         pass  # the event loop is gone; nothing left to send
 
                 try:
-                    for chunk in self.server.engine.synthesize(state, text, stop=stop):
+                    for chunk in self.server.engine.synthesize(state, text, stop=stop, rate=rate):
                         if stop.is_set():
                             return
                         publish(to_pcm16(chunk))
@@ -196,7 +240,7 @@ class _Session:
                     continue
                 try:
                     await self.write(
-                        AudioChunk(rate=rate, width=_WIDTH, channels=_CHANNELS, audio=item).event()
+                        AudioChunk(rate=sample_rate, width=_WIDTH, channels=_CHANNELS, audio=item).event()
                     )
                 except (ConnectionError, RuntimeError):
                     stop.set()
@@ -208,6 +252,41 @@ class _Session:
                 return
             await self.write(AudioStop().event())
             self.sent_audio = True
+
+    async def validate_voice(self, path: str, cache: bool = True) -> None:
+        """Load a copied state and run a real model smoke test.
+
+        The model is not thread-safe, so this shares the synthesis lock. The
+        response always carries ok/error; a bad file must not kill the server.
+        """
+        async with self.server.lock:
+            try:
+                revision = await asyncio.to_thread(
+                    self.server.engine.validate_voice, path, cache
+                )
+                payload = {"ok": True, "revision": revision, "error": ""}
+            except Exception as exc:
+                payload = {"ok": False, "revision": "", "error": str(exc)}
+        await self.write(Event(type="voice-validated", data=payload))
+
+    async def forget_voice(self, voice: str) -> None:
+        """Drop one cached state before a replacement is validated."""
+        async with self.server.lock:
+            try:
+                await asyncio.to_thread(self.server.engine.forget_voice, voice)
+                payload = {"ok": True, "error": ""}
+            except Exception as exc:
+                payload = {"ok": False, "error": str(exc)}
+        await self.write(Event(type="voice-forgotten", data=payload))
+
+    async def warm_voice(self, voice: str) -> None:
+        async with self.server.lock:
+            try:
+                await asyncio.to_thread(self.server.engine.warm_voice, voice)
+                payload = {"ok": True, "error": ""}
+            except Exception as exc:
+                payload = {"ok": False, "error": str(exc)}
+        await self.write(Event(type="voice-warmed", data=payload))
 
     async def write_start(self) -> None:
         rate = int(self.server.engine.sample_rate)
@@ -239,6 +318,18 @@ def voice_name(voice) -> Optional[str]:
     return voice.name if voice is not None else None
 
 
+def request_rate(event: Event) -> float:
+    """Read the optional speech-rate multiplier, failing closed on nonsense."""
+    raw = event.data.get("rate", 1.0)
+    try:
+        rate = float(raw)
+    except (TypeError, ValueError):
+        raise ValueError("rate must be a number")
+    if not MIN_RATE <= rate <= MAX_RATE:
+        raise ValueError(f"rate must be between {MIN_RATE} and {MAX_RATE}")
+    return rate
+
+
 async def serve(engine, host: str, port: int) -> None:
     tts_server = TtsServer(engine, default_voice=getattr(engine, "default_voice", "alba"))
     listener = await asyncio.start_server(tts_server.handle_connection, host, port)
@@ -259,7 +350,11 @@ def main() -> None:
     voices = [name.strip() for name in voice_list.split(",") if name.strip()] or ["alba"]
     default_voice = os.environ.get("TTS_VOICE", voices[0])
 
-    engine = PocketTtsEngine(language=os.environ.get("TTS_LANGUAGE") or None, voices=voices)
+    engine = PocketTtsEngine(
+        language=os.environ.get("TTS_LANGUAGE") or None,
+        voices=voices,
+        voice_dir=os.environ.get("TTS_VOICE_DIR") or None,
+    )
     started = time.monotonic()
     engine.load()  # warm the model before the health check can pass
     engine.default_voice = default_voice

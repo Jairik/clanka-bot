@@ -1,0 +1,120 @@
+{{define "personas_page"}}{{template "page_head" .}}{{template "personas_content" .}}{{template "page_foot" .}}{{end}}
+
+{{define "personas_content"}}
+<div id="personas-content">
+  {{if .Flash}}<p class="notice notice-success" role="status">{{.Flash}}</p>{{end}}
+  {{if .Error}}<p class="notice notice-error" role="alert">{{.Error}}</p>{{end}}
+
+  <div class="page-head">
+    <p class="eyebrow">Dashboard</p>
+    <h1>Personas</h1>
+    <p class="lede">A Persona bundles a voice, a personality prompt and the Agent Filler and Unavailable wording. Selecting one applies the bundle in a single settings transaction, so a stale or missing voice leaves everything unchanged. The personality prompt reaches the Agent path only inside the one labelled system part.</p>
+  </div>
+
+  {{if not .HasService}}
+  <section class="panel">
+    <h2>The persona library is not configured</h2>
+    <p class="muted">This Dashboard was built without the persona service, so there is nothing to edit.</p>
+  </section>
+  {{else}}
+
+  <section class="panel" aria-labelledby="persona-active-heading">
+    <div class="panel-head">
+      <div>
+        <h2 id="persona-active-heading">Active persona</h2>
+        <p class="muted">The applied values are ordinary live settings shared with the voice Tools and the settings page. If either layer is changed afterwards, the summary below says what differs instead of claiming the exact bundle.</p>
+      </div>
+    </div>
+    {{if .Active}}
+    <div class="setting" id="persona-active">
+      <div class="setting-head">
+        <h3>{{.Active.Name}}</h3>
+        <p class="setting-meta">
+          <span class="pill pill-ok">Active</span>
+          <span class="muted">Persona voice:</span> <span class="effective">{{.Active.Voice}}</span>
+          <span class="muted">Speaking voice:</span> <span class="effective">{{if .Active.EffectiveVoice}}{{.Active.EffectiveVoice}}{{else}}unavailable, using the default{{end}}</span>
+          {{if .Active.Exact}}<span class="pill pill-ok">Exact bundle</span>{{else}}<span class="pill pill-timed-out">Overridden or edited</span>{{end}}
+        </p>
+      </div>
+      {{range .Active.Notes}}<p class="notice notice-warn" role="status">{{.}}</p>{{end}}
+      <form class="inline-form" method="post" action="/personas/active/reset"
+            hx-post="/personas/active/reset" hx-target="#personas-content" hx-swap="outerHTML">
+        <button class="button button-quiet" type="submit">Clear the active persona</button>
+      </form>
+      <p class="muted">Clearing removes only the active marker. The voice and wording currently applied stay as they are; choose or select another persona to change them.</p>
+    </div>
+    {{else}}
+    <p class="muted">No persona is selected. The assistant keeps its current voice and wording.</p>
+    {{end}}
+  </section>
+
+  <section class="panel" aria-labelledby="persona-create-heading">
+    <div class="panel-head">
+      <div>
+        <h2 id="persona-create-heading">{{.New.Heading}}</h2>
+        <p class="muted">Only ready voices can be saved. A voice that goes stale later stays on its Persona but selection is refused until the state is re-exported or the Persona is edited to a ready voice. Creating a Persona does not change what the assistant is using.</p>
+      </div>
+    </div>
+    {{template "persona_form" .New}}
+  </section>
+
+  <section class="panel" aria-labelledby="persona-library-heading">
+    <div class="panel-head">
+      <div>
+        <h2 id="persona-library-heading">Library</h2>
+        <p class="muted">The voice and wording are copied into the live settings when a Persona is selected. Editing a Persona updates the stored record; its personality prompt applies on the next turn, and Select again applies a changed voice or wording.</p>
+      </div>
+    </div>
+    {{range .Rows}}
+    <article class="setting" id="{{.Edit.FormID}}" aria-labelledby="{{.Edit.FormID}}-heading">
+      <div class="setting-head">
+        <h3 id="{{.Edit.FormID}}-heading">{{.Name}}</h3>
+        <p class="setting-meta">
+          <span class="pill">Voice: {{.Voice}}</span>
+          <span class="pill">Voice status: {{.VoiceStatus}}</span>
+          {{if .Active}}<span class="pill pill-ok">Active</span>{{end}}
+        </p>
+      </div>
+      {{template "persona_form" .Edit}}
+      <div class="actions">
+        {{if .Active}}
+        <span class="pill pill-ok">Active persona</span>
+        {{else}}
+        <form class="inline-form" method="post" action="{{.SelectAction}}"
+              hx-post="{{.SelectAction}}" hx-target="#personas-content" hx-swap="outerHTML">
+          <button class="button" type="submit">Select this persona</button>
+        </form>
+        {{end}}
+      </div>
+    </article>
+    {{else}}
+    <p class="muted">No personas are stored yet. Create one above.</p>
+    {{end}}
+  </section>
+
+  {{end}}
+</div>
+{{end}}
+
+{{define "persona_form"}}
+<form class="inline-form" method="post" action="{{.Action}}"
+      hx-post="{{.Action}}" hx-target="#personas-content" hx-swap="outerHTML">
+  {{if .NameLocked}}
+  <p class="setting-meta"><span class="muted">Name:</span> <span class="effective">{{.Name}}</span></p>
+  {{else}}
+  <label for="{{.FormID}}-name">Persona name</label>
+  <input id="{{.FormID}}-name" name="name" type="text" maxlength="64" value="{{.Name}}" required>
+  {{end}}
+  <label for="{{.FormID}}-voice">Voice</label>
+  <select id="{{.FormID}}-voice" name="voice" required>
+    {{range .Voices}}<option value="{{.Name}}" {{if .Selected}}selected{{end}}>{{.Label}}</option>{{else}}<option value="">No ready voices</option>{{end}}
+  </select>
+  <label for="{{.FormID}}-personality">Personality prompt</label>
+  <textarea id="{{.FormID}}-personality" name="personality" rows="6" maxlength="8000" required>{{.Personality}}</textarea>
+  <label for="{{.FormID}}-filler">Filler phrase</label>
+  <textarea id="{{.FormID}}-filler" name="filler" rows="2" maxlength="500" required>{{.Filler}}</textarea>
+  <label for="{{.FormID}}-unavailable">Unavailable message</label>
+  <textarea id="{{.FormID}}-unavailable" name="unavailable" rows="2" maxlength="500" required>{{.Unavailable}}</textarea>
+  <div class="actions"><button class="button" type="submit">{{.Submit}}</button></div>
+</form>
+{{end}}

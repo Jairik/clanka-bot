@@ -43,8 +43,12 @@ func (r *Registry) Propose(name string, args json.RawMessage) (PendingConfirmati
 	if !ok {
 		return PendingConfirmation{}, fmt.Errorf("tool: unknown tool %q", name)
 	}
-	if e.info.Permission != PermissionConfirm {
-		return PendingConfirmation{}, fmt.Errorf("tool %q: permission %q needs no confirmation", name, e.info.Permission)
+	info := r.effective(e)
+	if !info.Enabled {
+		return PendingConfirmation{}, &DisabledError{Tool: name}
+	}
+	if info.Permission != PermissionConfirm {
+		return PendingConfirmation{}, fmt.Errorf("tool %q: permission %q needs no confirmation", name, info.Permission)
 	}
 	// Arm nothing when the model's arguments do not satisfy the Tool's schema:
 	// a malformed confirm call must not become a runnable pending call.
@@ -84,7 +88,14 @@ func (r *Registry) ExecutePending(ctx context.Context) (any, PendingConfirmation
 	}
 
 	e, ok := r.lookup(pending.Tool)
-	if !ok || e.info.Permission != PermissionConfirm {
+	if !ok {
+		return nil, *pending, fmt.Errorf("tool %q: pending call no longer names a confirm Tool", pending.Tool)
+	}
+	info := r.effective(e)
+	if !info.Enabled {
+		return nil, *pending, &DisabledError{Tool: pending.Tool}
+	}
+	if info.Permission != PermissionConfirm {
 		return nil, *pending, fmt.Errorf("tool %q: pending call no longer names a confirm Tool", pending.Tool)
 	}
 	result, err := r.run(ctx, e, pending.Args)

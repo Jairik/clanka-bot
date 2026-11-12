@@ -1,0 +1,31 @@
+# Bot-detection settings for the internal web-search instance. The limiter is
+# off in settings.yml, so this file only supplies the documented defaults and
+# stops SearXNG warning that /etc/searxng/limiter.toml is missing. Source:
+# https://github.com/searxng/searxng/blob/master/searx/limiter.toml
+[botdetection]
+
+# Leading bits compared to decide whether an address is in a client network.
+ipv4_prefix = 32
+ipv6_prefix = 48
+
+# Only a loopback reverse proxy may supply the real client address. The
+# assistant talks to this service directly on the Compose network, so no
+# proxy header is trusted.
+trusted_proxies = [
+  '127.0.0.0/8',
+  '::1',
+]
+
+[botdetection.ip_limit]
+
+# Link-local networks are not rate limited by default.
+filter_link_local = false
+link_token = false
+
+[botdetection.ip_lists]
+
+block_ip = []
+
+pass_ip = []
+
+pass_searxng_org = true

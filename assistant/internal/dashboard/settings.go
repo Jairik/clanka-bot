@@ -96,6 +96,11 @@ type settingView struct {
 	LowerLabel  string
 	Restart     bool
 	Override    bool
+	// SaveAction, ResetAction and Target let one setting template serve both
+	// the Settings page and the Sounds page's Ring section.
+	SaveAction  string
+	ResetAction string
+	Target      string
 }
 
 // editState preserves one rejected submission for the re-rendered form.
@@ -434,6 +439,9 @@ func newSettingView(value settings.Value, edit *editState) settingView {
 		LowerLabel:  lowerLayerLabel(value),
 		Restart:     value.Kind == settings.RestartRequired,
 		Override:    value.Source == settings.SourceOverride,
+		SaveAction:  "/settings/values/" + value.Key,
+		ResetAction: "/settings/values/" + value.Key + "/reset",
+		Target:      "#settings-content",
 	}
 	switch typed := value.Value.(type) {
 	case []string:

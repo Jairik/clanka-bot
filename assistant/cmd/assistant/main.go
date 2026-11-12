@@ -172,23 +172,28 @@ func run() error {
 		speechSpeaker = speech.New(ttsClient, playSink, ttsVoice, logger)
 	}
 
-	// One Announcement queue owns unprompted speech: it waits for the current
-	// reply and any pending Confirmation, then plays one line at a time. It is
-	// absent when TTS is not configured, so nothing can queue speech.
-	var announcements *announce.Queue
-	if speechSpeaker != nil {
-		announcements = announce.New(speechSpeaker, logger, announce.WithBlocked(func() bool {
-			_, pending := registry.Pending()
-			return pending
-		}))
-		defer announcements.Close()
-	}
-
 	// One Focus registry routes the shared Control phrases to a ringing alert,
 	// the current reply or music, in that fixed order. It is shared by the
 	// pipeline (routing), the reply session (the current reply) and the Tool
 	// modules that can hold Focus.
 	focusRegistry := focus.New()
+
+	// One Announcement queue owns unprompted speech and Dashboard previews: it
+	// waits for the current reply, a pending Confirmation and a ringing alert,
+	// then plays one item at a time. With a Dashboard but no TTS it still runs
+	// for Pi previews (WithPlayback); text announcements remain unavailable.
+	var announcements *announce.Queue
+	if speechSpeaker != nil || cfg.Dashboard.Enabled() {
+		queueOpts := []announce.Option{announce.WithBlocked(func() bool {
+			_, pending := registry.Pending()
+			return pending || focusRegistry.Held(focus.Ring)
+		})}
+		if speechSpeaker == nil {
+			queueOpts = append(queueOpts, announce.WithPlayback())
+		}
+		announcements = announce.New(speechSpeaker, logger, queueOpts...)
+		defer announcements.Close()
+	}
 
 	// One module list owns Tool wiring; each module reads its tools.<name>
 	// section and falls back to code defaults. The timezone seam exists before
@@ -476,6 +481,12 @@ func run() error {
 	// owner is configured. Its source and identity checks live in the handler,
 	// so this listener is never an unauthenticated surface.
 	if cfg.Dashboard.Enabled() {
+		// Keep the typed nil out of the interface so the Sounds page can fall
+		// back to synchronous playback on a text-only setup.
+		var previewQueue dashboard.PreviewQueue
+		if announcements != nil {
+			previewQueue = announcements
+		}
 		dashboardHandler, err := dashboard.New(dashboard.Options{
 			Owner:         cfg.Dashboard.Owner,
 			Logger:        logger,
@@ -485,6 +496,8 @@ func run() error {
 			Location:      locSvc,
 			Settings:      settingsSvc,
 			ToolPolicy:    toolPolicy,
+			Sounds:        cues,
+			PreviewQueue:  previewQueue,
 			API:           apiHandler,
 		})
 		if err != nil {

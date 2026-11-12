@@ -37,6 +37,7 @@ var routingEvalTools = []string{
 	audiocontrol.StopName,
 	timer.SetName,
 	timer.CancelName,
+	timer.RemainingName,
 	timer.ListName,
 }
 
@@ -274,6 +275,7 @@ type evalVerdict struct {
 	Tool   string
 	Path   tool.Path
 	Reason string
+	Top    []pipeline.ToolScore
 }
 
 type evalCounts struct {
@@ -389,15 +391,18 @@ func TestRoutingEvalAgainstMiniLM(t *testing.T) {
 		manager.Cancel("")
 
 		reason := ""
+		var top []pipeline.ToolScore
 		if line := strings.TrimSpace(logBuf.String()); line != "" {
 			var record struct {
-				Reason string `json:"fallthrough_reason"`
+				Reason string               `json:"fallthrough_reason"`
+				Top    []pipeline.ToolScore `json:"top_tools"`
 			}
 			if err := json.Unmarshal([]byte(line), &record); err == nil {
 				reason = record.Reason
+				top = record.Top
 			}
 		}
-		return evalVerdict{Tool: reply.Tool, Path: reply.Path, Reason: reason}
+		return evalVerdict{Tool: reply.Tool, Path: reply.Path, Reason: reason, Top: top}
 	}
 
 	counts := make(map[string]*evalCounts, len(routingEvalTools))
@@ -422,7 +427,7 @@ func TestRoutingEvalAgainstMiniLM(t *testing.T) {
 					other.fp++
 				}
 			}
-			t.Logf("MISS positive tool=%s utterance=%q got_tool=%s path=%s reason=%s", name, utterance, got.Tool, got.Path, got.Reason)
+			t.Logf("MISS positive tool=%s utterance=%q got_tool=%s path=%s reason=%s top=%v", name, utterance, got.Tool, got.Path, got.Reason, got.Top)
 		}
 	}
 

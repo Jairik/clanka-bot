@@ -10,6 +10,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
+	"github.com/Jairik/clanka-bot/assistant/internal/tz"
 	"gopkg.in/yaml.v3"
 )
 
@@ -40,6 +41,9 @@ type Deps struct {
 	// priority. A module that can hold Focus claims here; nil means the module
 	// still works but a shared phrase cannot reach it.
 	Focus *focus.Registry
+	// Zone resolves the live timezone for clock-time Alarms and Reminders.
+	// Duration Timers do not need it; nil means UTC.
+	Zone *tz.Service
 }
 
 // SecretResolver is the shared seam a module uses to read a declared secret.

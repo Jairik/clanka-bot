@@ -145,6 +145,12 @@ positives:
     # in the corpus; recall is not gated.
     - Set a timer for ten minutes.
     - Set a timer for ten seconds.
+    # Labelled timers: the name is part of the request and is extracted, not
+    # matched semantically, but the phrasing still belongs to timer.set.
+    - set a pasta timer for 10 minutes
+    - start a tea timer for five minutes
+    - set a timer for 10 minutes called pasta
+    - set a timer called tea for five minutes
   timer.cancel:
     - cancel the timer
     - cancel my timer
@@ -167,26 +173,50 @@ positives:
     - stop that timer
     - I want to cancel the timer
   timer.list:
-    - how long is left on my timer
-    - how much time is left
+    # Enumerating the active timers. "How long is left" belongs to
+    # timer.remaining now that it exists.
     - what timers do I have
     - list my timers
+    - show me my timers
+    - what timers are running
+    - how many timers are running
+    - do I have any timers
+    - what timers are active
+    - show all my timers
+    - what timers have I got
+    - list all timers
+    - are any timers running
+    - what's on my timer list
+    - which timers are set
+    - give me my timers
+    - tell me my timers
+    - what are my timers
+    - how many timers do I have
+    - are there any active timers
+    - show me all of the timers
+    - which timers are running
+  timer.remaining:
+    # The remaining-time lookup, with and without an explicit label.
+    - how long is left on my timer
+    - how much time is left
     - how much time is left on the timer
     - how long until the timer goes off
     - when does my timer finish
     - what's the time remaining
-    - do I have any timers
-    - how many timers are running
     - check the timer
     - what's left on the timer
     - how long does the timer have left
-    - show me my timers
     - is my timer still running
     - how long is the timer
     - time left on the timer
-    - what timers are active
     - how much longer on the timer
     - tell me the timer status
+    - how long is left on the pasta timer
+    - how much time is left on the pasta timer
+    - time remaining on the tea timer
+    - when is the egg timer done
+    - how long until the pasta timer goes off
+    - how long does the tea timer have left
 negatives:
   - what's the capital of France
   - who wrote hamlet
@@ -236,6 +266,12 @@ negatives:
   - what's the date of the next full moon
   - stop the car
   - cancel my subscription
+  # Timer-shaped but not Fast path requests: no duration, no timer, or a
+  # question about cooking rather than a running Timer.
+  - set a timer
+  - timer for the pasta
+  - how long is left on the oven
+  - what's the timer setting
 # Compound requests ask for more than one thing. They are kept separate so
 # the evaluation can report compound handling on its own.
 compounds:

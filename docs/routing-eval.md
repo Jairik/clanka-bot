@@ -135,26 +135,28 @@ above the 0.95 precision floor. Run against
 | `weather.current` | 20 | 11 | 4 | 7 | 0 | 9 | 1.00 | 0.55 |
 | `audio.volume_set` | 20 | 15 | 1 | 14 | 0 | 5 | 1.00 | 0.75 |
 | `audio.stop` | 20 | 10 | 0 | 10 | 0 | 10 | 1.00 | 0.50 |
-| `timer.set` | 22 | 10 | 0 | 10 | 0 | 12 | 1.00 | 0.4545 |
+| `timer.set` | 26 | 12 | 0 | 12 | 0 | 14 | 1.00 | 0.4615 |
 | `timer.cancel` | 20 | 15 | 0 | 15 | 0 | 5 | 1.00 | 0.75 |
-| `timer.list` | 20 | 5 | 0 | 5 | 0 | 15 | 1.00 | 0.25 |
-| **Total** | **162** | **97** | **10** | **87** | **0** | **65** | **1.00** | **0.5988** |
+| `timer.remaining` | 20 | 9 | 0 | 9 | 0 | 11 | 1.00 | 0.45 |
+| `timer.list` | 20 | 12 | 0 | 12 | 0 | 8 | 1.00 | 0.60 |
+| **Total** | **186** | **115** | **10** | **105** | **0** | **71** | **1.00** | **0.6183** |
 
-These are the numbers after the #34 fix in the final fix pass, updated for #44.
-The router now trims trailing sentence punctuation and collapses whitespace
-before embedding, so the two observed STT forms
+These are the numbers after the #34 fix in the final fix pass, updated for #44
+and #51. The router now trims trailing sentence punctuation and collapses
+whitespace before embedding, so the two observed STT forms
 (`Set a timer for ten minutes.`, `Set a timer for ten seconds.`) pass;
-`timer.set` TP rose from 8 to 10 and recall from 0.40 to 0.4545 without
-changing threshold or margin. #44 moved the `stop`, `pause` and `cancel` Control
-phrases to shared Focus intents and added `audio.stop`/`timer.cancel` Examples
-for the bare words; with no holder those phrases now reach the same Tools
-through the semantic router, so TP rose to 97 and recall to 0.5988 while the
-per-Tool precision floor and the Map 1 baseline gate stayed unchanged. The raw
-`ROUTING_EVAL_*` lines are in
+`timer.set` TP rose from 8 to 10 without changing threshold or margin. #44 moved
+the `stop`, `pause` and `cancel` Control phrases to shared Focus intents and
+added `audio.stop`/`timer.cancel` Examples for the bare words; with no holder
+those phrases now reach the same Tools through the semantic router. #51 added
+`timer.remaining` and more `timer.set`/`timer.list` positives. The total is now
+115/186 (recall 0.6183) with precision 1.00 and no negative or compound
+misroute, while the per-Tool precision floor and the Map 1 baseline gate stayed
+unchanged. The raw `ROUTING_EVAL_*` lines are in
 [`prototype-run/routing-eval-after-fixes.txt`](prototype-run/routing-eval-after-fixes.txt)
-for the pre-#44 run.
+for the pre-#44/#51 run.
 
-Plain negatives: **0 of 48** reached the Fast path. Compounds: **0 of 8**
+Plain negatives: **0 of 52** reached the Fast path. Compounds: **0 of 8**
 reached the Fast path. Every Tool was exercised by the semantic router at
 least five times, so no Tool cleared the floor only because the Control phrase
 table happened to cover its positives. The timer and list confusions are the

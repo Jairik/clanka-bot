@@ -55,7 +55,9 @@ func (m *Module) Configure(section *yaml.Node) error {
 	return nil
 }
 
-// Register adds timer.set, timer.cancel and timer.list.
+// Register adds timer.set, timer.cancel, timer.remaining and timer.list. When
+// the shared store is present the Manager recovers the Timers left by the
+// previous process and applies the downtime rule before any request arrives.
 func (m *Module) Register(r *tool.Registry, deps tool.Deps) error {
 	var say func(ctx context.Context, text string) error
 	if deps.Speaker != nil {
@@ -64,6 +66,9 @@ func (m *Module) Register(r *tool.Registry, deps tool.Deps) error {
 	manager := NewManagerText(deps.Clock, say, deps.Logger, m.cfg.AlertText)
 	if deps.Focus != nil {
 		manager = manager.WithFocus(deps.Focus)
+	}
+	if err := manager.AttachStore(deps.Store, deps.Announcements); err != nil {
+		return err
 	}
 	return Register(r, manager)
 }

@@ -4,8 +4,9 @@ package timer
 // Tool so the real Speak renderers are exercised.
 func (*Module) ConformanceSamples() map[string]any {
 	return map[string]any{
-		SetName:    Timer{DurationSeconds: 300, RemainingSeconds: 300},
-		CancelName: CancelOut{Cancelled: 1},
-		ListName:   ListOut{Timers: []Timer{{DurationSeconds: 300, RemainingSeconds: 120}}},
+		SetName:       Timer{ID: "1", Label: "pasta", DurationSeconds: 600, RemainingSeconds: 600},
+		CancelName:    CancelOut{Cancelled: 1},
+		RemainingName: RemainingOut{Timer: Timer{ID: "1", Label: "pasta", DurationSeconds: 600, RemainingSeconds: 420}},
+		ListName:      ListOut{Timers: []Timer{{ID: "1", DurationSeconds: 300, RemainingSeconds: 120}}},
 	}
 }

@@ -78,6 +78,25 @@ tools:
     # model-supplied value is clamped to. Each result is title, URL and snippet.
     results: 5
     max_results: 10
+  github:
+    # Agent-path GitHub Tools. The token is a write-only secret, never here.
+    # issue_create and pr_list work with a fine-grained PAT; notifications are
+    # the exception because GitHub's notifications API only accepts a classic
+    # token (see README.md "GitHub").
+    base_url: "https://api.github.com"
+    # One HTTP request, including reading the response body.
+    timeout: 4s
+    # The operator target when the model omits repo. No repository is
+    # hardcoded in the generic Tool logic; this is the only place the default
+    # lives. An empty value means the model must supply a repo every time.
+    default_repo: "Jairik/clanka-bot"
+    # issue_create refuses any repository not listed here before any HTTP
+    # write. An empty list refuses every issue write.
+    allowed_repos: ["Jairik/clanka-bot"]
+    # Default and maximum item counts for pr_list and notifications. The
+    # maximum is also a prompt-size bound.
+    results: 10
+    max_results: 20
   timer:
     alert_text: "Your timer is done."
   voice:

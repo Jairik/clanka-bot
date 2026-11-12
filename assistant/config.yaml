@@ -190,6 +190,8 @@ agent:
       # The key resolves from the write-only secrets table first, then this
       # environment variable. Set it through /api/secrets or .env; never here.
       api_key_env: OPENROUTER_API_KEY
+      # Config layer of the live `agent.model` setting. A Dashboard override
+      # wins and is read before the next provider request.
       model: deepseek/deepseek-v4.1-flash
       # Written second choice for a manual switch only. There is no runtime
       # failover (ADR-0002), so this value is not read by the client.

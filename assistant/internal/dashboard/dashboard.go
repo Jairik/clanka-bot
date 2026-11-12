@@ -15,7 +15,9 @@ import (
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
+	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
+	"github.com/Jairik/clanka-bot/assistant/internal/toolpolicy"
 	"github.com/Jairik/clanka-bot/assistant/tools"
 )
 
@@ -55,6 +57,12 @@ type Options struct {
 	// the Dashboard identity and same-origin checks. #40's settings handler is
 	// mounted here; secrets and uploads can use the same seam.
 	API http.Handler
+	// Settings and ToolPolicy back the Settings page. They are the same
+	// services the API and the voice Tools write, so the page needs no second
+	// store or validation copy. The page is explanatory and read-only when
+	// either is nil.
+	Settings   *settings.Service
+	ToolPolicy *toolpolicy.Policy
 	// ProxyAllowed overrides the trusted source-address check. Production uses
 	// the default (loopback plus the container's default gateway); tests inject
 	// their own address policy.
@@ -72,6 +80,8 @@ type Handler struct {
 	services      []ServiceCheck
 	modules       Modules
 	location      Location
+	settings      *settings.Service
+	tools         *toolpolicy.Policy
 	proxyAllowed  func(net.IP) bool
 	now           func() time.Time
 	templates     *template.Template
@@ -116,6 +126,8 @@ func New(opts Options) (*Handler, error) {
 		services:      opts.Services,
 		modules:       opts.Modules,
 		location:      opts.Location,
+		settings:      opts.Settings,
+		tools:         opts.ToolPolicy,
 		proxyAllowed:  opts.ProxyAllowed,
 		now:           now,
 		templates:     templates,
@@ -131,6 +143,13 @@ func New(opts Options) (*Handler, error) {
 	}
 	h.Handle("/health", h.healthPage)
 	h.Handle("/health/panel", h.healthPanel)
+	// Every Settings mutation goes through Mutating, so it inherits the
+	// Dashboard identity and the same-origin guard.
+	h.Handle("/settings", h.settingsPage)
+	h.Mutating("POST /settings/tools/{name}", h.settingsToolSave)
+	h.Mutating("POST /settings/tools/{name}/reset", h.settingsToolReset)
+	h.Mutating("POST /settings/values/{key}", h.settingsValueSave)
+	h.Mutating("POST /settings/values/{key}/reset", h.settingsValueReset)
 	h.Handle("/", h.index)
 	return h, nil
 }
@@ -199,7 +218,7 @@ func (h *Handler) healthPage(w http.ResponseWriter, r *http.Request) {
 	if !allowGet(w, r) {
 		return
 	}
-	h.render(w, "layout", h.health(r.Context()))
+	h.render(w, "health_page", h.health(r.Context()))
 }
 
 func (h *Handler) healthPanel(w http.ResponseWriter, r *http.Request) {

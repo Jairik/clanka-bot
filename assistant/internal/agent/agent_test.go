@@ -16,6 +16,7 @@ import (
 
 	"github.com/Jairik/clanka-bot/assistant/internal/agent"
 	"github.com/Jairik/clanka-bot/assistant/internal/secrets"
+	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/tools/clock"
@@ -261,6 +262,99 @@ func TestRequestCarriesPrivacyAndProviderFields(t *testing.T) {
 	}
 	if provider["sort"] != "latency" {
 		t.Errorf("provider.sort = %v, want latency", provider["sort"])
+	}
+}
+
+func TestModelFuncAppliesToTheNextRequest(t *testing.T) {
+	fake := newFakeProvider(t, textReply("one"), textReply("two"))
+	server := fake.start()
+	settings := testSettings(server.URL)
+	// The resolver stands in for the live settings service: reading it before
+	// every request is what makes a Dashboard edit apply without a restart.
+	var mu sync.Mutex
+	model := "openrouter/one"
+	settings.ModelFunc = func() string {
+		mu.Lock()
+		defer mu.Unlock()
+		return model
+	}
+	a := newTestAgent(t, settings, nil, nil)
+
+	if result := a.Run(context.Background(), tool.Request{ID: "req-model-1"}, "first", nil); result.Text != "one" {
+		t.Fatalf("first reply = %q, want one", result.Text)
+	}
+	mu.Lock()
+	model = "openrouter/two"
+	mu.Unlock()
+	if result := a.Run(context.Background(), tool.Request{ID: "req-model-2"}, "second", nil); result.Text != "two" {
+		t.Fatalf("second reply = %q, want two", result.Text)
+	}
+
+	if got := fake.request(t, 0).Body["model"]; got != "openrouter/one" {
+		t.Errorf("first request model = %v, want openrouter/one", got)
+	}
+	if got := fake.request(t, 1).Body["model"]; got != "openrouter/two" {
+		t.Errorf("second request model = %v, want openrouter/two", got)
+	}
+}
+
+func TestModelSettingOverrideAppliesToTheNextRequest(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "model-live.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer st.Close()
+	svc, err := settings.New(ctx, st, agent.ModelDefinition("first/model", "first/model"))
+	if err != nil {
+		t.Fatalf("settings.New: %v", err)
+	}
+
+	fake := newFakeProvider(t, textReply("one"), textReply("two"))
+	candidate := testSettings(fake.start().URL)
+	candidate.Model = "first/model"
+	// This is the same resolver main installs: the setting is read before the
+	// next provider request, not frozen when the Agent path is built.
+	candidate.ModelFunc = func() string { return svc.String(agent.ModelKey) }
+	a := newTestAgent(t, candidate, nil, nil)
+
+	a.Run(ctx, tool.Request{ID: "req-live-1"}, "first", nil)
+	if _, err := svc.Set(ctx, agent.ModelKey, "second/model"); err != nil {
+		t.Fatalf("set model: %v", err)
+	}
+	a.Run(ctx, tool.Request{ID: "req-live-2"}, "second", nil)
+
+	if got := fake.request(t, 0).Body["model"]; got != "first/model" {
+		t.Errorf("first request model = %v", got)
+	}
+	if got := fake.request(t, 1).Body["model"]; got != "second/model" {
+		t.Errorf("second request model = %v, want the stored override", got)
+	}
+}
+
+func TestModelDefinitionCarriesTheConfigLayerAndRejectsBlank(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "model.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	defer st.Close()
+	svc, err := settings.New(ctx, st, agent.ModelDefinition("code/model", "config/model"))
+	if err != nil {
+		t.Fatalf("settings.New: %v", err)
+	}
+	value, ok := svc.Get(agent.ModelKey)
+	if !ok {
+		t.Fatalf("%s is not defined", agent.ModelKey)
+	}
+	if value.Value != "config/model" || value.Source != settings.SourceConfig {
+		t.Errorf("effective model = %v from %q, want config/model from config", value.Value, value.Source)
+	}
+	if value.Kind != settings.Live {
+		t.Errorf("kind = %q, want live", value.Kind)
+	}
+	if _, err := svc.SetJSON(ctx, agent.ModelKey, json.RawMessage(`"   "`)); err == nil {
+		t.Fatal("a blank model override was accepted")
 	}
 }
 

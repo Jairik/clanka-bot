@@ -135,8 +135,11 @@ ones are recorded missed and summarised in one Announcement. A Timer that fires
 **Rings**: it loops the assigned `timer_ring` Cue with a gap, speaks its label
 according to `ring.timer.speak_label`, and keeps ringing until `stop`/`snooze`
 or `ring.timer.max_ring` (default 5 min). `snooze` on a Timer acts as stop.
-Reaching max_ring records the alert as missed in `alert_events`; the
-`Manager.SetMissedHook` seam is where #62 will send the ntfy Notification.
+Reaching max_ring records the alert as missed in `alert_events` and sends one
+Notification if `notify.missed_alerts` is on (see **Notifications** below).
+Startup recovery reports an open row left by a crash and an old overdue Timer
+the same way, before the scheduler starts. A missed Notification is dropped,
+not delayed, during Quiet hours.
 Inside Quiet hours a Timer Ring and its label use `quiet.volume`; an Alarm is
 exempt and keeps its own Ring volume.
 
@@ -196,7 +199,8 @@ re-rings after `ring.alarm.snooze` (default 9 min) without disturbing the
 repeat schedule; "stop" ends the current Ring, and a repeating Alarm schedules
 its next occurrence. On startup, an Alarm up to two minutes overdue fires now;
 older ones are recorded missed and summarised in one Announcement, and a
-repeating Alarm then schedules its next occurrence.
+repeating Alarm then schedules its next occurrence. A max_ring or recovered
+missed Alarm also sends one Notification when `notify.missed_alerts` is on.
 
 Each Alarm can override its Ring `sound`, `volume` and `ramp` for itself:
 "wake me at 7 with the birds sound" or "change my 7 am alarm to the birds
@@ -254,8 +258,9 @@ line when the window ends; a model is not called to write it. Dashboard audio
 previews keep their own queue slots and are played, never narrated as text. The
 summary and previews still wait for the current reply, a pending Confirmation
 and a ringing alert, and Barge-in cancels them like any other unprompted sound.
-Notifications are muted through the `quiet.Service.AllowDelivery` hook (#62
-wires ntfy later). Replies, Fillers, the Unavailable cue, Timer Rings and
+Notifications are muted through `quiet.Service.AllowDelivery` before any
+network request; a suppressed missed Notification is dropped, not retried when
+the window ends. Replies, Fillers, the Unavailable cue, Timer Rings and
 Reminders use `quiet.volume` as an **absolute** software gain; the host media
 volume is never changed, so there is nothing to restore. Alarms Ring at their
 normal volume, including a Ring recovered during startup.
@@ -277,6 +282,74 @@ clears both overrides. The Dashboard Settings page groups the same six values
 under **Quiet hours**; a saved change applies within a second without a
 request, because one small controller reevaluates at the next boundary or every
 second and never replaces the wording manager's settings observer.
+
+#### Notifications
+
+`notify.phone` sends a Notification to your phone through
+[ntfy](https://ntfy.sh). "Send that to my phone" sends the Assistant's previous
+reply; an explicit message ("send buy milk to my phone") is sent instead. The
+reply is resolved in memory with its provenance, and a reply that came from a
+**Local-only** Tool is refused, never forwarded off the Pi. The Tool is `act`,
+not `confirm`: the recipient is your own phone rather than a third party, and
+the delivered message is the reply you just heard or the text you dictated.
+The Tool itself is not Local-only because the Notification leaves the Pi by
+design; its result is only "Sent to your phone."
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| `notify.url` | `https://ntfy.sh` | ntfy server base URL, live overridable |
+| `notify.missed_alerts` | `true` | Push a Notification for a missed Timer or Alarm |
+
+The **topic is generated once** on first use and kept in the write-only
+secrets table as `NTFY_TOPIC`; it never appears in `config.yaml`, the settings
+API, a log line, or a prefilled form field. It is stable across restarts and
+concurrent first sends. `NTFY_TOKEN` is optional and is **never generated**:
+official ntfy access tokens are issued by the server. On the public ntfy.sh,
+leaving the token empty publishes to the random topic without an
+`Authorization` header and works out of the box; the random topic is an
+unguessable name, **not access control**, because anyone who learns it can
+subscribe.
+
+To connect the phone, install the ntfy app and subscribe to the topic. The
+safest bootstrap is to choose the topic yourself before first use:
+
+```sh
+# A hard-to-guess topic the phone app and the assistant both know.
+python3 -c 'import secrets; print("clanka-" + secrets.token_hex(16))'
+# Put that value in .env as NTFY_TOPIC, then restart.
+```
+
+If you leave `NTFY_TOPIC` empty, the assistant generates one; the
+write-only API does not reveal it, so set it explicitly when you need to
+configure a phone. The unencrypted database is owned by the service account, so
+the owner can retrieve a generated value with `sqlite3 data/assistant.db` if
+needed.
+
+For real access control, self-host ntfy with `auth-file` and
+`auth-default-access: deny-all`, then issue a token on that server
+(`ntfy token add`) and store it:
+
+```sh
+curl -s -X PUT localhost:8081/api/secrets/NTFY_TOKEN \
+  -H 'Content-Type: application/json' -d '{"value":"tk_..."}'
+```
+
+Set `notify.url` to the self-hosted base URL with
+`PUT /api/settings/notify.url` (or the config layer). `notify.url` is the
+server root, not a topic URL: JSON publishing posts to that root and carries
+the topic in the body. A locally invented token is not accepted by ntfy and is
+never fabricated here. Primary sources:
+[ntfy publishing](https://docs.ntfy.sh/publish/) (topic as password, JSON
+publish at the root URL, Bearer tokens) and
+[access control](https://docs.ntfy.sh/config/#access-control) (server-issued
+tokens via `ntfy token add` / `auth-tokens`).
+
+A missed Timer or Alarm sends one high-priority Notification with its label and
+reason (`max_ring`, `restart` or `downtime`). Quiet hours suppress it before any
+network request and do not schedule a retry. `notify.phone` answers
+"Notifications are muted during quiet hours." instead. Requests are bounded by
+a 10 s HTTP timeout, redirects are refused so the bearer token stays on the
+configured host, and response bodies are never logged.
 
 #### Voice library and rate
 

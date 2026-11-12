@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
+	"github.com/Jairik/clanka-bot/assistant/internal/notify"
 	"github.com/Jairik/clanka-bot/assistant/internal/quiet"
 	"github.com/Jairik/clanka-bot/assistant/internal/tz"
 	"gopkg.in/yaml.v3"
@@ -96,7 +97,10 @@ type Config struct {
 	// Quiet is the config layer for the live Quiet hours settings. The daily
 	// window is evaluated in the effective timezone; the Dashboard and the
 	// quiet.* Tools write the same stored overrides.
-	Quiet          Quiet             `yaml:"quiet"`
+	Quiet Quiet `yaml:"quiet"`
+	// Notify is the config layer for the live ntfy URL and missed-alert
+	// switch. The topic and token are secrets, never config values.
+	Notify         Notify            `yaml:"notify"`
 	ControlPhrases map[string]string `yaml:"control_phrases"`
 	Embed          struct {
 		URL     string   `yaml:"url"`
@@ -189,6 +193,11 @@ type AgentHistory struct {
 // Dashboard or voice override wins.
 type Quiet = quiet.Config
 
+// Notify is the config layer for the live ntfy URL and missed-alert switch. It
+// is the notify package's typed config; the generated topic and any access
+// token stay in the write-only secrets table.
+type Notify = notify.Config
+
 // Voice configures the custom voice-state library. Files are pre-exported
 // Pocket TTS .safetensors states; the folder is mounted read-only into tts and
 // never baked into an image.
@@ -263,6 +272,7 @@ func Default() Config {
 	cfg.Semantic.Joiners = []string{"and", "then", "also"}
 	cfg.NameMatch.Threshold = 0.60
 	cfg.Quiet = Quiet{Enabled: false, Start: "22:30", End: "07:00", Volume: 35}
+	cfg.Notify = notify.DefaultConfig()
 	cfg.TTS.Voice = "alba"
 	cfg.TTS.Timeout = Duration(30 * time.Second)
 	// Custom voice states live beside the database on the data volume. Compose
@@ -492,6 +502,9 @@ func (c Config) Validate() error {
 	}
 	if c.Quiet.Volume < 0 || c.Quiet.Volume > 100 {
 		return fmt.Errorf("config: quiet.volume must be between 0 and 100")
+	}
+	if err := c.Notify.Validate(); err != nil {
+		return fmt.Errorf("config: notify: %w", err)
 	}
 	if c.TTS.Addr != "" {
 		if c.TTS.Timeout.Duration() <= 0 {

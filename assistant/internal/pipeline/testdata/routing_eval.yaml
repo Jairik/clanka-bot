@@ -574,6 +574,31 @@ positives:
     - I'm up now, no more whispering
     - I'm awake, end the quiet please
     - I'm awake, quiet time is over
+  notify.phone:
+    # "That" refers to the previous Assistant reply; the handler resolves it
+    # with provenance and refuses a Local-only result.
+    - send that to my phone
+    - send this to my phone
+    - send it to my phone
+    - send that to my phone please
+    - send that to my phone right now
+    - push that to my phone
+    - push this to my phone
+    - send me that on my phone
+    - send your answer to my phone
+    - send the last answer to my phone
+    - send your last reply to my phone
+    - send that answer to my phone
+    - send this answer to my phone
+    - put that on my phone
+    - copy that to my phone
+    - forward that to my phone
+    - text me that
+    - notify my phone
+    - ping my phone
+    - send me a notification
+    - notify my phone that I'm on my way
+    - send buy milk to my phone
 negatives:
   - what's the capital of France
   - who wrote hamlet
@@ -671,6 +696,18 @@ negatives:
   - good night
   - how many hours until morning
   - set quiet hours
+  # Notification-shaped but not a send request: device settings, questions,
+  # another transport, or another recipient.
+  - what's my phone number
+  - where is my phone
+  - call my phone
+  - text my mom
+  - send an email
+  - notify the team
+  - turn on notifications
+  - put my phone on silent
+  - read my notifications
+  - send that to my laptop
   # Reminder-shaped but not a Fast path request: no message, no time, a
   # statement, or another device's reminder store.
   - remind me to buy milk
@@ -705,6 +742,7 @@ compounds:
   - tell me what voice you use and what time it is
   - set quiet hours from 10 to 7 and set a timer for five minutes
   - do not disturb for two hours and set a timer for five minutes
+  - send that to my phone and set a timer for five minutes
 # Focus cases: the same shared word must reach whatever holds Focus. Each case
 # names the holders present, the phrase's intent, and which holder wins. An
 # empty handled_by means no present holder declares the intent, so the utterance

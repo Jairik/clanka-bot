@@ -8,8 +8,10 @@ import (
 
 	"github.com/Jairik/clanka-bot/assistant/internal/announce"
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
+	"github.com/Jairik/clanka-bot/assistant/internal/lastreply"
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
 	"github.com/Jairik/clanka-bot/assistant/internal/namematch"
+	"github.com/Jairik/clanka-bot/assistant/internal/notify"
 	"github.com/Jairik/clanka-bot/assistant/internal/quiet"
 	"github.com/Jairik/clanka-bot/assistant/internal/ring"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
@@ -77,6 +79,22 @@ type Deps struct {
 	// the Dashboard. The voice Tools read and write it; nil registration is
 	// allowed so the conformance suite can check metadata without a database.
 	Voices *voicelib.Service
+	// Notify sends Notifications to the user's phone through ntfy. A module
+	// that owns a Scheduled alert installs the missed hook from this seam
+	// before recovery, so a recovered missed row is not lost. Nil means no
+	// Notification is delivered.
+	Notify Notifier
+	// LastReply holds the previous Assistant reply and its provenance. A Tool
+	// such as notify.phone resolves "that" from it; a Local-only reply must be
+	// refused rather than forwarded off the Pi. Nil means there is no reply.
+	LastReply *lastreply.Store
+}
+
+// Notifier is the shared Notification seam. The production implementation is
+// internal/notify.Service; tests may supply a fake.
+type Notifier interface {
+	Send(ctx context.Context, n notify.Notification) error
+	NotifyMissed(ctx context.Context, alert notify.MissedAlert)
 }
 
 // SecretResolver is the shared seam a module uses to read a declared secret.

@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
+	"github.com/Jairik/clanka-bot/assistant/internal/notify"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 )
 
@@ -50,6 +51,22 @@ func (m *Module) Register(r *tool.Registry, deps tool.Deps) error {
 	// fires immediately at startup already Rings through the shared engine.
 	if deps.Ring != nil {
 		manager.SetRingEngine(deps.Ring)
+	}
+	// Install the missed Notification hook before Start's recovery: recovery
+	// calls it for an open row left by a crash and for an old overdue Alarm, so
+	// those configured Notifications are not lost at startup.
+	if deps.Notify != nil {
+		notifier := deps.Notify
+		manager.SetMissedHook(func(alert MissedAlert) {
+			notifier.NotifyMissed(context.Background(), notify.MissedAlert{
+				Kind:    alert.Kind,
+				Label:   alert.Label,
+				Reason:  alert.Reason,
+				FiresAt: alert.FiresAt,
+				FiredAt: alert.FiredAt,
+				EndedAt: alert.EndedAt,
+			})
+		})
 	}
 	m.deps = deps
 	m.manager = manager

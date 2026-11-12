@@ -301,10 +301,12 @@ curl -s -X PUT localhost:8081/api/secrets/NTFY_TOKEN \
 ```
 
 Set `notify.url` to the self-hosted base URL with
-`PUT /api/settings/notify.url` (or the config layer). A locally invented token
-is not accepted by ntfy and is never fabricated here. Primary sources:
+`PUT /api/settings/notify.url` (or the config layer). `notify.url` is the
+server root, not a topic URL: JSON publishing posts to that root and carries
+the topic in the body. A locally invented token is not accepted by ntfy and is
+never fabricated here. Primary sources:
 [ntfy publishing](https://docs.ntfy.sh/publish/) (topic as password, JSON
-publish, Bearer tokens) and
+publish at the root URL, Bearer tokens) and
 [access control](https://docs.ntfy.sh/config/#access-control) (server-issued
 tokens via `ntfy token add` / `auth-tokens`).
 

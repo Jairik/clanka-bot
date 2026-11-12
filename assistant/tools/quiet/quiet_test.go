@@ -200,6 +200,7 @@ func TestExtractOffDNDAwake(t *testing.T) {
 	for _, utterance := range []string{
 		"set quiet hours from 10 to 7",
 		"turn off the lights",
+		"turn off the quiet music",
 		"do not disturb for two hours",
 	} {
 		if _, ok := off.Extract(utterance); ok {
@@ -223,6 +224,7 @@ func TestExtractOffDNDAwake(t *testing.T) {
 		"do not disturb me",
 		"quiet hours from 10 to 7",
 		"set a timer for two hours",
+		"give me a timer for five minutes",
 	} {
 		if _, ok := dnd.Extract(utterance); ok {
 			t.Errorf("dnd Extract(%q) matched", utterance)

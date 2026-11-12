@@ -335,7 +335,12 @@ func extractOff(text string) (OffIn, bool) {
 	if _, _, ok := parseWindow(text); ok {
 		return OffIn{}, false
 	}
-	if !strings.Contains(lower, "quiet") {
+	// Require the Quiet schedule, not any phrase containing "quiet" (for
+	// example "turn off the quiet music" must stay an audio request).
+	if !strings.Contains(lower, "quiet hours") &&
+		!strings.Contains(lower, "quiet window") &&
+		!strings.Contains(lower, "quiet schedule") &&
+		!strings.Contains(lower, "quiet time") {
 		return OffIn{}, false
 	}
 	verbs := []string{
@@ -365,10 +370,16 @@ func extractDND(text string) (DNDIn, bool) {
 	}
 	triggered := false
 	for _, trigger := range triggers {
-		if strings.Contains(lower, trigger) {
-			triggered = true
-			break
+		if !strings.Contains(lower, trigger) {
+			continue
 		}
+		// "give me" is only a DND cue when it asks for quiet, so "give me a
+		// timer for five minutes" cannot become a do-not-disturb period.
+		if trigger == "give me" && !strings.Contains(lower, "quiet") {
+			continue
+		}
+		triggered = true
+		break
 	}
 	if !triggered {
 		return DNDIn{}, false

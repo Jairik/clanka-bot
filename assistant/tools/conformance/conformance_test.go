@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 )
 
@@ -170,6 +171,37 @@ func TestMisroutedExampleFails(t *testing.T) {
 	}
 	wantProblem(t, problems, "must route to its own Tool")
 }
+
+// TestBadIntentDeclarationFails proves the module contract rejects an intent
+// outside the fixed vocabulary and a repeated declaration.
+func TestBadIntentDeclarationFails(t *testing.T) {
+	module := intentStub{
+		stubModule: stubModule{
+			name: "conformance_bad_intents",
+			register: func(r *tool.Registry) error {
+				return tool.Add(r, tool.Tool[struct{}, struct{}]{
+					Name:        "conformance.bad_intents",
+					Description: "A Tool with malformed Focus metadata.",
+					Permission:  tool.PermissionRead,
+					LocalOnly:   tool.LocalOnlyNo,
+					Handler:     func(context.Context, struct{}) (struct{}, error) { return struct{}{}, nil },
+				})
+			},
+		},
+		intents: []focus.Intent{"stopp", focus.Stop, focus.Stop},
+	}
+	problems := inspect(module).problems
+	wantProblem(t, problems, `Intents[0] "stopp" is not a Focus intent`)
+	wantProblem(t, problems, `Intents repeats "stop"`)
+}
+
+// intentStub is a stub module that opts into the optional Focus declaration.
+type intentStub struct {
+	stubModule
+	intents []focus.Intent
+}
+
+func (m intentStub) Intents() []focus.Intent { return m.intents }
 
 func wantProblem(t *testing.T, problems []string, want string) {
 	t.Helper()

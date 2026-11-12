@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/agent"
+	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/latency"
 	"github.com/Jairik/clanka-bot/assistant/internal/phrase"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
@@ -19,6 +20,10 @@ import (
 
 // PlaceholderReply is returned when no path exists yet for a transcript.
 const PlaceholderReply = "I don't know how to do that yet."
+
+// reasonNoFocus reports a shared Control phrase that no Focus holder took, so
+// it fell through to the semantic Fast path.
+const reasonNoFocus = "no_focus"
 
 // AgentRunner is the Agent path as the pipeline sees it. The method set is
 // kept small so routing work (#19) can swap in a stub.
@@ -100,6 +105,13 @@ func WithConfirmationResolver(resolver ConfirmationResolver) Option {
 	return func(p *Pipeline) { p.confirmation = resolver }
 }
 
+// WithFocus enables shared Control-phrase intents. A phrase mapped to an
+// intent is offered to whatever holds Focus; when nothing does, the utterance
+// falls through to the semantic Fast path like any other request.
+func WithFocus(registry *focus.Registry) Option {
+	return func(p *Pipeline) { p.focus = registry }
+}
+
 // DropPending discards a waiting Confirmation. Barge-in (#25) calls it when
 // the wake word interrupts a reply so a stale yes cannot run later.
 func (p *Pipeline) DropPending() (tool.PendingConfirmation, bool) {
@@ -121,10 +133,13 @@ type Pipeline struct {
 	semantic *SemanticRouter
 
 	confirmation ConfirmationResolver
+	focus        *focus.Registry
 }
 
 // New builds a pipeline and rejects a Control phrase table that points at
-// unknown Tools or Tools without a Speak renderer.
+// unknown Tools, Tools without a Speak renderer, or unknown Focus intents. A
+// phrase value without a dot names one of the fixed intents; a canonical
+// "module.tool" value names one Tool.
 func New(reg *tool.Registry, phrases map[string]string, logger *slog.Logger, opts ...Option) (*Pipeline, error) {
 	if reg == nil {
 		return nil, fmt.Errorf("pipeline: registry is required")
@@ -138,20 +153,31 @@ func New(reg *tool.Registry, phrases map[string]string, logger *slog.Logger, opt
 		if key == "" {
 			return nil, fmt.Errorf("pipeline: control phrase %q is empty", phrase)
 		}
-		if prev, exists := normalized[key]; exists && prev != name {
-			return nil, fmt.Errorf("pipeline: control phrase %q maps to both %q and %q", phrase, prev, name)
+		target := strings.TrimSpace(name)
+		if target == "" {
+			return nil, fmt.Errorf("pipeline: control phrase %q has no target", phrase)
 		}
-		info, ok := reg.Info(name)
+		if prev, exists := normalized[key]; exists && prev != target {
+			return nil, fmt.Errorf("pipeline: control phrase %q maps to both %q and %q", phrase, prev, target)
+		}
+		if focus.IsIntentTarget(target) {
+			if _, ok := focus.ParseIntent(target); !ok {
+				return nil, fmt.Errorf("pipeline: control phrase %q points at unknown intent %q", phrase, target)
+			}
+			normalized[key] = target
+			continue
+		}
+		info, ok := reg.Info(target)
 		if !ok {
-			return nil, fmt.Errorf("pipeline: control phrase %q points at unknown tool %q", phrase, name)
+			return nil, fmt.Errorf("pipeline: control phrase %q points at unknown tool %q", phrase, target)
 		}
 		if !info.HasSpeak {
-			return nil, fmt.Errorf("pipeline: control phrase %q points at %q, which has no Speak renderer", phrase, name)
+			return nil, fmt.Errorf("pipeline: control phrase %q points at %q, which has no Speak renderer", phrase, target)
 		}
 		if info.Permission == tool.PermissionConfirm {
-			return nil, fmt.Errorf("pipeline: control phrase %q points at confirm tool %q", phrase, name)
+			return nil, fmt.Errorf("pipeline: control phrase %q points at confirm tool %q", phrase, target)
 		}
-		normalized[key] = name
+		normalized[key] = target
 	}
 	p := &Pipeline{registry: reg, phrases: normalized, logger: logger}
 	for _, opt := range opts {
@@ -257,14 +283,30 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 		return reply
 	}
 
-	// 3. Control phrase is an exact match and must not wait on embeddings.
-	if name, ok := p.phrases[normalized]; ok {
-		markRouting()
-		record.reason = ""
-		reply.Path = tool.PathControlPhrase
-		reply.Tool = name
-		reply.Text, record.failure, reply.Pending = p.callTool(ctx, req, transcript, name, tool.PathControlPhrase, nil)
-		return reply
+	// 3. Control phrase is an exact match and must not wait on embeddings. A
+	// phrase may name one Tool, or a shared Focus intent that acts on whatever
+	// currently holds Focus. With nothing in Focus the intent falls through to
+	// the semantic Fast path below, exactly like an unmatched utterance.
+	if target, ok := p.phrases[normalized]; ok {
+		if focus.IsIntentTarget(target) {
+			intent, _ := focus.ParseIntent(target)
+			if text, handled := p.focusIntent(ctx, intent); handled {
+				markRouting()
+				record.reason = ""
+				reply.Path = tool.PathFocusIntent
+				reply.Text = text
+				return reply
+			}
+			// Keep the honest reason unless the semantic router replaces it.
+			record.reason = reasonNoFocus
+		} else {
+			markRouting()
+			record.reason = ""
+			reply.Path = tool.PathControlPhrase
+			reply.Tool = target
+			reply.Text, record.failure, reply.Pending = p.callTool(ctx, req, transcript, target, tool.PathControlPhrase, nil)
+			return reply
+		}
 	}
 
 	// 4. Semantic match, then extraction, then the Fast path.
@@ -296,6 +338,15 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 		record.reason = reasonSemanticNoMatch
 	}
 	return reply
+}
+
+// focusIntent offers one shared intent to whatever holds Focus. It reports
+// false when the seam is absent or no holder handles the intent.
+func (p *Pipeline) focusIntent(ctx context.Context, intent focus.Intent) (string, bool) {
+	if p.focus == nil {
+		return "", false
+	}
+	return p.focus.HandleIntent(ctx, intent)
 }
 
 func (p *Pipeline) callAgent(ctx context.Context, req tool.Request, transcript string, events Events, reply *Reply) {

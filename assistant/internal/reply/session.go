@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/latency"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	"github.com/Jairik/clanka-bot/assistant/internal/speech"
@@ -50,6 +51,7 @@ type Session struct {
 	filler        *speech.Filler
 	logger        *slog.Logger
 	announcements Announcer
+	focus         *focus.Registry
 }
 
 // Option configures a Session.
@@ -69,6 +71,12 @@ func WithLogger(logger *slog.Logger) Option {
 // Confirmation.
 func WithAnnouncements(a Announcer) Option {
 	return func(s *Session) { s.announcements = a }
+}
+
+// WithFocus makes a reply turn take Focus while it speaks, so a shared "stop"
+// cancels the original model stream and playback instead of the stop request.
+func WithFocus(registry *focus.Registry) Option {
+	return func(s *Session) { s.focus = registry }
 }
 
 // New builds a session. A nil speaker leaves replies text-only.
@@ -113,6 +121,13 @@ func (s *Session) ask(ctx context.Context, req tool.Request, transcript string, 
 		return reply, nil
 	}
 
+	// The turn gets its own cancellable context so a shared "stop" can abandon
+	// the original model stream and playback without touching the stop request.
+	turnCtx, cancelTurn := context.WithCancel(ctx)
+	defer cancelTurn()
+	claimFocus, releaseFocus := s.focusClaim(turnCtx, cancelTurn)
+	defer releaseFocus()
+
 	// The request has one sound slot. The Agent path cue, the slow-reply cue
 	// and the first actual reply PCM race for it; text alone does not claim it,
 	// because TTS may still be silent after the first delta (#25/S4).
@@ -126,7 +141,7 @@ func (s *Session) ask(ctx context.Context, req tool.Request, transcript string, 
 		return false
 	}
 
-	player := newPlayer(ctx, s.speaker, s.sink, func() { firstSound() })
+	player := newPlayer(turnCtx, s.speaker, s.sink, func() { firstSound() })
 	chunker := speech.NewChunker()
 	var prefix string
 	streamed := 0
@@ -135,18 +150,23 @@ func (s *Session) ask(ctx context.Context, req tool.Request, transcript string, 
 		// The path is known before the model call, so the cached phrase is heard
 		// while the first tokens are still pending.
 		AgentPath: func() {
+			// The model is about to run: this turn is now the current reply.
+			claimFocus()
 			if s.filler == nil || s.sink == nil || !firstSound() {
 				return
 			}
 			player.play(item{filler: s.filler})
 		},
-		// A dropped Confirmation's "Cancelled." is spoken before any answer.
+		// A dropped Confirmation's "Cancelled." is spoken before any answer. It
+		// deliberately does not claim Focus: this turn has not routed yet, so a
+		// shared "stop" must still reach the reply it interrupted.
 		Prefix: func(text string) {
 			prefix = text
 			firstSound()
 			player.play(item{text: text})
 		},
 		Delta: func(delta string) {
+			claimFocus()
 			for _, chunk := range chunker.Write(delta) {
 				// Do not claim the sound slot here: the reply counts as heard
 				// when its first PCM reaches the sink, not when text arrives.
@@ -156,8 +176,8 @@ func (s *Session) ask(ctx context.Context, req tool.Request, transcript string, 
 		},
 	}
 
-	stopCue := s.cueSlowReply(player, from, firstSound, claimedCh)
-	reply := s.pipeline.HandleEvents(ctx, req, transcript, events)
+	stopCue := s.cueSlowReply(player, from, firstSound, claimedCh, claimFocus)
+	reply := s.pipeline.HandleEvents(turnCtx, req, transcript, events)
 	if rest := chunker.Flush(); rest != "" {
 		player.play(item{text: rest})
 		streamed++
@@ -172,6 +192,7 @@ func (s *Session) ask(ctx context.Context, req tool.Request, transcript string, 
 			text = strings.TrimSpace(strings.TrimPrefix(text, prefix))
 		}
 		if text != "" {
+			claimFocus()
 			player.play(item{text: text})
 		}
 	}
@@ -182,6 +203,63 @@ func (s *Session) ask(ctx context.Context, req tool.Request, transcript string, 
 	stopCue()
 	s.complete(ctx, err)
 	return reply, err
+}
+
+// replyHolder is the current reply's Focus holder. It handles only "stop":
+// generation and playback cannot be paused and resumed. HandleIntent cancels
+// the turn's own context, which abandons the model stream and TTS together.
+type replyHolder struct {
+	cancel context.CancelFunc
+	done   atomic.Bool
+}
+
+func (h *replyHolder) Intents() []focus.Intent { return []focus.Intent{focus.Stop} }
+
+func (h *replyHolder) HandleIntent(_ context.Context, intent focus.Intent) (string, bool) {
+	if intent != focus.Stop || !h.done.CompareAndSwap(false, true) {
+		return "", false
+	}
+	h.cancel()
+	return "", true
+}
+
+// focusClaim returns the lazy claim and release pair for one turn. The claim is
+// made only when the turn produces output, never at turn start: a request that
+// routes a shared "stop" must still see the reply it interrupted. Release is
+// token-checked by focus.Registry, so a late turn cannot clear a newer holder.
+func (s *Session) focusClaim(turnCtx context.Context, cancel context.CancelFunc) (claim func(), release func()) {
+	if s.focus == nil {
+		return func() {}, func() {}
+	}
+	var mu sync.Mutex
+	var holder *replyHolder
+	var current *focus.Claim
+	claim = func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if current != nil || turnCtx.Err() != nil {
+			// A cancelled turn has nothing left to stop, so it must not take
+			// Focus from the holder that replaced it.
+			return
+		}
+		holder = &replyHolder{cancel: cancel}
+		current = s.focus.Claim(focus.Reply, holder)
+	}
+	release = func() {
+		mu.Lock()
+		owned := current
+		stopped := holder
+		current = nil
+		holder = nil
+		mu.Unlock()
+		if stopped != nil {
+			// Mark the holder finished before releasing it, so a racing intent
+			// declines instead of cancelling an already-finished turn.
+			stopped.done.Store(true)
+		}
+		owned.Release()
+	}
+	return claim, release
 }
 
 // complete writes the one request log line for this turn, if the caller
@@ -220,7 +298,7 @@ func isCancellation(ctx context.Context, err error) bool {
 // cueSlowReply plays the one Filler when no reply audio has started by
 // FillerAfter, measured from the endpointer. The returned stop function must run
 // before the session returns; it waits for the cue goroutine to exit.
-func (s *Session) cueSlowReply(player *player, from time.Time, claim func() bool, claimed <-chan struct{}) func() {
+func (s *Session) cueSlowReply(player *player, from time.Time, claim func() bool, claimed <-chan struct{}, focusClaim func()) func() {
 	if s.filler == nil || s.sink == nil {
 		return func() {}
 	}
@@ -240,6 +318,9 @@ func (s *Session) cueSlowReply(player *player, from time.Time, claim func() bool
 			// item that is still in TTS synthesis: SerialSink makes a reply
 			// that starts meanwhile wait for this short phrase, so the two
 			// never overlap.
+			// A slow reply is still the current reply: a shared "stop" can
+			// cancel this cue and the model call behind it.
+			focusClaim()
 			if s.filler != nil && s.sink != nil && claim() {
 				if err := s.filler.Play(player.ctx, s.sink); err != nil && player.ctx.Err() == nil {
 					s.logger.Warn("reply: filler", "error", err.Error())

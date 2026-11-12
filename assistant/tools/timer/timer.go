@@ -9,8 +9,10 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/parse"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 )
@@ -24,6 +26,17 @@ const (
 
 // AlertText is spoken when a timer fires. It reuses the reply Speaker.
 const AlertText = "Your timer is done."
+
+// StopText and CancelText are spoken by the reply turn that stops a ringing
+// alert; the alert itself is cancelled rather than spoken over.
+const (
+	StopText   = "Timer stopped."
+	CancelText = "Timer cancelled."
+)
+
+// alertIntents is the fixed set a ringing timer alert handles. A Timer's
+// "snooze" is #52 Ring behaviour, so it is deliberately absent here.
+func alertIntents() []focus.Intent { return []focus.Intent{focus.Stop, focus.Cancel} }
 
 // alertTimeout bounds one alert so a stuck TTS service cannot leak a goroutine.
 const alertTimeout = 30 * time.Second
@@ -48,6 +61,7 @@ type Manager struct {
 	say       func(ctx context.Context, text string) error
 	logger    *slog.Logger
 	alertText string
+	focus     *focus.Registry
 	seq       int
 	entries   map[string]*entry
 }
@@ -72,6 +86,41 @@ func NewManagerText(now func() time.Time, say func(ctx context.Context, text str
 	return &Manager{now: now, say: say, logger: logger, alertText: alertText, entries: make(map[string]*entry)}
 }
 
+// WithFocus makes a ringing alert hold Focus, so a shared "stop" or "cancel"
+// reaches the alert instead of the current reply or music. It returns the
+// manager so a module can wire it in one line.
+func (m *Manager) WithFocus(registry *focus.Registry) *Manager {
+	m.mu.Lock()
+	m.focus = registry
+	m.mu.Unlock()
+	return m
+}
+
+// alertHolder is the ringing alert's Focus holder. It handles stop and cancel
+// by cancelling the alert's speech context; the stop turn says the line.
+type alertHolder struct {
+	cancel context.CancelFunc
+	done   atomic.Bool
+}
+
+func (h *alertHolder) Intents() []focus.Intent { return alertIntents() }
+
+func (h *alertHolder) HandleIntent(_ context.Context, intent focus.Intent) (string, bool) {
+	switch intent {
+	case focus.Stop, focus.Cancel:
+	default:
+		return "", false
+	}
+	if !h.done.CompareAndSwap(false, true) {
+		return "", false
+	}
+	h.cancel()
+	if intent == focus.Cancel {
+		return CancelText, true
+	}
+	return StopText, true
+}
+
 // Set starts a timer and returns it.
 func (m *Manager) Set(d time.Duration) Timer {
 	m.mu.Lock()
@@ -93,7 +142,8 @@ func (m *Manager) Set(d time.Duration) Timer {
 	return t
 }
 
-// fire removes the timer and speaks its alert.
+// fire removes the timer and speaks its alert. While the alert sounds it holds
+// Focus at Ring priority, so "stop" or "cancel" reaches it first.
 func (m *Manager) fire(id string) {
 	m.mu.Lock()
 	if _, ok := m.entries[id]; !ok {
@@ -102,6 +152,7 @@ func (m *Manager) fire(id string) {
 	}
 	delete(m.entries, id)
 	say := m.say
+	focusRegistry := m.focus
 	m.mu.Unlock()
 
 	m.logger.Info("timer fired", "timer_id", id)
@@ -111,7 +162,17 @@ func (m *Manager) fire(id string) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), alertTimeout)
 	defer cancel()
-	if err := say(ctx, m.alertText); err != nil {
+	if focusRegistry != nil {
+		holder := &alertHolder{cancel: cancel}
+		claim := focusRegistry.Claim(focus.Ring, holder)
+		defer func() {
+			// Finish before releasing so a racing intent declines rather than
+			// cancelling a finished alert.
+			holder.done.Store(true)
+			claim.Release()
+		}()
+	}
+	if err := say(ctx, m.alertText); err != nil && ctx.Err() == nil {
 		m.logger.Error("timer alert", "timer_id", id, "error", err.Error())
 	}
 }
@@ -235,6 +296,7 @@ func NewCancel(m *Manager) tool.Tool[CancelIn, CancelOut] {
 			"cancel my timer",
 			"stop the timer",
 			"cancel it",
+			"cancel",
 		},
 		Extract: func(string) (CancelIn, bool) { return CancelIn{}, true },
 	}

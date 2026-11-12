@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/announce"
+	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
 	"gopkg.in/yaml.v3"
@@ -35,6 +36,10 @@ type Deps struct {
 	// Announcements queues speech the user did not just ask for. A ringing
 	// Timer or Alarm is not an Announcement; nil drops it.
 	Announcements *announce.Queue
+	// Focus routes shared Control-phrase intents to the holder at each
+	// priority. A module that can hold Focus claims here; nil means the module
+	// still works but a shared phrase cannot reach it.
+	Focus *focus.Registry
 }
 
 // SecretResolver is the shared seam a module uses to read a declared secret.
@@ -79,6 +84,14 @@ type HealthChecker interface {
 // value wins. Modules that need no secret omit this interface.
 type SecretDeclarer interface {
 	RequiredSecrets() []string
+}
+
+// IntentDeclarer is a Module's optional declaration of the shared Focus
+// intents it handles when it holds Focus. A module that never takes Focus
+// omits this interface. The declaration is static; the holder a module claims
+// at runtime declares the same set.
+type IntentDeclarer interface {
+	Intents() []focus.Intent
 }
 
 // SecretNames collects every secret declared by the modules, in module order,

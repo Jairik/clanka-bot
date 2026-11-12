@@ -107,7 +107,8 @@ docker compose -p clanka-routing-eval \
 
 The test prints one `ROUTING_EVAL_TOOL` line per Tool with TP, Control-phrase
 TP, semantic TP, FP, FN, precision and recall, then
-`ROUTING_EVAL_COMPOUNDS`, `ROUTING_EVAL_NEGATIVES`, `ROUTING_EVAL_TOTAL` and
+`ROUTING_EVAL_COMPOUNDS`, `ROUTING_EVAL_NEGATIVES`, `ROUTING_EVAL_FOCUS`,
+`ROUTING_EVAL_FOCUS_TOTAL`, `ROUTING_EVAL_TOTAL` and
 `ROUTING_EVAL_BASELINE`. It fails if any Tool is below the precision floor,
 made no predictions, was only ever right through a Control phrase, or if the
 overall result is below the Map 1 baseline. The harness allows a 10s embed
@@ -133,19 +134,25 @@ above the 0.95 precision floor. Run against
 | `date.today` | 20 | 18 | 0 | 18 | 0 | 2 | 1.00 | 0.90 |
 | `weather.current` | 20 | 11 | 4 | 7 | 0 | 9 | 1.00 | 0.55 |
 | `audio.volume_set` | 20 | 15 | 1 | 14 | 0 | 5 | 1.00 | 0.75 |
-| `audio.stop` | 20 | 9 | 2 | 7 | 0 | 11 | 1.00 | 0.45 |
+| `audio.stop` | 20 | 10 | 0 | 10 | 0 | 10 | 1.00 | 0.50 |
 | `timer.set` | 22 | 10 | 0 | 10 | 0 | 12 | 1.00 | 0.4545 |
-| `timer.cancel` | 20 | 15 | 1 | 14 | 0 | 5 | 1.00 | 0.75 |
+| `timer.cancel` | 20 | 15 | 0 | 15 | 0 | 5 | 1.00 | 0.75 |
 | `timer.list` | 20 | 5 | 0 | 5 | 0 | 15 | 1.00 | 0.25 |
-| **Total** | **162** | **96** | **13** | **83** | **0** | **66** | **1.00** | **0.5926** |
+| **Total** | **162** | **97** | **10** | **87** | **0** | **65** | **1.00** | **0.5988** |
 
-These are the numbers after the #34 fix in the final fix pass. The router now
-trims trailing sentence punctuation and collapses whitespace before embedding,
-so the two observed STT forms (`Set a timer for ten minutes.`,
-`Set a timer for ten seconds.`) pass; `timer.set` TP rose from 8 to 10 and
-recall from 0.40 to 0.4545 without changing threshold or margin. The raw
+These are the numbers after the #34 fix in the final fix pass, updated for #44.
+The router now trims trailing sentence punctuation and collapses whitespace
+before embedding, so the two observed STT forms
+(`Set a timer for ten minutes.`, `Set a timer for ten seconds.`) pass;
+`timer.set` TP rose from 8 to 10 and recall from 0.40 to 0.4545 without
+changing threshold or margin. #44 moved the `stop`, `pause` and `cancel` Control
+phrases to shared Focus intents and added `audio.stop`/`timer.cancel` Examples
+for the bare words; with no holder those phrases now reach the same Tools
+through the semantic router, so TP rose to 97 and recall to 0.5988 while the
+per-Tool precision floor and the Map 1 baseline gate stayed unchanged. The raw
 `ROUTING_EVAL_*` lines are in
-[`prototype-run/routing-eval-after-fixes.txt`](prototype-run/routing-eval-after-fixes.txt).
+[`prototype-run/routing-eval-after-fixes.txt`](prototype-run/routing-eval-after-fixes.txt)
+for the pre-#44 run.
 
 Plain negatives: **0 of 48** reached the Fast path. Compounds: **0 of 8**
 reached the Fast path. Every Tool was exercised by the semantic router at
@@ -153,6 +160,21 @@ least five times, so no Tool cleared the floor only because the Control phrase
 table happened to cover its positives. The timer and list confusions are the
 main reason recall is conservative; those requests go to the Agent path rather
 than risking a wrong timer action.
+
+### Focus cases
+
+The `focus:` section in `routing_eval.yaml` is a separate oracle for the shared
+Control phrases (#44). Each case names the holders present (`ring`, `reply`,
+`music`), the phrase's intent, and the holder that must take it, or an empty
+`handled_by` when no present holder declares the intent and the utterance must
+fall through. The same word appears under different holders — `stop` with a
+ringing alert, with a reply, with music, and with nothing — so a regression that
+always picks one holder or always falls through fails. The offline fixture test
+checks the priority walk and the shipped phrase table; the real-MiniLM run also
+checks that a fall-through still reaches the semantic Fast path. Holder
+capabilities in the fixture mirror the production declarations: a ringing alert
+handles `stop`/`cancel`, the current reply handles `stop`, and music handles the
+transport controls.
 
 For comparison, the old placeholders (`0.70` / `0.08`) scored overall precision
 0.985 and recall 0.79, but missed the floor where it matters: `time.now` at

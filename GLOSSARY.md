@@ -46,6 +46,10 @@ _Avoid_: Escape phrase, override
 The activity a shared Control phrase such as "stop" or "pause" acts on: a ringing Scheduled alert first, then the Assistant's current reply, then playing music.
 _Avoid_: Active context, target, foreground
 
+**Focus intent**:
+One of the fixed shared Control-phrase actions — `stop`, `pause`, `resume`, `next`, `cancel`, `snooze` — that goes to whatever holds Focus instead of to one named Tool.
+_Avoid_: Command, action, gesture
+
 **Hermes request**:
 An utterance that starts with the prefix "ask Hermes", which sends the request straight to Hermes as a Hermes job, skipping the Agent path.
 _Avoid_: Hermes route, tier 3 request

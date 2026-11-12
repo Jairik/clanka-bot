@@ -78,6 +78,30 @@ returns the stored value first and the `.env` bootstrap second. Never put the
 value in `config.yaml`, a setting, a log line or an error; the secrets API lists
 the declared name with only `set`, `last4`, `updated_at` and `source`.
 
+### If the Tool can hold Focus
+
+A shared Control phrase (`stop`, `pause`, `resume`, `next`, `cancel`, `snooze`)
+goes to whatever holds Focus, in this fixed order: a ringing Scheduled alert,
+then the current reply, then music. A module that can be one of those holders
+declares the intents it handles and claims Focus only while it is active:
+
+```go
+// Intents lists what this module handles while it holds Focus.
+func (*Module) Intents() []focus.Intent { return []focus.Intent{focus.Stop} }
+
+// Claim at the matching priority while the activity runs; release when it ends.
+claim := deps.Focus.Claim(focus.Music, holder)
+defer claim.Release()
+```
+
+The holder implements `focus.Holder`: `Intents()` returns the same set, and
+`HandleIntent` acts and returns optional spoken text. Claiming with a token
+means a late turn cannot clear a newer holder. Do not claim at turn start for a
+request that may route a shared phrase: the phrase must still reach the holder
+it is meant to stop. `tool.IntentDeclarer` is the static module declaration; the
+conformance suite checks every intent is in the fixed vocabulary. A module that
+never takes Focus omits both.
+
 ## 4. Choose the Permission level
 
 | Permission | Use when | Fast path |

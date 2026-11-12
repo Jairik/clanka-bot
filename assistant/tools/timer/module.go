@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"gopkg.in/yaml.v3"
 )
@@ -35,6 +36,10 @@ func NewModule() *Module { return &Module{cfg: DefaultConfig()} }
 // Name is the module name and config section suffix.
 func (*Module) Name() string { return "timer" }
 
+// Intents declares the shared Focus intents a ringing timer alert handles.
+// The alert is not a Ring yet (#52), but "stop" and "cancel" already reach it.
+func (*Module) Intents() []focus.Intent { return alertIntents() }
+
 // Configure decodes tools.timer over the code defaults.
 func (m *Module) Configure(section *yaml.Node) error {
 	cfg := DefaultConfig()
@@ -56,5 +61,9 @@ func (m *Module) Register(r *tool.Registry, deps tool.Deps) error {
 	if deps.Speaker != nil {
 		say = deps.Speaker.SayText
 	}
-	return Register(r, NewManagerText(deps.Clock, say, deps.Logger, m.cfg.AlertText))
+	manager := NewManagerText(deps.Clock, say, deps.Logger, m.cfg.AlertText)
+	if deps.Focus != nil {
+		manager = manager.WithFocus(deps.Focus)
+	}
+	return Register(r, manager)
 }

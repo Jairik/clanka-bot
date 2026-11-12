@@ -129,8 +129,11 @@ curl -s -X POST localhost:8081/debug/transcript \
 
 Timers speak an alert through the same TTS voice when they fire. The Control
 phrases `stop`, `pause`, `cancel` and `louder` are matched exactly, so they
-answer without waiting on the embed service (`cancel` cancels the timer and
-`louder` steps the volume up).
+answer without waiting on the embed service. `stop`, `pause` and `cancel` are
+shared Focus intents: they act on a ringing Timer alert first, then the current
+reply, then playing music. With nothing in Focus they fall through to the
+semantic Fast path, so `cancel` still reaches `timer.cancel` and `louder` still
+steps the volume up.
 
 Speech the Assistant starts without being asked (a Reminder, a finished Hermes
 job) goes through one Announcement queue. It waits for the current reply to

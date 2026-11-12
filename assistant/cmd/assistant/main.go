@@ -22,6 +22,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/config"
 	"github.com/Jairik/clanka-bot/assistant/internal/dashboard"
 	"github.com/Jairik/clanka-bot/assistant/internal/embed"
+	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	"github.com/Jairik/clanka-bot/assistant/internal/reply"
@@ -147,6 +148,12 @@ func run() error {
 		defer announcements.Close()
 	}
 
+	// One Focus registry routes the shared Control phrases to a ringing alert,
+	// the current reply or music, in that fixed order. It is shared by the
+	// pipeline (routing), the reply session (the current reply) and the Tool
+	// modules that can hold Focus.
+	focusRegistry := focus.New()
+
 	// One module list owns Tool wiring; each module reads its tools.<name>
 	// section and falls back to code defaults.
 	deps := tool.Deps{
@@ -156,6 +163,7 @@ func run() error {
 		Store:         st,
 		Secrets:       secretsSvc,
 		Announcements: announcements,
+		Focus:         focusRegistry,
 	}
 	if speechSpeaker != nil {
 		deps.Speaker = speechSpeaker
@@ -227,6 +235,9 @@ func run() error {
 		pipeline.WithHistory(agentPath.History()),
 		// Spoken Confirmation for confirm Tools, enforced by the registry.
 		pipeline.WithConfirmationResolver(pipeline.NewConfirmation(registry, logger)),
+		// Shared Control phrases reach whatever holds Focus; with nothing in
+		// Focus they fall through to the semantic Fast path.
+		pipeline.WithFocus(focusRegistry),
 	}
 	// Compute Tool example vectors once; a dead embed service only disables
 	// semantic matching, leaving Control phrases and the Agent path working.
@@ -262,6 +273,9 @@ func run() error {
 		// plays between turns and once a pending Confirmation resolves.
 		sessionOpts = append(sessionOpts, reply.WithAnnouncements(announcements))
 	}
+	// A speaking reply holds Focus, so a shared "stop" cancels its model stream
+	// and playback rather than the stop request itself.
+	sessionOpts = append(sessionOpts, reply.WithFocus(focusRegistry))
 	session := reply.New(p, speaker, playSink, filler, sessionOpts...)
 
 	// The debug entry is only spoken when a TTS service is configured.
@@ -354,6 +368,7 @@ func run() error {
 		"stt_addr", cfg.STT.Addr,
 		"agent_filler", cfg.Agent.Filler,
 		"tools", len(registry.Names()),
+		"focus_intents", toolSet.FocusIntents(),
 		"embed_model", cfg.Embed.Model,
 		"semantic_tools", semantic.ToolCount(),
 		"location_city", currentCity(locSvc),

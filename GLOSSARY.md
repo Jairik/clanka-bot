@@ -74,6 +74,10 @@ _Avoid_: Holding message, stall phrase
 A configurable phrase spoken when the Agent path can't reach its model, so the user knows the request wasn't handled. The Fast path keeps working.
 _Avoid_: Error message, brain-offline line
 
+**Last reply**:
+The most recent completed Assistant answer kept in memory, with the Tool that produced it and whether that result was Local-only. Follow-ups ("say that again", "send that to my phone") read it; a cancelled or blank turn does not replace it.
+_Avoid_: Previous output, last message, say-again buffer
+
 **Name matcher**:
 The one lookup that resolves a spoken library name — a sound, a voice or a Spotify playlist — first by exact or normalised spelling and then by embedding similarity above a threshold. It returns one name or no match, never a forced guess.
 _Avoid_: Fuzzy search, autocomplete

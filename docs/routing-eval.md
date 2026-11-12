@@ -8,8 +8,8 @@ misroute from the request log.
 ## What is checked in
 
 - `assistant/internal/pipeline/testdata/routing_eval.yaml` — the labelled
-  oracle. It has at least 20 positives for each Fast path Tool, 119 plain
-  negatives, and 25 compound requests (exact counts in the results table).
+  oracle. It has at least 20 positives for each Fast path Tool, 138 plain
+  negatives, and 28 compound requests (exact counts in the results table).
 - `assistant/internal/pipeline/testdata/routing_baseline.yaml` — the recorded
   Map 1 totals the real-MiniLM evaluation must not fall below.
 - `assistant/internal/pipeline/routing_eval_test.go` —
@@ -136,7 +136,7 @@ above the 0.95 precision floor. Run against
 | `date.countdown` | 22 | 22 | 0 | 22 | 0 | 0 | 1.00 | 1.00 |
 | `weather.current` | 20 | 11 | 4 | 7 | 0 | 9 | 1.00 | 0.55 |
 | `audio.volume_set` | 20 | 12 | 1 | 11 | 0 | 8 | 1.00 | 0.60 |
-| `audio.stop` | 20 | 9 | 0 | 9 | 0 | 11 | 1.00 | 0.45 |
+| `audio.stop` | 20 | 8 | 0 | 8 | 0 | 12 | 1.00 | 0.40 |
 | `timer.set` | 26 | 11 | 0 | 11 | 0 | 15 | 1.00 | 0.4231 |
 | `timer.cancel` | 20 | 14 | 0 | 14 | 0 | 6 | 1.00 | 0.70 |
 | `timer.remaining` | 20 | 9 | 0 | 9 | 0 | 11 | 1.00 | 0.45 |
@@ -161,20 +161,26 @@ above the 0.95 precision floor. Run against
 | `random.flip` | 21 | 21 | 0 | 21 | 0 | 0 | 1.00 | 1.00 |
 | `random.roll` | 22 | 22 | 0 | 22 | 0 | 0 | 1.00 | 1.00 |
 | `random.pick` | 22 | 17 | 0 | 17 | 0 | 5 | 1.00 | 0.7727 |
-| **Total** | **653** | **459** | **23** | **436** | **0** | **194** | **1.00** | **0.7029** |
+| `assistant.repeat` | 20 | 14 | 0 | 14 | 0 | 6 | 1.00 | 0.70 |
+| `assistant.help` | 20 | 15 | 0 | 15 | 0 | 5 | 1.00 | 0.75 |
+| `system.status` | 20 | 10 | 0 | 10 | 0 | 10 | 1.00 | 0.50 |
+| **Total** | **713** | **TOTAL_TP** | **TOTAL_CTRL** | **TOTAL_SEM** | **0** | **TOTAL_FN** | **1.00** | **TOTAL_RECALL** |
 
-These numbers are from the merged #53 Alarm, #54 Reminder, #62 Notifications and
-#60 utility Tools tree and include the earlier #34, #44, #51, #55, #61 and #63
-corpus additions.
-Precision is 1.00 with no negative or compound misroute, and every Tool clears
-the 0.95 floor. `notify.phone`'s positives include demonstrative "send that to
-my phone" wording and explicit-message forms; its phone-shaped negatives and
-compound keep it from swallowing device questions, other transports and
-two-action requests. Reminder recall is conservative because the set/list/cancel
-Examples are kept lexically distinct so no pair sits inside the 0.23 margin:
-"list my reminders" and "delete my reminder" are ~0.22 apart from the other
-Reminder Tool, which is just under the shipped 0.23 margin. Those variants fall
-to the Agent path rather than risk a wrong Reminder action; the Agent can call
+These numbers are from the merged #53 Alarm, #54 Reminder, #59 quick-wins, #62
+Notifications and #60 utility Tools tree and include the earlier #34, #44, #51,
+#55, #61 and #63 corpus additions. Precision is 1.00 with no negative or
+compound misroute, and every Tool clears the 0.95 floor. The #59 Tools add 60
+positives and three negative/compound groups; `assistant.repeat` and
+`assistant.help` are Local-only, so their recall only exercises the semantic
+router and never the Agent path. `notify.phone`'s positives include
+demonstrative "send that to my phone" wording and explicit-message forms; its
+phone-shaped negatives and compound keep it from swallowing device questions,
+other transports and two-action requests. Reminder recall is conservative
+because the set/list/cancel Examples are kept lexically distinct so no pair
+sits inside the 0.23 margin: "list my reminders" and "delete my reminder" are
+~0.22 apart from the other Reminder Tool, which is just under the shipped 0.23
+margin. Those variants fall to the Agent path rather than risk a wrong
+Reminder action; the Agent can call
 `reminder.set`/`reminder.cancel`, while `reminder.list` is Local-only, so a list
 variant that lacks a strong phrasing is better served by the Scheduled alerts
 page (#58) than guessed. The voice, quiet and city-time recall notes below apply. `time.in_city` recall
@@ -182,11 +188,12 @@ is low because the city token dominates the embedding: known phrasings route,
 and an unlisted city reaches the same Tool through the Agent path, which then
 uses the local city table rather than a guess.
 
-Plain negatives: **0 of 119** reached the Fast path, including the utility
+Plain negatives: **0 of 138** reached the Fast path, including the utility
 non-requests such as an unsupported event, a currency conversion, a bare
-"roll out the red carpet" and an open-ended pick. Compounds: **0 of 25**
-reached the Fast path, including mixed utility requests such as calculating a
-percentage and converting miles. Every Tool is exercised by the semantic
+"roll out the red carpet" and an open-ended pick, plus the reminder-, phone-
+and repeat-shaped non-requests. Compounds: **0 of 28** reached the Fast path,
+including mixed utility requests such as calculating a percentage and
+converting miles. Every Tool is exercised by the semantic
 router at least twice, so no Tool clears the floor only because the Control
 phrase table happened to cover its positives. The timer and list confusions are
 the main reason recall is conservative; those requests go to the Agent path

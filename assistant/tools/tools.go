@@ -8,6 +8,7 @@ import (
 
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/tools/alarm"
+	"github.com/Jairik/clanka-bot/assistant/tools/assistant"
 	"github.com/Jairik/clanka-bot/assistant/tools/audiocontrol"
 	"github.com/Jairik/clanka-bot/assistant/tools/calc"
 	"github.com/Jairik/clanka-bot/assistant/tools/clock"
@@ -15,6 +16,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/tools/quiet"
 	"github.com/Jairik/clanka-bot/assistant/tools/random"
 	"github.com/Jairik/clanka-bot/assistant/tools/reminder"
+	"github.com/Jairik/clanka-bot/assistant/tools/system"
 	"github.com/Jairik/clanka-bot/assistant/tools/timer"
 	"github.com/Jairik/clanka-bot/assistant/tools/units"
 	"github.com/Jairik/clanka-bot/assistant/tools/voice"
@@ -39,6 +41,8 @@ func NewSet() *Set {
 		voice.NewModule(),
 		reminder.NewModule(),
 		notify.NewModule(),
+		assistant.NewModule(),
+		system.NewModule(),
 		calc.NewModule(),
 		units.NewModule(),
 		random.NewModule(),

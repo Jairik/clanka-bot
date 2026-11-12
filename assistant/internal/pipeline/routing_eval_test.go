@@ -29,6 +29,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/tools/alarm"
+	"github.com/Jairik/clanka-bot/assistant/tools/assistant"
 	"github.com/Jairik/clanka-bot/assistant/tools/audiocontrol"
 	"github.com/Jairik/clanka-bot/assistant/tools/calc"
 	"github.com/Jairik/clanka-bot/assistant/tools/clock"
@@ -36,6 +37,7 @@ import (
 	quiettools "github.com/Jairik/clanka-bot/assistant/tools/quiet"
 	"github.com/Jairik/clanka-bot/assistant/tools/random"
 	"github.com/Jairik/clanka-bot/assistant/tools/reminder"
+	"github.com/Jairik/clanka-bot/assistant/tools/system"
 	"github.com/Jairik/clanka-bot/assistant/tools/timer"
 	"github.com/Jairik/clanka-bot/assistant/tools/units"
 	"github.com/Jairik/clanka-bot/assistant/tools/voice"
@@ -70,6 +72,9 @@ var routingEvalTools = []string{
 	reminder.SetName,
 	reminder.ListName,
 	reminder.CancelName,
+	assistant.RepeatName,
+	assistant.HelpName,
+	system.Name,
 	notifytools.Name,
 	calc.Name,
 	units.Name,
@@ -370,6 +375,20 @@ func evalRegistry(t *testing.T) (*tool.Registry, *timer.Manager, *alarm.Manager,
 	reminderModule := reminder.NewModule()
 	if err := reminderModule.Register(reg, tool.Deps{Clock: func() time.Time { return fixed }}); err != nil {
 		t.Fatalf("register reminder: %v", err)
+	}
+	// The self-describing Tools are real; the repeat store is empty and the
+	// status seam is deterministic so the corpus never opens a socket.
+	if err := assistant.NewModule().Register(reg, tool.Deps{LastReply: lastreply.New()}); err != nil {
+		t.Fatalf("register assistant: %v", err)
+	}
+	if err := system.NewModule().Register(reg, tool.Deps{Status: func(context.Context) tool.StatusReport {
+		return tool.StatusReport{
+			Services: []tool.StatusCheck{{Name: "embed", State: tool.StatusOK}},
+			Location: tool.StatusCheck{Name: "location", State: tool.StatusOK},
+			Modules:  []tool.StatusCheck{{Name: "weather", State: tool.StatusOK}},
+		}
+	}}); err != nil {
+		t.Fatalf("register system: %v", err)
 	}
 	// notify.phone executes the real handler for its positives. A fake ntfy
 	// server keeps every publish local and the topic in memory.

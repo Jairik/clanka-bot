@@ -88,11 +88,16 @@ forms; no page edit is needed.
 
 `tool.Deps.Notify` is the one ntfy service (`Send` and `NotifyMissed`); do not
 build a second HTTP client, and do not put the topic or token in a setting or a
-log line. `tool.Deps.LastReply` returns the previous reply with its `Tool`,
-`Path` and `LocalOnly` provenance, so "send that to my phone" can resolve
-"that" without persisting private text. Any Tool that leaves the Pi must refuse
-a reply whose `LocalOnly` is true; the declared privacy of another Tool is not
-overridable by a follow-up. A Scheduled-alert module installs
+log line. `tool.Deps.LastReply` returns the previous completed reply with its `Tool`,
+`Path` and `LocalOnly` provenance, so "say that again" or "send that to my
+phone" can resolve it without persisting private text. `pipeline.WithLastReply`
+fills it after every completed turn; a blank or cancelled turn leaves the
+previous record alone. Any Tool that leaves the Pi must refuse a reply whose
+`LocalOnly` is true; the declared privacy of another Tool is not overridable by
+a follow-up. If the follow-up Tool itself could turn a Local-only result into
+model-visible output, declare that Tool `LocalOnlyYes`; that is the explicit
+safe choice `assistant.repeat` and `assistant.help` make. A Scheduled-alert
+module installs
 `deps.Notify.NotifyMissed` before its recovery runs, so a missed row recovered
 at startup is not lost.
 
@@ -119,6 +124,16 @@ request that may route a shared phrase: the phrase must still reach the holder
 it is meant to stop. `tool.IntentDeclarer` is the static module declaration; the
 conformance suite checks every intent is in the fixed vocabulary. A module that
 never takes Focus omits both.
+
+### If the Tool reports system health
+
+`tool.Deps.Status` returns the one bounded `tool.StatusReport` built by
+`internal/status`: Compose service checks, the location check and every Tool
+module's optional `Health`. It is the same snapshot the Dashboard Health page
+renders, so the two can never disagree. Call it per request, keep the spoken
+answer to the check names and states, and do not put free-text details in a
+model-visible `Out`; `system.status` is the reference implementation. A nil
+seam must fail clearly rather than claim everything is fine.
 
 ### If the Tool recovers persisted state
 

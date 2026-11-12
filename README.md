@@ -125,6 +125,14 @@ curl -s -X POST localhost:8081/debug/transcript \
   -H 'Content-Type: application/json' -d '{"text":"how long is left on my timer"}'
 curl -s -X POST localhost:8081/debug/transcript \
   -H 'Content-Type: application/json' -d '{"text":"turn the volume to 40"}'
+curl -s -X POST localhost:8081/debug/transcript \
+  -H 'Content-Type: application/json' -d '{"text":"say that again"}'
+curl -s -X POST localhost:8081/debug/transcript \
+  -H 'Content-Type: application/json' -d '{"text":"what can you do"}'
+curl -s -X POST localhost:8081/debug/transcript \
+  -H 'Content-Type: application/json' -d '{"text":"are you ok"}'
+curl -s -X POST localhost:8081/debug/transcript \
+  -H 'Content-Type: application/json' -d '{"text":"mute"}'
 ```
 
 The utility Tools answer common questions without the Agent path:
@@ -149,6 +157,17 @@ execution; `units.convert` has a fixed unit table with no currency;
 `random.flip`/`roll`/`pick` use `crypto/rand` and preserve the words the user
 gave. Coverage, grammar and limits are in
 [docs/utility-tools.md](docs/utility-tools.md).
+
+`assistant.repeat` says the last completed reply again from an in-memory store.
+An error or Unavailable message counts because the user heard it; a blank or
+cancelled turn does not erase the previous one. The Tool is Local-only because
+the previous reply may itself have come from a Local-only Tool, so the repeat
+never becomes model-visible Tool output. "What can you do" is `assistant.help`,
+generated from the enabled registry on every call: a disabled Tool and its
+description disappear from the next answer, and no feature list lives in code.
+`system.status` reads the same bounded service/module snapshot as the Dashboard
+Health page, so a timed-out or unreachable service is reported honestly rather
+than as healthy.
 
 Timers are stored in the database and survive a restart. Give one a label
 ("set a pasta timer for 10 minutes") and ask for it later ("how long is left on
@@ -225,12 +244,21 @@ older ones are recorded missed and summarised in one Announcement, and a
 repeating Alarm then schedules its next occurrence. A max_ring or recovered
 missed Alarm also sends one Notification when `notify.missed_alerts` is on.
 
-The Control phrases `stop`, `pause`, `cancel`, `snooze` and `louder` are matched
-exactly, so they answer without waiting on the embed service. `stop`, `pause`,
-`cancel` and `snooze` are shared Focus intents: they act on a ringing alert
-first, then the current reply, then playing music. With nothing in Focus they
-fall through to the semantic Fast path, so `cancel` still reaches
-`timer.cancel` and `louder` still steps the volume up.
+The Control phrases `stop`, `pause`, `cancel`, `snooze`, `louder`, `quieter`
+and `mute` are matched exactly, so they answer without waiting on the embed
+service. `stop`, `pause`, `cancel` and `snooze` are shared Focus intents: they
+act on a ringing alert first, then the current reply, then playing music. With
+nothing in Focus they fall through to the semantic Fast path, so `cancel` still
+reaches `timer.cancel` and `louder` still steps the volume up. A volume phrase
+runs the Tool's extraction even though it matched exactly, so `quieter` steps
+down and `mute` sets the sink volume to zero; `unmute` steps up because there is
+no stored pre-mute level. These drive the actual Pulse sink through `pactl`.
+They do not change `quiet.volume` or any `ring.<kind>.volume`: a Ring's
+configured volume stays absolute and independent of the media volume, so a
+mute never rewrites the alarm settings. The Pulse sink is shared, though, so a
+sink mute also silences anything currently playing through it; raise the volume
+again after the Ring or alarm. Music ducking and its restore belong to the
+Ring's `ring.Music` seam (#72), not to this volume control.
 
 Speech the Assistant starts without being asked (a Reminder, a finished Hermes
 job) goes through one Announcement queue. It waits for the current reply to

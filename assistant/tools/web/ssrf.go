@@ -227,6 +227,14 @@ func (f *fetcher) checkRedirect(req *http.Request, via []*http.Request) error {
 	if err := checkFetchURL(req.URL); err != nil {
 		return err
 	}
+	// A downgrade would resend the URL (which may carry a signed token) in
+	// clear text. Refuse it rather than follow the hop.
+	if len(via) > 0 {
+		previous := via[len(via)-1]
+		if previous.URL != nil && previous.URL.Scheme == "https" && req.URL.Scheme == "http" {
+			return fmt.Errorf("%w: https redirect to http", errBlockedAddress)
+		}
+	}
 	pins, _ := req.Context().Value(pinKey{}).(pinSet)
 	if pins == nil {
 		pins = pinSet{}

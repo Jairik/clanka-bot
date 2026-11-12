@@ -378,6 +378,30 @@ func TestFetchReusesThePinAcrossSameHostRedirects(t *testing.T) {
 	}
 }
 
+func TestFetchRejectsHTTPSDowngrade(t *testing.T) {
+	fixture := newFetchFixture(t, DefaultFetchConfig(),
+		http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
+		map[string][]netip.Addr{"article.example.test": publicV4()})
+	pins := pinSet{"article.example.test": publicV4()}
+	previous := &http.Request{URL: mustURL(t, "https://article.example.test/start")}
+	next := (&http.Request{URL: mustURL(t, "http://article.example.test/next")}).
+		WithContext(context.WithValue(context.Background(), pinKey{}, pins))
+
+	err := fixture.fetcher.checkRedirect(next, []*http.Request{previous})
+	if !errors.Is(err, errBlockedAddress) {
+		t.Fatalf("checkRedirect error = %v, want an https-to-http refusal", err)
+	}
+}
+
+func mustURL(t *testing.T, raw string) *url.URL {
+	t.Helper()
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("parse %s: %v", raw, err)
+	}
+	return parsed
+}
+
 func TestFetchRevalidatesEveryRedirect(t *testing.T) {
 	page := `<html><head><title>Redirected</title></head><body><article><p>` +
 		strings.Repeat("The redirect target is a real article with enough text. ", 20) +

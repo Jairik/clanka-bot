@@ -39,6 +39,10 @@ type migration struct {
 // restart (ADR-0003). Version 4 indexes the Sound library: built-in sounds and
 // WAV files in sounds/ with their name, duration and first-added time. Cue role
 // assignments are ordinary settings rows, so they share this database too.
+// Version 5 is the alert history: a fired Timer deletes its pending row in the
+// same transaction that opens a history row, so an at-most-once fire still
+// leaves a durable fired/ringing/stopped/missed record for crash recovery and
+// the later notification hook (#62).
 var migrations = []migration{
 	{
 		version: 1,
@@ -90,6 +94,28 @@ var migrations = []migration{
 				duration_ms INTEGER NOT NULL,
 				added_at    TEXT NOT NULL
 			)`,
+		},
+	},
+	{
+		version: 5,
+		name:    "alert_events",
+		statements: []string{
+			// source_id is the scheduler's id before its pending row was
+			// deleted. ended_at is NULL until a terminal state is written.
+			`CREATE TABLE alert_events (
+				id          INTEGER PRIMARY KEY AUTOINCREMENT,
+				kind        TEXT NOT NULL,
+				source_id   TEXT NOT NULL DEFAULT '',
+				label       TEXT NOT NULL DEFAULT '',
+				duration_ms INTEGER NOT NULL,
+				fires_at    INTEGER NOT NULL,
+				fired_at    INTEGER NOT NULL,
+				state       TEXT NOT NULL,
+				ended_at    INTEGER,
+				ended_by    TEXT NOT NULL DEFAULT ''
+			)`,
+			`CREATE INDEX alert_events_state ON alert_events (state)`,
+			`CREATE INDEX alert_events_fired_at ON alert_events (fired_at)`,
 		},
 	},
 }

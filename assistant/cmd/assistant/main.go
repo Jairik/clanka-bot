@@ -27,7 +27,9 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
 	"github.com/Jairik/clanka-bot/assistant/internal/namematch"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
+	"github.com/Jairik/clanka-bot/assistant/internal/playback"
 	"github.com/Jairik/clanka-bot/assistant/internal/reply"
+	"github.com/Jairik/clanka-bot/assistant/internal/ring"
 	"github.com/Jairik/clanka-bot/assistant/internal/secrets"
 	"github.com/Jairik/clanka-bot/assistant/internal/secretsapi"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
@@ -42,6 +44,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/wording"
 	"github.com/Jairik/clanka-bot/assistant/internal/wyoming"
 	"github.com/Jairik/clanka-bot/assistant/tools"
+	"github.com/Jairik/clanka-bot/assistant/tools/timer"
 )
 
 func main() {
@@ -172,12 +175,18 @@ func run() error {
 		speechSpeaker = speech.New(ttsClient, playSink, ttsVoice, logger)
 	}
 
+	// The speech gate lets a Ring wait for the current reply sentence and then
+	// take the one speaker; the reply's next sentence waits for the Ring.
+	speechGate := playback.NewGate()
+
 	// One Announcement queue owns unprompted speech: it waits for the current
 	// reply and any pending Confirmation, then plays one line at a time. It is
 	// absent when TTS is not configured, so nothing can queue speech.
 	var announcements *announce.Queue
 	if speechSpeaker != nil {
-		announcements = announce.New(speechSpeaker, logger, announce.WithBlocked(func() bool {
+		// Announcements use the same speech gate as replies: a Ring waits for
+		// the current line and an Announcement waits for an active Ring.
+		announcements = announce.New(playback.NewGatedSpeaker(speechSpeaker, speechGate), logger, announce.WithBlocked(func() bool {
 			_, pending := registry.Pending()
 			return pending
 		}))
@@ -189,6 +198,37 @@ func run() error {
 	// pipeline (routing), the reply session (the current reply) and the Tool
 	// modules that can hold Focus.
 	focusRegistry := focus.New()
+
+	// The Ring engine exists before Tool modules register, so an overdue Timer
+	// that fires during recovery already Rings instead of using the old spoken
+	// alert. Its settings reader is late-bound: the settings service is created
+	// below, and a startup-time Ring before that falls back to code defaults.
+	var settingsSvc *settings.Service
+	ringDeps := ring.Deps{
+		Focus:    focusRegistry,
+		Boundary: speechGate,
+		Settings: func(kind ring.Kind) ring.Settings {
+			if settingsSvc == nil {
+				return ring.Defaults(kind)
+			}
+			return ring.ReadSettings(settingsSvc, kind)
+		},
+		Clip: func(kind ring.Kind) (sound.Clip, bool) {
+			role := sound.RoleTimerRing
+			if kind == ring.Alarm {
+				role = sound.RoleAlarmRing
+			}
+			return cues.Clip(role)
+		},
+		Play: func(ctx context.Context, clip sound.Clip) error {
+			return clip.Play(ctx, playSink)
+		},
+		Logger: logger,
+	}
+	if speechSpeaker != nil {
+		ringDeps.Speaker = speechSpeaker
+	}
+	ringEngine := ring.New(ringDeps)
 
 	// One module list owns Tool wiring; each module reads its tools.<name>
 	// section and falls back to code defaults. The timezone seam exists before
@@ -211,6 +251,7 @@ func run() error {
 		Focus:         focusRegistry,
 		Zone:          zone,
 		Cues:          cues,
+		Ring:          ringEngine,
 		Names:         names,
 	}
 	if speechSpeaker != nil {
@@ -252,6 +293,9 @@ func run() error {
 		Reminder:  baseCfg.Sounds.Reminder,
 		Error:     baseCfg.Sounds.Error,
 	})...)
+	// Ring behaviour is per kind: Timer and Alarm share the engine but keep
+	// independent live max_ring, volume, ramp, gap and speak_label settings.
+	defs = append(defs, ring.Definitions()...)
 	// The model name is a live setting like the wording. Its default comes
 	// from the active provider's code default when that provider is built in;
 	// otherwise the configured model is both the default and the config layer.
@@ -260,7 +304,7 @@ func run() error {
 		modelDefault = defaultProvider.Model
 	}
 	defs = append(defs, agent.ModelDefinition(modelDefault, provider.Model))
-	settingsSvc, err := settings.New(ctx, st, defs...)
+	settingsSvc, err = settings.New(ctx, st, defs...)
 	if err != nil {
 		return fmt.Errorf("settings: %w", err)
 	}
@@ -274,6 +318,22 @@ func run() error {
 	// change applies on the next Cue. The shared serial sink keeps a Cue from
 	// overlapping a reply.
 	cues.Bind(settingsSvc, playSink)
+
+	// The Timer module already attached ringEngine before its recovery. Only
+	// the missed hook and shutdown wait remain to wire here; #62 replaces the
+	// log-only hook with its ntfy Notification.
+	if module, ok := toolSet.Module("timer").(*timer.Module); ok {
+		if manager := module.Manager(); manager != nil {
+			manager.SetMissedHook(func(alert timer.MissedAlert) {
+				logger.Warn("timer missed",
+					"label", alert.Label,
+					"reason", alert.Reason,
+					"fires_at", alert.FiresAt,
+					"ended_at", alert.EndedAt)
+			})
+			defer manager.Close()
+		}
+	}
 	if zone.IsUTC() {
 		// UTC is a safe default, not a guess: warn once so a silent one-hour
 		// error in a clock-time Alarm is visible at startup.
@@ -413,6 +473,9 @@ func run() error {
 	// A speaking reply holds Focus, so a shared "stop" cancels its model stream
 	// and playback rather than the stop request itself.
 	sessionOpts = append(sessionOpts, reply.WithFocus(focusRegistry))
+	// A Ring waits for the current reply sentence, then the reply's next
+	// sentence waits for the Ring. With no Ring the gate is a fast no-op.
+	sessionOpts = append(sessionOpts, reply.WithSpeechGate(speechGate))
 	session := reply.New(p, speaker, playSink, filler, sessionOpts...)
 
 	// The debug entry is only spoken when a TTS service is configured.

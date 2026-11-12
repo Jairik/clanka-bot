@@ -198,11 +198,13 @@ control_phrases:
   "time": time.now
   # Playback and timer controls are single words, which embed poorly, so they
   # are matched exactly instead. "louder" calls volume_set with no arguments,
-  # which means one step up. "stop", "pause" and "cancel" are shared intents:
-  # they reach a ringing alert, the current reply or music before any Tool.
+  # which means one step up. "stop", "pause", "cancel" and "snooze" are shared
+  # intents: they reach a ringing alert, the current reply or music before any
+  # Tool. Snooze on a Timer acts as stop; #53 gives an Alarm its real snooze.
   "stop": stop
   "pause": pause
   "cancel": cancel
+  "snooze": snooze
   "louder": audio.volume_set
   "what's the weather like": weather.current
   "what is the weather like": weather.current

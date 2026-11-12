@@ -107,8 +107,9 @@ func waitAnnouncement(t *testing.T, rec *announcementRecorder) string {
 }
 
 // TestSecretsAndTimersPreserveEachOtherAcrossReopen pins the merged migration
-// ledger: #46's secrets table (version 2) and #51's timers table (version 3)
-// share one database and must both survive a fresh apply and a reopen.
+// ledger: #46's secrets table (version 2), #51's timers table (version 3) and
+// #55's sound library index (version 4) share one database and must both
+// survive a fresh apply and a reopen.
 func TestSecretsAndTimersPreserveEachOtherAcrossReopen(t *testing.T) {
 	const name = "TIMER_MERGE_TEST_SECRET"
 	path := filepath.Join(t.TempDir(), "data", "assistant.db")
@@ -127,7 +128,7 @@ func TestSecretsAndTimersPreserveEachOtherAcrossReopen(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	// A fresh database applies both migrations in order.
+	// A fresh database applies every migration in order.
 	migrations := func(st *store.Store) map[int]string {
 		rows, err := st.DB().Query(`SELECT version, name FROM schema_migrations ORDER BY version`)
 		if err != nil {
@@ -148,7 +149,7 @@ func TestSecretsAndTimersPreserveEachOtherAcrossReopen(t *testing.T) {
 		}
 		return applied
 	}
-	wantVersions := map[int]string{1: "settings", 2: "secrets", 3: "timers"}
+	wantVersions := map[int]string{1: "settings", 2: "secrets", 3: "timers", 4: "sounds"}
 	applied := migrations(firstStore)
 	if len(applied) != len(wantVersions) {
 		t.Fatalf("fresh migrations = %v, want %v", applied, wantVersions)

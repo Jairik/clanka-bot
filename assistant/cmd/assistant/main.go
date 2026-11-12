@@ -29,6 +29,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/secretsapi"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 	"github.com/Jairik/clanka-bot/assistant/internal/settingsapi"
+	"github.com/Jairik/clanka-bot/assistant/internal/sound"
 	"github.com/Jairik/clanka-bot/assistant/internal/speech"
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
@@ -80,6 +81,18 @@ func run() error {
 			logger.Error("store close", "error", err.Error())
 		}
 	}()
+
+	// The Cue library indexes built-in sounds and WAV files dropped into the
+	// data volume's sounds/ folder. Cues render to the capture format so the
+	// wake path keeps the endpointing timing it already had (#18).
+	cueFormat := audio.Format{Rate: cfg.Capture.Rate, Width: 2, Channels: 1}
+	if cueFormat.Rate <= 0 {
+		cueFormat.Rate = 16000
+	}
+	cues, err := sound.New(ctx, st, cfg.Data.Dir, cueFormat, logger)
+	if err != nil {
+		return fmt.Errorf("sound library: %w", err)
+	}
 
 	// The provider entry names the secret key and is needed before Tool
 	// registration so the secrets service knows every writable name.
@@ -161,6 +174,7 @@ func run() error {
 		Secrets:       secretsSvc,
 		Announcements: announcements,
 		Zone:          zone,
+		Cues:          cues,
 	}
 	if speechSpeaker != nil {
 		deps.Speaker = speechSpeaker
@@ -180,6 +194,13 @@ func run() error {
 		return err
 	}
 	defs := append(append([]settings.Definition{}, toolDefs...), tz.Definition(cfg.Timezone))
+	defs = append(defs, cues.Definitions(sound.Config{
+		Wake:      cfg.Sounds.Wake,
+		TimerRing: cfg.Sounds.TimerRing,
+		AlarmRing: cfg.Sounds.AlarmRing,
+		Reminder:  cfg.Sounds.Reminder,
+		Error:     cfg.Sounds.Error,
+	})...)
 	settingsSvc, err := settings.New(ctx, st, defs...)
 	if err != nil {
 		return fmt.Errorf("settings: %w", err)
@@ -187,6 +208,10 @@ func run() error {
 	// Bind after the service exists so the timezone is live overridable: the
 	// Dashboard's settings handler and any voice Tool write the same service.
 	zone.Bind(settingsSvc)
+	// Bind the same live settings service the Dashboard writes, so a role
+	// change applies on the next Cue. The shared serial sink keeps a Cue from
+	// overlapping a reply.
+	cues.Bind(settingsSvc, playSink)
 	if zone.IsUTC() {
 		// UTC is a safe default, not a guess: warn once so a silent one-hour
 		// error in a clock-time Alarm is visible at startup.
@@ -276,6 +301,9 @@ func run() error {
 		// plays between turns and once a pending Confirmation resolves.
 		sessionOpts = append(sessionOpts, reply.WithAnnouncements(announcements))
 	}
+	// The error Cue plays before an Agent-path Unavailable message. Other
+	// consumers come from the same library via tool.Deps.Cues.
+	sessionOpts = append(sessionOpts, reply.WithCues(cues))
 	session := reply.New(p, speaker, playSink, filler, sessionOpts...)
 
 	// The debug entry is only spoken when a TTS service is configured.
@@ -285,7 +313,19 @@ func run() error {
 	}
 
 	if cfg.VoiceEnabled() {
-		loop, err := newVoiceLoop(cfg, session, p, sink, announcements, logger)
+		// Read the wake role per detection so a Dashboard write applies live.
+		// wakeword.chime.enabled stays the master switch it was before #55.
+		wakeCue := func() ([]byte, audio.Format, bool) {
+			if !cfg.Wakeword.Chime.Enabled {
+				return nil, audio.Format{}, false
+			}
+			clip, ok := cues.Clip(sound.RoleWake)
+			if !ok {
+				return nil, audio.Format{}, false
+			}
+			return clip.PCM, clip.Format, true
+		}
+		loop, err := newVoiceLoop(cfg, session, p, sink, announcements, wakeCue, logger)
 		if err != nil {
 			return err
 		}
@@ -359,6 +399,7 @@ func run() error {
 		"data_dir", cfg.Data.Dir,
 		"store", st.Path(),
 		"settings", len(settingsSvc.List()),
+		"sounds", len(cues.List()),
 		"timezone", zone.Name(),
 		"speech", cfg.TTS.Addr != "",
 		"tts_addr", cfg.TTS.Addr,
@@ -381,7 +422,7 @@ func run() error {
 // STT, the wake chime, and the shared reply Session. The pipeline is the
 // Barge-in seam that drops a waiting Confirmation, and the Announcement queue
 // stops unprompted speech as soon as a wake word starts a turn.
-func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingDropper, sink audio.Sink, announcements *announce.Queue, logger *slog.Logger) (*voice.Loop, error) {
+func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingDropper, sink audio.Sink, announcements *announce.Queue, wakeCue func() ([]byte, audio.Format, bool), logger *slog.Logger) (*voice.Loop, error) {
 	captureFormat := audio.Format{Rate: cfg.Capture.Rate, Width: cfg.Capture.Width, Channels: cfg.Capture.Channels}
 	frameBytes := cfg.Capture.Rate * cfg.Capture.Width * cfg.Capture.Channels * cfg.Capture.FrameMS / 1000
 	if frameBytes <= 0 {
@@ -407,10 +448,6 @@ func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingD
 		},
 		ChimeFormat: audio.Format{Rate: captureFormat.Rate, Width: 2, Channels: 1},
 	}
-	if cfg.Wakeword.Chime.Enabled {
-		voiceCfg.Chime = audio.Chime(captureFormat.Rate)
-	}
-
 	logger.Info("voice input enabled",
 		"pulse_source", cfg.Capture.Source,
 		"wakeword_addr", cfg.Wakeword.Addr,
@@ -427,6 +464,7 @@ func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingD
 		Player:    audio.NewPCMPlayer(sink),
 		Responder: voice.NewPipelineResponder(session, tool.DevicePi),
 		Dropper:   pending,
+		WakeCue:   wakeCue,
 		Logger:    logger,
 	}
 	// Leave the seam absent rather than storing a typed nil: a text-only setup

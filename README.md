@@ -228,6 +228,35 @@ Non-secret settings live in [`assistant/config.yaml`](assistant/config.yaml).
 `.env` holds deployment inputs and the secret bootstrap; a value stored through
 `/api/secrets` wins. An empty `tts.addr` disables spoken replies.
 
+#### Sound library and Cue roles
+
+A **Cue** is a non-speech sound with a fixed role: `wake`, `timer_ring`,
+`alarm_ring`, `reminder` (before the Reminder is spoken) and `error` (before the
+Unavailable message). The built-in `chime` is synthesised in Go and ships in the
+image; the current wake sound is still its default. Any `.wav` file dropped into
+`data/sounds/` is indexed at startup with its name, duration and first-added
+date, using pure-Go decoding (ADR-0001, no ffmpeg).
+
+Each role is a live setting named `sounds.<role>`:
+`GET /api/settings` lists them and `PUT` changes one. A value is a library name
+such as `birds`, a path under the data volume such as `sounds/birds.wav`, a
+built-in name, or `none` to stay silent. `config.yaml` may set the same values
+for a headless setup; a stored override wins.
+
+```sh
+# Assign a dropped file to the error Cue, then reset to config.yaml.
+curl -s -X PUT localhost:8081/api/settings/sounds.error \
+  -H 'Content-Type: application/json' -d '{"value":"birds"}'
+curl -s -X DELETE localhost:8081/api/settings/sounds.error
+```
+
+Length caps are enforced when a sound is assigned and never trim the file:
+`wake` 1.0 s, `reminder`/`error` 3 s, Rings 60 s. A longer sound is rejected
+with the cap in the error. This ticket wires the wake and error Cues; Timers and
+Alarms still use the spoken alert, and Reminders do not exist yet. The sound
+seam for those consumers is `tool.Deps.Cues`; upload, MP3 decoding and the
+Dashboard Sounds page belong to #56.
+
 ### Latency
 
 Every request writes one JSON `request` line with per-stage timings

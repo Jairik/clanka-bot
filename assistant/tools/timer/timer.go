@@ -62,6 +62,7 @@ type Manager struct {
 
 	db            *sql.DB
 	announcements *announce.Queue
+	ring          func(Timer) bool
 	closed        bool
 
 	seq     int
@@ -86,6 +87,16 @@ func NewManagerText(now func() time.Time, say func(ctx context.Context, text str
 		alertText = AlertText
 	}
 	return &Manager{now: now, say: say, logger: logger, alertText: alertText, entries: make(map[string]*entry)}
+}
+
+// SetRing installs the Ring callback that runs when a Timer fires. It reports
+// whether it handled the alert; returning false keeps the configured spoken
+// line. #52 replaces that single line with the looping Ring engine; this seam
+// exists so the Manager does not grow a second fire path in the meantime.
+func (m *Manager) SetRing(ring func(Timer) bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ring = ring
 }
 
 // Set starts an unlabelled timer and returns it. It is the original in-memory
@@ -161,9 +172,17 @@ func (m *Manager) fire(id string) {
 	m.alert(e.timer)
 }
 
-// alert speaks one timer's done line through the shared speaker seam.
+// alert hands one firing Timer to the Ring seam, then falls back to the single
+// spoken line that predates the Ring engine.
 func (m *Manager) alert(timer Timer) {
 	m.logger.Info("timer fired", "timer_id", timer.ID, "label", timer.Label)
+	m.mu.Lock()
+	ring := m.ring
+	m.mu.Unlock()
+	if ring != nil && ring(timer) {
+		m.logger.Info("timer rung", "timer_id", timer.ID, "label", timer.Label)
+		return
+	}
 	if m.say == nil {
 		m.logger.Warn("timer alert dropped: speech is not configured", "timer_id", timer.ID)
 		return

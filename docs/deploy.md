@@ -249,12 +249,12 @@ container health field.
 - [ ] `make check`
 - [ ] `make deploy` (or `scripts/deploy.sh`)
 - [ ] Verify: `docker compose ps`, `curl -s localhost:8080/healthz`
-- [ ] The `assistant-data` volume holds the SQLite database (ADR-0003). It
-      survives container restarts and image rebuilds, and only `assistant`
-      mounts it. It holds settings overrides and unencrypted secrets (API keys,
-      tokens) in a file mode 0600; treat a backup like the secrets it contains.
-      `docker compose down -v` deletes it: back it up first if the settings or
-      secrets matter.
+- [ ] The `assistant-data` volume holds the SQLite database (ADR-0003) and the
+      `sounds/` sound library. It survives container restarts and image rebuilds,
+      and only `assistant` mounts it. It holds settings overrides and
+      unencrypted secrets (API keys, tokens) in a file mode 0600; treat a backup
+      like the secrets it contains. `docker compose down -v` deletes it: back it
+      up first if the settings, sounds or secrets matter.
 - [ ] Reboot once and confirm the stack comes back without a login.
 
 ## Image tags and rollback

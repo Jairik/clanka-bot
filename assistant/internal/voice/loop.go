@@ -104,7 +104,10 @@ type Deps struct {
 	// Announcer is optional: when set, a wake word stops unprompted speech
 	// before capture starts.
 	Announcer Announcer
-	Logger    *slog.Logger
+	// WakeCue resolves the live wake Cue once per detection. When set it
+	// replaces Config.Chime, and ok=false means the role is assigned none.
+	WakeCue func() (pcm []byte, format audio.Format, ok bool)
+	Logger  *slog.Logger
 }
 
 // micFrame is one captured PCM block stamped with its capture time. The stamp
@@ -132,8 +135,8 @@ func New(cfg Config, deps Deps) (*Loop, error) {
 	if deps.Source == nil || deps.Wake == nil || deps.STT == nil || deps.Responder == nil {
 		return nil, errors.New("voice: source, wake, stt and responder are required")
 	}
-	if len(cfg.Chime) > 0 && deps.Player == nil {
-		return nil, errors.New("voice: a player is required when a chime is configured")
+	if (len(cfg.Chime) > 0 || deps.WakeCue != nil) && deps.Player == nil {
+		return nil, errors.New("voice: a player is required when a wake Cue is configured")
 	}
 	if deps.Logger == nil {
 		deps.Logger = slog.Default()
@@ -240,16 +243,24 @@ func (l *Loop) session(ctx context.Context) (bool, error) {
 	sessCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	// The chime plays while STT starts, so the user can begin speaking at once.
-	// Endpointing waits for it to finish: the chime comes back through the mic
-	// and must not count as the start of the question.
+	// The wake Cue plays while STT starts, so the user can begin speaking at
+	// once. Resolve it per detection: a Dashboard write changes the next wake
+	// without a restart. Endpointing waits for it to finish because the sound
+	// comes back through the mic.
+	wakePCM, wakeFormat := l.cfg.Chime, l.cfg.ChimeFormat
+	if l.deps.WakeCue != nil {
+		wakePCM, wakeFormat = nil, audio.Format{}
+		if pcm, format, ok := l.deps.WakeCue(); ok {
+			wakePCM, wakeFormat = pcm, format
+		}
+	}
 	chimeDone := make(chan struct{})
 	var chimeEnded atomic.Value // time.Time, stored before chimeDone closes
-	if len(l.cfg.Chime) > 0 {
+	if len(wakePCM) > 0 {
 		go func() {
 			defer close(chimeDone)
-			if err := l.deps.Player.Play(sessCtx, l.cfg.Chime, l.cfg.ChimeFormat); err != nil && sessCtx.Err() == nil {
-				l.deps.Logger.Warn("voice: chime", "error", err.Error())
+			if err := l.deps.Player.Play(sessCtx, wakePCM, wakeFormat); err != nil && sessCtx.Err() == nil {
+				l.deps.Logger.Warn("voice: wake cue", "error", err.Error())
 			}
 			chimeEnded.Store(time.Now())
 		}()
@@ -272,7 +283,7 @@ func (l *Loop) session(ctx context.Context) (bool, error) {
 	// mic. Drop them, including any still buffered when it ends, instead of
 	// endpointing them after chimeDone and opening a 15 s utterance on the tail
 	// (#18/S6). Frames captured after the chime ends are the user.
-	chimeOver := len(l.cfg.Chime) == 0
+	chimeOver := len(wakePCM) == 0
 	var chimeEnd time.Time
 	for ended := false; !ended; {
 		select {

@@ -268,12 +268,13 @@ design; its result is only "Sent to your phone."
 
 The **topic is generated once** on first use and kept in the write-only
 secrets table as `NTFY_TOPIC`; it never appears in `config.yaml`, the settings
-API, a log line or a form field. It is stable across restarts and concurrent
-first sends. `NTFY_TOKEN` is optional and is **never generated**: official ntfy
-access tokens are issued by the server. On the public ntfy.sh, leaving the
-token empty publishes to the random topic without an `Authorization` header and
-works out of the box; the random topic is an unguessable name, **not access
-control**, because anyone who learns it can subscribe.
+API, a log line, or a prefilled form field. It is stable across restarts and
+concurrent first sends. `NTFY_TOKEN` is optional and is **never generated**:
+official ntfy access tokens are issued by the server. On the public ntfy.sh,
+leaving the token empty publishes to the random topic without an
+`Authorization` header and works out of the box; the random topic is an
+unguessable name, **not access control**, because anyone who learns it can
+subscribe.
 
 To connect the phone, install the ntfy app and subscribe to the topic. The
 safest bootstrap is to choose the topic yourself before first use:

@@ -231,6 +231,16 @@ and the active Agent provider) with `set`, `last4`, update time and source
 a cleared stored value falls back to `.env` immediately. No value is revealed,
 prefilled or echoed, and a new module declaration appears without a page edit.
 
+Notifications use the public ntfy.sh by default (`notify.url`). The ntfy topic
+is generated once into that secrets table on first use, so it is never in
+`config.yaml`; to connect a phone without reading the database, set
+`NTFY_TOPIC` in `.env` before first use and subscribe the ntfy app to it. A
+self-hosted ntfy with access control needs a server-issued token in
+`NTFY_TOKEN`; a random local token is not accepted, and the assistant never
+invents one. Outbound HTTPS to the configured ntfy server must be reachable
+from the Pi. See the README's **Notifications** section for the security
+caveat and the self-hosted token steps.
+
 The Health page shows the five current Compose services (`embed`, `assistant`,
 `wakeword`, `stt`, `tts`), the resolved location and each Tool module that
 declares a health check. `embed` is checked over HTTP `/healthz`; the three

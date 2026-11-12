@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
+	"github.com/Jairik/clanka-bot/assistant/internal/notify"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"gopkg.in/yaml.v3"
 )
@@ -78,6 +80,23 @@ func (m *Module) Register(r *tool.Registry, deps tool.Deps) error {
 	// immediately at startup already Rings through the shared engine.
 	if deps.Ring != nil {
 		manager.SetRingEngine(deps.Ring)
+	}
+	// Install the missed Notification hook before AttachStore: recovery calls
+	// it for an open row left by a crash and for an old overdue Timer, so those
+	// configured Notifications are not lost at startup.
+	if deps.Notify != nil {
+		notifier := deps.Notify
+		manager.SetMissedHook(func(alert MissedAlert) {
+			notifier.NotifyMissed(context.Background(), notify.MissedAlert{
+				Kind:     alert.Kind,
+				Label:    alert.Label,
+				Reason:   alert.Reason,
+				Duration: time.Duration(alert.DurationSeconds) * time.Second,
+				FiresAt:  alert.FiresAt,
+				FiredAt:  alert.FiredAt,
+				EndedAt:  alert.EndedAt,
+			})
+		})
 	}
 	if err := manager.AttachStore(deps.Store, deps.Announcements); err != nil {
 		return err

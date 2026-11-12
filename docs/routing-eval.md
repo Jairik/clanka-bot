@@ -8,8 +8,8 @@ misroute from the request log.
 ## What is checked in
 
 - `assistant/internal/pipeline/testdata/routing_eval.yaml` — the labelled
-  oracle. It has at least 20 positives for each of the seventeen Fast path Tools
-  (346 total), 75 plain negatives, and 12 compound requests.
+  oracle. It has at least 20 positives for each of the eighteen Fast path Tools
+  (368 total), 85 plain negatives, and 13 compound requests.
 - `assistant/internal/pipeline/testdata/routing_baseline.yaml` — the recorded
   Map 1 totals the real-MiniLM evaluation must not fall below.
 - `assistant/internal/pipeline/routing_eval_test.go` —
@@ -147,22 +147,26 @@ above the 0.95 precision floor. Run against
 | `quiet.off` | 20 | 16 | 2 | 14 | 0 | 4 | 1.00 | 0.80 |
 | `quiet.dnd` | 20 | 20 | 0 | 20 | 0 | 0 | 1.00 | 1.00 |
 | `quiet.awake` | 20 | 20 | 2 | 18 | 0 | 0 | 1.00 | 1.00 |
-| **Total** | **346** | **236** | **23** | **213** | **0** | **110** | **1.00** | **0.6821** |
+| `notify.phone` | 22 | 22 | 0 | 22 | 0 | 0 | 1.00 | 1.00 |
+| **Total** | **368** | **258** | **23** | **235** | **0** | **110** | **1.00** | **0.7011** |
 
-These numbers are from the #61 Quiet hours tree after the #63 voice merge and
-include the earlier #34, #44 and #51 corpus additions. Precision is 1.00 with
-no negative or compound misroute, and every Tool clears the 0.95 floor. The
-voice recall stays deliberately conservative for list/current questions; the
-Agent path answers them. Four natural `quiet.off` phrasings ("disable quiet
-hours", "switch off quiet hours", "get rid of quiet hours", "turn off nightly
-quiet hours") fall to the Agent path because the `quiet.set` vectors are close;
-recall is not a floor, and adding more near duplicates would not make the split
-more reliable. The other conservative Tools are the timer/list confusions
-described below.
+These numbers are from the #62 Notifications tree and include the earlier #34,
+#44, #51, #61 and #63 corpus additions. Precision is 1.00 with no negative or
+compound misroute, and every Tool clears the 0.95 floor. The new
+`notify.phone` positives include demonstrative "send that to my phone" wording
+and explicit-message forms; 12 phone-shaped negatives and one compound keep the
+tool from swallowing device questions, other transports and two-action
+requests. The voice recall stays deliberately conservative for list/current
+questions; the Agent path answers them. Four natural `quiet.off` phrasings
+("disable quiet hours", "switch off quiet hours", "get rid of quiet hours",
+"turn off nightly quiet hours") fall to the Agent path because the `quiet.set`
+vectors are close; recall is not a floor, and adding more near duplicates would
+not make the split more reliable. The other conservative Tools are the
+timer/list confusions described below.
 
-Plain negatives: **0 of 75** reached the Fast path. Compounds: **0 of 12**
+Plain negatives: **0 of 85** reached the Fast path. Compounds: **0 of 13**
 reached the Fast path. Every Tool is exercised by the semantic router at least
-five times, so no Tool clears the floor only because the Control phrase table
+twice, so no Tool clears the floor only because the Control phrase table
 happened to cover its positives. The timer and list confusions are the main
 reason recall is conservative; those requests go to the Agent path rather than
 risking a wrong timer action.

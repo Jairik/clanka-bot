@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -18,14 +19,18 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/agent"
 	"github.com/Jairik/clanka-bot/assistant/internal/embed"
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
+	"github.com/Jairik/clanka-bot/assistant/internal/lastreply"
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
+	corenotify "github.com/Jairik/clanka-bot/assistant/internal/notify"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	quietcore "github.com/Jairik/clanka-bot/assistant/internal/quiet"
+	"github.com/Jairik/clanka-bot/assistant/internal/secrets"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/tools/audiocontrol"
 	"github.com/Jairik/clanka-bot/assistant/tools/clock"
+	notifytools "github.com/Jairik/clanka-bot/assistant/tools/notify"
 	quiettools "github.com/Jairik/clanka-bot/assistant/tools/quiet"
 	"github.com/Jairik/clanka-bot/assistant/tools/timer"
 	"github.com/Jairik/clanka-bot/assistant/tools/voice"
@@ -52,6 +57,7 @@ var routingEvalTools = []string{
 	quiettools.OffName,
 	quiettools.DNDName,
 	quiettools.AwakeName,
+	notifytools.Name,
 }
 
 const (
@@ -239,6 +245,25 @@ func (*evalAudio) SetVolume(context.Context, int) error    { return nil }
 func (*evalAudio) AdjustVolume(context.Context, int) error { return nil }
 func (*evalAudio) Stop(context.Context) error              { return nil }
 
+// evalNotifyReader supplies the notify settings without a second settings
+// service; the corpus only needs the fake ntfy URL.
+type evalNotifyReader struct {
+	values map[string]settings.Value
+}
+
+func (r evalNotifyReader) Get(key string) (settings.Value, bool) {
+	value, ok := r.values[key]
+	return value, ok
+}
+
+// evalNotifySecrets keeps the generated topic in memory for one eval run.
+type evalNotifySecrets struct{}
+
+func (evalNotifySecrets) Get(string) (string, bool) { return "", false }
+func (evalNotifySecrets) Set(_ context.Context, name, value string) (secrets.Metadata, error) {
+	return secrets.Metadata{Name: name, Set: true, Source: secrets.SourceStore}, nil
+}
+
 // evalRegistry wires the real Tools with test-safe dependencies. Weather gets
 // a local upstream so every weather positive executes the handler, but no
 // request leaves the machine.
@@ -305,6 +330,31 @@ func evalRegistry(t *testing.T) (*tool.Registry, *timer.Manager) {
 	quietService.BindWriter(quietSettings)
 	if err := quiettools.NewModule().Register(reg, tool.Deps{Quiet: quietService, Clock: func() time.Time { return fixed }}); err != nil {
 		t.Fatalf("register quiet: %v", err)
+	}
+	// notify.phone executes the real handler for its positives. A fake ntfy
+	// server keeps every publish local and the topic in memory.
+	ntfy := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.Copy(io.Discard, r.Body)
+		_, _ = io.WriteString(w, `{"id":"eval"}`)
+	}))
+	t.Cleanup(ntfy.Close)
+	notifyService, err := corenotify.New(corenotify.Options{
+		Reader: evalNotifyReader{values: map[string]settings.Value{
+			corenotify.URLKey:          {Key: corenotify.URLKey, Value: ntfy.URL},
+			corenotify.MissedAlertsKey: {Key: corenotify.MissedAlertsKey, Value: true},
+		}},
+		Secrets: evalNotifySecrets{},
+		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Config:  corenotify.DefaultConfig(),
+	})
+	if err != nil {
+		t.Fatalf("notify service: %v", err)
+	}
+	if err := notifytools.NewModule().Register(reg, tool.Deps{
+		Notify:    notifyService,
+		LastReply: lastreply.New(),
+	}); err != nil {
+		t.Fatalf("register notify: %v", err)
 	}
 	return reg, manager
 }

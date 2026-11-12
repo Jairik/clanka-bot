@@ -9,6 +9,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/tools/audiocontrol"
 	"github.com/Jairik/clanka-bot/assistant/tools/clock"
+	"github.com/Jairik/clanka-bot/assistant/tools/notify"
 	"github.com/Jairik/clanka-bot/assistant/tools/quiet"
 	"github.com/Jairik/clanka-bot/assistant/tools/timer"
 	"github.com/Jairik/clanka-bot/assistant/tools/voice"
@@ -30,6 +31,7 @@ func NewSet() *Set {
 		timer.NewModule(),
 		quiet.NewModule(),
 		voice.NewModule(),
+		notify.NewModule(),
 	}}
 }
 

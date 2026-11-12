@@ -24,8 +24,10 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/dashboard"
 	"github.com/Jairik/clanka-bot/assistant/internal/embed"
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
+	"github.com/Jairik/clanka-bot/assistant/internal/lastreply"
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
 	"github.com/Jairik/clanka-bot/assistant/internal/namematch"
+	"github.com/Jairik/clanka-bot/assistant/internal/notify"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	"github.com/Jairik/clanka-bot/assistant/internal/playback"
 	"github.com/Jairik/clanka-bot/assistant/internal/quiet"
@@ -174,6 +176,7 @@ func run() error {
 	// process. It is read-only, so two views of the same DB cannot diverge.
 	zone := tz.New(os.Getenv("TZ"), logger)
 	recoveryDefs := append(ring.Definitions(), quiet.Definitions(baseCfg.Quiet)...)
+	recoveryDefs = append(recoveryDefs, notify.Definitions(baseCfg.Notify)...)
 	recoveryDefs = append(recoveryDefs, tz.Definition(baseCfg.Timezone))
 	recoverySettings, err := settings.New(ctx, st, recoveryDefs...)
 	if err != nil {
@@ -204,6 +207,22 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("secrets: %w", err)
 	}
+	// Notifications are created before Tool registration so a Timer/Alarm
+	// recovered during Register already has the missed hook. The startup reader
+	// supplies the saved notify.* values until the full service is bound below.
+	notifySvc, err := notify.New(notify.Options{
+		Reader:  recoverySettings,
+		Quiet:   quietSvc,
+		Secrets: secretsSvc,
+		Logger:  logger,
+		Config:  baseCfg.Notify,
+	})
+	if err != nil {
+		return fmt.Errorf("notify: %w", err)
+	}
+	// The previous reply stays in memory with its provenance so a follow-up
+	// "send that to my phone" can resolve it without persisting private text.
+	lastReplyStore := lastreply.New()
 
 	// Resolve the place once before serving so the first request has it; Watch
 	// keeps it fresh every 24h. The prompt reads the service per request.
@@ -344,6 +363,8 @@ func run() error {
 		Names:         names,
 		Quiet:         quietSvc,
 		Voices:        voiceSvc,
+		Notify:        notifySvc,
+		LastReply:     lastReplyStore,
 	}
 	if speechSpeaker != nil {
 		deps.Speaker = speechSpeaker
@@ -384,6 +405,9 @@ func run() error {
 	// Quiet hours shares the one settings service with the Dashboard and voice
 	// Tools; the startup reader above is replaced by this full service.
 	defs = append(defs, quiet.Definitions(baseCfg.Quiet)...)
+	// Notify's URL and missed-alert switch are live settings; the topic and
+	// optional token remain write-only secrets.
+	defs = append(defs, notify.Definitions(baseCfg.Notify)...)
 	// The model name is a live setting like the wording. Its default comes
 	// from the active provider's code default when that provider is built in;
 	// otherwise the configured model is both the default and the config layer.
@@ -410,6 +434,8 @@ func run() error {
 	// or a voice Tool write is visible to the next Status read.
 	quietSvc.Bind(settingsSvc)
 	quietSvc.BindWriter(settingsSvc)
+	// Notify now reads the same live settings as the Dashboard and the Tools.
+	notifySvc.Bind(settingsSvc)
 	// One small worker applies the current Quiet status to the Announcement
 	// queue. It reevaluates at the next window boundary or after one second, so
 	// a Dashboard edit applies promptly without a request or a second settings
@@ -475,18 +501,11 @@ func run() error {
 		})
 	}
 
-	// The Timer module already attached ringEngine before its recovery. Only
-	// the missed hook and shutdown wait remain to wire here; #62 replaces the
-	// log-only hook with its ntfy Notification.
+	// The Timer module installed the Notify missed hook before its recovery,
+	// so open/downtime rows already reached ntfy. Only the shutdown wait
+	// remains, and Close waits for the final history write.
 	if module, ok := toolSet.Module("timer").(*timer.Module); ok {
 		if manager := module.Manager(); manager != nil {
-			manager.SetMissedHook(func(alert timer.MissedAlert) {
-				logger.Warn("timer missed",
-					"label", alert.Label,
-					"reason", alert.Reason,
-					"fires_at", alert.FiresAt,
-					"ended_at", alert.EndedAt)
-			})
 			defer manager.Close()
 		}
 	}
@@ -590,6 +609,9 @@ func run() error {
 		// Shared Control phrases reach whatever holds Focus; with nothing in
 		// Focus they fall through to the semantic Fast path.
 		pipeline.WithFocus(focusRegistry),
+		// Keep the previous reply and its provenance for follow-ups such as
+		// "send that to my phone".
+		pipeline.WithLastReply(lastReplyStore),
 	}
 	// Compute Tool example vectors from the effective Examples (a stored
 	// override may already exist). A dead embed service only disables semantic

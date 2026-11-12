@@ -75,14 +75,6 @@ func New(opts Options) *Source {
 	}
 }
 
-// Timeout is the overall budget one snapshot may take.
-func (s *Source) Timeout() time.Duration {
-	if s == nil {
-		return DefaultTimeout
-	}
-	return s.timeout
-}
-
 // Status runs every check inside one shared deadline. Service checks run
 // concurrently; module checks are one call because the module list owns their
 // order and each module's own budget.

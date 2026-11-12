@@ -176,7 +176,7 @@ above the 0.95 precision floor. Run against
 | `assistant.repeat` | 20 | 13 | 0 | 13 | 0 | 7 | 1.00 | 0.65 |
 | `assistant.help` | 20 | 15 | 0 | 15 | 0 | 5 | 1.00 | 0.75 |
 | `system.status` | 20 | 10 | 0 | 10 | 0 | 10 | 1.00 | 0.50 |
-| `spotify.play` | 25 | 11 | 0 | 11 | 0 | 14 | 1.00 | 0.44 |
+| `spotify.play` | 26 | 12 | 0 | 12 | 0 | 14 | 1.00 | 0.46 |
 | `spotify.pause` | 23 | 11 | 0 | 11 | 0 | 12 | 1.00 | 0.4783 |
 | `spotify.next` | 21 | 6 | 0 | 6 | 0 | 15 | 1.00 | 0.2857 |
 | `spotify.volume` | 21 | 4 | 0 | 4 | 0 | 17 | 1.00 | 0.1905 |
@@ -187,7 +187,7 @@ above the 0.95 precision floor. Run against
 | `spotify.previous` | 20 | 4 | 0 | 4 | 0 | 16 | 1.00 | 0.2000 |
 | `spotify.queue_add` | 20 | 5 | 0 | 5 | 0 | 15 | 1.00 | 0.2500 |
 | `spotify.like` | 20 | 8 | 0 | 8 | 0 | 12 | 1.00 | 0.4000 |
-| **Total** | **1037** | **645** | **30** | **615** | **0** | **392** | **1.00** | **0.6220** |
+| **Total** | **1038** | **646** | **30** | **616** | **0** | **392** | **1.00** | **0.6224** |
 
 The five Spotify playback Tools (#72) were added to this table. Their Examples
 share "music"/"song" wording with `audio.stop`, `audio.volume_set` and each
@@ -212,7 +212,7 @@ three utterances that had been parked as negatives until this ticket ("like
 this song", "go back to the previous song", "repeat this song") moved to
 positives. Overall precision stays 1.00 with no negative or compound
 misroute and every Tool clears the 0.95 floor. Overall recall over the whole
-corpus falls from 0.6645 to 0.6220 because the new Tools start with low recall
+corpus falls from 0.6645 to 0.6224 because the new Tools start with low recall
 (the 0.23 margin rejects near-duplicate Examples) and because of the costs
 below; it stays above the Map 1 baseline (96/162, 0.5926), which is untouched. Costs to
 existing Tools: `spotify.next` fell from 13 to 6 TP (recall 0.6190 to 0.2857)

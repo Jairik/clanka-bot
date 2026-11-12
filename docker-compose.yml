@@ -88,6 +88,10 @@ services:
       # NTFY_TOKEN must be issued by the ntfy server, never generated locally.
       NTFY_TOPIC: ${NTFY_TOPIC:-}
       NTFY_TOKEN: ${NTFY_TOKEN:-}
+      # GitHub Tools: fine-grained PAT for issues/PRs, and an optional classic
+      # PAT with only the notifications scope for github.notifications.
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GITHUB_NOTIFICATIONS_TOKEN: ${GITHUB_NOTIFICATIONS_TOKEN:-}
       TZ: ${TZ:-UTC}
     volumes:
       # The one SQLite database (ADR-0003). Only assistant mounts this volume;

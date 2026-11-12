@@ -173,13 +173,12 @@ step that sends a Notification during Quiet hours, or any missing Notification.
   assistant to use. Its issue write scope is needed for the issue test.
 - A classic PAT with the `notifications` scope only, for `GITHUB_NOTIFICATIONS_TOKEN`.
   This token is optional. Without it, the notifications Tool says so.
-- The two-token contract is in `assistant/tools/github/github.go`. Whether the
-  owner has accepted it is still open in #68. Confirm that before this section.
+- The two-token contract is in `assistant/tools/github/github.go`; the owner
+  chose it on 2026-11-12 (#68).
 
-**Manual step (no helper):** `docker-compose.yml` does not pass `GITHUB_TOKEN`
-or `GITHUB_NOTIFICATIONS_TOKEN` into the assistant container, so a value set
-only in `.env` does not reach the Tools. Set both in the Dashboard `/secrets`
-page. Do not rely on `.env` for these two names.
+Either set both tokens in `.env` (Compose passes them to the assistant as a
+bootstrap) or in the Dashboard `/secrets` page. A value stored on `/secrets`
+wins over `.env`.
 
 **Steps:**
 

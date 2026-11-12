@@ -503,7 +503,7 @@ func TestActivityTypedConfirmationYesAndNo(t *testing.T) {
 		t.Fatalf("first ask = %d", rec.Code)
 	}
 	pendingPage := f.page("/activity")
-	for _, want := range []string{"Agent path", "Confirmation pending", "Confirmation"} {
+	for _, want := range []string{"Agent path", "Confirmation pending", "Confirmation", "mail.send"} {
 		if !strings.Contains(pendingPage, want) {
 			t.Errorf("pending page lacks %q", want)
 		}
@@ -550,8 +550,10 @@ func TestActivityTypedPermissionTighteningConfirmsAndKeepsLocalOnly(t *testing.T
 		t.Fatalf("ask = %d", rec.Code)
 	}
 	pending := f.page("/activity")
-	if !strings.Contains(pending, "Confirmation pending") {
-		t.Fatalf("permission tightening did not arm a Confirmation:\n%s", pending)
+	for _, want := range []string{"Confirmation pending", "secret.read"} {
+		if !strings.Contains(pending, want) {
+			t.Fatalf("permission tightening page lacks %q:\n%s", want, pending)
+		}
 	}
 
 	rec := f.ask("yes")

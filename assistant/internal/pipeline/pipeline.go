@@ -469,6 +469,14 @@ func (p *Pipeline) callAgent(ctx context.Context, req tool.Request, transcript s
 			Result:    string(call.Result),
 		})
 	}
+	if result.Pending != nil {
+		info, _ := p.registry.Info(result.Pending.Tool)
+		latency.AddToolCall(ctx, latency.ToolCallDetail{
+			Name:      result.Pending.Tool,
+			LocalOnly: info.LocalOnly,
+			Result:    "Confirmation required.",
+		})
+	}
 	reply.Tool = strings.Join(names, ",")
 }
 
@@ -487,6 +495,12 @@ func (p *Pipeline) callTool(ctx context.Context, req tool.Request, transcript, n
 		if errors.As(err, &required) {
 			pending, proposeErr := p.registry.Propose(name, args)
 			if proposeErr == nil {
+				// The Tool did not run; still show which call is waiting.
+				latency.AddToolCall(ctx, latency.ToolCallDetail{
+					Name:      name,
+					LocalOnly: info.LocalOnly,
+					Result:    "Confirmation required.",
+				})
 				return pending.Summary, "", &pending
 			}
 			err = proposeErr

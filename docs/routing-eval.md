@@ -8,8 +8,8 @@ misroute from the request log.
 ## What is checked in
 
 - `assistant/internal/pipeline/testdata/routing_eval.yaml` — the labelled
-  oracle. It has 20 positives for each of the eight Fast path Tools (160
-  total), 48 plain negatives, and 8 compound requests.
+  oracle. It has at least 20 positives for each Fast path Tool (266 total), 63
+  plain negatives, and 10 compound requests.
 - `assistant/internal/pipeline/testdata/routing_baseline.yaml` — the recorded
   Map 1 totals the real-MiniLM evaluation must not fall below.
 - `assistant/internal/pipeline/routing_eval_test.go` —
@@ -156,7 +156,16 @@ unchanged. The raw `ROUTING_EVAL_*` lines are in
 [`prototype-run/routing-eval-after-fixes.txt`](prototype-run/routing-eval-after-fixes.txt)
 for the pre-#44/#51 run.
 
-Plain negatives: **0 of 52** reached the Fast path. Compounds: **0 of 8**
+#63 added the four voice Tools and 80 positive voice utterances. The final run
+on the merged corpus is 165/266 (recall 0.6203) with precision 1.00, 0 of 63
+plain negatives and 0 of 10 compounds misrouted. `voice.set` resolves every
+positive; `voice.list`/`voice.current` are conservative because their
+paraphrases are close to each other, so their common exact phrasings are also
+Control phrases and the rest fall to the Agent path rather than guess. Per-Tool
+precision stays at 1.00 and each voice Tool has semantic true positives, so no
+Tool clears the floor only through Control phrases.
+
+Plain negatives: **0 of 63** reached the Fast path. Compounds: **0 of 10**
 reached the Fast path. Every Tool was exercised by the semantic router at
 least five times, so no Tool cleared the floor only because the Control phrase
 table happened to cover its positives. The timer and list confusions are the

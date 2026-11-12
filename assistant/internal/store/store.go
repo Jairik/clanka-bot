@@ -42,7 +42,11 @@ type migration struct {
 // Version 5 is the alert history: a fired Timer deletes its pending row in the
 // same transaction that opens a history row, so an at-most-once fire still
 // leaves a durable fired/ringing/stopped/missed record for crash recovery and
-// the later notification hook (#62).
+// the later notification hook (#62). Version 6 indexes custom Pocket TTS voice
+// states in voices/: the file, its size/mtime for replacement detection, the
+// model revision it was validated against, staleness, the last validation
+// error and the optional consent note. The active voice and rate are ordinary
+// settings rows.
 var migrations = []migration{
 	{
 		version: 1,
@@ -116,6 +120,27 @@ var migrations = []migration{
 			)`,
 			`CREATE INDEX alert_events_state ON alert_events (state)`,
 			`CREATE INDEX alert_events_fired_at ON alert_events (fired_at)`,
+		},
+	},
+	{
+		version: 6,
+		name:    "voices",
+		statements: []string{
+			// file is relative to the voices library. added_at and mod_time are
+			// Unix nanoseconds; validated_at is RFC3339. stale is set when TTS
+			// starts on a different model revision than the one recorded here.
+			`CREATE TABLE voices (
+				name               TEXT PRIMARY KEY,
+				file               TEXT NOT NULL,
+				size               INTEGER NOT NULL,
+				mod_time           INTEGER NOT NULL,
+				added_at           INTEGER NOT NULL,
+				validated_revision TEXT NOT NULL DEFAULT '',
+				validated_at       TEXT NOT NULL DEFAULT '',
+				stale              INTEGER NOT NULL DEFAULT 0,
+				last_error         TEXT NOT NULL DEFAULT '',
+				note               TEXT NOT NULL DEFAULT ''
+			)`,
 		},
 	},
 }

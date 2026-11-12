@@ -10,6 +10,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/tools/audiocontrol"
 	"github.com/Jairik/clanka-bot/assistant/tools/clock"
 	"github.com/Jairik/clanka-bot/assistant/tools/timer"
+	"github.com/Jairik/clanka-bot/assistant/tools/voice"
 	"github.com/Jairik/clanka-bot/assistant/tools/weather"
 	"gopkg.in/yaml.v3"
 )
@@ -26,6 +27,7 @@ func NewSet() *Set {
 		weather.NewModule(),
 		audiocontrol.NewModule(),
 		timer.NewModule(),
+		voice.NewModule(),
 	}}
 }
 

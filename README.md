@@ -182,6 +182,57 @@ curl -s -X POST localhost:8081/debug/announce \
 Quiet hours will hold and release the same queue; nothing is spoken while a
 hold is on.
 
+#### Voice library and rate
+
+Voice is a persistent setting, not a per-request choice. The library is the
+Pocket TTS voices warmed in the `tts` image (`TTS_VOICES`, default `alba`) plus
+pre-exported `.safetensors` voice states copied into `voices/` on the
+`assistant-data` volume. Compose mounts that folder read-only into `tts` at
+`/voices`; files are never baked into an image or committed. `voice.dir` may
+name another volume path, and `voice.tts_dir` is the same folder's path inside
+`tts`.
+
+Only `.safetensors` is accepted: `.pt`, `.pth` and other pickle-backed torch
+files are refused and never opened. A copied file is at most 32 MB and is
+checked in two stages on the next library rescan:
+
+1. A pure-Go header check: six `self_attn/cache` `F32 [2,1,N,16,64]` tensors
+   with `1 <= N <= 400`, six `F32`-paired `I64 [1]` `offset` tensors, and the
+   optional six `pad` tensors (12 or 18 entries), with contiguous in-file data
+   offsets. This is the same check #64 reuses before accepting an upload.
+2. A real TTS model smoke test (`voice-validate`) that loads the state and
+   generates audio. The model revision it passed against is recorded.
+
+`voice.set`, `voice.list`, `voice.current` and `voice.rate` are Local-only
+Tools; `voice.set` resolves the spoken name through the shared name matcher.
+`voice.name` and `voice.rate` are ordinary live settings, so the Dashboard and
+voice write the same stored override:
+
+```sh
+curl -s -X POST localhost:8081/debug/transcript \
+  -H 'Content-Type: application/json' -d '{"text":"use the jarvis voice"}'
+curl -s -X POST localhost:8081/debug/transcript \
+  -H 'Content-Type: application/json' -d '{"text":"what voices do you have"}'
+curl -s -X POST localhost:8081/debug/transcript \
+  -H 'Content-Type: application/json' -d '{"text":"speak faster"}'
+curl -s -X PUT localhost:8081/api/settings/voice.rate \
+  -H 'Content-Type: application/json' -d '{"value":1.2}'
+```
+
+The active voice warm-loads at startup; every other state loads on first use
+and stays cached in the `tts` process. If `tts` starts on a different model
+revision, unchanged custom voices are marked stale. If the active voice is one
+of them, startup falls back to the default built-in and queues exactly one
+Announcement; the stale entry stays listed so it can be re-exported on the
+desktop.
+
+`voice.rate` is a multiplier (`0.5`–`2.0`, default `1.0`). Pocket TTS 4.0.1
+has no native speed control, so the `tts` wrapper resamples its output: faster
+speech also raises pitch, and slower speech lowers it. There is no
+time-stretch; the bounded range keeps the artefact small. Selecting a different
+voice or rate re-synthesizes the cached Agent Filler in the background, so the
+spoken cue never keeps the old voice.
+
 Routing precision is measured against a labelled corpus with the real MiniLM
 model; the floor is 0.95 for every Tool, and ambiguous phrasing goes to the
 Agent path. See [docs/routing-eval.md](docs/routing-eval.md) to run the
@@ -413,8 +464,9 @@ are in [`docs/latency.md`](docs/latency.md). The latest dev-box numbers are in
 ## Tests
 
 ```sh
-make test   # Go tests, Compose checker and shell script tests
-python -m pytest tts/tests stt/tests   # needs `pip install wyoming pytest numpy`
+make test       # Go tests, Compose checker and shell script tests
+make tts-test   # Wyoming/pcm Python tests; needs `pip install wyoming pytest numpy`
+python -m pytest tts/tests stt/tests
 ```
 
 ## Deploying

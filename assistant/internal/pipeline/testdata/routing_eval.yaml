@@ -217,6 +217,96 @@ positives:
     - when is the egg timer done
     - how long until the pasta timer goes off
     - how long does the tea timer have left
+  voice.set:
+    # Changing the persistent voice. The name is resolved by the shared name
+    # matcher, so the corpus uses library-style names rather than inventing a
+    # catalogue.
+    - use the jarvis voice
+    - switch to the alba voice
+    - change your voice to jarvis
+    - set your voice to the alba voice
+    - can you talk in the jarvis voice
+    - please use the alba voice
+    - I want the jarvis voice
+    - make your voice jarvis
+    - change to the alba voice
+    - switch your voice to jarvis
+    - use jarvis as your voice
+    - I'd like you to use the jarvis voice
+    - can you change your voice to alba
+    - set the voice to jarvis
+    - talk in the alba voice
+    - speak in the jarvis voice
+    - use the jarvis voice from now on
+    - change your speaking voice to jarvis
+    - I want you to sound like jarvis
+    - switch to jarvis
+  voice.list:
+    # Enumerating the voice library: built-ins plus copied states.
+    - what voices do you have
+    - list the voices
+    - which voices can you do
+    - what voices are installed
+    - tell me the voices in your library
+    - show me the available voices
+    - what voices are available
+    - list your voices
+    - which voices do you know
+    - what voice options do I have
+    - what voices can you speak in
+    - tell me what voices you have
+    - show me your voice library
+    - which voices are loaded
+    - what are my voice choices
+    - can you list the voices
+    - what voices are in the library
+    - name the voices you can use
+    - what voices do you support
+    - give me the list of voices
+  voice.current:
+    # Asking about the voice speaking right now, not the catalogue.
+    - which voice is this
+    - what voice are you using
+    - what's your current voice
+    - which voice am I hearing
+    - tell me what voice you're speaking in
+    - what voice is selected
+    - which voice is active
+    - what voice are you speaking with
+    - what voice do you have now
+    - tell me which voice this is
+    - what is your voice right now
+    - which voice are you set to
+    - what voice is speaking
+    - am I hearing alba
+    - what's the voice you're using
+    - which voice did I pick
+    - what voice are you on
+    - tell me the current voice
+    - which voice is this speaking
+    - what voice setting is active
+  voice.rate:
+    # Changing the speech-rate multiplier, not music or speaker volume.
+    - speak faster
+    - talk faster
+    - speak a little slower
+    - slow down your voice
+    - speed up
+    - go back to normal speed
+    - can you speak faster
+    - please slow down
+    - talk more slowly
+    - speed up your speech
+    - slow your speaking down
+    - speak at normal speed
+    - can you speak a bit faster
+    - I want you to talk slower
+    - increase your speaking speed
+    - make your voice faster
+    - speak more quickly
+    - slow down a little
+    - return to your normal speaking rate
+    - can you slow down your voice
 negatives:
   - what's the capital of France
   - who wrote hamlet
@@ -272,6 +362,19 @@ negatives:
   - timer for the pasta
   - how long is left on the oven
   - what's the timer setting
+  # Voice-shaped but not a library or rate request: playback, volume, privacy,
+  # or a different voice service.
+  - play the jarvis song
+  - turn up the volume
+  - speak up
+  - talk to the agent
+  - what voices does Spotify have
+  - who is jarvis
+  - use the kitchen lights
+  - slow down the music
+  - change the voice memo settings on my phone
+  - speak after the tone
+  - make the music louder
 # Compound requests ask for more than one thing. They are kept separate so
 # the evaluation can report compound handling on its own.
 compounds:
@@ -283,6 +386,8 @@ compounds:
   - tell me the time then play some music
   - set a timer for 5 minutes and remind me to check the oven
   - stop talking and tell me the time
+  - change your voice to jarvis and speak faster
+  - tell me what voice you use and what time it is
 # Focus cases: the same shared word must reach whatever holds Focus. Each case
 # names the holders present, the phrase's intent, and which holder wins. An
 # empty handled_by means no present holder declares the intent, so the utterance

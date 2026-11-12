@@ -41,6 +41,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/toolpolicy"
 	"github.com/Jairik/clanka-bot/assistant/internal/tz"
 	"github.com/Jairik/clanka-bot/assistant/internal/voice"
+	"github.com/Jairik/clanka-bot/assistant/internal/voicelib"
 	"github.com/Jairik/clanka-bot/assistant/internal/wording"
 	"github.com/Jairik/clanka-bot/assistant/internal/wyoming"
 	"github.com/Jairik/clanka-bot/assistant/tools"
@@ -108,6 +109,41 @@ func run() error {
 		return fmt.Errorf("connection settings: %w", err)
 	}
 
+	// Speech is optional: without a TTS address the debug entry stays
+	// text-only. The client is created before the voice library so startup can
+	// learn the model revision and the built-in voices the image warmed.
+	var ttsClient *wyoming.Client
+	var ttsInfo wyoming.VoiceLibrary
+	var ttsDescribe wyoming.Info
+	if cfg.TTS.Addr != "" {
+		ttsClient = wyoming.NewClient(cfg.TTS.Addr, wyoming.WithTimeout(cfg.TTS.Timeout.Duration()))
+		ttsDescribe, ttsInfo = checkTTSService(logger, ttsClient, cfg.TTS.Addr)
+	}
+
+	// Describe is a second source when an older TTS service has no voice-info
+	// event; its advertised voices are still the warm built-ins.
+	if len(ttsInfo.Voices) == 0 {
+		for _, program := range ttsDescribe.TTS {
+			for _, advertised := range program.Voices {
+				ttsInfo.Voices = append(ttsInfo.Voices, advertised.Name)
+			}
+		}
+	}
+
+	// The voice library owns the copied .safetensors states and their validation
+	// revisions. It indexes files now; Rescan below runs the model smoke test
+	// against the live TTS revision once the settings service exists.
+	voiceSvc, err := voicelib.New(ctx, st, voicelib.Config{
+		Dir:      cfg.VoiceDir(),
+		TTSDir:   cfg.Voice.TTSDir,
+		Default:  cfg.TTS.Voice,
+		Builtins: ttsInfo.Voices,
+		Logger:   logger,
+	})
+	if err != nil {
+		return fmt.Errorf("voice library: %w", err)
+	}
+
 	// The Cue library indexes built-in sounds and WAV files dropped into the
 	// data volume's sounds/ folder. Cues render to the capture format so the
 	// wake path keeps the endpointing timing it already had (#18).
@@ -173,14 +209,11 @@ func run() error {
 
 	// Speech is optional: without a TTS address the debug entry stays text-only.
 	// The Filler audio is synthesized after the settings service resolves the
-	// live wording, so a stored override applies at startup.
+	// live wording, so a stored override applies at startup. The speaker's
+	// voice/rate source is bound to the settings service below.
 	var speechSpeaker *speech.Speaker
-	var ttsClient *wyoming.Client
-	var ttsVoice wyoming.Voice
-	if cfg.TTS.Addr != "" {
-		ttsClient = wyoming.NewClient(cfg.TTS.Addr, wyoming.WithTimeout(cfg.TTS.Timeout.Duration()))
-		checkTTSService(logger, ttsClient, cfg.TTS.Addr)
-		ttsVoice = wyoming.Voice{Name: cfg.TTS.Voice}
+	ttsVoice := wyoming.Voice{Name: cfg.TTS.Voice}
+	if ttsClient != nil {
 		speechSpeaker = speech.New(ttsClient, playSink, ttsVoice, logger)
 	}
 
@@ -278,6 +311,7 @@ func run() error {
 		Cues:          cues,
 		Ring:          ringEngine,
 		Names:         names,
+		Voices:        voiceSvc,
 	}
 	if speechSpeaker != nil {
 		deps.Speaker = speechSpeaker
@@ -323,6 +357,13 @@ func run() error {
 		modelDefault = defaultProvider.Model
 	}
 	defs = append(defs, agent.ModelDefinition(modelDefault, provider.Model))
+	// Voice name and rate are live settings shared with the Dashboard and the
+	// voice Tools. The name's config layer is tts.voice; the library adds the
+	// custom .safetensors entries once Rescan runs.
+	defs = append(defs, voiceSvc.Definitions(voicelib.DefinitionConfig{
+		Name: baseCfg.TTS.Voice,
+		Rate: baseCfg.Voice.Rate,
+	})...)
 	settingsSvc, err = settings.New(ctx, st, defs...)
 	if err != nil {
 		return fmt.Errorf("settings: %w", err)
@@ -337,6 +378,48 @@ func run() error {
 	// change applies on the next Cue. The shared serial sink keeps a Cue from
 	// overlapping a reply.
 	cues.Bind(settingsSvc, playSink)
+	// Bind the voice library to the same live settings service. The first
+	// rescan records the TTS revision, smoke-tests copied files, and falls back
+	// an unusable active voice before the speaker is bound or a reply starts.
+	voiceSvc.Bind(settingsSvc)
+	voiceCtx, cancelVoice := context.WithTimeout(ctx, 5*time.Minute)
+	var voiceProbe voicelib.Probe
+	if ttsClient != nil {
+		voiceProbe = voicelib.NewTTSProbe(ttsClient, cfg.TTS.Timeout.Duration())
+	}
+	if err := voiceSvc.Rescan(voiceCtx, voiceProbe); err != nil {
+		// A library problem must not stop speech: the built-in default still
+		// works, and the next rescan can index the files.
+		logger.Warn("voice library rescan failed", "error", err.Error())
+	}
+	if fallback, err := voiceSvc.EnsureActive(voiceCtx); err != nil {
+		logger.Warn("voice fallback failed", "error", err.Error())
+	} else if fallback != nil && announcements != nil {
+		// Exactly one Announcement for the stale active voice. The setting is
+		// now the default built-in, so a later rescan or turn cannot repeat it.
+		announcements.Enqueue(fmt.Sprintf(
+			"The %s voice needs re-exporting for the updated speech model, so I'm using %s.",
+			fallback.From, fallback.To))
+	}
+	if ttsClient != nil {
+		// Warm the active voice now; other voices load on first use and stay
+		// cached in the TTS process.
+		if ref, _, ok := voiceSvc.ActiveSpeech(); ok {
+			warmCtx, cancelWarm := context.WithTimeout(voiceCtx, cfg.TTS.Timeout.Duration())
+			if err := ttsClient.WarmVoice(warmCtx, ref); err != nil {
+				logger.Warn("voice warm-load failed", "voice", ref, "error", err.Error())
+			}
+			cancelWarm()
+		}
+	}
+	cancelVoice()
+	// Every reply, Filler and alert reads the same live voice/rate snapshot.
+	if speechSpeaker != nil {
+		speechSpeaker.BindVoice(func() speech.VoiceSettings {
+			voice, rate := currentSpeechVoice(voiceSvc)
+			return speech.VoiceSettings{Voice: voice, Rate: rate}
+		})
+	}
 
 	// The Timer module already attached ringEngine before its recovery. Only
 	// the missed hook and shutdown wait remain to wire here; #62 replaces the
@@ -372,14 +455,29 @@ func run() error {
 	var filler *speech.Filler
 	var synthFiller wording.FillerSynth
 	if ttsClient != nil {
-		filler = loadAgentFiller(logger, ttsClient, ttsVoice, settingsSvc.String(wording.FillerKey), cfg.TTS.Timeout.Duration())
+		voice, rate := currentSpeechVoice(voiceSvc)
+		filler = loadAgentFiller(logger, ttsClient, voice, rate, settingsSvc.String(wording.FillerKey), cfg.TTS.Timeout.Duration())
 		synthFiller = func(ctx context.Context, text string) (*speech.Filler, error) {
 			ctx, cancel := context.WithTimeout(ctx, cfg.TTS.Timeout.Duration())
 			defer cancel()
-			return speech.SynthesizeFiller(ctx, ttsClient, ttsVoice, text)
+			voice, rate := currentSpeechVoice(voiceSvc)
+			return speech.SynthesizeFiller(ctx, ttsClient, voice, text, wyoming.WithRate(rate))
 		}
 	}
-	wordingMgr, err := wording.NewManager(settingsSvc, wordingSetup, filler, synthFiller, logger)
+	// The wording worker keeps the single settings observer. The extra keys and
+	// signature make a voice/rate change re-synthesize the cached Filler, so
+	// the spoken cue never keeps the old voice forever.
+	wordingMgr, err := wording.NewManager(settingsSvc, wordingSetup, filler, synthFiller, logger,
+		wording.WithFillerKeys(voicelib.KeyName, voicelib.KeyRate),
+		wording.WithFillerSignature(func() string {
+			ref, rate, ok := voiceSvc.ActiveSpeech()
+			if !ok {
+				ref = voiceSvc.DefaultName()
+				rate = voiceSvc.Rate()
+			}
+			return fmt.Sprintf("%s@%.2f", ref, rate)
+		}),
+	)
 	if err != nil {
 		return err
 	}
@@ -601,6 +699,10 @@ func run() error {
 		"store", st.Path(),
 		"settings", len(settingsSvc.List()),
 		"sounds", len(cues.List()),
+		"voices", len(voiceSvc.List()),
+		"voice", settingsSvc.String(voicelib.KeyName),
+		"voice_rate", settingsSvc.Float(voicelib.KeyRate),
+		"voice_revision", voiceSvc.Revision(),
 		"timezone", zone.Name(),
 		"speech", cfg.TTS.Addr != "",
 		"tts_addr", cfg.TTS.Addr,
@@ -679,10 +781,10 @@ func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingD
 
 // loadAgentFiller caches the Agent path cue before the HTTP server starts. A
 // TTS failure is not fatal: replies still work, just without the immediate cue.
-func loadAgentFiller(logger *slog.Logger, client *wyoming.Client, voice wyoming.Voice, text string, timeout time.Duration) *speech.Filler {
+func loadAgentFiller(logger *slog.Logger, client *wyoming.Client, voice wyoming.Voice, rate float64, text string, timeout time.Duration) *speech.Filler {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	filler, err := speech.SynthesizeFiller(ctx, client, voice, text)
+	filler, err := speech.SynthesizeFiller(ctx, client, voice, text, wyoming.WithRate(rate))
 	if err != nil {
 		logger.Warn("agent filler unavailable", "error", err.Error())
 		return nil
@@ -691,15 +793,28 @@ func loadAgentFiller(logger *slog.Logger, client *wyoming.Client, voice wyoming.
 	return filler
 }
 
-// checkTTSService logs whether the TTS service answers describe. A failure is
-// not fatal: the text reply still works and compose gates startup anyway.
-func checkTTSService(logger *slog.Logger, client *wyoming.Client, addr string) {
+// currentSpeechVoice resolves the live active voice and rate. The default
+// built-in is the final fallback, so speech never depends on a stale state.
+func currentSpeechVoice(service *voicelib.Service) (wyoming.Voice, float64) {
+	if service != nil {
+		if ref, rate, ok := service.ActiveSpeech(); ok {
+			return wyoming.Voice{Name: ref}, rate
+		}
+		return wyoming.Voice{Name: service.DefaultName()}, service.Rate()
+	}
+	return wyoming.Voice{}, 1.0
+}
+
+// checkTTSService logs whether the TTS service answers describe and voice-info.
+// A failure is not fatal: the text reply still works and compose gates startup
+// anyway.
+func checkTTSService(logger *slog.Logger, client *wyoming.Client, addr string) (wyoming.Info, wyoming.VoiceLibrary) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	info, err := client.Describe(ctx)
 	if err != nil {
 		logger.Warn("tts not ready", "addr", addr, "error", err.Error())
-		return
+		return wyoming.Info{}, wyoming.VoiceLibrary{}
 	}
 	voices := 0
 	streaming := false
@@ -708,6 +823,14 @@ func checkTTSService(logger *slog.Logger, client *wyoming.Client, addr string) {
 		streaming = streaming || program.SupportsSynthesizeStreaming
 	}
 	logger.Info("tts ready", "addr", addr, "programs", len(info.TTS), "voices", voices, "streaming", streaming)
+	voiceInfo, err := client.VoiceInfo(ctx)
+	if err != nil {
+		// An older wrapper without the custom events still serves built-ins
+		// from describe; only custom-state staleness needs the revision.
+		logger.Warn("tts voice-info unavailable", "addr", addr, "error", err.Error())
+		return info, wyoming.VoiceLibrary{}
+	}
+	return info, voiceInfo
 }
 
 // currentCity returns the resolved city for the startup log, or "" when no

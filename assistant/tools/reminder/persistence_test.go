@@ -346,3 +346,71 @@ func TestDowntimeSummaryDropDoesNotLogTheMessage(t *testing.T) {
 		t.Fatalf("recovery logs lost the dropped-summary count:\n%s", output)
 	}
 }
+
+// blockingSpeaker holds the message until its context is cancelled, so a test
+// can cancel a Reminder that already fired and is speaking now.
+type blockingSpeaker struct{ started chan struct{} }
+
+func (s *blockingSpeaker) SayText(ctx context.Context, _ string) error {
+	select {
+	case s.started <- struct{}{}:
+	default:
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+// TestCancelStopsARingingReminder covers the Dashboard's active row: the
+// pending row is gone, but cancelling by the reminder id still ends the speech
+// and records stopped/cancel.
+func TestCancelStopsARingingReminder(t *testing.T) {
+	st := openReminderStore(t, filepath.Join(t.TempDir(), "assistant.db"))
+	t.Cleanup(func() { st.Close() })
+	speaker := &blockingSpeaker{started: make(chan struct{}, 1)}
+	queue := announce.New(speaker, testLogger())
+	t.Cleanup(queue.Close)
+	m := reminder.NewManager(reminder.Options{Speaker: speaker, Queue: queue, Logger: testLogger()})
+	if err := m.AttachStore(st); err != nil {
+		t.Fatalf("AttachStore: %v", err)
+	}
+	t.Cleanup(m.Close)
+
+	item, err := m.StartDuration("check the oven", 20*time.Millisecond)
+	if err != nil {
+		t.Fatalf("StartDuration: %v", err)
+	}
+	select {
+	case <-speaker.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the Reminder never started speaking")
+	}
+	if got := m.List(); len(got) != 0 {
+		t.Fatalf("pending Reminders after firing = %+v, want none", got)
+	}
+
+	cancelled, err := m.Cancel(item.ID)
+	if err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	if cancelled != 1 {
+		t.Fatalf("Cancel reported %d, want the active Reminder cancelled", cancelled)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		events, err := m.History(10)
+		if err != nil {
+			t.Fatalf("History: %v", err)
+		}
+		for _, event := range events {
+			if event.Kind == "reminder" && event.SourceID == item.ID {
+				if event.State == alertstore.StateStopped && event.EndedBy == "cancel" {
+					return
+				}
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("history did not record stopped/cancel: %+v", events)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}

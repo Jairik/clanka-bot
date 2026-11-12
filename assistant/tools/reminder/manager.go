@@ -106,6 +106,12 @@ type Manager struct {
 	wg      sync.WaitGroup
 	seq     int
 	entries map[string]*entry
+
+	// active holds one cancellable playback context per fired Reminder, keyed by
+	// the id its history row uses, so a cancel can stop a message that is
+	// already speaking or waiting in the Announcement queue.
+	active    map[string]context.CancelFunc
+	cancelled map[string]bool
 }
 
 // NewManager builds an empty manager.
@@ -117,14 +123,16 @@ func NewManager(opts Options) *Manager {
 		opts.Logger = slog.Default()
 	}
 	return &Manager{
-		now:     opts.Now,
-		logger:  opts.Logger,
-		zone:    opts.Zone,
-		speaker: opts.Speaker,
-		queue:   opts.Queue,
-		cues:    opts.Cues,
-		quiet:   opts.Quiet,
-		entries: make(map[string]*entry),
+		now:       opts.Now,
+		logger:    opts.Logger,
+		zone:      opts.Zone,
+		speaker:   opts.Speaker,
+		queue:     opts.Queue,
+		cues:      opts.Cues,
+		quiet:     opts.Quiet,
+		entries:   make(map[string]*entry),
+		active:    make(map[string]context.CancelFunc),
+		cancelled: make(map[string]bool),
 	}
 }
 
@@ -266,7 +274,38 @@ func (m *Manager) fire(id string) {
 		m.logger.Warn("reminder dropped: the Announcement queue is not configured", "reminder_id", r.ID)
 		return
 	}
-	if !queue.EnqueueAlert(func(ctx context.Context) error { return m.speakAlert(ctx, eventID, r) }) {
+	// A fired Reminder has no pending row, so its only cancel handle is this
+	// playback context, kept until the queue item finishes.
+	activeCtx, activeCancel := context.WithCancel(context.Background())
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		activeCancel()
+		m.finishEvent(eventID, alertstore.StateInterrupted, "shutdown")
+		return
+	}
+	m.active[r.ID] = activeCancel
+	m.mu.Unlock()
+	release := func() {
+		activeCancel()
+		m.mu.Lock()
+		delete(m.active, r.ID)
+		delete(m.cancelled, r.ID)
+		m.mu.Unlock()
+	}
+	play := func(queueCtx context.Context) error {
+		// The active entry lives until the queue worker finishes this item, so
+		// a cancel can reach a message that is still waiting its turn.
+		defer release()
+		// Mirror a manager cancel into the queue's own barge-in context.
+		ctx, cancel := context.WithCancel(queueCtx)
+		defer cancel()
+		stop := context.AfterFunc(activeCtx, cancel)
+		defer stop()
+		return m.speakAlert(ctx, eventID, r)
+	}
+	if !queue.EnqueueAlert(play) {
+		release()
 		m.finishEvent(eventID, alertstore.StateMissed, "unavailable")
 		m.logger.Warn("reminder dropped: the Announcement queue is closed", "reminder_id", r.ID)
 	}
@@ -284,10 +323,16 @@ func (m *Manager) speakAlert(ctx context.Context, eventID int64, r Reminder) err
 		m.finishEvent(eventID, alertstore.StateInterrupted, "shutdown")
 		return nil
 	}
+	if m.ringCancelled(r.ID) {
+		// A dashboard or voice cancel was asked for before this item reached
+		// the worker; record the user's intent, not a barge-in.
+		m.finishEvent(eventID, alertstore.StateStopped, "cancel")
+		return nil
+	}
 	m.markRinging(eventID)
 	if err := m.playCue(ctx); err != nil {
 		if ctx.Err() != nil {
-			m.finishEvent(eventID, alertstore.StateInterrupted, "barge_in")
+			m.finishInterrupted(eventID, r.ID)
 			return err
 		}
 		// A missing or broken Cue must not drop the spoken message.
@@ -300,7 +345,7 @@ func (m *Manager) speakAlert(ctx context.Context, eventID int64, r Reminder) err
 	}
 	if err := m.speak(ctx, r.Message); err != nil {
 		if ctx.Err() != nil {
-			m.finishEvent(eventID, alertstore.StateInterrupted, "barge_in")
+			m.finishInterrupted(eventID, r.ID)
 			return err
 		}
 		m.finishEvent(eventID, alertstore.StateMissed, "unavailable")
@@ -310,6 +355,23 @@ func (m *Manager) speakAlert(ctx context.Context, eventID int64, r Reminder) err
 	m.finishEvent(eventID, alertstore.StateStopped, "spoken")
 	m.logger.Info("reminder spoken", "reminder_id", r.ID)
 	return nil
+}
+
+// ringCancelled reports whether a cancel asked for this fired Reminder.
+func (m *Manager) ringCancelled(id string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cancelled[id]
+}
+
+// finishInterrupted records a cancelled playback as a user cancel when the
+// manager stopped it, or a barge-in otherwise.
+func (m *Manager) finishInterrupted(eventID int64, id string) {
+	if m.ringCancelled(id) {
+		m.finishEvent(eventID, alertstore.StateStopped, "cancel")
+		return
+	}
+	m.finishEvent(eventID, alertstore.StateInterrupted, "barge_in")
 }
 
 // playCue resolves the live Cue, scales it for Quiet hours and plays it once.
@@ -363,7 +425,21 @@ func (m *Manager) Cancel(id string) (int, error) {
 			ids = append(ids, key)
 		}
 	}
-	return m.cancelLocked(ids, "reminder_id")
+	cancelled, err := m.cancelLocked(ids, "reminder_id")
+	if err != nil {
+		return cancelled, err
+	}
+	if id != "" {
+		if cancel := m.active[id]; cancel != nil {
+			// A fired Reminder has no pending row; mark the active playback so
+			// its history row records stopped/cancel, then stop it.
+			m.cancelled[id] = true
+			cancel()
+			cancelled++
+			m.logger.Info("reminder playback cancelled", "reminder_id", id)
+		}
+	}
+	return cancelled, nil
 }
 
 // CancelQuery stops every Reminder whose message contains query. An empty
@@ -430,6 +506,10 @@ func (m *Manager) Close() {
 	for id, e := range m.entries {
 		e.stop.Stop()
 		delete(m.entries, id)
+	}
+	for id, cancel := range m.active {
+		cancel()
+		delete(m.active, id)
 	}
 	m.mu.Unlock()
 	m.wg.Wait()

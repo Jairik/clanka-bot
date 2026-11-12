@@ -189,6 +189,11 @@ func Add[In, Out any](r *Registry, t Tool[In, Out]) error {
 	// Agent-only is a routing declaration, not a missing renderer. Reject the
 	// Fast path hooks so a later edit cannot half-add the Tool back to that path.
 	if t.AgentOnly {
+		// Local-only Tools are hidden from the Agent path, so pairing the two
+		// would leave no caller at all. A confirm-Agent Tool is still allowed.
+		if t.LocalOnly == LocalOnlyYes {
+			return fmt.Errorf("tool %q: AgentOnly cannot be LocalOnly: no path could call it", t.Name)
+		}
 		if len(t.Examples) > 0 {
 			return fmt.Errorf("tool %q: AgentOnly must not declare Examples", t.Name)
 		}

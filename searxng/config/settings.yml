@@ -28,9 +28,9 @@ search:
     - json
 
 outgoing:
-  # The assistant's Tool budget is 1.5 s per search. Let one slow engine time
-  # out rather than hold the whole turn open; SearXNG answers with whatever
-  # the other engines returned.
+  # SearXNG gives each engine 1.5 s; the assistant allows 2.5 s for the whole
+  # search. Let one slow engine time out rather than hold the turn open;
+  # SearXNG answers with whatever the other engines returned.
   request_timeout: 1.5
   # Three engines per request; the default pool is sized for a public site.
   pool_connections: 20

@@ -23,7 +23,7 @@ A Tool whose results must never leave the Pi, so the Agent path can neither see 
 _Avoid_: Private tool, offline tool, sensitive tool
 
 **Agent-only Tool**:
-A Tool the semantic Fast path must never choose, so only the Agent path can call it. It declares `AgentOnly` and has no matching Examples or Extract; the name is listed for the Agent's tool set, not the Fast path index.
+A Tool the semantic Fast path must never choose, so only the Agent path can call it. It declares `AgentOnly` and has no matching Examples or Extract; the name is listed for the Agent's tool set, not the Fast path index. `LocalOnlyYes` with `AgentOnly` is rejected at registration, because then no path could call it.
 _Avoid_: Hidden Tool, private tool, non-voice Tool
 
 **Public page fetch**:

@@ -189,7 +189,9 @@ exist to route a Tool the Fast path must not take. `Speak` stays optional: a
 Tool that otherwise renders a result (for example a confirmed action) may keep
 it. The Tool is still offered to the Agent path as long as it is not Local-only.
 Its conformance check then skips Example routing and instead asserts the
-metadata is not Fast-path eligible.
+metadata is not Fast-path eligible. Registration also rejects
+`LocalOnlyYes` + `AgentOnly`: the Fast path excludes the first and the Agent
+path excludes the second, so no caller could ever reach the Tool.
 
 An Agent-only Tool gets an explicit Agent integration test, not a routing
 positive: script the provider to call the Tool and assert the result reached

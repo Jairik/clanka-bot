@@ -100,6 +100,9 @@ func TestAgentAnswersWhoWonTheMatchWithWebSearch(t *testing.T) {
 	if !strings.Contains(string(firstTools), `"required":["query"]`) {
 		t.Fatalf("web.search schema does not require query: %s", firstTools)
 	}
+	if !strings.Contains(string(firstTools), "untrusted") {
+		t.Fatalf("the model was not told the Tool output is untrusted: %s", firstTools)
+	}
 
 	// The second provider request carries the real Tool result, so the
 	// scripted answer is grounded in the search, not guessed.

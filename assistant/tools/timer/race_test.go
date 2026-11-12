@@ -12,8 +12,10 @@ import (
 )
 
 // TestConcurrentSetCancelAndFire exercises the scheduler and cancel paths
-// together. Run it with -race; the assertion is narrow on purpose: a cancelled
-// Timer must never speak, and the Manager must not panic or deadlock.
+// together. Run it with -race; the assertions are narrow on purpose: a Timer
+// cancelled while it is still pending must never speak, a Timer cancelled
+// while its Ring is sounding must be stopped, and the Manager must not panic
+// or deadlock.
 func TestConcurrentSetCancelAndFire(t *testing.T) {
 	var spoken atomic.Int64
 	say := func(context.Context, string) error {
@@ -23,10 +25,7 @@ func TestConcurrentSetCancelAndFire(t *testing.T) {
 	m := timer.NewManager(nil, say, slog.Default())
 	defer m.Close()
 
-	var (
-		wg        sync.WaitGroup
-		cancelled atomic.Int64
-	)
+	var wg sync.WaitGroup
 	for i := 0; i < 80; i++ {
 		wg.Add(1)
 		go func(i int) {
@@ -37,20 +36,17 @@ func TestConcurrentSetCancelAndFire(t *testing.T) {
 				return
 			}
 			if i%2 == 0 {
-				n, err := m.CancelTimers(tm.ID)
-				if err != nil {
+				if _, err := m.CancelTimers(tm.ID); err != nil {
 					t.Errorf("CancelTimers: %v", err)
-					return
 				}
-				// A timer that fired before this call was not cancelled; only
-				// count the calls that actually removed an entry.
-				cancelled.Add(int64(n))
 			}
 		}(i)
 	}
 	wg.Wait()
 
-	// Let the uncancelled half fire, then stop any straggler.
+	// Let the uncancelled half fire, then stop any straggler. A cancel that
+	// raced an already-sounding Ring may count that Ring, which has already
+	// spoken; the deterministic batch below covers the never-speak promise.
 	deadline := time.Now().Add(2 * time.Second)
 	for spoken.Load() < 40 && time.Now().Before(deadline) {
 		time.Sleep(2 * time.Millisecond)
@@ -58,11 +54,30 @@ func TestConcurrentSetCancelAndFire(t *testing.T) {
 	if _, err := m.CancelTimers(""); err != nil {
 		t.Fatalf("CancelTimers(all): %v", err)
 	}
-	if got := spoken.Load(); got > 80-cancelled.Load() {
-		t.Fatalf("alerts = %d, want at most the %d timers that were not cancelled", got, 80-cancelled.Load())
-	}
 	if got := len(m.List()); got != 0 {
 		t.Fatalf("timers = %d after cancelling everything, want 0", got)
+	}
+
+	// A pending Timer cancelled before its deadline never speaks. A fresh
+	// Manager keeps the first phase's stragglers out of this assertion.
+	var silent atomic.Int64
+	m2 := timer.NewManager(nil, func(context.Context, string) error {
+		silent.Add(1)
+		return nil
+	}, slog.Default())
+	defer m2.Close()
+	for i := 0; i < 10; i++ {
+		tm, err := m2.Start("", 50*time.Millisecond)
+		if err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		if _, err := m2.CancelTimers(tm.ID); err != nil {
+			t.Fatalf("CancelTimers: %v", err)
+		}
+	}
+	time.Sleep(120 * time.Millisecond)
+	if got := silent.Load(); got != 0 {
+		t.Fatalf("alerts = %d, want the 10 cancelled Timers silent", got)
 	}
 }
 

@@ -45,7 +45,6 @@ type soundRowView struct {
 	Name     string
 	Duration string
 	Added    string
-	Builtin  bool
 	Origin   string
 	AudioURL string
 }
@@ -369,7 +368,6 @@ func (h *Handler) buildSoundsView(flash, errorText string, edit *editState) soun
 			Name:     entry.Name,
 			Duration: displayDuration(entry.Duration),
 			Added:    added,
-			Builtin:  entry.Builtin,
 			Origin:   origin,
 			AudioURL: "/sounds/audio/" + url.PathEscape(entry.Name),
 		})

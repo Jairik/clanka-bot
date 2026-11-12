@@ -54,10 +54,13 @@ curl -s -X POST localhost:8081/debug/transcript \
 If the IP lookup fails, the last known place is used, then the optional
 `location.fallback` values in config, then no place at all.
 
-Anything the Fast path does not handle goes to the Agent path, which needs an
-OpenRouter key in `.env` (`OPENROUTER_API_KEY`); without one it answers with
-the configured Unavailable message and the Fast path keeps working. Every
-provider request forces OpenRouter's `provider.zdr` and
+Anything the Fast path does not handle goes to the Agent path. Its OpenRouter
+key resolves from the write-only secrets store first, then the
+`OPENROUTER_API_KEY` environment variable in `.env`; either alone is enough,
+and the stored value wins. A key stored from the Dashboard takes effect on the
+next turn without a restart. Without any key the Agent path answers with the
+configured Unavailable message and the Fast path keeps working. Every provider
+request forces OpenRouter's `provider.zdr` and
 `provider.data_collection: "deny"` in code.
 
 Agent path replies are spoken as they are generated: the first chunk is flushed
@@ -68,9 +71,12 @@ cached, so it plays the moment a request is routed to the Agent path; an empty
 Filler is a startup error. The same cached phrase covers a slow Fast path Tool:
 if nothing has been said 1.5 seconds after you stop talking, it plays once. A
 request never plays it twice, and it never talks over an answer.
-Both published ports are bound to the host loopback only. The debug listener
-binds all interfaces inside the container (see `docker-compose.yml`), so the
-host port mapping is what keeps it local.
+All three published ports are bound to the host loopback only. The debug and
+Dashboard listeners bind all interfaces inside the container (see
+`docker-compose.yml`), so the host port mapping and their source-address checks
+are what keep them local. The Dashboard is disabled until
+`ASSISTANT_DASHBOARD_OWNER` is set and is meant to be reached through
+`tailscale serve`; see `docs/deploy.md`.
 
 ### Voice
 
@@ -170,8 +176,9 @@ one the alert scheduler reads, so a change applies without a restart. No
 timezone is ever guessed from an IP address.
 
 The JSON API is mounted under `/api/` on the localhost debug listener, never on
-the public health listener. The future authenticated Dashboard (#47) mounts the
-same handler behind Tailscale identity.
+the public health listener. The authenticated Dashboard mounts the same handler
+behind Tailscale identity. Settings, Tool overrides and Secrets share that
+handler.
 
 ```sh
 # List every effective value and the layer it came from.
@@ -187,6 +194,27 @@ curl -s -X PUT localhost:8081/api/tools/weather.current \
 curl -s -X DELETE localhost:8081/api/tools/weather.current
 ```
 
+### Secrets
+
+Secrets are write-only. A stored value wins over the `.env` bootstrap with the
+same name, and only metadata comes back: whether it is set, the last four
+characters (only for values of at least 12 characters), the update date and the
+active source (`store` or `env`). Values never appear in the settings API,
+logs or error responses. The database file is mode 0600, but it is unencrypted:
+back it up accordingly.
+
+```sh
+# Store or rotate the OpenRouter key. The value is never returned.
+curl -s -X PUT localhost:8081/api/secrets/OPENROUTER_API_KEY \
+  -H 'Content-Type: application/json' -d '{"value":"sk-or-v1-..."}'
+
+# Clear the stored value; the .env value applies again when present.
+curl -s -X DELETE localhost:8081/api/secrets/OPENROUTER_API_KEY
+```
+
+The secrets route is part of the same `/api/` handler as settings; it is mounted
+only on the localhost debug listener and behind the authenticated Dashboard.
+
 ### Audio
 
 Per [ADR-0001](docs/adr/0001-middleware-owns-all-audio-io.md), only the
@@ -196,8 +224,9 @@ read the host Pulse cookie, and plays through `pacat`. Set
 `ASSISTANT_PULSE_SINK` to a sink name from `pactl list short sinks`; empty uses
 the default sink. On the Pi this is the Echo Dot once Bluetooth A2DP is set up.
 
-Non-secret settings live in [`assistant/config.yaml`](assistant/config.yaml);
-`.env` holds deployment inputs only. An empty `tts.addr` disables spoken replies.
+Non-secret settings live in [`assistant/config.yaml`](assistant/config.yaml).
+`.env` holds deployment inputs and the secret bootstrap; a value stored through
+`/api/secrets` wins. An empty `tts.addr` disables spoken replies.
 
 ### Latency
 

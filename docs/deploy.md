@@ -112,6 +112,106 @@ ML services never touch audio devices.
       `systemctl enable docker` plus `restart: unless-stopped` covers reboots;
       there are no custom systemd units.
 
+### Dashboard over Tailscale
+
+The Dashboard is a separate listener served by `assistant`, using
+server-rendered Go templates and htmx. It is **off** until a Tailscale owner is
+configured, and it is meant to be reached only through `tailscale serve`, never
+published to the LAN or the internet.
+
+1. **Set the owner.** Put the exact login from `tailscale status --json` (or the
+   admin console) in `.env`, and keep the loopback port unless it clashes:
+
+   ```sh
+   ASSISTANT_DASHBOARD_PORT=8082
+   ASSISTANT_DASHBOARD_OWNER=you@example.com
+   ```
+
+   Then deploy or restart the assistant container. An empty owner disables the
+   listener. If you change `ASSISTANT_DASHBOARD_PORT`, use the same port in the
+   `tailscale serve` command below. `assistant/config.yaml` documents
+   `dashboard.owner`, `addr` and `health_timeout`.
+
+2. **Enable HTTPS on the tailnet** if it is not already on. `tailscale serve`
+   provisions the certificate for the Pi's `*.ts.net` name.
+
+3. **Proxy the loopback port from the Pi host**, not from inside a container:
+
+   ```sh
+   tailscale serve --bg 8082
+   tailscale serve status
+   ```
+
+   Serve sends `https://<pi-name>.<tailnet>.ts.net/` to
+   `http://127.0.0.1:8082`; opening that URL from any device in the tailnet
+   shows the Health page.
+
+4. **Limit the port to the owner in the tailnet policy.** Serve traffic is
+   subject to the ACL at the destination port, 443. A grant scoped to the Pi's
+   host alias does that, for example:
+
+   ```json
+   {
+     "hosts": {
+       "pi": "100.x.y.z"
+     },
+     "grants": [
+       {
+         "src": ["you@example.com"],
+         "dst": ["pi"],
+         "ip": ["tcp:443"]
+       }
+     ]
+   }
+   ```
+
+   If a broader rule already lets other members reach port 443 on the Pi, this
+   port is not isolated; narrow or remove that rule. Do not use
+   `tailscale funnel`: public traffic has no Tailscale identity headers, and the
+   Dashboard rejects it.
+
+**How the loopback boundary works.** Compose publishes the Dashboard on
+`127.0.0.1:8082` on the host and sets `ASSISTANT_DASHBOARD_ADDR=:8082` inside
+the container. Docker cannot reach a listener bound to `127.0.0.1` *inside* a
+container through a published port, so the container binds all interfaces just
+as the debug entry does. The host publication is still loopback-only. The
+handler refuses any request whose source is not loopback or the container's
+default gateway (the host) before it reads identity headers, and it ignores
+`X-Forwarded-For`. A LAN or tailnet client that somehow reaches the port
+directly therefore cannot authenticate by sending its own
+`Tailscale-User-Login`. Never add a LAN/WAN port mapping for 8082.
+
+`tailscale serve` strips client-supplied `Tailscale-*` headers and adds the
+authenticated `Tailscale-User-Login`. The Dashboard requires exactly one such
+header and compares it to the configured owner; other identities, missing
+headers, duplicate headers and tagged devices are refused with 403.
+
+Check the listener locally:
+
+```sh
+# No identity header: rejected.
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8082/health
+
+# The configured owner: 200 and the Health page.
+curl -s -H 'Tailscale-User-Login: you@example.com' http://127.0.0.1:8082/health | head
+```
+
+The second command is only a local smoke test; from another device use the
+HTTPS `*.ts.net` URL, which carries the real identity.
+
+The Dashboard also mounts the settings/Tool-override API under `/api/`
+(`/api/settings`, `/api/tools`) behind the same identity check. Mutating API
+requests must be same-origin; the debug listener keeps its own localhost-only
+mount of the same handler.
+
+The Health page shows the five current Compose services (`embed`, `assistant`,
+`wakeword`, `stt`, `tts`), the resolved location and each Tool module that
+declares a health check. `embed` is checked over HTTP `/healthz`; the three
+Wyoming services are checked with `describe`; `assistant` is the process serving
+the page. One refresh is bounded by `dashboard.health_timeout` (3 s), and checks
+that overrun are shown as timed out. These are endpoint checks, not Docker's
+container health field.
+
 ### Audio and the Echo Dot
 
 - [ ] Install the host audio stack (PipeWire with its PulseAudio-compatible
@@ -143,15 +243,18 @@ ML services never touch audio devices.
 - [ ] Create the host-local `.env` and adjust it:
       `cd ~/clanka-bot && cp .env.example .env`, set `TZ`, ports,
       `ASSISTANT_PULSE_SINK` and `ASSISTANT_PULSE_SOURCE` (the `parec` source
-      from `pactl list short sources`). `.env` is gitignored and never baked
-      into an image.
+      from `pactl list short sources`), and set `ASSISTANT_DASHBOARD_OWNER` to
+      your Tailscale login if you want the Dashboard (empty disables it).
+      `.env` is gitignored and never baked into an image.
 - [ ] `make check`
 - [ ] `make deploy` (or `scripts/deploy.sh`)
 - [ ] Verify: `docker compose ps`, `curl -s localhost:8080/healthz`
 - [ ] The `assistant-data` volume holds the SQLite database (ADR-0003). It
       survives container restarts and image rebuilds, and only `assistant`
-      mounts it. `docker compose down -v` deletes it: back it up first if the
-      settings matter.
+      mounts it. It holds settings overrides and unencrypted secrets (API keys,
+      tokens) in a file mode 0600; treat a backup like the secrets it contains.
+      `docker compose down -v` deletes it: back it up first if the settings or
+      secrets matter.
 - [ ] Reboot once and confirm the stack comes back without a login.
 
 ## Image tags and rollback

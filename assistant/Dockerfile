@@ -17,5 +17,5 @@ COPY config.yaml /app/config.yaml
 RUN mkdir -p /app/data && chmod 0777 /app/data
 WORKDIR /app
 USER assistant
-EXPOSE 8080 8081
+EXPOSE 8080 8081 8082
 ENTRYPOINT ["/usr/local/bin/assistant"]

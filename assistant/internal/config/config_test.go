@@ -3,6 +3,7 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -119,6 +120,88 @@ func TestLoadAppliesDefaultsForOmittedFields(t *testing.T) {
 	}
 	if len(cfg.Agent.RequestPrefixes) == 0 {
 		t.Error("Agent.RequestPrefixes is empty")
+	}
+}
+
+func TestLoadDefaultsTheDashboardToDisabled(t *testing.T) {
+	cfg, err := config.Load(writeConfig(t, "{}\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Dashboard.Owner != "" {
+		t.Errorf("Dashboard.Owner = %q, want empty", cfg.Dashboard.Owner)
+	}
+	if cfg.Dashboard.Enabled() {
+		t.Error("Dashboard.Enabled() = true, want false without an owner")
+	}
+	if cfg.Dashboard.Addr != "127.0.0.1:8082" {
+		t.Errorf("Dashboard.Addr = %q, want 127.0.0.1:8082", cfg.Dashboard.Addr)
+	}
+	if cfg.Dashboard.HealthTimeout.Duration() != 3*time.Second {
+		t.Errorf("Dashboard.HealthTimeout = %s, want 3s", cfg.Dashboard.HealthTimeout.Duration())
+	}
+}
+
+func TestLoadEnablesTheDashboardWithALoopbackOrContainerAddress(t *testing.T) {
+	for _, addr := range []string{"127.0.0.1:8082", "[::1]:8082", "localhost:8082", ":8082", "0.0.0.0:8082"} {
+		t.Run(addr, func(t *testing.T) {
+			cfg, err := config.Load(writeConfig(t, "dashboard:\n  owner: alice@example.com\n  addr: \""+addr+"\"\n"))
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if !cfg.Dashboard.Enabled() {
+				t.Error("Dashboard.Enabled() = false, want true")
+			}
+			if cfg.Dashboard.Addr != addr {
+				t.Errorf("Dashboard.Addr = %q, want %q", cfg.Dashboard.Addr, addr)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsADashboardOnALANAddress(t *testing.T) {
+	_, err := config.Load(writeConfig(t, "dashboard:\n  owner: alice@example.com\n  addr: \"192.168.1.10:8082\"\n"))
+	if err == nil {
+		t.Fatal("Load succeeded, want a loopback-only Dashboard error")
+	}
+	if !strings.Contains(err.Error(), "dashboard.addr") {
+		t.Errorf("error = %v, want dashboard.addr", err)
+	}
+}
+
+func TestLoadRejectsMalformedDashboardSettings(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"no address", "dashboard:\n  owner: alice@example.com\n  addr: \"\"\n"},
+		{"missing port", "dashboard:\n  owner: alice@example.com\n  addr: \"127.0.0.1\"\n"},
+		{"bad port", "dashboard:\n  owner: alice@example.com\n  addr: \"127.0.0.1:http\"\n"},
+		{"owner with spaces", "dashboard:\n  owner: \"alice @ example.com\"\n"},
+		{"zero health timeout", "dashboard:\n  owner: alice@example.com\n  health_timeout: 0s\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := config.Load(writeConfig(t, tt.body)); err == nil {
+				t.Fatal("Load succeeded, want error")
+			}
+		})
+	}
+}
+
+func TestLoadAppliesDashboardEnvironmentOverrides(t *testing.T) {
+	t.Setenv("ASSISTANT_DASHBOARD_OWNER", "alice@example.com")
+	t.Setenv("ASSISTANT_DASHBOARD_ADDR", ":7082")
+
+	cfg, err := config.Load(writeConfig(t, "{}\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Dashboard.Owner != "alice@example.com" {
+		t.Errorf("Dashboard.Owner = %q", cfg.Dashboard.Owner)
+	}
+	if cfg.Dashboard.Addr != ":7082" {
+		t.Errorf("Dashboard.Addr = %q", cfg.Dashboard.Addr)
 	}
 }
 

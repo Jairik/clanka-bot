@@ -1,0 +1,25 @@
+{{define "layout"}}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Assistant · Dashboard</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <!-- htmx is vendored: no build step, and no internet access at runtime. -->
+  <script src="/static/htmx.min.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#main">Skip to content</a>
+  <header class="top">
+    <div class="brand">assistant<span>·</span>dashboard</div>
+    <nav aria-label="Dashboard">
+      <a href="/health" aria-current="page">Health</a>
+    </nav>
+    <div class="who">{{.Owner}}</div>
+  </header>
+  <main id="main">
+    {{template "content" .}}
+  </main>
+  <footer>Tailnet only · server-rendered Go templates + htmx</footer>
+</body>
+</html>{{end}}

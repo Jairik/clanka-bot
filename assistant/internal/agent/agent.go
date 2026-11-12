@@ -29,8 +29,14 @@ const (
 
 // Settings is the Agent path's runtime configuration (non-secret).
 type Settings struct {
-	BaseURL      string
-	APIKeyEnv    string
+	BaseURL string
+	// APIKeyEnv is the environment bootstrap for the provider key. It is the
+	// fallback when APIKey is nil and the variable name the secrets service
+	// declares for the Dashboard write.
+	APIKeyEnv string
+	// APIKey, when set, resolves the key per request so a stored secret takes
+	// effect without a restart. The stored value wins over APIKeyEnv.
+	APIKey       func() string
 	Model        string
 	Headers      map[string]string
 	Routing      map[string]any

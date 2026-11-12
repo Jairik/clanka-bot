@@ -1,4 +1,5 @@
-# Non-secret assistant settings. Secrets belong in .env, never here.
+# Non-secret assistant settings. Secrets belong in .env or the write-only
+# secrets store, never here.
 
 http:
   # Health endpoint. Docker publishes this on the host loopback only.
@@ -12,10 +13,25 @@ debug:
   # published port is already bound to 127.0.0.1 on the host.
   addr: "127.0.0.1:8081"
 
+dashboard:
+  # Tailscale login allowed to use the Dashboard. Empty disables the listener,
+  # so a fresh checkout exposes no web UI. Set this to the login reported by
+  # `tailscale status --json`, then expose the loopback port with
+  # `tailscale serve` and an owner-only ACL (docs/deploy.md).
+  owner: ""
+  # Loopback listener. Compose overrides this to ":8082" because a
+  # container-bound 127.0.0.1 is unreachable through Docker's published port;
+  # the host mapping is still 127.0.0.1 only.
+  addr: "127.0.0.1:8082"
+  # One Health page refresh, covering every service and module check. Checks
+  # that overrun are shown as timed out; no request waits longer than this.
+  health_timeout: 3s
+
 data:
-  # The one SQLite database (ADR-0003): settings overrides today, secrets and
-  # alerts later. Compose mounts the assistant-data volume at /app/data and
-  # sets ASSISTANT_DATA_DIR; local runs default to ./data.
+  # The one SQLite database (ADR-0003): settings overrides, write-only secrets
+  # and alerts. Compose mounts the assistant-data volume at /app/data and sets
+  # ASSISTANT_DATA_DIR; local runs default to ./data. The file is mode 0600 and
+  # unencrypted, so treat a backup like the secrets it contains.
   dir: "data"
 
 # The IANA timezone clock-time Alarms and Reminders are interpreted in. This is
@@ -169,7 +185,8 @@ agent:
   providers:
     openrouter:
       base_url: https://openrouter.ai/api/v1
-      # The key lives only in the environment, never in this file.
+      # The key resolves from the write-only secrets table first, then this
+      # environment variable. Set it through /api/secrets or .env; never here.
       api_key_env: OPENROUTER_API_KEY
       model: deepseek/deepseek-v4.1-flash
       # Written second choice for a manual switch only. There is no runtime

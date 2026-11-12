@@ -34,6 +34,13 @@ func (s *Set) Modules() []tool.Module {
 	return append([]tool.Module(nil), s.modules...)
 }
 
+// SecretNames reports every secret declared by the modules, in module order,
+// with duplicates collapsed. main adds the Agent provider's key name and hands
+// the list to the secrets service as the write-only allowlist.
+func (s *Set) SecretNames() []string {
+	return tool.SecretNames(s.modules...)
+}
+
 // RegisterAll configures each module from its tools.<name> section and adds
 // its Tools. A nil sections map uses the modules' code defaults.
 func (s *Set) RegisterAll(r *tool.Registry, deps tool.Deps, sections map[string]yaml.Node) error {

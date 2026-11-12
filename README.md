@@ -132,9 +132,14 @@ Timers are stored in the database and survive a restart. Give one a label
 the pasta timer"); `timer.list` is Local-only because labels can be private.
 On startup, a Timer up to two minutes overdue goes off immediately, while older
 ones are summarised in one Announcement. Timers speak an alert through the same
-TTS voice when they fire. The Control phrases `stop`, `pause`, `cancel` and
-`louder` are matched exactly, so they answer without waiting on the embed
-service (`cancel` cancels the timer and `louder` steps the volume up).
+TTS voice when they fire.
+
+The Control phrases `stop`, `pause`, `cancel` and `louder` are matched exactly,
+so they answer without waiting on the embed service. `stop`, `pause` and
+`cancel` are shared Focus intents: they act on a ringing Timer alert first,
+then the current reply, then playing music. With nothing in Focus they fall
+through to the semantic Fast path, so `cancel` still reaches `timer.cancel` and
+`louder` still steps the volume up.
 
 Speech the Assistant starts without being asked (a Reminder, a finished Hermes
 job) goes through one Announcement queue. It waits for the current reply to
@@ -215,6 +220,7 @@ There is no general hot-reload framework.
 | Key | Live effect |
 | --- | --- |
 | `tools.<name>.control_phrases` | The exact phrases that route to that Tool. A replacement applies to the next request. |
+| `focus.<intent>.phrases` | Exact phrases for one shared Focus intent (`stop`, `pause`, `resume`, `next`, `cancel`, `snooze`). They act on a ringing alert, the current reply or music; with nothing in Focus they fall through to the semantic Fast path. |
 | `tools.<name>.examples` | Semantic Fast path Examples. A change re-embeds in the background; routing keeps the old vectors until the new ones are ready, and a superseded rebuild is discarded. |
 | `agent.request_prefixes` | Prefixes that go straight to the Agent path. A change applies to the next request. |
 | `agent.filler` | The phrase played while the Agent path waits. A change re-synthesizes the cached audio in the background; the old audio plays until the new clip is ready, and at most one Filler still plays per request. |
@@ -229,6 +235,11 @@ curl -s -X PUT localhost:8081/api/settings/tools.time.now.control_phrases \
   -d '{"value":["what time is it","current time"]}'
 curl -s -X DELETE localhost:8081/api/settings/tools.time.now.control_phrases
 
+# Move "stop" to a different shared intent phrase, then reset it.
+curl -s -X PUT localhost:8081/api/settings/focus.stop.phrases \
+  -H 'Content-Type: application/json' -d '{"value":["stop","halt"]}'
+curl -s -X DELETE localhost:8081/api/settings/focus.stop.phrases
+
 # Change the Agent cue and the model-unreachable line.
 curl -s -X PUT localhost:8081/api/settings/agent.filler \
   -H 'Content-Type: application/json' -d '{"value":"Just a moment."}'
@@ -236,11 +247,12 @@ curl -s -X PUT localhost:8081/api/settings/agent.unavailable_message \
   -H 'Content-Type: application/json' -d '{"value":"I can't reach my brain right now."}'
 ```
 
-A blank phrase, a duplicate within one Tool's list, an unknown Tool, or a
-Control phrase pointing at a confirm Tool is rejected at write time. If two
-Tools ever claim the same normalized phrase (possible only through separate
-overrides), the phrase is dropped from the Control phrase table so it falls
-through to the semantic or Agent path instead of choosing an owner at random.
+A blank phrase, a duplicate within one list, an unknown Tool, an unknown
+intent, or a Control phrase pointing at a confirm Tool is rejected at write
+time. If two owners ever claim the same normalized phrase (two Tools, two
+intents, or a Tool and an intent; possible only through separate overrides),
+the phrase is dropped from the Control phrase table so it falls through to the
+semantic or Agent path instead of choosing an owner at random.
 
 ### Secrets
 

@@ -306,3 +306,18 @@ tools:
 	}
 	t.Fatal("Health returned no weather check")
 }
+
+// TestFocusIntentsListsTheModuleDeclarations keeps the startup log honest: the
+// one module list reports the shared intents each module can handle.
+func TestFocusIntentsListsTheModuleDeclarations(t *testing.T) {
+	got := tools.NewSet().FocusIntents()
+	want := []string{"timer:stop", "timer:cancel"}
+	if len(got) != len(want) {
+		t.Fatalf("FocusIntents() = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("FocusIntents()[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}

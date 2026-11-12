@@ -15,6 +15,10 @@ Run the sections in order. Later sections assume the earlier ones passed.
 - Use the Dashboard `/settings` page for live settings (for example
   `music.max_volume`). Do not edit `assistant/config.yaml` for a live test.
 - Commands use `docker compose` from the repo root unless a step says otherwise.
+- Always set `GIT_SHA` when you `docker compose up` a single service (as the
+  steps below do). Without it Compose falls back to a stale `clanka/<service>:dev`
+  image. `make deploy` sets it for you. `docker compose restart` keeps the
+  current image but does not re-read `.env`.
 - A box on a GitHub issue is ticked only by the owner, and only after the
   evidence is attached. This runbook does not tick boxes.
 - Mark each result `PASS`, `FAIL` or `NOT RUN`. `NOT RUN` never counts as a
@@ -62,7 +66,7 @@ phone or laptop. The Pi's MagicDNS name.
 2. Restart the assistant so it reads the new values:
 
    ```sh
-   docker compose up -d assistant
+   GIT_SHA=$(git rev-parse --short HEAD) docker compose up -d assistant
    ```
 
 3. Publish the Dashboard over Tailscale, and check the serve status:
@@ -128,7 +132,7 @@ random topic name. Do not reuse a public topic that others can guess.
 4. Restart the assistant if you changed `.env` (not needed for Dashboard secrets):
 
    ```sh
-   docker compose up -d assistant
+   GIT_SHA=$(git rev-parse --short HEAD) docker compose up -d assistant
    ```
 
 5. Ask a question that gets a reply, then say "send that to my phone". Note
@@ -241,7 +245,7 @@ the host does not need it (see deploy.md).
 1. Start librespot and check it is healthy:
 
    ```sh
-   docker compose up -d librespot
+   GIT_SHA=$(git rev-parse --short HEAD) docker compose up -d librespot
    docker compose ps librespot
    ```
 
@@ -313,7 +317,7 @@ recording through the speaker.
 
 4. For AEC-on cells only, set `ASSISTANT_PULSE_SINK=aec_music_sink` and
    `ASSISTANT_PULSE_SOURCE=aec_mic_source` in `.env`, then run
-   `docker compose up -d assistant librespot`. For AEC-off cells, point both
+   `GIT_SHA=$(git rev-parse --short HEAD) docker compose up -d assistant librespot`. For AEC-off cells, point both
    back at the real sink and mic. Restart `assistant` between states.
 5. Make the blank evidence file, then record one cell after each real run:
 

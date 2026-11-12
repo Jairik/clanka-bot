@@ -108,6 +108,22 @@ it is meant to stop. `tool.IntentDeclarer` is the static module declaration; the
 conformance suite checks every intent is in the fixed vocabulary. A module that
 never takes Focus omits both.
 
+### If the Tool recovers persisted state
+
+A module that starts a scheduler or recovers rows from SQLite implements the
+optional `tool.Startable` interface:
+
+```go
+// Start runs after main has bound the live settings, Cues, Zone and Ring seams.
+func (m *Module) Start(context.Context) error { return m.manager.AttachStore(...) }
+```
+
+`tools.Set.StartAll` calls it once, in module order, after `RegisterAll` and
+after the live settings service exists. Do not recover in `Register`: an alert
+that is already overdue would fire with the code defaults instead of the
+effective settings. Read a live setting per action through
+`tool.Deps.Settings` (a late-bound accessor) and never snapshot it.
+
 ## 4. Choose the Permission level
 
 | Permission | Use when | Fast path |

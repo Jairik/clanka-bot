@@ -45,24 +45,33 @@ const (
 	DefaultGap = time.Second
 	// DefaultAlarmRamp is the default Alarm ramp, so it wakes gently.
 	DefaultAlarmRamp = 30 * time.Second
+	// DefaultAlarmSnooze is the default re-ring delay after "snooze" on an
+	// Alarm. A Timer's snooze acts as stop, so only Alarm uses it.
+	DefaultAlarmSnooze = 9 * time.Minute
 )
 
 // Settings are one kind's live Ring settings. Sound is not a field: the Cue
-// role key (SoundKey) already names the assigned sound for the kind.
+// role key (SoundKey) already names the assigned sound for the kind. Snooze is
+// read by the Alarm scheduler after a snooze outcome; the Ring engine itself
+// only ends the Ring and reports the reason.
 type Settings struct {
 	MaxRing    time.Duration
 	Volume     int
 	Ramp       time.Duration
 	Gap        time.Duration
 	SpeakLabel SpeakLabel
+	Snooze     time.Duration
 }
 
-// Defaults returns the shipped Ring settings for one kind. Timer ramp is 0 s;
-// Alarm ramp is 30 s. An unknown kind is treated as a Timer.
+// Defaults returns the shipped Ring settings for one kind. Timer ramp is 0 s
+// and has no snooze; Alarm ramp is 30 s and snoozes for 9 min. An unknown kind
+// is treated as a Timer.
 func Defaults(kind Kind) Settings {
 	ramp := time.Duration(0)
+	snooze := time.Duration(0)
 	if kind == Alarm {
 		ramp = DefaultAlarmRamp
+		snooze = DefaultAlarmSnooze
 	}
 	return Settings{
 		MaxRing:    DefaultMaxRing,
@@ -70,6 +79,7 @@ func Defaults(kind Kind) Settings {
 		Ramp:       ramp,
 		Gap:        DefaultGap,
 		SpeakLabel: SpeakStart,
+		Snooze:     snooze,
 	}
 }
 
@@ -91,16 +101,22 @@ func Key(kind Kind, field string) string {
 	return "ring." + string(kind) + "." + field
 }
 
-// SettingsKeys returns every key a Ring reads, sound role included.
+// SettingsKeys returns every key a Ring reads, sound role included. Alarm
+// adds the snooze delay the Alarm scheduler reads after a snooze outcome.
 func SettingsKeys(kind Kind) []string {
-	return []string{
+	keys := []string{
 		SoundKey(kind),
 		Key(kind, "max_ring"),
+	}
+	if kind == Alarm {
+		keys = append(keys, Key(kind, "snooze"))
+	}
+	return append(keys,
 		Key(kind, "volume"),
 		Key(kind, "ramp"),
 		Key(kind, "gap"),
 		Key(kind, "speak_label"),
-	}
+	)
 }
 
 // Reader is the read side of the settings service. *settings.Service
@@ -141,6 +157,13 @@ func ReadSettings(svc Reader, kind Kind) Settings {
 		if text, ok := value.Value.(string); ok {
 			if mode, ok := ParseSpeakLabel(text); ok {
 				out.SpeakLabel = mode
+			}
+		}
+	}
+	if kind == Alarm {
+		if value, ok := svc.Get(Key(kind, "snooze")); ok {
+			if d, ok := value.Value.(time.Duration); ok && d > 0 {
+				out.Snooze = d
 			}
 		}
 	}
@@ -186,6 +209,16 @@ func Definitions() []settings.Definition {
 				settings.WithValidator(validSpeakLabel(kind)),
 			),
 		)
+		if kind == Alarm {
+			// The Alarm scheduler reads this after a snooze outcome; the Ring
+			// engine itself does not use it, so a Timer has no snooze key.
+			defs = append(defs, settings.Duration(Key(kind, "snooze"), defaults.Snooze,
+				settings.WithDescription(fmt.Sprintf(
+					"How long a snoozed Alarm waits before it Rings again. Default %s.",
+					defaults.Snooze)),
+				settings.WithValidator(validSnooze(kind)),
+			))
+		}
 	}
 	return defs
 }
@@ -256,6 +289,22 @@ func validSpeakLabel(kind Kind) func(any) error {
 		}
 		if _, ok := ParseSpeakLabel(text); !ok {
 			return fmt.Errorf("ring: %s speak_label must be start, every_loop or never", kind)
+		}
+		return nil
+	}
+}
+
+// validSnooze bounds the Alarm re-ring delay. A short delay is still useful
+// for a quick repeat; an hour is the ceiling so a snooze cannot overlap the
+// next daily occurrence.
+func validSnooze(kind Kind) func(any) error {
+	return func(value any) error {
+		d, ok := value.(time.Duration)
+		if !ok {
+			return fmt.Errorf("ring: %s snooze must be a duration", kind)
+		}
+		if d < time.Second || d > time.Hour {
+			return fmt.Errorf("ring: %s snooze must be between 1s and 1h", kind)
 		}
 		return nil
 	}

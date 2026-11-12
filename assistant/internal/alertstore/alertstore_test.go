@@ -120,6 +120,42 @@ func TestRecoverClosesOnlyOpenEvents(t *testing.T) {
 	}
 }
 
+// TestRecoverKindLeavesOtherKindsOpen proves the Timer and Alarm schedulers
+// each close only their own open rows; the other kind's row stays for its own
+// manager to recover.
+func TestRecoverKindLeavesOtherKindsOpen(t *testing.T) {
+	ctx := context.Background()
+	history, st := openHistory(t)
+	at := time.UnixMilli(1_700_000_100_000)
+	timerID := insertEvent(t, st.DB(), history, alertstore.Event{
+		Kind: "timer", SourceID: "timer", Label: "timer", FiresAt: at, FiredAt: at, State: alertstore.StateFired,
+	})
+	alarmID := insertEvent(t, st.DB(), history, alertstore.Event{
+		Kind: "alarm", SourceID: "alarm", Label: "alarm", FiresAt: at, FiredAt: at, State: alertstore.StateRinging,
+	})
+	recovered, err := history.RecoverKind(ctx, "alarm", at.Add(time.Minute))
+	if err != nil {
+		t.Fatalf("RecoverKind: %v", err)
+	}
+	if len(recovered) != 1 || recovered[0].ID != alarmID || recovered[0].Kind != "alarm" {
+		t.Fatalf("recovered = %+v, want only the alarm row", recovered)
+	}
+	events, err := history.List(ctx, 10)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	states := map[int64]alertstore.State{}
+	for _, event := range events {
+		states[event.ID] = event.State
+	}
+	if states[timerID] != alertstore.StateFired {
+		t.Fatalf("timer state = %q, want it left open", states[timerID])
+	}
+	if states[alarmID] != alertstore.StateMissed {
+		t.Fatalf("alarm state = %q, want missed", states[alarmID])
+	}
+}
+
 // insertEvent writes one event in its own transaction, as the scheduler does.
 func insertEvent(t *testing.T, db *sql.DB, history *alertstore.Store, event alertstore.Event) int64 {
 	t.Helper()

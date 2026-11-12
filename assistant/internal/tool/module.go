@@ -12,6 +12,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/namematch"
 	"github.com/Jairik/clanka-bot/assistant/internal/quiet"
 	"github.com/Jairik/clanka-bot/assistant/internal/ring"
+	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 	"github.com/Jairik/clanka-bot/assistant/internal/sound"
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
 	"github.com/Jairik/clanka-bot/assistant/internal/tz"
@@ -54,15 +55,20 @@ type Deps struct {
 	// sounds.alarm_ring (#53), and #54 plays the Reminder Cue before
 	// announcing. Nil means no Cue sound.
 	Cues *sound.Service
-	// Ring is the shared Scheduled-alert Ring engine. Timer attaches it
-	// before recovering persisted rows, so even an immediately overdue Timer
-	// Rings instead of falling back to the old spoken alert; #53 reuses the
-	// same engine for Alarms. Nil keeps the spoken fallback.
+	// Ring is the shared Scheduled-alert Ring engine. Timer and Alarm attach it
+	// before their Start hook recovers persisted rows, so even an immediately
+	// overdue alert Rings instead of falling back to the old spoken line. Nil
+	// keeps the spoken fallback.
 	Ring *ring.Engine
 	// Names is the one shared matcher for spoken library names: sounds,
 	// voices and Spotify playlists. It reads the live threshold per lookup and
 	// never forces a guess; nil means a module cannot resolve spoken names.
 	Names *namematch.Matcher
+	// Settings returns the live settings service once main has created it. It
+	// is a function because Tool modules register before the service exists;
+	// a module that needs a live setting reads it per action and must not
+	// snapshot it. Nil means only code defaults are available.
+	Settings func() *settings.Service
 	// Quiet is the live Quiet hours service. The Quiet Tools write through it,
 	// and a future Reminder (#54) can use its Speak/Clip helpers so its speech
 	// and Cue obey quiet.volume. Nil means Quiet hours are unavailable.
@@ -123,6 +129,15 @@ type SecretDeclarer interface {
 // at runtime declares the same set.
 type IntentDeclarer interface {
 	Intents() []focus.Intent
+}
+
+// Startable is a Module's optional post-registration hook. main calls it after
+// the live settings, Cues, Zone and Ring seams are bound, so a module that
+// recovers persisted schedules starts them with the effective configuration
+// instead of the code defaults. It must run once, after Register and before
+// serving; a module without persisted state omits it.
+type Startable interface {
+	Start(ctx context.Context) error
 }
 
 // SecretNames collects every secret declared by the modules, in module order,

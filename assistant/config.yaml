@@ -5,7 +5,8 @@ http:
   addr: ":8080"
 
 debug:
-  # Localhost-only typed-transcript entry used to exercise the pipeline.
+  # Localhost-only typed-transcript and Announcement entries used to exercise
+  # the pipeline.
   enabled: true
   # Loopback by default. Compose overrides this to ":8081" because the
   # published port is already bound to 127.0.0.1 on the host.
@@ -14,6 +15,20 @@ debug:
 tools:
   # Applied to Tools that do not declare their own timeout.
   default_timeout: 2s
+  # Each Tool module reads its own tools.<name> block; an omitted key or block
+  # uses the code defaults shown here.
+  weather:
+    geocoding_url: "https://geocoding-api.open-meteo.com/v1/search"
+    forecast_url: "https://api.open-meteo.com/v1/forecast"
+    # Per upstream call.
+    timeout: 1500ms
+    # Geocode plus forecast together.
+    budget: 2s
+  audio:
+    # One "louder" or "quieter" step in percent.
+    step_percent: 10
+  timer:
+    alert_text: "Your timer is done."
 
 # Embed service (MiniLM). Model name is here so bge-small can be tried later.
 embed:

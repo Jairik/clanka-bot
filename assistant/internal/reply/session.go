@@ -33,14 +33,23 @@ type Speaker interface {
 	SayText(ctx context.Context, text string) error
 }
 
+// Announcer is the Announcement queue as a reply turn sees it. A turn holds
+// unprompted speech, and starting one cancels an Announcement already playing
+// so the user is answered promptly.
+type Announcer interface {
+	TurnStarted()
+	TurnFinished()
+}
+
 // Session is the seam for one spoken turn: #18's capture loop calls Ask, and
 // #25 cancels playback through the request context.
 type Session struct {
-	pipeline Pipeline
-	speaker  Speaker
-	sink     speech.Sink
-	filler   *speech.Filler
-	logger   *slog.Logger
+	pipeline      Pipeline
+	speaker       Speaker
+	sink          speech.Sink
+	filler        *speech.Filler
+	logger        *slog.Logger
+	announcements Announcer
 }
 
 // Option configures a Session.
@@ -53,6 +62,13 @@ func WithLogger(logger *slog.Logger) Option {
 			s.logger = logger
 		}
 	}
+}
+
+// WithAnnouncements makes every reply turn hold the Announcement queue, so
+// unprompted speech waits for the reply and never plays into a pending
+// Confirmation.
+func WithAnnouncements(a Announcer) Option {
+	return func(s *Session) { s.announcements = a }
 }
 
 // New builds a session. A nil speaker leaves replies text-only.
@@ -84,6 +100,12 @@ func (s *Session) AskFrom(ctx context.Context, req tool.Request, transcript stri
 func (s *Session) ask(ctx context.Context, req tool.Request, transcript string, from time.Time) (pipeline.Reply, error) {
 	if s == nil || s.pipeline == nil {
 		return pipeline.Reply{RequestID: req.ID, Text: pipeline.PlaceholderReply}, nil
+	}
+	// One turn owns the speaker: unprompted speech waits, and an Announcement
+	// already playing is cut off so the reply starts without delay.
+	if s.announcements != nil {
+		s.announcements.TurnStarted()
+		defer s.announcements.TurnFinished()
 	}
 	if s.speaker == nil {
 		reply := s.pipeline.HandleEvents(ctx, req, transcript, pipeline.Events{})

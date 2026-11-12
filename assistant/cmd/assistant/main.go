@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/agent"
+	"github.com/Jairik/clanka-bot/assistant/internal/announce"
 	"github.com/Jairik/clanka-bot/assistant/internal/api"
 	"github.com/Jairik/clanka-bot/assistant/internal/audio"
 	"github.com/Jairik/clanka-bot/assistant/internal/config"
@@ -27,7 +28,6 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/voice"
 	"github.com/Jairik/clanka-bot/assistant/internal/wyoming"
 	"github.com/Jairik/clanka-bot/assistant/tools"
-	"github.com/Jairik/clanka-bot/assistant/tools/weather"
 )
 
 func main() {
@@ -97,17 +97,30 @@ func run() error {
 		filler = loadAgentFiller(logger, client, wantVoice, cfg.Agent.Filler, cfg.TTS.Timeout.Duration())
 	}
 
-	// Timers reuse the reply Speaker for their alert.
-	var timerAlert func(context.Context, string) error
+	// One Announcement queue owns unprompted speech: it waits for the current
+	// reply and any pending Confirmation, then plays one line at a time. It is
+	// absent when TTS is not configured, so nothing can queue speech.
+	var announcements *announce.Queue
 	if speechSpeaker != nil {
-		timerAlert = speechSpeaker.SayText
+		announcements = announce.New(speechSpeaker, logger, announce.WithBlocked(func() bool {
+			_, pending := registry.Pending()
+			return pending
+		}))
+		defer announcements.Close()
 	}
-	if err := tools.RegisterAll(registry, tools.Options{
-		Weather:    weather.Deps{Location: locSvc.Current},
-		Audio:      sink,
-		TimerAlert: timerAlert,
-		Logger:     logger,
-	}); err != nil {
+
+	// One module list owns Tool wiring; each module reads its tools.<name>
+	// section and falls back to code defaults.
+	deps := tool.Deps{
+		Logger:        logger,
+		Location:      locSvc.Current,
+		Audio:         sink,
+		Announcements: announcements,
+	}
+	if speechSpeaker != nil {
+		deps.Speaker = speechSpeaker
+	}
+	if err := tools.NewSet().RegisterAll(registry, deps, cfg.Tools.Sections); err != nil {
 		return fmt.Errorf("register tools: %w", err)
 	}
 
@@ -168,7 +181,13 @@ func run() error {
 	if speechSpeaker != nil {
 		speaker = speechSpeaker
 	}
-	session := reply.New(p, speaker, playSink, filler)
+	var sessionOpts []reply.Option
+	if announcements != nil {
+		// Every turn holds the Announcement queue, so unprompted speech only
+		// plays between turns and once a pending Confirmation resolves.
+		sessionOpts = append(sessionOpts, reply.WithAnnouncements(announcements))
+	}
+	session := reply.New(p, speaker, playSink, filler, sessionOpts...)
 
 	// The debug entry is only spoken when a TTS service is configured.
 	var responder api.Responder
@@ -177,7 +196,7 @@ func run() error {
 	}
 
 	if cfg.VoiceEnabled() {
-		loop, err := newVoiceLoop(cfg, session, p, sink, logger)
+		loop, err := newVoiceLoop(cfg, session, p, sink, announcements, logger)
 		if err != nil {
 			return err
 		}
@@ -198,6 +217,11 @@ func run() error {
 		var opts []api.Option
 		if responder != nil {
 			opts = append(opts, api.WithResponder(responder))
+		}
+		if announcements != nil {
+			// The debug entry can queue an Announcement, so the between-turns
+			// behaviour is demonstrable without a Reminder.
+			opts = append(opts, api.WithAnnouncements(announcements))
 		}
 		servers = append(servers, &http.Server{
 			Addr:              cfg.Debug.Addr,
@@ -229,8 +253,9 @@ func run() error {
 
 // newVoiceLoop wires the microphone path: Pulse capture, Wyoming wake word and
 // STT, the wake chime, and the shared reply Session. The pipeline is the
-// Barge-in seam that drops a waiting Confirmation.
-func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingDropper, sink audio.Sink, logger *slog.Logger) (*voice.Loop, error) {
+// Barge-in seam that drops a waiting Confirmation, and the Announcement queue
+// stops unprompted speech as soon as a wake word starts a turn.
+func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingDropper, sink audio.Sink, announcements *announce.Queue, logger *slog.Logger) (*voice.Loop, error) {
 	captureFormat := audio.Format{Rate: cfg.Capture.Rate, Width: cfg.Capture.Width, Channels: cfg.Capture.Channels}
 	frameBytes := cfg.Capture.Rate * cfg.Capture.Width * cfg.Capture.Channels * cfg.Capture.FrameMS / 1000
 	if frameBytes <= 0 {
@@ -269,7 +294,7 @@ func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingD
 		"endpoint_silence", cfg.STT.Endpoint.Silence.Duration().String(),
 	)
 
-	return voice.New(voiceCfg, voice.Deps{
+	deps := voice.Deps{
 		Source:    audio.NewPulseSource(cfg.Capture.Binary, cfg.Capture.Source, captureFormat),
 		Wake:      voice.NewWyomingWake(wakeClient, names, wireFormat),
 		STT:       voice.NewWyomingSTT(sttClient, wyoming.TranscribeOptions{Name: cfg.STT.Model, Language: cfg.STT.Language}, wireFormat),
@@ -277,7 +302,13 @@ func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingD
 		Responder: voice.NewPipelineResponder(session, tool.DevicePi),
 		Dropper:   pending,
 		Logger:    logger,
-	})
+	}
+	// Leave the seam absent rather than storing a typed nil: a text-only setup
+	// has no speech to stop.
+	if announcements != nil {
+		deps.Announcer = announcements
+	}
+	return voice.New(voiceCfg, deps)
 }
 
 // loadAgentFiller caches the Agent path cue before the HTTP server starts. A

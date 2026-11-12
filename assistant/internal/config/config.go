@@ -23,6 +23,9 @@ type Config struct {
 	} `yaml:"debug"`
 	Tools struct {
 		DefaultTimeout Duration `yaml:"default_timeout"`
+		// Sections holds each Tool module's tools.<name> block verbatim; the
+		// module decodes its own typed config over its code defaults.
+		Sections map[string]yaml.Node `yaml:",inline"`
 	} `yaml:"tools"`
 	TTS struct {
 		Addr    string   `yaml:"addr"` // empty disables spoken replies

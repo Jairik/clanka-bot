@@ -101,6 +101,15 @@ func (s *Service) Watch(ctx context.Context) {
 	}
 }
 
+// Health reports whether a place is known for prompts and the weather Tool.
+// It reads the cached/fallback chain and makes no network call.
+func (s *Service) Health(context.Context) error {
+	if _, ok := s.Current(); !ok {
+		return errors.New("location: no place known")
+	}
+	return nil
+}
+
 // Current returns the last successful lookup, then the config fallback, then
 // no location at all.
 func (s *Service) Current() (Location, bool) {

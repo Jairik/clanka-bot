@@ -9,6 +9,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/announce"
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
+	"github.com/Jairik/clanka-bot/assistant/internal/tz"
 	"gopkg.in/yaml.v3"
 )
 
@@ -35,6 +36,9 @@ type Deps struct {
 	// Announcements queues speech the user did not just ask for. A ringing
 	// Timer or Alarm is not an Announcement; nil drops it.
 	Announcements *announce.Queue
+	// Zone resolves the live timezone for clock-time Alarms and Reminders.
+	// Duration Timers do not need it; nil means UTC.
+	Zone *tz.Service
 }
 
 // SecretResolver is the shared seam a module uses to read a declared secret.

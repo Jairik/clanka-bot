@@ -127,10 +127,14 @@ curl -s -X POST localhost:8081/debug/transcript \
   -H 'Content-Type: application/json' -d '{"text":"turn the volume to 40"}'
 ```
 
-Timers speak an alert through the same TTS voice when they fire. The Control
-phrases `stop`, `pause`, `cancel` and `louder` are matched exactly, so they
-answer without waiting on the embed service (`cancel` cancels the timer and
-`louder` steps the volume up).
+Timers are stored in the database and survive a restart. Give one a label
+("set a pasta timer for 10 minutes") and ask for it later ("how long is left on
+the pasta timer"); `timer.list` is Local-only because labels can be private.
+On startup, a Timer up to two minutes overdue goes off immediately, while older
+ones are summarised in one Announcement. Timers speak an alert through the same
+TTS voice when they fire. The Control phrases `stop`, `pause`, `cancel` and
+`louder` are matched exactly, so they answer without waiting on the embed
+service (`cancel` cancels the timer and `louder` steps the volume up).
 
 Speech the Assistant starts without being asked (a Reminder, a finished Hermes
 job) goes through one Announcement queue. It waits for the current reply to
@@ -165,6 +169,12 @@ settings include each Tool's `enabled` flag and Permission level, the wording
 below and the connection-level values. A stored Permission may only tighten
 (`read` → `act` → `confirm`), never loosen, and Local-only is code-declared and
 cannot be overridden.
+
+The `timezone` setting is a live IANA name for clock-time Alarms and Reminders.
+An empty value falls back to the container's `TZ`, then UTC, and UTC logs a
+startup warning. The same settings service the Dashboard writes through is the
+one the alert scheduler reads, so a change applies without a restart. No
+timezone is ever guessed from an IP address.
 
 The JSON API is mounted under `/api/` on the localhost debug listener, never on
 the public health listener. The authenticated Dashboard (#47) mounts the

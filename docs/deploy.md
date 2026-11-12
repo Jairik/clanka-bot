@@ -81,7 +81,10 @@ ML services never touch audio devices.
 - [ ] Boot, then update and reboot:
       `sudo apt update && sudo apt full-upgrade -y && sudo reboot`
 - [ ] Set the timezone to match `.env`:
-      `sudo timedatectl set-timezone <Area/City>`
+      `sudo timedatectl set-timezone <Area/City>`. The assistant reads the live
+      `timezone` setting first, then `config.yaml`'s `timezone`, then `TZ`, and
+      logs a startup warning when the effective zone is UTC. It never infers a
+      zone from the public IP.
 - [ ] Confirm the Pi 5's 16K pages: `getconf PAGE_SIZE` prints `16384`.
 
 ### Docker

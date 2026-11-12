@@ -429,6 +429,49 @@ func TestIssueCreateDoesNotRetryOnFailure(t *testing.T) {
 	})
 }
 
+// TestRedirectsAreNotFollowed keeps the bearer token on the configured origin:
+// a 3xx fails the call, is never retried, and the target sees no request.
+func TestRedirectsAreNotFollowed(t *testing.T) {
+	var mu sync.Mutex
+	targetHits := 0
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		mu.Lock()
+		targetHits++
+		mu.Unlock()
+		http.Error(w, "redirect target", http.StatusInternalServerError)
+	}))
+	t.Cleanup(target.Close)
+
+	fake := &fakeGitHub{handler: func(w http.ResponseWriter, _ *http.Request, _ []byte) {
+		w.Header().Set("Location", target.URL)
+		w.WriteHeader(http.StatusFound)
+	}}
+	server := fake.start(t)
+	reg, _ := registerModule(t, testConfig(t, map[string]any{"base_url": server.URL}), fixedSecret("token"))
+
+	if _, err := reg.Execute(context.Background(), PRListName, nil); err == nil ||
+		!strings.Contains(tool.FailureMessage(err), "couldn't check") {
+		t.Fatalf("pr_list redirect error = %v, want a bounded failure", err)
+	}
+	armIssue(t, reg, `{"title":"Redirected"}`)
+	if _, _, err := reg.ExecutePending(context.Background()); err == nil ||
+		!strings.Contains(tool.FailureMessage(err), "couldn't create") {
+		t.Fatalf("issue_create redirect error = %v, want a bounded failure", err)
+	}
+
+	if got := fake.count(http.MethodGet, "/search/issues"); got != 1 {
+		t.Fatalf("search redirects followed = %d, want exactly 1 request to the configured origin", got)
+	}
+	if got := fake.count(http.MethodPost, "/repos/acme/widgets/issues"); got != 1 {
+		t.Fatalf("issue redirects followed = %d, want exactly 1 request to the configured origin", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if targetHits != 0 {
+		t.Fatalf("redirect target requests = %d, want 0", targetHits)
+	}
+}
+
 func TestPRListUsesReviewRequestedNotAllOpenPullRequests(t *testing.T) {
 	fake := &fakeGitHub{handler: func(w http.ResponseWriter, _ *http.Request, _ []byte) {
 		w.Header().Set("Content-Type", "application/json")

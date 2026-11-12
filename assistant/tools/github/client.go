@@ -102,9 +102,12 @@ type client struct {
 
 // newClient builds the module's one GitHub client.
 func newClient(baseURL string, timeout time.Duration, token func() (string, bool)) *client {
+	httpClient := httpclient.New(httpclient.Options{Timeout: timeout})
+	// These endpoints never need a redirect, and not following one keeps the bearer token on the configured origin.
+	httpClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &client{
 		baseURL: strings.TrimRight(baseURL, "/"),
-		http:    httpclient.New(httpclient.Options{Timeout: timeout}),
+		http:    httpClient,
 		token:   token,
 	}
 }

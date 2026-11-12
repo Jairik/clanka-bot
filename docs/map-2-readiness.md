@@ -129,7 +129,13 @@ the review pin.
   music-volume measurement; #70 remains prep only and must not unblock #72.
 - **#71** Spotify: no real account pairing, playback or real
   `credentials.json` survival evidence.
-- **#72 / #73** gated on #70/#71; no playback Tools or music ducking shipped.
+- **#72** Spotify playback: code and fake-tested only (httptest Web API, fake
+  `pactl`, fake Focus holders). Tools, music Focus, the local Ducker and the
+  unset-by-default `music.max_volume` are in; no live Spotify playback, real
+  Pulse ducking, speaker or `music.max_volume` value (#70) exists. Ticket stays
+  open for live acceptance.
+- **#73** playlists/library: not built; it builds on the #72 `Player`/`Service`
+  seams.
 - **#76** Hermes/OpenCode: spike only; no Hermes/Tailscale install and no valid
   standalone Go key.
 - **Live browser/tailnet and final-SHA hosted CI** were not exercised in this

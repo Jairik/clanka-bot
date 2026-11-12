@@ -209,10 +209,33 @@ librespot container with no credentials still advertises the device, so
 "not paired" is a normal first-run state. `librespot-cache` contains
 credentials: treat it like the secrets database and do not copy it around.
 
-The playback and playlist voice Tools are #72/#73; #71 lands the container,
-pairing/auth surface, health rows, refresh-token storage and the reusable
-`internal/spotify` client seam. No real Spotify account or playback is
-exercised by the automated tests.
+**Playback Tools (#72).** `spotify.play` (resume, or search a track, artist,
+album, playlist or "my liked songs"), `spotify.pause`, `spotify.next`,
+`spotify.volume` and `spotify.now_playing` drive the Pi's own Connect device
+(the one named by `spotify.device_name` / `SPOTIFY_DEVICE_NAME`, `Clanka` by
+default) through the Web API client above; a phone or desktop elsewhere on the
+account is never controlled. Starting music claims Focus at the lowest
+(`music`) priority, so "pause", "resume", "next" and "stop" reach it as shared
+Focus intents when no Ring or reply holds a higher priority. Paused music keeps
+that claim so a bare "resume" still works; "stop" or a missing device releases
+it. Playing, pausing and volume need Spotify Premium and a paired device.
+
+Music ducks locally (ADR-0004): while a reply, a Ring or the turn after the
+wake word is active, the Assistant lowers the librespot Pulse stream
+(`pactl set-sink-input-volume`, matched by application name `librespot`) to 25%
+and restores it to 100% afterwards. That is separate from Spotify's own volume,
+which `spotify.volume` sets over the Web API.
+
+`music.max_volume` (Dashboard Settings, live) caps Spotify's volume. It is
+**unset by default (0 = no cap)**; the #70 hardware spike picks a value. When
+set it limits `spotify.volume`, any level passed to `spotify.play`, and a
+device that is already louder is lowered to it when play starts.
+
+Status: code and tests only, exercised against an httptest fake Web API, a fake
+`pactl` and fake Focus holders. No real Spotify account, librespot playback,
+Pulse ducking or speaker has been exercised; those are the open live-acceptance
+items on #72. The playlist-by-name, previous, shuffle, repeat, queue and like
+Tools are #73.
 
 
 Agent path replies are spoken as they are generated: the first chunk is flushed
@@ -358,9 +381,10 @@ the message uses the shared speaker; there is no model call on the way out.
 
 A Ring waits for the current reply sentence to finish (not the whole reply),
 then takes the one speaker; the reply's next sentence waits for the Ring and
-resumes afterwards, so ringing never cancels an answer. Music will be ducked
-through the `ring.Music` seam when Spotify lands (#72), and the restore runs on
-stop, timeout and shutdown.
+resumes afterwards, so ringing never cancels an answer. Music is ducked
+through the `ring.Music` seam (the shared `internal/music` Ducker, #72), and the
+restore runs on stop, timeout and shutdown. Real Pulse ducking is unverified on
+hardware.
 
 Ring settings are live and per kind:
 

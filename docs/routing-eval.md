@@ -9,8 +9,8 @@ misroute from the request log.
 
 - `assistant/internal/pipeline/testdata/routing_eval.yaml` — the labelled
   oracle. It has at least 20 positives for each Fast path Tool (exact counts in
-  the results table), 178 plain
-  negatives, and 34 compound requests (exact counts in the results table).
+  the results table), 192 plain
+  negatives, and 37 compound requests (exact counts in the results table).
 - `assistant/internal/pipeline/testdata/routing_baseline.yaml` — the recorded
   Map 1 totals the real-MiniLM evaluation must not fall below.
 - `assistant/internal/pipeline/routing_eval_test.go` —
@@ -144,7 +144,7 @@ above the 0.95 precision floor. Run against
 | `date.countdown` | 22 | 22 | 0 | 22 | 0 | 0 | 1.00 | 1.00 |
 | `weather.current` | 20 | 11 | 4 | 7 | 0 | 9 | 1.00 | 0.55 |
 | `audio.volume_set` | 20 | 9 | 1 | 8 | 0 | 11 | 1.00 | 0.45 |
-| `audio.stop` | 20 | 8 | 0 | 8 | 0 | 12 | 1.00 | 0.40 |
+| `audio.stop` | 20 | 6 | 0 | 6 | 0 | 14 | 1.00 | 0.30 |
 | `timer.set` | 26 | 11 | 0 | 11 | 0 | 15 | 1.00 | 0.4231 |
 | `timer.cancel` | 20 | 14 | 0 | 14 | 0 | 6 | 1.00 | 0.70 |
 | `timer.remaining` | 20 | 9 | 0 | 9 | 0 | 11 | 1.00 | 0.45 |
@@ -176,9 +176,28 @@ above the 0.95 precision floor. Run against
 | `assistant.repeat` | 20 | 14 | 0 | 14 | 0 | 6 | 1.00 | 0.70 |
 | `assistant.help` | 20 | 15 | 0 | 15 | 0 | 5 | 1.00 | 0.75 |
 | `system.status` | 20 | 10 | 0 | 10 | 0 | 10 | 1.00 | 0.50 |
-| **Total** | **804** | **559** | **30** | **529** | **0** | **245** | **1.00** | **0.6953** |
+| `spotify.play` | 25 | 11 | 0 | 11 | 0 | 14 | 1.00 | 0.44 |
+| `spotify.pause` | 23 | 11 | 0 | 11 | 0 | 12 | 1.00 | 0.4783 |
+| `spotify.next` | 21 | 13 | 0 | 13 | 0 | 8 | 1.00 | 0.6190 |
+| `spotify.volume` | 21 | 4 | 0 | 4 | 0 | 17 | 1.00 | 0.1905 |
+| `spotify.now_playing` | 21 | 12 | 0 | 12 | 0 | 9 | 1.00 | 0.5714 |
+| **Total** | **915** | **608** | **30** | **578** | **0** | **307** | **1.00** | **0.6645** |
 
-These numbers are from the merged tree after #66, #67 and #68: the #57
+The five Spotify playback Tools (#72) were added to this table. Their Examples
+share "music"/"song" wording with `audio.stop`, `audio.volume_set` and each
+other, so they were kept few and distinct to stay inside the 0.23 margin; most
+natural paraphrases fall to the Agent path, which can call the same Tools.
+`spotify.volume` recall is low on purpose: its Examples had to stay clear of
+`audio.volume_set`. Oracle changes: "play some jazz music", "play some quiet
+music" and "make the music louder" moved from negatives to positives now that a
+music Tool exists, and `audio.stop`'s music-shaped positives ("pause", "pause
+playback", "pause the music", "stop the music") became `spotify.pause`
+positives; `audio.stop` no longer lists "pause" or "pause the music" as
+Examples. `audio.stop` went from 8 to 6 TP (recall 0.40 to 0.30) because its
+music-shaped wording is now Spotify's; every other pre-existing Tool, including
+`audio.volume_set` (9 TP), is unchanged.
+
+The numbers above are from the merged tree after #66, #67 and #68: the #57
 per-Alarm overrides, #59 quick-wins, #60 utility Tools, #62 Notifications, #65
 Persona, #53 Alarm, #54 Reminder and the Agent-only web/GitHub Tools. Precision
 is 1.00 with no negative or compound misroute, and every Tool clears the 0.95

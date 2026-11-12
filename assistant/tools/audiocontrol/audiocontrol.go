@@ -154,10 +154,8 @@ func NewStop(controls Controls) tool.Tool[StopIn, StopOut] {
 		Speak: func(StopOut) string { return "Stopped." },
 		Examples: []string{
 			"stop",
-			"pause",
 			"stop talking",
 			"be quiet",
-			"pause the music",
 		},
 	}
 }

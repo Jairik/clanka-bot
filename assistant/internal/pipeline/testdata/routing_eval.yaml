@@ -98,11 +98,11 @@ positives:
     - put the volume at 75
   audio.stop:
     - stop
-    - pause
+    - stop making noise
     - stop talking
     - be quiet
-    - pause the music
-    - stop the music
+    - stop speaking
+    - stop it
     - please stop
     - quiet please
     - shut up
@@ -111,7 +111,7 @@ positives:
     - silence
     - stop the audio
     - can you stop
-    - pause playback
+    - stop that
     - stop the playback
     - that's enough
     - hush
@@ -896,6 +896,126 @@ positives:
     - is the GLaDOS persona active
     - current persona please
     - which persona am I talking to
+  # Spotify playback (#72). Music plays on the Pi, so these are Fast path
+  # Tools; playlist-by-name, previous, shuffle, repeat, queue and like are #73
+  # and stay in negatives until that ticket builds them.
+  spotify.play:
+    - play Radiohead
+    - play some Radiohead
+    - play the album OK Computer
+    - play the song Karma Police
+    - play my liked songs
+    - play my saved songs
+      - play some jazz music
+    - put on some jazz
+    - play music by Taylor Swift
+    - play the playlist Chill Vibes
+    - play the artist Daft Punk
+    - resume the music
+    - play some music
+    - play some quiet music
+    - start playing music
+    - play Bohemian Rhapsody by Queen
+    - play the Beatles
+    - listen to Fleetwood Mac
+    - put on some Miles Davis
+    - play my favorite songs
+    - please play some Bob Dylan
+    - play something by Adele
+    - play the track Hey Jude
+    - play the album Thriller
+    - play me some Coldplay
+    - continue playing music
+  spotify.pause:
+    - pause
+    - pause playback
+    - pause the music
+    - pause spotify
+    - pause the song
+    - stop the music
+    - hold the music
+    - pause the music please
+    - pause the track
+    - can you pause the music
+    - stop the song
+    - pause my music
+    - pause the tunes
+    - pause this song
+    - pause the music for a moment
+    - stop playing music
+    - pause the playlist
+    - pause the album
+    - pause the music playback
+    - pause that song
+    - stop the track
+    - please pause spotify
+    - pause the song that's playing
+  spotify.next:
+    - skip this song
+    - next song
+    - skip to the next track
+    - skip the song
+    - go to the next track
+    - skip this track
+    - skip ahead to the next song
+    - next track please
+    - skip this one
+    - change the song
+    - switch to the next song
+    - skip to the next one
+    - skip the current song
+    - advance to the next track
+    - jump to the next song
+    - go to the next song
+    - skip to the next song please
+    - I don't like this song, skip it
+    - skip forward a song
+    - move on to the next track
+    - skip the track that's playing
+  spotify.volume:
+    - set the music volume to 40
+    - turn the music volume to 30 percent
+    - turn the music up
+    - turn the music down
+    - make the music louder
+    - make the music quieter
+    - spotify volume to 50
+    - lower the music volume
+    - set the music to 25 percent
+    - raise the music volume
+    - music volume 60
+    - turn down the music
+    - turn up the music
+    - set spotify volume to 35
+    - make the music a bit louder
+    - make the music a bit quieter
+    - put the music volume at 45
+    - bring the music volume down
+    - the music is too loud, turn it down
+    - the music is too quiet, turn it up
+    - spotify volume down
+  spotify.now_playing:
+    - what's playing
+    - what song is this
+    - what song is playing
+    - who sings this
+    - what's the current song
+    - which track is playing
+    - what am I listening to
+    - what's this song called
+    - name this song
+    - what's the name of this song
+    - what artist is this
+    - who is this song by
+    - tell me what's playing
+    - what's currently playing
+    - what music is on
+    - what song is on right now
+    - what is this track
+    - which song is this
+    - what's playing right now
+    - what's on spotify right now
+    - what's the song that's playing
 negatives:
   - what's the capital of France
   - who wrote hamlet
@@ -907,7 +1027,6 @@ negatives:
   - will it rain next Tuesday
   - what's the stock price of Apple
   - write an email to my boss
-  - play some jazz music
   - remind me to call mom at noon
   - turn on the lights
   - order a pizza
@@ -980,14 +1099,12 @@ negatives:
   - slow down the music
   - change the voice memo settings on my phone
   - speak after the tone
-  - make the music louder
   - what are my quiet hours
   - why is my phone on do not disturb
   - do not disturb is enabled on my phone
   - sleep mode on my phone
   - I woke up at 7 this morning
   - remind me to be quiet at 10
-  - play some quiet music
   - turn down the volume
   - good night
   - how many hours until morning
@@ -1102,6 +1219,25 @@ negatives:
   - list pull requests that need my review
   - what are my github notifications
   - check my github notifications
+  # Spotify neighbours that must not reach the Fast path (#72). Knowledge
+  # questions about music, and the #73 actions that have no Tool yet.
+  - who sang Bohemian Rhapsody
+  - what is the best Radiohead album
+  - recommend some songs like Radiohead
+  - what year did Thriller come out
+  - what are the lyrics to Creep
+  - how many albums has Taylor Swift made
+  - play a game of chess with me
+  - skip to the end of the article
+  - when is my next meeting
+  - add this song to my playlist
+  - like this song
+  - go back to the previous song
+  - shuffle my liked songs
+  - repeat this song
+  - queue up another Radiohead song
+  - play the video on my phone
+  - pause my gym membership
 
 # Compound requests ask for more than one thing. They are kept separate so
 # the evaluation can report compound handling on its own.
@@ -1150,6 +1286,10 @@ compounds:
   - convert 5 miles to km also tell me the weather
   - what's the time in London and set a timer for five minutes
   - pick between pizza and tacos and set a timer for five minutes
+  - play some jazz and set a timer for ten minutes
+  - pause the music and tell me the weather
+  - what's playing and what time is it
+
 focus:
   - utterance: stop
     holders: [ring, reply, music]

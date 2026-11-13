@@ -31,6 +31,10 @@ export const emptyActivity = (requests: Request[] = []): ActivityView => ({
   PrivacyNotice: "",
   LatencyNotice: "",
   CollectionNote: "",
+  HasHistory: false,
+  Next: "",
+  Filter: "all",
+  Query: "",
 });
 
 export const req = (over: Partial<Request> & { ID: string }): Request => ({
@@ -54,6 +58,7 @@ export const req = (over: Partial<Request> & { ID: string }): Request => ({
   Stages: [],
   Checkpoints: [],
   Calls: [],
+  Summary: false,
   ...over,
 });
 

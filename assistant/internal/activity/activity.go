@@ -1,12 +1,16 @@
-// Package activity keeps the bounded, in-memory recent-request list behind the
-// authenticated Dashboard Activity page. It is fed by the one latency
-// completion event that also writes the structured request log, so there is no
-// second tracing protocol and no unbounded log file to read back.
+// Package activity keeps the recent-request list behind the authenticated
+// Dashboard Activity page. It is fed by the one latency completion event that
+// also writes the structured request log, so there is no second tracing
+// protocol and no unbounded log file to read back.
+//
+// The bounded ring is the fast first page. When a History is attached it is
+// also the durable source of truth: a request from last week is still
+// searchable after a restart (#96).
 //
 // Privacy: entries include the reply text and Tool results, including
-// Local-only results. That data stays in this process's memory and is shown
-// only by the authenticated Dashboard. Nothing here is serialized, logged,
-// sent to a model, placed in Agent history, or passed to a Notification.
+// Local-only results. That data stays in this process's memory and database and
+// is shown only by the authenticated Dashboard. Nothing here is logged, sent to
+// a model, placed in Agent history, or passed to a Notification.
 package activity
 
 import (
@@ -77,6 +81,11 @@ type Entry struct {
 	Stages      []Timing
 	Checkpoints []Timing
 	Calls       []Call
+	// Summary is set when retention has trimmed this row's long text.
+	Summary bool
+	// Cursor is the durable history position this row was read at. It is empty
+	// for a row that only exists in the in-memory ring.
+	Cursor string
 }
 
 // Store is the bounded recent-request ring. It is safe for concurrent use by
@@ -86,6 +95,7 @@ type Store struct {
 	limit   int
 	entries []Entry
 	now     func() time.Time
+	history *History
 }
 
 // New builds a bounded store. A zero or negative limit uses DefaultLimit.
@@ -94,6 +104,23 @@ func New(limit int) *Store {
 		limit = DefaultLimit
 	}
 	return &Store{limit: limit, now: time.Now}
+}
+
+// NewWithHistory builds the same ring and also writes each entry to the
+// durable history, which then answers anything older than the ring.
+func NewWithHistory(limit int, history *History) *Store {
+	store := New(limit)
+	store.history = history
+	return store
+}
+
+// History returns the attached durable store, or nil for a ring-only test or
+// debug setup.
+func (s *Store) History() *History {
+	if s == nil {
+		return nil
+	}
+	return s.history
 }
 
 // Observe implements latency.Observer. It copies the completion into a plain,
@@ -139,11 +166,18 @@ func (s *Store) Observe(completed latency.Completed) {
 	}
 
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.entries = append(s.entries, entry)
 	if len(s.entries) > s.limit {
 		// Copy into a fresh slice so the discarded entries can be reclaimed.
 		s.entries = append([]Entry(nil), s.entries[len(s.entries)-s.limit:]...)
+	}
+	s.mu.Unlock()
+
+	// The durable write happens outside the ring lock: a slow disk must never
+	// make a reader wait, and Add itself reports and swallows its error so the
+	// completed request is unaffected.
+	if s.history != nil {
+		_ = s.history.Add(entry)
 	}
 }
 

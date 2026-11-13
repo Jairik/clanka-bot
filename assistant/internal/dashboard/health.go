@@ -8,8 +8,8 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 )
 
-// healthView is the Health page's whole data model. The panel is rendered from
-// the same view for both a full page load and an htmx refresh. The check
+// healthView is the Health page's whole data model. The page and the JSON
+// read under /api/ui/health are rendered from the same view. The check
 // results come from internal/status, which the system.status Tool also uses,
 // so the page and a spoken status never disagree about a service.
 type healthView struct {

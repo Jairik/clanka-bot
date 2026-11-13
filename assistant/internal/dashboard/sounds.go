@@ -338,14 +338,15 @@ func limitForm(w http.ResponseWriter, r *http.Request) error {
 	return r.ParseForm()
 }
 
-// soundsSuccess answers an htmx submission with the swapped content; a plain
-// form gets the 303 redirect, so both journeys work without JavaScript.
+// soundsSuccess answers with the refreshed view, so the app can replace the
+// page state from one response.
 func (h *Handler) soundsSuccess(w http.ResponseWriter, r *http.Request, flash string) {
 	h.writeJSON(w, http.StatusOK, h.buildSoundsView(soundsFlashMessage(flash), "", nil))
 }
 
 // soundsFail re-renders the page with an error and, when supplied, the rejected
-// Ring input. htmx only swaps 2xx responses, so a fragment error stays 200.
+// Ring input. The status is the real one, so the app can tell a refused write
+// from a saved one.
 func (h *Handler) soundsFail(w http.ResponseWriter, r *http.Request, status int, message string, edit *editState) {
 	view := h.buildSoundsView("", message, edit)
 	h.writeJSON(w, status, view)

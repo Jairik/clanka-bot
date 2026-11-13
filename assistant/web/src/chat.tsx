@@ -72,15 +72,20 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const fail = (id: string, e: unknown) =>
     setPending((p) => p.map((x) => (x.id === id ? { ...x, error: e instanceof Error ? e.message : String(e) } : x)));
 
+  // Two sends in the same millisecond must not share an id: settle, dismiss
+  // and retry act on one id, and React needs unique keys.
+  const seq = useRef(0);
+  const nextId = useCallback(() => `p${Date.now()}-${(seq.current += 1)}`, []);
+
   const send = useCallback((text: string) => {
-    const id = `p${Date.now()}`;
+    const id = nextId();
     setPending((p) => [...p, { id, source: "dashboard", text, at: new Date() }]);
     postForm<ActivityView>("/activity/ask", { text }).then((r) => settle(id, r), (e) => fail(id, e));
-  }, []);
+  }, [nextId]);
 
   const audio = useRef(new Map<string, ArrayBuffer>());
   const sendAudio = useCallback((pcm: ArrayBuffer) => {
-    const id = `p${Date.now()}`;
+    const id = nextId();
     audio.current.set(id, pcm);
     setPending((p) => [...p, { id, source: "dashboard_mic", text: "", at: new Date() }]);
     postForm<ActivityView>("/api/ui/ask/audio", undefined, {
@@ -93,7 +98,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       },
       (e) => fail(id, e),
     );
-  }, []);
+  }, [nextId]);
 
   const dismiss = useCallback((id: string) => {
     audio.current.delete(id);
@@ -336,6 +341,7 @@ export function Composer({ placeholder = "Ask clanka…", onSent, toolbar, class
   const [levels, setLevels] = useState<number[]>(() => Array(28).fill(0.06));
   const [now, setNow] = useState(Date.now());
   const [micError, setMicError] = useState("");
+  const [starting, setStarting] = useState(false);
   const recording = useRef<Recording | null>(null);
   const canMic = session.Mic && micSupported();
 
@@ -365,6 +371,13 @@ export function Composer({ placeholder = "Ask clanka…", onSent, toolbar, class
   }, [now, rec, finish]);
 
   const start = async () => {
+    // getUserMedia blocks on the browser's permission prompt, so a second
+    // press can arrive before the first call resolves. Without this guard the
+    // second recording replaces the first in `recording.current`, and the
+    // first stream's tracks are never stopped: a live mic the user cannot
+    // cancel until the page reloads.
+    if (recording.current || starting) return;
+    setStarting(true);
     setMicError("");
     try {
       let last = 0;
@@ -378,6 +391,8 @@ export function Composer({ placeholder = "Ask clanka…", onSent, toolbar, class
       setNow(Date.now());
     } catch (e) {
       setMicError(e instanceof DOMException && e.name === "NotAllowedError" ? "Microphone access was blocked." : "Could not start the microphone.");
+    } finally {
+      setStarting(false);
     }
   };
   const submit = () => {
@@ -398,7 +413,7 @@ export function Composer({ placeholder = "Ask clanka…", onSent, toolbar, class
       variant="ghost"
       size="sm"
       onPress={start}
-      isDisabled={!canMic}
+      isDisabled={!canMic || starting}
       aria-label={canMic ? "Talk" : session.Mic ? "The microphone needs HTTPS" : "Speech recognition is not configured"}
     >
       <AudioLines className="size-4" />

@@ -109,8 +109,8 @@ func (h *Handler) secretsReady(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-// secretsSuccess answers htmx with the swapped content and a plain browser
-// form with a redirect, so both journeys work without JavaScript.
+// secretsSuccess answers with the refreshed view, so the app can replace the
+// page state from one response.
 func (h *Handler) secretsSuccess(w http.ResponseWriter, r *http.Request, flash string) {
 	h.writeJSON(w, http.StatusOK, h.buildSecretsView(secretsFlashMessage(flash), ""))
 }

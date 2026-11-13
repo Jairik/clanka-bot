@@ -175,6 +175,7 @@ export function VolumeControl() {
   const { Volume: wired } = useSession();
   const [state, setState] = useState<VolumeState | null>(null);
   const [level, setLevel] = useState(0);
+  const [error, setError] = useState("");
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const dragging = useRef(false);
 
@@ -184,6 +185,7 @@ export function VolumeControl() {
       getJSON<VolumeState>("/api/ui/volume").then((v) => {
         setState(v);
         if (!dragging.current) setLevel(v.Percent);
+        setError(v.Error || "");
       }, () => {});
     void load();
     // Voice commands change the volume too; keep the bar honest.
@@ -191,7 +193,18 @@ export function VolumeControl() {
     return () => clearInterval(id);
   }, [wired]);
 
-  if (!wired || !state?.Available) return null;
+  if (!wired) return null;
+
+  // A refused write answers 502 with the error text and often no level at
+  // all. Showing it is the difference between "the speaker did not take it"
+  // and a control that silently does nothing.
+  if (!state?.Available) {
+    return error ? (
+      <span className="max-w-40 truncate text-[11px] text-danger" role="status">
+        {error}
+      </span>
+    ) : null;
+  }
 
   const write = async (body: Record<string, string>) => {
     const res = await postForm<VolumeState>("/api/ui/volume", body);
@@ -199,6 +212,7 @@ export function VolumeControl() {
       setState(res.view);
       if (!dragging.current) setLevel(res.view.Percent);
     }
+    setError(res.ok ? "" : res.view?.Error || res.text || "The speaker did not accept that change.");
   };
   const setTo = (v: number) => {
     const c = Math.max(0, Math.min(100, Math.round(v / VOL_STEP) * VOL_STEP));
@@ -227,6 +241,11 @@ export function VolumeControl() {
         <Range label="Speaker volume" value={eff} onChange={setTo} step={VOL_STEP} />
       </div>
       <span className="hidden w-12 text-right font-mono text-xs tabular-nums text-muted sm:inline">{label}</span>
+      {error && (
+        <span className="max-w-40 truncate text-[11px] text-danger" role="status">
+          {error}
+        </span>
+      )}
       <Popover>
         <Button size="sm" variant="ghost" className="font-mono text-xs tabular-nums text-muted sm:hidden" aria-label={`Volume ${label}`}>
           {label}

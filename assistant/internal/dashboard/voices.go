@@ -274,14 +274,15 @@ func (h *Handler) voicesReady(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-// voicesSuccess answers htmx with the swapped content; a plain form gets the
-// 303 redirect, so both journeys work without JavaScript.
+// voicesSuccess answers with the refreshed view, so the app can replace the
+// page state from one response.
 func (h *Handler) voicesSuccess(w http.ResponseWriter, r *http.Request, flash string) {
 	h.writeJSON(w, http.StatusOK, h.buildVoicesView(voicesFlashMessage(flash), "", nil))
 }
 
 // voicesFail re-renders the page with an error and, when supplied, the rejected
-// rate input. htmx only swaps 2xx responses, so a fragment error stays 200.
+// rate input. The status is the real one, so the app can tell a refused write
+// from a saved one.
 func (h *Handler) voicesFail(w http.ResponseWriter, r *http.Request, status int, message string, edit *editState) {
 	view := h.buildVoicesView("", message, edit)
 	h.writeJSON(w, status, view)

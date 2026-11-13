@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@heroui/react";
 import { Play, Speaker, Upload } from "lucide-react";
 import { usePageData } from "../api";
@@ -12,14 +12,16 @@ export function SoundsPage() {
   const actions = useActions<SoundsView>(set);
   const [playing, setPlaying] = useState("");
   const audio = useRef<HTMLAudioElement | null>(null);
+  useEffect(() => () => audio.current?.pause(), []);
 
   const preview = (name: string, url: string) => {
     audio.current?.pause();
     if (playing === name) return setPlaying("");
     const a = new Audio(url);
     audio.current = a;
-    a.onended = () => setPlaying("");
-    void a.play();
+    // A blocked autoplay or a missing file must not leave the button lit.
+    a.onended = a.onerror = () => setPlaying("");
+    void a.play().catch(() => setPlaying(""));
     setPlaying(name);
   };
 

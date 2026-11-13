@@ -28,11 +28,19 @@ export function ActivityPage() {
         filter === "voice" ? !isTyped(r.Source) : filter === "typed" ? isTyped(r.Source) : filter === "problems" ? isProblem(r) : true,
       )
       .filter((r) => !needle || `${r.Transcript} ${r.Reply} ${r.Tool} ${r.PathLabel} ${r.Error}`.toLowerCase().includes(needle));
-    const m = new Map<string, Request[]>();
+    const m = new Map<string, { title: string; list: Request[] }>();
+    const today = new Date().toDateString();
     for (const r of list) {
       const d = new Date(r.TimeISO);
-      const key = d.toLocaleString([], { weekday: "short", hour: "numeric" });
-      m.set(key, [...(m.get(key) ?? []), r]);
+      // The key carries the day as well as the hour: the ring can span more
+      // than a week, and "Mon 2 PM" from two different weeks would otherwise
+      // land in one bucket with a duplicate React key.
+      const key = `${d.toDateString()}|${d.getHours()}`;
+      const hour = d.toLocaleString([], { weekday: "short", hour: "numeric" });
+      const title = d.toDateString() === today ? hour : `${hour} · ${d.toLocaleDateString([], { month: "short", day: "numeric" })}`;
+      const entry = m.get(key) ?? { title, list: [] };
+      entry.list.push(r);
+      m.set(key, entry);
     }
     return [...m.entries()];
   }, [requests, filter, q]);
@@ -67,12 +75,12 @@ export function ActivityPage() {
       </div>
 
       <div className="space-y-3">
-        {buckets.map(([hour, rs], i) => {
+        {buckets.map(([key, { title, list: rs }], i) => {
           const bad = rs.filter(isFailed).length;
           return (
             <Section
-              key={hour}
-              title={hour}
+              key={key}
+              title={title}
               defaultOpen={i === 0 || !!q}
               flush
               summary={`${rs.length} request${rs.length > 1 ? "s" : ""}`}

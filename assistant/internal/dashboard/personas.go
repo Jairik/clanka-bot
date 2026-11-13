@@ -171,15 +171,15 @@ func (h *Handler) personasReady(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-// personasSuccess answers htmx with the swapped content; a plain form gets a
-// 303 redirect, so both journeys work without JavaScript.
+// personasSuccess answers with the refreshed view, so the app can replace the
+// page state from one response.
 func (h *Handler) personasSuccess(w http.ResponseWriter, r *http.Request, flash string) {
 	h.writeJSON(w, http.StatusOK, h.buildPersonasView(personasFlashMessage(flash), "", nil, "", nil))
 }
 
 // personasFail re-renders the page with an error and, when supplied, the
-// rejected create or edit form values. htmx only swaps 2xx responses, so a
-// fragment error stays 200.
+// rejected create or edit form values. The status is the real one, so the app
+// can tell a refused write from a saved one.
 func (h *Handler) personasFail(w http.ResponseWriter, r *http.Request, status int, message string, create *personaFormView, editName string, edit *personaFormView) {
 	view := h.buildPersonasView("", message, create, editName, edit)
 	h.writeJSON(w, status, view)

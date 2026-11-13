@@ -451,6 +451,31 @@ func TestSettingsToolFormRejectsLooseningAndLocalOnlyWrites(t *testing.T) {
 	}
 }
 
+// TestSettingsFormsBoundTheRequestBody proves a settings write cannot read an
+// unbounded body into memory: the form read is capped like every other write
+// on this surface.
+func TestSettingsFormsBoundTheRequestBody(t *testing.T) {
+	f := newSettingsFixture(t)
+	// Twice the cap the server applies, so the read has to refuse it.
+	huge := url.Values{
+		"field": {"enabled"},
+		"value": {"false"},
+		"pad":   {strings.Repeat("x", 2<<20)},
+	}
+	rec := f.post("/settings/tools/time.now", huge)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("oversized form status = %d, want 400; body = %s", rec.Code, rec.Body.String())
+	}
+	var v settingsResp
+	decodeJSON(t, rec, &v)
+	if !strings.Contains(v.Error, "form") {
+		t.Errorf("oversized form error is not explained: %q", v.Error)
+	}
+	if state := f.policy.State("time.now"); !state.Enabled {
+		t.Fatalf("an oversized form still wrote the Tool: %+v", state)
+	}
+}
+
 func TestSettingsWordingFormSavesResetsAndPreservesInvalidInput(t *testing.T) {
 	f := newSettingsFixture(t)
 

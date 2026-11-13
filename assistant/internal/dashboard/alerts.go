@@ -363,15 +363,14 @@ func alertPhoneSafeError(err error) string {
 	return "Could not save the alarm overrides."
 }
 
-// alertsSuccess answers htmx with the swapped content and a plain form with a
-// 303 redirect, so both journeys mutate once through the same route.
+// alertsSuccess answers with the refreshed view, so the app can replace the
+// page state from one response.
 func (h *Handler) alertsSuccess(w http.ResponseWriter, r *http.Request, flash string) {
 	h.writeJSON(w, http.StatusOK, h.buildAlertsView(alertsFlashMessage(flash), "", nil))
 }
 
-// alertsFail re-renders the page with an error and the rejected input. htmx
-// only swaps 2xx responses by default, so a fragment error stays 200 while a
-// plain form keeps the real 4xx status.
+// alertsFail answers with an error and the rejected input. The status is the
+// real one, so the app can tell a refused write from a saved one.
 func (h *Handler) alertsFail(w http.ResponseWriter, r *http.Request, status int, message string, edit *alertEditState) {
 	view := h.buildAlertsView("", message, edit)
 	h.writeJSON(w, status, view)

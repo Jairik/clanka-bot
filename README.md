@@ -331,9 +331,11 @@ offline. Rebuild `stt` after changing `STT_MODELS` or `STT_MODEL`. Set
 `ASSISTANT_PULSE_SOURCE` from `pactl list short sources` (the dev box uses the
 USB webcam's mono source).
 
-The mic endpoint threshold (`stt.endpoint.threshold_dbfs`, default -38) was set
-from the dev box's measured noise floor of about -45 dBFS. Lower it if the
-Assistant cuts you off, raise it if it never ends a request.
+The mic endpoint threshold (`stt.endpoint.threshold_dbfs`, default -38) depends
+on source gain. The C270 was calibrated to 32% gain on 2026-11-12: idle RMS
+-47.4 dBFS, zero sampled idle frames above threshold, and a human-spoken turn
+ended after 501 ms of silence. See [the calibration record](docs/mic-calibration-2026-11-12.md)
+and [the measurement guide](docs/mic-calibration.md) before changing it.
 
 The date, timer and audio Tools run on the Fast path too:
 

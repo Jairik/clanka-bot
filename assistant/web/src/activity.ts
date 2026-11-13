@@ -30,14 +30,47 @@ const matches = (r: Request, filter: ActivityFilter) =>
           ? isProblem(r)
           : true;
 
-/** Case-insensitive match over everything the row shows. */
-const haystack = (r: Request) => `${r.Transcript} ${r.Reply} ${r.Tool} ${r.PathLabel} ${r.Error}`.toLowerCase();
+/** Case-insensitive match over everything the row shows, including the raw
+ * path and the call names the server also searches. */
+const haystack = (r: Request) =>
+  [
+    r.Transcript, r.Reply, r.Tool, r.PathLabel, r.Path,
+    r.Path.replaceAll("_", " "),
+    r.Error,
+    ...(r.Calls ?? []).map((c) => c.Name),
+  ]
+    .join(" ")
+    .toLowerCase();
 
 /** Order is preserved: the caller passes newest-first. */
 export function filterActivity(requests: Request[], filter: string, query: string): Request[] {
   const f = asFilter(filter);
   const needle = query.trim().toLowerCase();
   return requests.filter((r) => matches(r, f)).filter((r) => !needle || haystack(r).includes(needle));
+}
+
+/**
+ * The paged history read. Defaults are omitted so the plain route stays the
+ * first page and an unchanged URL is cacheable by the service worker's
+ * network-first rule.
+ */
+export function activityQuery({ filter, q, before }: { filter: string; q: string; before?: string }): string {
+  const params = new URLSearchParams();
+  const f = asFilter(filter);
+  const text = q.trim();
+  if (f !== "all") params.set("filter", f);
+  if (text) params.set("q", text);
+  if (before) params.set("before", before);
+  const search = params.toString();
+  return `/api/ui/activity${search ? `?${search}` : ""}`;
+}
+
+/**
+ * Apply one live delta to a newest-first list. Deduping by request id keeps a
+ * POST response and the stream from showing the same answer twice.
+ */
+export function mergeActivity(requests: Request[], entry: Request, limit: number): Request[] {
+  return [entry, ...requests.filter((r) => r.ID !== entry.ID)].slice(0, Math.max(1, limit));
 }
 
 export type ActivityBucket = { key: string; title: string; list: Request[] };

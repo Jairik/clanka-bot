@@ -100,6 +100,31 @@ timings, the Tool calls and the outcome, built from the same completion as the
 structured request log. Local-only Tool results appear there, and nowhere else.
 _Avoid_: Request log viewer, trace, transcript history
 
+**Activity history**:
+The durable part of Activity: one SQLite row per completed request, older than
+the in-memory ring, paged newest first and searchable across the text the row
+shows. Retention keeps a recent window in full, trims older rows to a short
+summary and deletes rows past the age and row limits. The ring stays the fast
+first page; the history is the source of truth for anything older.
+_Avoid_: Request log archive, transcript database, telemetry
+
+**UI artifact**:
+The Dashboard's React build shipped as its own SHA-tagged Compose service, which
+the assistant proxies on the Dashboard origin. The embedded copy in the binary
+is the fallback, so a UI-only change restarts one container and a stopped
+artifact still serves a working Dashboard. The API view version is the contract
+between the two.
+_Avoid_: Frontend app, static site, CDN bundle
+
+**Live stream**:
+The one read-only Server-Sent Events connection the Dashboard opens for the
+whole app. It carries deltas only — a completed request, the speaker state, a
+changed alert list and a changed health report — behind the same identity and
+Host checks as every other route. The client pauses its polling while it is
+open, reconnects with backoff, and reloads the current view on every open so a
+missed event is not lost.
+_Avoid_: WebSocket, push channel, event bus
+
 **Name matcher**:
 The one lookup that resolves a spoken library name — a sound, a voice or a Spotify playlist — first by exact or normalised spelling and then by embedding similarity above a threshold. It returns one name or no match, never a forced guess.
 _Avoid_: Fuzzy search, autocomplete

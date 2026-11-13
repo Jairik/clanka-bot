@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -139,6 +140,13 @@ type Options struct {
 	// UI overrides the embedded React build (a directory holding index.html
 	// and assets/). Tests inject a small fixture; production leaves it nil.
 	UI fs.FS
+	// UIURL is the internal base URL of the standalone Dashboard artifact (the
+	// dashboard-web service). When set, the app tries it first and falls back
+	// to the embedded bundle on any failure, so a UI-only deploy needs no Go
+	// rebuild and a stopped service still serves a working page.
+	UIURL string
+	// UIVersion is the artifact pin reported in X-Dashboard-UI-Version.
+	UIVersion string
 }
 
 // Handler is the authenticated Dashboard mux. Register extra pages before
@@ -171,6 +179,9 @@ type Handler struct {
 	// wakeword is the configured allowlist and thresholds shown on Settings
 	// and probed on Health.
 	wakeword WakewordInfo
+	// live fans out the SSE stream: activity deltas plus sampled volume, alert
+	// and health changes.
+	live *liveHub
 	// wakeModels caches the wakeword service's advertised models for the
 	// voice-samples status marks (see voicesamples.go).
 	wakeModels wakeModelCache
@@ -183,6 +194,7 @@ type Handler struct {
 	hosts        httpguard.Hosts
 	proxyAllowed func(net.IP) bool
 	ui           fs.FS
+	uiArtifact   *uiArtifact
 	mux          *http.ServeMux
 }
 
@@ -218,6 +230,10 @@ func New(opts Options) (*Handler, error) {
 		if err != nil {
 			return nil, fmt.Errorf("dashboard: ui assets: %w", err)
 		}
+	}
+	uiArtifact, err := newUIArtifact(opts.UIURL, opts.UIVersion, logger)
+	if err != nil {
+		return nil, err
 	}
 
 	// One shared bounded snapshot feeds the Health page; main passes the same
@@ -264,7 +280,14 @@ func New(opts Options) (*Handler, error) {
 		hosts:          hosts,
 		proxyAllowed:   opts.ProxyAllowed,
 		ui:             ui,
+		uiArtifact:     uiArtifact,
 		mux:            http.NewServeMux(),
+	}
+	// The SSE hub is created before any route can be served; an Activity
+	// observer pushes each completed request as one delta.
+	h.live = newLiveHub(h)
+	if h.activity != nil {
+		h.activity.Subscribe(h.liveActivity)
 	}
 	if opts.API != nil {
 		// The API handler has no auth of its own; identity is enforced by
@@ -278,6 +301,9 @@ func New(opts Options) (*Handler, error) {
 	h.Handle("GET /api/ui/session", h.sessionInfo)
 	h.Handle("GET /api/ui/health", h.healthPage)
 	h.Handle("GET /api/ui/activity", h.activityPage)
+	// One read-only live stream for the whole app. Every write still uses its
+	// own Mutating route; this only carries deltas.
+	h.Handle("GET /api/ui/events", h.events)
 	h.Handle("GET /api/ui/settings", h.settingsPage)
 	h.Handle("GET /api/ui/secrets", h.secretsPage)
 	h.Handle("GET /api/ui/sounds", h.soundsPage)
@@ -424,9 +450,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	stripTailscaleHeaders(r.Header)
 	ctx := context.WithValue(r.Context(), loginKey{}, login)
 	// One central gzip for the document and the JSON views. A HEAD, a Range
-	// request and a precompressed asset (which sets Content-Encoding itself)
-	// pass through untouched.
-	if r.Method != http.MethodHead && r.Header.Get("Range") == "" && acceptsEncoding(r.Header.Get("Accept-Encoding"), "gzip") {
+	// request, a precompressed asset (which sets Content-Encoding itself) and
+	// the SSE stream (which must flush per frame) pass through untouched.
+	if r.Method != http.MethodHead && r.Header.Get("Range") == "" && r.URL.Path != "/api/ui/events" && acceptsEncoding(r.Header.Get("Accept-Encoding"), "gzip") {
 		cw := &compressWriter{ResponseWriter: w}
 		defer func() { _ = cw.Close() }()
 		h.mux.ServeHTTP(cw, r.WithContext(ctx))
@@ -452,6 +478,10 @@ type sessionView struct {
 	Activity bool
 	CanSpeak bool
 	Speak    bool
+	// APIVersion is the view-shape contract this server serves. A UI built
+	// against a different value refuses to render instead of showing undefined
+	// fields; see internal/dashboard/version.go.
+	APIVersion int
 }
 
 func (h *Handler) sessionInfo(w http.ResponseWriter, r *http.Request) {
@@ -459,13 +489,14 @@ func (h *Handler) sessionInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.writeJSON(w, http.StatusOK, sessionView{
-		Owner:    h.owner,
-		Typed:    h.typed != nil,
-		Mic:      h.typed != nil && h.transcriber != nil,
-		Volume:   h.volume != nil,
-		Activity: h.activity != nil,
-		CanSpeak: h.spoken != nil && h.settings != nil,
-		Speak:    h.speaking(),
+		Owner:      h.owner,
+		Typed:      h.typed != nil,
+		Mic:        h.typed != nil && h.transcriber != nil,
+		Volume:     h.volume != nil,
+		Activity:   h.activity != nil,
+		CanSpeak:   h.spoken != nil && h.settings != nil,
+		Speak:      h.speaking(),
+		APIVersion: APIVersion,
 	})
 }
 
@@ -473,6 +504,9 @@ func (h *Handler) sessionInfo(w http.ResponseWriter, r *http.Request) {
 // snapshots, so an encode error is unexpected and only logged.
 func (h *Handler) writeJSON(w http.ResponseWriter, status int, view any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	// Every view carries the contract it was built from, so a UI can fail
+	// loudly even when it does not read the session first.
+	w.Header().Set("X-Dashboard-API-Version", strconv.Itoa(APIVersion))
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(view); err != nil {
 		h.logger.Error("dashboard json", "error", err.Error())

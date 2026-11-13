@@ -27,6 +27,8 @@ import (
 func main() {
 	addr := flag.String("addr", "127.0.0.1:8099", "listen address")
 	owner := flag.String("owner", "smoke@example.com", "the Tailscale login the stub stands in for")
+	uiURL := flag.String("ui-url", "", "optional standalone Dashboard artifact base URL")
+	uiVersion := flag.String("ui-version", "smoke", "artifact pin reported in X-Dashboard-UI-Version")
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -37,6 +39,8 @@ func main() {
 		Typed:       typedStub{},
 		Transcriber: transcriberStub{},
 		Volume:      &volumeStub{percent: 40},
+		UIURL:       *uiURL,
+		UIVersion:   *uiVersion,
 	})
 	if err != nil {
 		log.Fatalf("dashboard: %v", err)

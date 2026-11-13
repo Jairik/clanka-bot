@@ -24,15 +24,16 @@ const (
 	maxSafetensorsHeader   = 1 << 20
 	f32Size                = 4
 	i64Size                = 8
-	// Pocket TTS exports a streaming state for six FlowLM layers. Each layer
-	// has one attention cache; offset and optional pad tensors describe where
-	// the prompt ends. #64 reuses this check before copying a file in.
-	requiredStateTensors = 12
-	optionalStateTensors = 6
-	stateLayerCount      = 6
-	stateHeads           = 16
-	stateDimPerHead      = 64
-	maxStateContext      = 400
+	// A Pocket TTS streaming state has one attention cache and one offset per
+	// FlowLM layer, plus an optional pad tensor per layer. The layer and head
+	// counts depend on the model (100M: 6 layers x 16 heads; 18M and 7M:
+	// 8 x 8; 2M: 8 x 3), so the header check validates the shape and its
+	// consistency instead of one pinned layout. The TTS smoke test remains the
+	// authority on whether the running model can load the state.
+	stateDimPerHead = 64
+	maxStateContext = 400
+	maxStateLayers  = 32
+	maxStateHeads   = 32
 )
 
 // StateInfo reports the structure of a validated voice state.
@@ -53,16 +54,21 @@ type tensorInfo struct {
 // InspectState validates the safetensors header of a copied voice state without
 // loading any tensor data. It rejects the pickle formats (.pt/.pth/.bin) by
 // extension, enforces the 32 MB ceiling, and checks the Pocket TTS streaming
-// state shape the pinned model exports:
+// state shape:
 //
-//   - exactly six `self_attn/cache` F32 tensors of shape [2, 1, N, 16, 64],
-//     1 <= N <= 400;
-//   - exactly six matching `self_attn/offset` I64 [1] tensors;
-//   - optionally six `self_attn/pad` I64 [1] tensors (12 or 18 entries total);
+//   - one `self_attn/cache` F32 tensor per FlowLM layer, shape
+//     [2, 1, N, H, 64], 1 <= N <= 400, 1 <= H <= 32, with N and H the same
+//     for every layer;
+//   - one matching `self_attn/offset` I64 [1] tensor per layer;
+//   - optionally one `self_attn/pad` I64 [1] tensor per layer;
+//   - 1..32 distinct self_attn layers, so 2 or 3 tensors per layer;
 //   - data offsets inside the file, non-overlapping, and covering all bytes.
 //
-// The same function is the upload gate for #64: write the upload to a temp file
-// under the library directory, call InspectState, then rename it into place.
+// The layer and head counts differ by model size, so the check accepts every
+// layout the pinned package can export; the TTS model smoke test then proves
+// the state actually loads. The same function is the upload gate for #64:
+// write the upload to a temp file under the library directory, call
+// InspectState, then rename it into place.
 func InspectState(path string) (StateInfo, error) {
 	if !strings.EqualFold(filepath.Ext(path), ".safetensors") {
 		return StateInfo{}, fmt.Errorf("voice state: only .safetensors files are supported, got %q", filepath.Ext(path))
@@ -127,13 +133,8 @@ func InspectState(path string) (StateInfo, error) {
 
 // validateStateTensors applies the structural policy to the decoded header.
 func validateStateTensors(tensors map[string]tensorInfo, dataBytes int64) (StateInfo, error) {
-	if len(tensors) != requiredStateTensors && len(tensors) != requiredStateTensors+optionalStateTensors {
-		return StateInfo{}, fmt.Errorf("voice state: has %d tensors, want %d (or %d with optional pad tensors)",
-			len(tensors), requiredStateTensors, requiredStateTensors+optionalStateTensors)
-	}
-
-	layers := make(map[string]bool, stateLayerCount)
-	var contextLen int64
+	layers := make(map[string]bool)
+	var contextLen, heads int64
 	caches, offsets, pads := 0, 0, 0
 	for key, tensor := range tensors {
 		module, name, ok := strings.Cut(key, "/")
@@ -154,14 +155,20 @@ func validateStateTensors(tensors map[string]tensorInfo, dataBytes int64) (State
 			if shape := tensor.Shape; len(shape) != 5 ||
 				shape[0] != 2 || shape[1] != 1 ||
 				shape[2] < 1 || shape[2] > maxStateContext ||
-				shape[3] != stateHeads || shape[4] != stateDimPerHead {
-				return StateInfo{}, fmt.Errorf("voice state: %s has shape %v, want [2 1 N %d %d] with 1 <= N <= %d",
-					key, tensor.Shape, stateHeads, stateDimPerHead, maxStateContext)
+				shape[3] < 1 || shape[3] > maxStateHeads ||
+				shape[4] != stateDimPerHead {
+				return StateInfo{}, fmt.Errorf("voice state: %s has shape %v, want [2 1 N H %d] with 1 <= N <= %d and 1 <= H <= %d",
+					key, tensor.Shape, stateDimPerHead, maxStateContext, maxStateHeads)
 			}
 			if contextLen == 0 {
 				contextLen = tensor.Shape[2]
 			} else if tensor.Shape[2] != contextLen {
 				return StateInfo{}, fmt.Errorf("voice state: %s has context %d, other layers use %d", key, tensor.Shape[2], contextLen)
+			}
+			if heads == 0 {
+				heads = tensor.Shape[3]
+			} else if tensor.Shape[3] != heads {
+				return StateInfo{}, fmt.Errorf("voice state: %s has %d heads, other layers use %d", key, tensor.Shape[3], heads)
 			}
 		case "offset":
 			offsets++
@@ -177,14 +184,19 @@ func validateStateTensors(tensors map[string]tensorInfo, dataBytes int64) (State
 			return StateInfo{}, fmt.Errorf("voice state: unexpected tensor %q; only self_attn cache, offset and pad are allowed", key)
 		}
 	}
-	if caches != stateLayerCount || offsets != stateLayerCount {
-		return StateInfo{}, fmt.Errorf("voice state: has %d caches and %d offsets, want %d of each", caches, offsets, stateLayerCount)
+	if len(tensors) != caches+offsets+pads {
+		return StateInfo{}, fmt.Errorf("voice state: has %d tensors, want one cache, one offset and at most one pad per layer", len(tensors))
 	}
-	if pads != 0 && pads != stateLayerCount {
-		return StateInfo{}, fmt.Errorf("voice state: has %d pad tensors, want 0 or %d", pads, stateLayerCount)
+	layerCount := len(layers)
+	if layerCount < 1 || layerCount > maxStateLayers {
+		return StateInfo{}, fmt.Errorf("voice state: has %d self_attn modules, want 1 to %d", layerCount, maxStateLayers)
 	}
-	if len(layers) != stateLayerCount {
-		return StateInfo{}, fmt.Errorf("voice state: has %d self_attn modules, want %d", len(layers), stateLayerCount)
+	if caches != layerCount || offsets != layerCount {
+		return StateInfo{}, fmt.Errorf("voice state: has %d caches and %d offsets across %d self_attn modules, want one of each per layer",
+			caches, offsets, layerCount)
+	}
+	if pads != 0 && pads != layerCount {
+		return StateInfo{}, fmt.Errorf("voice state: has %d pad tensors across %d layers, want 0 or one per layer", pads, layerCount)
 	}
 
 	// Every data byte must belong to exactly one tensor and stay inside the

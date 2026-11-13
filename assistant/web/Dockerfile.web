@@ -1,0 +1,29 @@
+# The Dashboard UI as its own versioned artifact (#105). Compose runs this next
+# to the assistant and the assistant proxies to it on the same origin, so a
+# page-only change is a rebuild and restart of this service alone: no Go
+# rebuild and no assistant restart. The assistant also embeds the same build as
+# the offline fallback, so stopping this service leaves a working Dashboard.
+#
+# Build context is assistant/, so the UI source and its lockfile are the ones
+# the embedded copy uses.
+FROM --platform=$BUILDPLATFORM node:22-alpine AS build
+WORKDIR /src/web
+RUN corepack enable
+COPY web/package.json web/pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY web/ ./
+# Vite writes to ../internal/dashboard/ui/dist; the Go image embeds the same
+# path. This image copies it into a static server instead.
+RUN mkdir -p ../internal/dashboard/ui && pnpm build
+
+FROM nginx:1.29-alpine
+ARG WEB_VERSION=dev
+# The build is the artifact: no Node, no package manager and no shell tooling
+# beyond what the static server needs.
+COPY --from=build /src/internal/dashboard/ui/dist /usr/share/nginx/html
+# A template, not a config: the image entrypoint fills in the build SHA so the
+# assistant can report the build that actually answered, even after a --no-deps
+# rollback of this service alone.
+ENV DASHBOARD_UI_VERSION=$WEB_VERSION
+COPY web/nginx.conf /etc/nginx/templates/default.conf.template
+EXPOSE 8080

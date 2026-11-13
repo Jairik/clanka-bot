@@ -17,6 +17,13 @@ export type ActivityView = {
   PrivacyNotice: string;
   LatencyNotice: string;
   CollectionNote: string;
+  // HasHistory reports that the durable store is attached, so the page can
+  // page and search beyond the ring. Next is the cursor for the following
+  // page, empty when there is nothing older.
+  HasHistory: boolean;
+  Next: string;
+  Filter: string;
+  Query: string;
 };
 
 export type AlarmEditor = {
@@ -221,6 +228,8 @@ export type Request = {
   Reply: string;
   LocalOnly: boolean;
   Pending: boolean;
+  // Summary marks a row retention has trimmed to its short form.
+  Summary: boolean;
   Stages: Timing[] | null;
   Checkpoints: Timing[] | null;
   Calls: Call[] | null;
@@ -276,6 +285,10 @@ export type Session = {
   Activity: boolean;
   CanSpeak: boolean;
   Speak: boolean;
+  // APIVersion is the view-shape contract this server serves. A UI built
+  // against a different value refuses to render instead of showing undefined
+  // fields; see internal/dashboard/version.go.
+  APIVersion: number;
 };
 
 export type Setting = {

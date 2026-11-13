@@ -689,10 +689,13 @@ Only `.safetensors` is accepted: `.pt`, `.pth` and other pickle-backed torch
 files are refused and never opened. A file is at most 32 MB and is checked in
 two stages, whether it arrives through the Dashboard or a manual copy:
 
-1. A pure-Go header check: six `self_attn/cache` `F32 [2,1,N,16,64]` tensors
-   with `1 <= N <= 400`, six `F32`-paired `I64 [1]` `offset` tensors, and the
-   optional six `pad` tensors (12 or 18 entries), with contiguous in-file data
-   offsets. This is a header parse only; a pickle payload never runs.
+1. A pure-Go header check: one `self_attn/cache` `F32 [2,1,N,H,64]` tensor per
+   FlowLM layer with `1 <= N <= 400` and `1 <= H <= 32`, one matching `I64 [1]`
+   `offset` per layer, and an optional `pad` per layer (2 or 3 entries per
+   layer), with N and H consistent across layers and contiguous in-file data
+   offsets. The layer and head counts depend on the model (100M: 6x16,
+   18M and 7M: 8x8, 2M: 8x3). This is a header parse only; a pickle payload
+   never runs.
 2. A real TTS model smoke test (`voice-validate`) that loads the state and
    generates audio. The model revision it passed against is recorded.
 

@@ -91,11 +91,6 @@ func run() error {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
 
-	// One bounded, in-memory Activity ring is fed by the same latency
-	// completion that writes the structured request log. It is display-only:
-	// the Dashboard is its only reader, and Local-only results never leave it.
-	activityStore := activity.New(activity.DefaultLimit)
-
 	// One signal context covers the HTTP listeners, the voice loop and the
 	// location watch.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -112,6 +107,37 @@ func run() error {
 	defer func() {
 		if err := st.Close(); err != nil {
 			logger.Error("store close", "error", err.Error())
+		}
+	}()
+
+	// One bounded Activity ring is fed by the same latency completion that
+	// writes the structured request log, and the same completion also writes
+	// the durable history (#96). The ring stays the fast first page; the
+	// database answers anything older and any search. It is display-only: the
+	// Dashboard is its only reader, and Local-only results never leave it.
+	activityHistory := activity.NewHistory(st.DB(), activity.HistoryOptions{})
+	activityStore := activity.NewWithHistory(activity.DefaultLimit, activityHistory)
+	go func() {
+		// Enforce retention now and then hourly, so the file is bounded even
+		// without another request and the read path never prunes.
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for {
+			result, err := activityHistory.Prune(ctx)
+			if err != nil {
+				logger.Warn("activity history prune", "error", err.Error())
+			} else if result.Deleted > 0 || result.Trimmed > 0 {
+				logger.Info("activity history pruned",
+					"deleted", result.Deleted,
+					"trimmed", result.Trimmed,
+					"remaining", result.Remaining,
+				)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
 		}
 	}()
 
@@ -985,6 +1011,10 @@ func run() error {
 			Transcriber: dashboardTranscriber(cfg),
 			Volume:      sink,
 			API:         apiHandler,
+			// The standalone dashboard-web artifact; the embedded bundle stays
+			// the fallback, so a stopped service still serves the Dashboard.
+			UIURL:     cfg.Dashboard.UIURL,
+			UIVersion: cfg.Dashboard.UIVersion,
 		})
 		if err != nil {
 			return err
@@ -1002,10 +1032,16 @@ func run() error {
 				"detail", "only loopback Host headers are accepted; set ASSISTANT_DASHBOARD_HOSTS to the exact tailscale serve name (for example pi.example.ts.net) or requests through the proxy will be refused",
 			)
 		}
+		uiSource := "embedded"
+		if cfg.Dashboard.UIURL != "" {
+			uiSource = cfg.Dashboard.UIURL
+		}
 		logger.Info("dashboard enabled",
 			"addr", cfg.Dashboard.Addr,
 			"owner", cfg.Dashboard.Owner,
 			"hosts", cfg.Dashboard.Hosts,
+			"ui", uiSource,
+			"ui_version", cfg.Dashboard.UIVersion,
 		)
 	} else {
 		logger.Info("dashboard disabled", "reason", "dashboard.owner is empty")

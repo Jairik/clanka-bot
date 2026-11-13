@@ -2,6 +2,8 @@
 // the action URLs the server put in each view, and answer with the refreshed
 // view (Error set and a 4xx/5xx status when the write was refused).
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { isLiveName, useLive } from "./events";
+import { API_VERSION } from "./api-version";
 import type { DataPage, PageViews, WriteResult } from "./types";
 
 export class HttpError extends Error {
@@ -13,9 +15,25 @@ export class HttpError extends Error {
   }
 }
 
+/**
+ * The assistant reports the view shape it serves in every response. A page
+ * built against another shape refuses the payload instead of rendering fields
+ * that moved or disappeared; the session view alone is not enough once a tab
+ * stays open across an assistant upgrade.
+ */
+export class APIVersionMismatch extends Error {
+  constructor(public served: number) {
+    super(
+      `This Dashboard build expects API v${API_VERSION}; the assistant at this address serves API v${served}. Deploy the dashboard-web and assistant images from the same commit.`,
+    );
+  }
+}
+
 export async function getJSON<T>(path: string, signal?: AbortSignal): Promise<T> {
   const res = await fetch(path, { headers: { Accept: "application/json" }, signal, credentials: "same-origin" });
   if (!res.ok) throw new HttpError(res.status, (await res.text()).trim() || res.statusText);
+  const served = Number(res.headers.get("X-Dashboard-API-Version") ?? "");
+  if (Number.isFinite(served) && served > 0 && served !== API_VERSION) throw new APIVersionMismatch(served);
   return res.json() as Promise<T>;
 }
 
@@ -65,6 +83,7 @@ export function usePageData<P extends DataPage>(page: P, opts: { poll?: number; 
   const [loading, setLoading] = useState(true);
   const first = useRef(true);
   const query = opts.query;
+  const { live, generation, subscribe } = useLive();
 
   const reload = useCallback(async () => {
     const q = first.current && query ? `?${query}` : "";
@@ -87,12 +106,29 @@ export function usePageData<P extends DataPage>(page: P, opts: { poll?: number; 
   }, [reload]);
 
   useEffect(() => {
-    if (!opts.poll) return;
+    // While the stream is open it carries the page's changes, so the poll is
+    // the fallback for a stream that could not be opened or has dropped.
+    if (!opts.poll || live) return;
     const id = setInterval(() => {
       if (document.visibilityState === "visible") void reload();
     }, opts.poll);
     return () => clearInterval(id);
-  }, [opts.poll, reload]);
+  }, [opts.poll, reload, live]);
+
+  // Health and Alerts arrive as a whole view, so a delta replaces the data.
+  useEffect(() => {
+    if (!isLiveName(page)) return;
+    return subscribe(page, (view) => {
+      setData(view as PageViews[P]);
+      setError("");
+      setLoading(false);
+    });
+  }, [page, subscribe]);
+
+  // Every open resyncs, so a change missed while disconnected is recovered.
+  useEffect(() => {
+    if (generation > 0) void reload();
+  }, [generation, reload]);
 
   return { data, error, loading, reload, set: setData };
 }

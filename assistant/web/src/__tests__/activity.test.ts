@@ -1,6 +1,7 @@
 // The Activity filter and hour-bucket rules, without a DOM.
 import { describe, expect, it } from "vitest";
-import { asFilter, bucketActivity, filterActivity, isProblem, isTypedSource } from "../activity";
+import { activityQuery, asFilter, bucketActivity, filterActivity, isProblem, isTypedSource, mergeActivity } from "../activity";
+import { liveBackoff } from "../events";
 import { req } from "./harness";
 
 const voice = req({ ID: "v", Source: "voice" });
@@ -34,6 +35,16 @@ describe("activity filters", () => {
     expect(filterActivity(rows, "all", "rain").map((r) => r.ID)).toEqual(["b"]);
     expect(filterActivity(rows, "all", "timeout").map((r) => r.ID)).toEqual(["c"]);
     expect(filterActivity(rows, "all", "  ").map((r) => r.ID)).toEqual(["a", "b", "c"]);
+  });
+
+  it("searches the raw path and call names the server also matches", () => {
+    const rows = [
+      req({ ID: "p", Path: "agent_path", PathLabel: "Agent path" }),
+      req({ ID: "c", Path: "fast_path", PathLabel: "Other", Calls: [{ Name: "notes.search", LocalOnly: true, Result: "" }] }),
+    ];
+    expect(filterActivity(rows, "all", "agent_path").map((r) => r.ID)).toEqual(["p"]);
+    expect(filterActivity(rows, "all", "agent path").map((r) => r.ID)).toEqual(["p"]);
+    expect(filterActivity(rows, "all", "notes.search").map((r) => r.ID)).toEqual(["c"]);
   });
 
   it("falls back to All for an unknown filter", () => {
@@ -74,5 +85,39 @@ describe("activity buckets", () => {
     const older = bucketActivity([req({ ID: "b", TimeISO: "2026-11-01T09:00:00" })], now)[0];
     expect(today.title).not.toContain("·");
     expect(older.title).toContain("·");
+  });
+});
+
+describe("activity history query", () => {
+  it("omits defaults so the first page keeps its plain URL", () => {
+    expect(activityQuery({ filter: "all", q: "  " })).toBe("/api/ui/activity");
+  });
+
+  it("carries the filter, the trimmed search and the cursor", () => {
+    expect(activityQuery({ filter: "problems", q: " blue timer ", before: "c1" })).toBe(
+      "/api/ui/activity?filter=problems&q=blue+timer&before=c1",
+    );
+  });
+
+  it("falls back to All for an unknown filter", () => {
+    expect(activityQuery({ filter: "nonsense", q: "x" })).toBe("/api/ui/activity?q=x");
+  });
+});
+
+describe("live activity deltas", () => {
+  it("prepends an event once and keeps the page bounded", () => {
+    const a = req({ ID: "a" });
+    const b = req({ ID: "b" });
+    const next = mergeActivity([a, b], req({ ID: "c" }), 2);
+    expect(next.map((r) => r.ID)).toEqual(["c", "a"]);
+    // A delta for a request the POST already inserted must not duplicate it.
+    const three = mergeActivity([a, b], req({ ID: "c" }), 3);
+    expect(mergeActivity(three, req({ ID: "c" }), 3).map((r) => r.ID)).toEqual(["c", "a", "b"]);
+  });
+});
+
+describe("live reconnect backoff", () => {
+  it("doubles from one second and stops at thirty", () => {
+    expect([0, 1, 2, 3, 4, 5, 6].map(liveBackoff)).toEqual([1000, 2000, 4000, 8000, 16000, 30000, 30000]);
   });
 });

@@ -474,6 +474,23 @@ export type VoiceSamplePhrase = {
   Slug: string;
   Text: string;
   Selected: boolean;
+  Builtin: boolean;
+  // Stored is false only for a phrase that exists in the URL alone (an
+  // old link); recording into it stores it.
+  Stored: boolean;
+  Positives: number;
+  Negatives: number;
+  // Model is "trained", "missing" or "unknown" (see ModelNote).
+  Model: string;
+  // Missing lists the gaps in plain words; NeedsAttention is the `!` mark
+  // and StatusLabel its accessible label and tooltip.
+  Missing: string[] | null;
+  NeedsAttention: boolean;
+  StatusLabel: string;
+  // CanRemove is an empty custom phrase; RemoveAction is set for every
+  // stored custom phrase so the page can explain why it is disabled.
+  CanRemove: boolean;
+  RemoveAction: string;
 };
 
 export type VoiceSampleTake = {
@@ -496,6 +513,13 @@ export type VoiceSamplesView = {
   // store; the page then explains the missing piece instead of a dead button.
   RecordingAvailable: boolean;
   Phrases: VoiceSamplePhrase[] | null;
+  // AddPhraseAction stores a new phrase with no takes (form field
+  // "phrase", plus "current" so a refusal keeps the page where it was).
+  AddPhraseAction: string;
+  // ModelsKnown is true when the wakeword service answered, so each
+  // phrase's Model is "trained" or "missing" rather than "unknown".
+  ModelsKnown: boolean;
+  ModelNote: string;
   Slug: string;
   Phrase: string;
   PositiveCount: number;

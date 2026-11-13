@@ -117,20 +117,7 @@ func (h *Handler) wakewordChecks(ctx context.Context) []checkView {
 		}}
 	}
 
-	var advertised map[string]bool
-	var probeErr error
-	client := wyoming.NewClient(h.wakeword.Addr, wyoming.WithTimeout(wyomingHealthTimeout))
-	describe, err := client.Describe(ctx)
-	if err != nil {
-		probeErr = err
-	} else {
-		advertised = make(map[string]bool)
-		for _, program := range describe.Wake {
-			for _, model := range program.Models {
-				advertised[model.Name] = true
-			}
-		}
-	}
+	advertised, probeErr := h.advertisedWakeModels(ctx)
 
 	views := make([]checkView, 0, len(h.wakeword.Models))
 	for _, model := range h.wakeword.Models {
@@ -165,4 +152,23 @@ func (h *Handler) wakewordChecks(ctx context.Context) []checkView {
 		views = append(views, view)
 	}
 	return views
+}
+
+// advertisedWakeModels asks the wakeword service which models it serves. It is
+// the one runtime signal for "this phrase has a trained model": the detector
+// image bakes in wakeword/models/*.tflite and advertises each by name, so a
+// model that is not listed is not one the Assistant can listen for.
+func (h *Handler) advertisedWakeModels(ctx context.Context) (map[string]bool, error) {
+	client := wyoming.NewClient(h.wakeword.Addr, wyoming.WithTimeout(wyomingHealthTimeout))
+	describe, err := client.Describe(ctx)
+	if err != nil {
+		return nil, err
+	}
+	advertised := make(map[string]bool)
+	for _, program := range describe.Wake {
+		for _, model := range program.Models {
+			advertised[model.Name] = true
+		}
+	}
+	return advertised, nil
 }

@@ -171,7 +171,16 @@ is present. No transcription or external service is used for quality checks.
 For new phrases the batch uses ordinary-speech negatives; collect curated
 phrase-specific near misses with the single-take recorder as well.
 
-The Dashboard's `/voice-samples` page writes the same layout: keeps go straight
+**Add phrase** on the Dashboard's `/voice-samples` page stores a new phrase at
+once as an empty `<slug>/real/{positive,negative}` tree ("Hey Clanka" becomes
+`hey-clanka`), so it survives a reload before its first take. A phrase marked
+`!` still lacks positives (or has fewer than 5), negatives, or a trained model;
+"trained" means the wakeword service advertises `<slug with underscores>`,
+which happens only after `install` and a redeploy of the wakeword image. An
+empty custom phrase can be removed there; one with takes cannot until they are
+deleted.
+
+The page writes the same layout: keeps go straight
 to `real/positive` and `real/negative`, and Submit writes
 `<slug>-<date>-<time>.tar.gz` with a `manifest.json` next to `real/`. Playback
 in the page is from a blob for an unkept take and from an authenticated

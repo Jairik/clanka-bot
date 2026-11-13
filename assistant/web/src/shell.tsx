@@ -10,6 +10,7 @@ import { getJSON, navigate, postForm, useLocation } from "./api";
 import type { HealthView, Session, Volume as VolumeState } from "./types";
 import { Range, cn } from "./ui";
 import { SpeakToggle } from "./speak";
+import { prefetch } from "./routes";
 import { snapVolume, VOL_STEP } from "./volume";
 
 export type PageId = "home" | "activity" | "alerts" | "notes" | "health" | "sounds" | "voices" | "personas" | "voice-samples" | "spotify" | "secrets" | "settings";
@@ -81,11 +82,14 @@ export function Shell({ children }: { children: ReactNode }) {
         <nav className="flex flex-1 flex-col items-center gap-1 overflow-y-auto py-4" aria-label="Pages">
           {PAGES.map(({ id, path: to, title, icon: I }) => (
             // A plain link with a title: wrapping it in Tooltip.Trigger put a
-            // button role around a link, which is invalid nesting.
+            // button role around a link, which is invalid nesting. Hover/focus
+            // warms that page's chunk so navigation is instant.
             <a
               key={id}
               href={to}
               onClick={link(to)}
+              onMouseEnter={() => prefetch(id)}
+              onFocus={() => prefetch(id)}
               aria-label={title}
               aria-current={page === id ? "page" : undefined}
               title={title}

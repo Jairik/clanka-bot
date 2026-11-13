@@ -358,6 +358,40 @@ out. These are endpoint/status checks, not Docker's container health field.
       connect <MAC>
       ```
 
+- [ ] Keep the Echo Dot connected and stop it re-announcing. The Echo says
+      "Playing from <Pi name>" every time the A2DP stream reopens, and
+      WirePlumber closes an idle Bluetooth output after about 5 s by default,
+      so without this every reply after a pause triggers the announcement.
+      Check the version with `wireplumber --version`. On 0.4 (current Pi OS),
+      write `~/.config/wireplumber/bluetooth.lua.d/99-clanka-echo.lua`,
+      replacing `<MAC_>` with the MAC in underscore form
+      (`AA_BB_CC_DD_EE_FF`):
+
+      ```lua
+      bluez_monitor.properties["with-logind"] = false  -- headless: no seat
+      table.insert(bluez_monitor.rules, {
+        matches = { { { "device.name", "equals", "bluez_card.<MAC_>" } } },
+        apply_properties = {
+          ["bluez5.auto-connect"] = "[ a2dp_sink ]",
+          ["device.profile"] = "a2dp-sink",
+        },
+      })
+      -- Never suspend the Echo's output, so the stream stays open.
+      table.insert(bluez_monitor.rules, {
+        matches = { { { "node.name", "matches", "bluez_output.<MAC_>.*" } } },
+        apply_properties = { ["session.suspend-timeout-seconds"] = 0 },
+      })
+      ```
+
+      0.4 reads only these Lua files and ignores `wireplumber.conf.d/*.conf`
+      (0.5 syntax). On 0.5, put the same settings in
+      `wireplumber.conf.d/` as `monitor.bluez.rules` instead. Run
+      `systemctl --user restart wireplumber`; if the Echo does not reconnect,
+      run `bluetoothctl connect <MAC>`. To verify, play a sound and wait 10 s:
+      `pactl list short sinks` should show the bluez output as `IDLE`, not
+      `SUSPENDED`. Over SSH, `export XDG_RUNTIME_DIR=/run/user/$(id -u)` first.
+      A real disconnect (reboot, Echo restart) still announces; the Echo has no
+      setting to turn that off.
 - [ ] Make the Echo Dot the default sink and check playback:
       `pactl set-default-sink <sink>`; `speaker-test -t wav -c 2`.
 - [ ] Compose mounts the host's Pulse socket into `assistant` and `soloist`

@@ -18,6 +18,10 @@ Default five-role vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `
 
 Single-context: one `GLOSSARY.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
 
+### Pi access
+
+Before SSH, deploy, or any tailnet connection to the Pi, read `docs/agents/machines.md`. That file is gitignored and stays off the public repo.
+
 ### Adding a Tool
 
 `make new-tool name=<module>.<tool>` scaffolds a Tool module; the full recipe

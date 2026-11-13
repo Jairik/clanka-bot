@@ -18,3 +18,6 @@ wakeword/training/**/*.wav
 # Wake-phrase sample bundles exported from the Dashboard. They contain the
 # owner's voice and are copied off the Pi by hand, never committed.
 /exports/
+
+# Private Pi and tailnet details for agents; never committed.
+docs/agents/machines.md

@@ -1,7 +1,7 @@
 // Home: an overview of summary cards over the prompt panel. Sending anything
 // flips to the conversation; the History button flips back.
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Button, Tabs } from "@heroui/react";
+import { Button, ToggleButton, ToggleButtonGroup } from "@heroui/react";
 import { AlarmClock, CloudSun, Gauge, HeartPulse, History, KeyRound, Music, ScrollText, Timer, Volume2, Zap } from "lucide-react";
 import { getJSON, navigate, useQueryParam } from "../api";
 import { Composer, Exchange, PendingExchange, fmtMS, isFailed, isTyped, parseMS, totalMS, useChat } from "../chat";
@@ -39,20 +39,23 @@ export function Home() {
               </h1>
               <p className="mt-1 text-sm text-muted">here's a quick look at what clanka has been up to.</p>
             </div>
-            <Tabs selectedKey={chat ? "chat" : "overview"} onSelectionChange={(k) => setView(String(k))} className="w-auto">
-              <Tabs.ListContainer>
-                <Tabs.List aria-label="Home view" className="border">
-                  <Tabs.Tab id="overview" className="px-4">
-                    Overview
-                    <Tabs.Indicator />
-                  </Tabs.Tab>
-                  <Tabs.Tab id="chat" className="px-4">
-                    Conversation
-                    <Tabs.Indicator />
-                  </Tabs.Tab>
-                </Tabs.List>
-              </Tabs.ListContainer>
-            </Tabs>
+            {/* Toggle buttons rather than Tabs: the two views share one page
+                and there is no tab panel to point aria-controls at. */}
+            <ToggleButtonGroup
+              selectionMode="single"
+              disallowEmptySelection
+              selectedKeys={new Set([chat ? "chat" : "overview"])}
+              onSelectionChange={(keys) => setView(String([...keys][0]))}
+              aria-label="Home view"
+              className="border"
+            >
+              <ToggleButton id="overview" className="px-4">
+                Overview
+              </ToggleButton>
+              <ToggleButton id="chat" className="px-4">
+                Conversation
+              </ToggleButton>
+            </ToggleButtonGroup>
           </div>
 
           {chat ? (

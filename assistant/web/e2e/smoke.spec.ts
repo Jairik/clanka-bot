@@ -1,5 +1,7 @@
 // Every route loads without a console error or a failed request, the chat
 // answers, the mic reflects its states, and a refused volume write is shown.
+// The same suite runs axe in both themes and walks the keyboard paths.
+import AxeBuilder from "@axe-core/playwright";
 import { expect, test, type Page } from "@playwright/test";
 
 const ROUTES = [
@@ -153,4 +155,65 @@ test("the phone layout opens the More sheet", async ({ page, isMobile }) => {
   await page.getByRole("button", { name: "Settings" }).click();
   await expect(page).toHaveURL(/\/settings$/);
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+});
+
+test.describe("accessibility", () => {
+  for (const route of ROUTES) {
+    for (const theme of ["light", "dark"] as const) {
+      test(`${route} has no axe violations (${theme})`, async ({ page, isMobile }) => {
+        test.skip(isMobile, "the desktop project scans both themes");
+        await page.emulateMedia({ colorScheme: theme });
+        await page.goto(route);
+        await page.waitForLoadState("networkidle");
+        const results = await new AxeBuilder({ page }).analyze();
+        expect(results.violations).toEqual([]);
+      });
+    }
+  }
+
+  test("the skip link reaches the main content", async ({ page, isMobile }) => {
+    test.skip(isMobile, "the desktop rail has the skip link");
+    await page.goto("/");
+    await page.keyboard.press("Tab");
+    const focused = page.locator(":focus");
+    await expect(focused).toHaveText("Skip to content");
+    await focused.press("Enter");
+    await expect.poll(() => page.evaluate(() => document.activeElement?.id)).toBe("main");
+  });
+
+  test("a collapsible section opens with the keyboard", async ({ page }) => {
+    await page.goto("/health");
+    const trigger = page.getByRole("button", { name: /Compose services/ });
+    const initial = (await trigger.getAttribute("aria-expanded")) === "true" ? "true" : "false";
+    const flipped = initial === "true" ? "false" : "true";
+    await trigger.focus();
+    await trigger.press("Enter");
+    await expect(trigger).toHaveAttribute("aria-expanded", flipped);
+    await trigger.press("Space");
+    await expect(trigger).toHaveAttribute("aria-expanded", initial);
+  });
+
+  test("the composer sends with Enter from the keyboard", async ({ page }, testInfo) => {
+    await page.goto("/");
+    const box = page.getByRole("textbox", { name: "Message" });
+    await box.focus();
+    const question = `keyboard ${testInfo.project.name} ${Date.now()}`;
+    await page.keyboard.type(question);
+    await page.keyboard.press("Enter");
+    await expect(page.getByText(`You said: ${question}`)).toBeVisible();
+  });
+
+  test("the phone sheet takes focus and returns it on close", async ({ page, isMobile }) => {
+    test.skip(!isMobile, "phone sheet only");
+    await page.goto("/");
+    const more = page.getByRole("navigation", { name: "Sections" }).getByRole("button", { name: "More" });
+    await more.focus();
+    await more.press("Enter");
+    await expect(page.getByRole("heading", { name: "More" })).toBeVisible();
+    // Focus moves into the dialog.
+    await expect.poll(() => page.evaluate(() => !!document.activeElement?.closest("[role=dialog]"))).toBe(true);
+    await page.keyboard.press("Escape");
+    await expect(page.getByRole("heading", { name: "More" })).toBeHidden();
+    await expect(more).toBeFocused();
+  });
 });

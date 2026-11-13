@@ -18,7 +18,7 @@ from pathlib import Path
 import numpy as np
 from openwakeword.utils import bulk_predict
 
-SWEEP = (0.3, 0.4, 0.5, 0.6, 0.7)
+SWEEP = (0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.95, 0.98)
 # openWakeWord scores one frame per 1280 samples (80 ms) at 16 kHz.
 FRAME_SECONDS = 1280 / 16000
 REFRACTORY_SECONDS = 2.0
@@ -184,7 +184,8 @@ def main():
     for label, key, expect in (
         ("recall, training voices (unseen clips)", "positives", True),
         ("recall, voices held out of training", "voices", True),
-        ("near-miss false-accept rate", "negatives", False),
+        ("training-negative false-accept rate", "negatives", False),
+        ("near-miss false-accept rate", "near_misses", False),
         ("ordinary-speech false-accept rate", "speech", False),
         ("real held-out recall", "real_positive", True),
         ("real negative false-accept rate", "real_negative", False),

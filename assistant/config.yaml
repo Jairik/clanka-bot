@@ -295,7 +295,12 @@ wakeword:
   # list below); the Assistant sends the complete map with every detect stream
   # and the service applies it per model. WAKEWORD_THRESHOLDS
   # (clanker:0.6,okay_nabu:0.5) overrides this map at deployment.
-  thresholds: {}
+  thresholds:
+    # The shipped synthetic volume_up starter model needs 0.98 to hold the
+    # measured false-trigger budget (wakeword/training/README.md). Only applied
+    # while wakeword.commands.enabled is true. There is no committed
+    # volume_down model yet.
+    volume_up: 0.98
   # Wake-free command models (#81): the service reports volume_up /
   # volume_down without the wake word and the Assistant runs one volume step
   # with no STT. Off until models trained on this house's samples exist and the

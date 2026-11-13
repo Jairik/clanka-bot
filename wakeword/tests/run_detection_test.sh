@@ -62,7 +62,7 @@ wait_ready "$cid"
 
 # The custom model must be served alongside the upstream built-ins, so
 # WAKEWORD_MODELS can name okay_nabu or another upstream detector too.
-py --expect-models clanker,okay_nabu
+py --expect-models clanker,okay_nabu,volume_up
 
 py --model clanker \
   --positive /test/fixtures/positive \
@@ -70,6 +70,16 @@ py --model clanker \
 
 # Two models in one detect stream: both load, and clanker still fires.
 py --model clanker,okay_nabu --positive /test/fixtures/positive
+
+# The wake-free volume_up command model (#81) fires on held-out TTS positives
+# at its deployed 0.98 threshold and rejects near misses. The false accept on
+# "volume off" is a known starter-model limitation, recorded in training/README.
+py --model volume_up \
+  --positive /test/fixtures/volume_up/positive \
+  --thresholds volume_up=0.98
+py --model volume_up \
+  --negative /test/fixtures/volume_up/negative \
+  --thresholds volume_up=0.98
 
 # A threshold for another model must not move clanker's.
 py --model clanker --positive /test/fixtures/positive \

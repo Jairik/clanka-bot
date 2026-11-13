@@ -15,6 +15,8 @@ PHRASE=${PHRASE:-clanker}
 # Smaller starter models can override the synthetic clip counts.
 N_TRAIN=${N_TRAIN:-10000}
 N_TEST=${N_TEST:-2000}
+# Workers per clip-generation set. Lower this on a small-VRAM or shared box.
+GEN_WORKERS=${GEN_WORKERS:-4}
 OWW_REV=368c03716d1e92591906a84949bc477f3a834455
 VOICES=alba,anna,azelma,bill_boerst,charles,cosette,daan,eponine,estelle,eve,fantine,george,giovanni,jane,javert,jean,juergen,lola,marius,mary,michael,paul,peter_yearsley,rafael,vera
 HELD_OUT=caro_davy,stuart_bell
@@ -68,17 +70,17 @@ gen() {
 
 clips() {
   mkdir -p "$MODEL_DIR"
-  gen --out-dir "$MODEL_DIR/positive_train" --phrases "$(phrase_file positives)" --voices "$VOICES" --count "$N_TRAIN" --workers 4 --speed-probability 0.25 --seed 1
-  gen --out-dir "$MODEL_DIR/positive_test" --phrases "$(phrase_file positives)" --voices "$VOICES" --count "$N_TEST" --workers 4 --speed-probability 0.25 --seed 2
-  gen --out-dir "$MODEL_DIR/negative_train" --phrases "$(phrase_file negative_phrases)" --voices "$VOICES" --count "$N_TRAIN" --workers 4 --speed-probability 0.15 --seed 3
-  gen --out-dir "$MODEL_DIR/negative_test" --phrases "$(phrase_file negative_phrases)" --voices "$VOICES" --count "$N_TEST" --workers 4 --speed-probability 0.15 --seed 4
+  gen --out-dir "$MODEL_DIR/positive_train" --phrases "$(phrase_file positives)" --voices "$VOICES" --count "$N_TRAIN" --workers "$GEN_WORKERS" --speed-probability 0.25 --seed 1
+  gen --out-dir "$MODEL_DIR/positive_test" --phrases "$(phrase_file positives)" --voices "$VOICES" --count "$N_TEST" --workers "$GEN_WORKERS" --speed-probability 0.25 --seed 2
+  gen --out-dir "$MODEL_DIR/negative_train" --phrases "$(phrase_file negative_phrases)" --voices "$VOICES" --count "$N_TRAIN" --workers "$GEN_WORKERS" --speed-probability 0.15 --seed 3
+  gen --out-dir "$MODEL_DIR/negative_test" --phrases "$(phrase_file negative_phrases)" --voices "$VOICES" --count "$N_TEST" --workers "$GEN_WORKERS" --speed-probability 0.15 --seed 4
 }
 
 acceptance() {
   mkdir -p "$ACCEPT_DIR"
-  gen --out-dir "$ACCEPT_DIR/positive" --phrases "$(phrase_file positives)" --voices "$HELD_OUT" --count 60 --workers 2 --speed-probability 0.5 --seed 7
-  gen --out-dir "$ACCEPT_DIR/negative" --phrases "$(phrase_file near_misses)" --voices "$HELD_OUT" --count 80 --workers 2 --speed-probability 0.5 --seed 11
-  gen --out-dir "$ACCEPT_DIR/speech" --phrases "$(phrase_file ordinary_phrases)" --voices "$HELD_OUT" --count 40 --workers 2 --speed-probability 0.3 --seed 13
+  gen --out-dir "$ACCEPT_DIR/positive" --phrases "$(phrase_file positives)" --voices "$HELD_OUT" --count 60 --workers "$GEN_WORKERS" --speed-probability 0.5 --seed 7
+  gen --out-dir "$ACCEPT_DIR/negative" --phrases "$(phrase_file near_misses)" --voices "$HELD_OUT" --count 80 --workers "$GEN_WORKERS" --speed-probability 0.5 --seed 11
+  gen --out-dir "$ACCEPT_DIR/speech" --phrases "$(phrase_file ordinary_phrases)" --voices "$HELD_OUT" --count 40 --workers "$GEN_WORKERS" --speed-probability 0.3 --seed 13
 }
 
 real() {
@@ -117,13 +119,21 @@ evaluate() {
   if [ -d "$MODEL_DIR/real_holdout/negative" ] && [ -n "$(ls -A "$MODEL_DIR/real_holdout/negative")" ]; then
     real_negative=(--real-negative "$MODEL_DIR/real_holdout/negative")
   fi
+  # Commands run at 0.7 by default; clanker keeps the deployed 0.5. The
+  # near-miss phrase breakdown uses the phrase actually trained for.
+  local threshold=${EVAL_THRESHOLD:-0.5} target
+  if [ "$PHRASE" != clanker ] && [ -z "${EVAL_THRESHOLD:-}" ]; then
+    threshold=0.7
+  fi
+  target=$(head -n 1 "$(phrase_file positives)")
   venv/bin/python "$TRAIN/evaluate.py" --model "$REPO/wakeword/models/$PHRASE.tflite" \
+    --threshold "$threshold" --target "$target" \
     --positives "$MODEL_DIR/positive_test" \
     --negatives "$MODEL_DIR/negative_test" \
     --voices "$ACCEPT_DIR/positive" \
     --near-misses "$ACCEPT_DIR/negative" \
     --speech "$ACCEPT_DIR/speech" \
-    --background "$WORK/background" \
+    --background "$WORK/background" --background-max "${BACKGROUND_MAX:-400}" \
     "${real_positive[@]}" "${real_negative[@]}" \
     --json-out "$WORK/logs/eval-$PHRASE.json"
 }

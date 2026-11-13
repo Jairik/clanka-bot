@@ -4,7 +4,7 @@ SHELL := /bin/bash
 GIT_SHA ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
 export GIT_SHA
 
-.PHONY: web web-dev build up down logs deploy rollback build-arm64 test tts-test check routing-eval latency-report new-tool wakeword-test soloist soloist-update
+.PHONY: web web-dev web-image build up down logs deploy rollback build-arm64 test tts-test check routing-eval latency-report new-tool wakeword-test soloist soloist-update
 
 build: ## Build every service image for this host.
 	docker compose build
@@ -39,6 +39,10 @@ build-arm64: ## Build all images for the Pi under QEMU (not for latency work).
 web: ## Build the Dashboard React app into the Go embed directory.
 	cd assistant && go run ./cmd/gentypes
 	cd assistant/web && pnpm install --frozen-lockfile && pnpm build
+
+web-image: ## Ship a UI-only change: rebuild dashboard-web, no Go rebuild or assistant restart.
+	docker compose build dashboard-web
+	docker compose up -d --no-deps dashboard-web
 
 web-dev: ## Dashboard dev server; proxies to a local assistant (see assistant/web/README.md).
 	cd assistant/web && pnpm install && pnpm dev

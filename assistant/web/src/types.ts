@@ -285,6 +285,10 @@ export type Session = {
   Activity: boolean;
   CanSpeak: boolean;
   Speak: boolean;
+  // APIVersion is the view-shape contract this server serves. A UI built
+  // against a different value refuses to render instead of showing undefined
+  // fields; see internal/dashboard/version.go.
+  APIVersion: number;
 };
 
 export type Setting = {

@@ -86,8 +86,14 @@ real() {
 }
 
 train() {
-  cp "$TRAIN/$PHRASE.yml" "$PHRASE.yml"
-  venv/bin/python openWakeWord/openwakeword/train.py --training_config "$PHRASE.yml" --augment_clips
+  # wakeword/train may have written a per-run config (steps, clip counts) into
+  # the work directory; only fall back to the checked-in phrase config when it
+  # has not. A direct `run.sh train` therefore keeps #114's behaviour.
+  if [ ! -f "$WORK/$PHRASE.yml" ]; then
+    [ -f "$TRAIN/$PHRASE.yml" ] || { echo "run.sh: missing $TRAIN/$PHRASE.yml" >&2; exit 2; }
+    cp "$TRAIN/$PHRASE.yml" "$WORK/$PHRASE.yml"
+  fi
+  venv/bin/python openWakeWord/openwakeword/train.py --training_config "$WORK/$PHRASE.yml" --augment_clips
   # openWakeWord then always attempts its own onnx -> tflite conversion (its
   # --convert_to_tflite default is the non-empty string "False"), which needs
   # onnx-tf. The ONNX is written before that, and convert does the conversion,
@@ -95,7 +101,7 @@ train() {
   # output_dir is ./clips, so export_model writes clips/<phrase>.onnx next to
   # the clips/<phrase>/ directory rather than inside it.
   rm -f "clips/$PHRASE.onnx"
-  venv/bin/python openWakeWord/openwakeword/train.py --training_config "$PHRASE.yml" --train_model || true
+  venv/bin/python openWakeWord/openwakeword/train.py --training_config "$WORK/$PHRASE.yml" --train_model || true
   [ -s "clips/$PHRASE.onnx" ] || { echo "training did not write clips/$PHRASE.onnx" >&2; exit 1; }
 }
 

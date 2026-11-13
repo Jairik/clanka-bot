@@ -61,8 +61,12 @@ type Config struct {
 	} `yaml:"tts"`
 	// Voice is the custom voice-state library and the config layer of the live
 	// voice.rate setting. voice.name's config layer stays tts.voice.
-	Voice   Voice `yaml:"voice"`
-	Capture struct {
+	Voice Voice `yaml:"voice"`
+	// VoiceSamples is the Dashboard recorder's take store and the host-visible
+	// bundle export directory. Nothing here is uploaded or served publicly;
+	// the owner copies a finished bundle to the desktop by hand.
+	VoiceSamples VoiceSamples `yaml:"voice_samples"`
+	Capture      struct {
 		// Source names a Pulse source; empty uses the host default.
 		Source   string `yaml:"source"`
 		Binary   string `yaml:"binary"`
@@ -380,6 +384,52 @@ func (w Wakeword) ModelThresholds() map[string]float64 {
 	return thresholds
 }
 
+// VoiceSamples is the Dashboard's wake-phrase sample store and the bundle
+// export directory. Takes are canonical WAV files under a per-phrase
+// real/positive, real/negative layout; a submitted .tar.gz is written to the
+// export directory, which Compose bind-mounts so the scp copy command names a
+// host path.
+type VoiceSamples struct {
+	// Dir holds the draft takes. Empty means data.dir/wake-samples. A relative
+	// path resolves under data.dir; an absolute path is used as-is.
+	Dir string `yaml:"dir"`
+	// ExportDir holds finished bundles. Empty means data.dir/exports. Compose
+	// sets the absolute /exports, which is a bind mount of ./exports.
+	ExportDir string `yaml:"export_dir"`
+	// HostDir is ExportDir as the Pi's host sees it. Empty hides the scp and
+	// Taildrop copy commands, because a container path would be wrong on the
+	// desktop. Set it to the host path of the bind mount.
+	HostDir string `yaml:"host_dir"`
+	// SSHUser and SSHHost build the scp command. Both empty hides it.
+	SSHUser string `yaml:"ssh_user"`
+	SSHHost string `yaml:"ssh_host"`
+	// Desktop is the Taildrop target. Empty hides the taildrop command.
+	Desktop string `yaml:"desktop"`
+	// MaxTakes caps each kind per phrase; 0 uses the package default.
+	MaxTakes int `yaml:"max_takes"`
+}
+
+// VoiceSamplesDir resolves the take store path.
+func (c Config) VoiceSamplesDir() string {
+	return resolveDataPath(c.Data.Dir, c.VoiceSamples.Dir, "wake-samples")
+}
+
+// VoiceSamplesExportDir resolves the bundle directory.
+func (c Config) VoiceSamplesExportDir() string {
+	return resolveDataPath(c.Data.Dir, c.VoiceSamples.ExportDir, "exports")
+}
+
+func resolveDataPath(dataDir, dir, fallback string) string {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return filepath.Join(dataDir, fallback)
+	}
+	if filepath.IsAbs(dir) {
+		return dir
+	}
+	return filepath.Join(dataDir, dir)
+}
+
 // Sounds names the sound assigned to each fixed Cue role. Duration caps are
 // checked when the value is assigned, never by trimming the file.
 type Sounds struct {
@@ -439,6 +489,9 @@ func Default() Config {
 	cfg.Voice.Dir = "voices"
 	cfg.Voice.TTSDir = "/voices"
 	cfg.Voice.Rate = 1.0
+	cfg.VoiceSamples.Dir = "wake-samples"
+	cfg.VoiceSamples.ExportDir = "exports"
+	cfg.VoiceSamples.MaxTakes = 100
 	cfg.Playback.Binary = "pacat"
 	cfg.Capture.Binary = "parec"
 	cfg.Capture.Rate = 16000
@@ -607,6 +660,27 @@ func applyEnv(cfg *Config) error {
 		}
 		cfg.Voice.Rate = rate
 	}
+	// The Dashboard recorder's store and the host-visible bundle directory.
+	// The SSH and Taildrop values only build the copy command shown after
+	// Submit; no request is made with them.
+	if v := os.Getenv("ASSISTANT_VOICE_SAMPLES_DIR"); v != "" {
+		cfg.VoiceSamples.Dir = v
+	}
+	if v := os.Getenv("ASSISTANT_VOICE_SAMPLES_EXPORT_DIR"); v != "" {
+		cfg.VoiceSamples.ExportDir = v
+	}
+	if v := os.Getenv("ASSISTANT_VOICE_SAMPLES_HOST_DIR"); v != "" {
+		cfg.VoiceSamples.HostDir = v
+	}
+	if v := os.Getenv("ASSISTANT_EXPORT_SSH_USER"); v != "" {
+		cfg.VoiceSamples.SSHUser = v
+	}
+	if v := os.Getenv("ASSISTANT_EXPORT_SSH_HOST"); v != "" {
+		cfg.VoiceSamples.SSHHost = v
+	}
+	if v := os.Getenv("ASSISTANT_EXPORT_DESKTOP"); v != "" {
+		cfg.VoiceSamples.Desktop = v
+	}
 	if v := os.Getenv("ASSISTANT_PULSE_SINK"); v != "" {
 		cfg.Playback.Sink = v
 	}
@@ -709,6 +783,12 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.Data.Dir) == "" {
 		return fmt.Errorf("config: data.dir is required")
+	}
+	if c.VoiceSamples.MaxTakes < 0 {
+		return fmt.Errorf("config: voice_samples.max_takes must be positive or zero for the default")
+	}
+	if c.VoiceSamples.MaxTakes > 0 && c.VoiceSamples.MaxTakes < 5 {
+		return fmt.Errorf("config: voice_samples.max_takes must be at least 5 (the smallest finished set)")
 	}
 	if err := c.Spotify.Validate(); err != nil {
 		return fmt.Errorf("config: %w", err)

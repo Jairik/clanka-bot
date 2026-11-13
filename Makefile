@@ -10,6 +10,7 @@ build: ## Build every service image for this host.
 	docker compose build
 
 up: ## Start the stack in the background.
+	mkdir -p exports
 	docker compose up -d
 
 down: ## Stop the stack.
@@ -34,11 +35,12 @@ web: ## Build the Dashboard React app into the Go embed directory.
 web-dev: ## Dashboard dev server; proxies to a local assistant (see assistant/web/README.md).
 	cd assistant/web && pnpm install && pnpm dev
 
-test: ## Run the assistant, deployment and mic-check test suites.
+test: ## Run the assistant, deployment, wakeword-CLI and mic-check test suites.
 	cd assistant && go test ./...
 	bash scripts/tests/deploy_test.sh
 	bash scripts/tests/check_compose_test.sh
 	python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
+	python3 -m unittest discover -s wakeword/tests -p 'test_*.py' -v
 
 tts-test: ## Run the Wyoming/pcm Python tests (needs wyoming and numpy installed).
 	python3 -m pytest tts/tests -q

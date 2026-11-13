@@ -62,6 +62,97 @@ directory. Temporarily stop the assistant before recording to prevent spoken
 replies contaminating takes, then start it again afterward. The helper itself
 does not change service state.
 
+## Record in the Dashboard, train on the desktop
+
+The Pi records and exports; the desktop GPU trains. `wakeword/train` is the
+desktop entry point and a thin orchestrator over `run.sh` and the scripts in
+this directory.
+
+```sh
+wakeword/train status                       # phrases, real/synthetic counts, last eval
+wakeword/train import rbpi@pi:/home/rbpi/clanka-bot/exports/clanker-20261112-093000.tar.gz
+wakeword/train synth  --phrase "volume up" --count 6000
+wakeword/train train  --phrase "volume up" --steps 50000 --real-weight 3
+wakeword/train eval   --phrase "volume up"
+wakeword/train install --phrase "volume up" --to pi
+wakeword/train all    --phrase "volume up" --from ./volume-up-20261112-093000.tar.gz
+```
+
+Each phrase has a work directory, default
+`~/.cache/clanka/wakeword-<slug>`. The `clanker` path is the existing
+`wakeword-clanker` work directory, so the commands above keep using the assets
+and clips already there. A new phrase's directory needs its own second-stage
+setup once (the venvs and pinned assets are per work directory):
+
+```sh
+WORK=~/.cache/clanka/wakeword-volume-up wakeword/training/run.sh setup assets
+```
+
+Nothing is uploaded, and takes copied into the work directory never enter the
+checkout.
+
+**import** accepts a Dashboard bundle (`.tar.gz`), a directory, or
+`user@host:path`. It fetches a remote path with
+`scp -o BatchMode=yes`, validates every clip as 16 kHz mono 16-bit WAV between
+0.2 s and 2.0 s, requires 5–100 positives, and continues the
+`real_p_00001.wav` numbering. Re-importing the same set is a no-op: the PCM
+digest is the dedupe key, so a different WAV header does not create a second
+take. A tailnet policy in `check` mode makes scp fail with a sign-in hint; run
+`ssh rbpi@pi` once in a terminal, then repeat the import. The tar reader refuses
+absolute paths, `..`, links and unexpected entries.
+
+**synth** writes positive and negative clips with Pocket TTS, plus the
+held-out-voice acceptance set, into `$WORK/clips/<phrase>/` and
+`$WORK/clips/<phrase>/acceptance/` (`<phrase>` is the underscore model name,
+e.g. `volume_up`). The defaults come from the checked-in phrase config:
+`clanker` uses 10k/2k clips and 50k steps; `volume_up`/`volume_down` use
+6k/1.2k and 30k. Flags override them: `--count`, `--test-count`,
+`--negative-count`, `--voices all|<list>`, `--held-out <list>`,
+`--speeds 0.8-1.2`, `--speed-probability`, `--workers`, `--seed`, `--device`.
+`generate_clips.py` only knows the factors 0.9, 0.95, 1.05 and 1.1, so a range
+is mapped onto those. An optional CLI config at
+`wakeword/training/phrases/<slug>.yml` (hyphen slug) may carry the same values
+plus curated text lists; it is separate from the openWakeWord `<phrase>.yml`
+and the `phrases/<phrase>/` list directories. Without one, a new phrase gets
+generated text variants and near misses and the shared ordinary-speech list.
+`clanker`, `volume_up` and `volume_down` keep their curated positives,
+negatives, near misses and ordinary speech. A `--dry-run` prints every command
+without touching the GPU.
+
+**train** writes `$WORK/<phrase>.yml` from the checked-in config and the
+requested `--steps` (the clip counts become `n_samples`, so openWakeWord never
+asks the stub Piper generator for more), splits the real takes 80/20 through
+`prep_real.py`, runs `run.sh train convert`, and logs to
+`$WORK/logs/train-<timestamp>.log`. `--real-weight N` duplicates each real
+positive N times in `positive_train`, which is the only weighting
+openWakeWord's per-clip generator exposes. The split is skipped, and the
+extracted features kept, when the real set and weight are unchanged, so an
+interrupted run resumes at feature extraction rather than starting over. A
+changed YAML `steps` retrains the model but reuses the features.
+
+**eval** runs `run.sh evaluate` and reads `$WORK/logs/eval-<phrase>.json` to print, at
+the deployed threshold, recall on the held-out TTS voices and on the ~20% of
+real takes held out separately, near-miss and ordinary-speech false accepts,
+and false accepts per hour over the background set.
+
+**install** without `--to pi` verifies `wakeword/models/<phrase>.tflite` (the underscore model name, e.g. `volume_up.tflite`) and
+prints the commit and redeploy commands. `install --to pi` copies it to
+`~/clanka-bot/wakeword/models/` on `rbpi@pi` with `BatchMode=yes` and prints a
+`docker compose build wakeword && up -d` command, because `deploy.sh` refuses a
+dirty checkout and the copied file is untracked. For a durable install, commit
+the model on the desktop and deploy normally. Either way, set
+`WAKEWORD_MODEL=<phrase>` in `.env` and restart `assistant`.
+
+**status** lists every `~/.cache/clanka/wakeword-*` work directory with its
+real and synthetic counts, whether its model exists, and the last eval summary.
+
+The Dashboard's `/voice-samples` page writes the same layout: keeps go straight
+to `real/positive` and `real/negative`, and Submit writes
+`<slug>-<date>-<time>.tar.gz` with a `manifest.json` next to `real/`. Playback
+in the page is from a blob for an unkept take and from an authenticated
+same-origin route for a kept one, which is why the app document's CSP carries
+`media-src 'self' blob:`.
+
 ## Retrain and deploy
 
 Stages run in order, and re-running a finished stage is cheap: clips and feature

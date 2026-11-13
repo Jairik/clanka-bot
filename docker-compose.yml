@@ -57,6 +57,18 @@ services:
       ASSISTANT_TTS_ADDR: "tts:10200"
       # ADR-0003: the one SQLite database lives on the assistant-data volume.
       ASSISTANT_DATA_DIR: "/app/data"
+      # Wake-phrase samples recorded in the Dashboard. Takes are their own
+      # volume so a database backup does not pull in the owner's voice; a
+      # submitted bundle is written to /exports, a host-visible bind mount, so
+      # the copy command names a path the desktop can scp.
+      ASSISTANT_VOICE_SAMPLES_DIR: "/app/data/wake-samples"
+      ASSISTANT_VOICE_SAMPLES_EXPORT_DIR: "/exports"
+      # Empty hides the scp and Taildrop lines. Set these in .env for the Pi:
+      # the host path of the bind mount, and the desktop's Tailscale name.
+      ASSISTANT_VOICE_SAMPLES_HOST_DIR: ${ASSISTANT_VOICE_SAMPLES_HOST_DIR:-}
+      ASSISTANT_EXPORT_SSH_USER: ${ASSISTANT_EXPORT_SSH_USER:-}
+      ASSISTANT_EXPORT_SSH_HOST: ${ASSISTANT_EXPORT_SSH_HOST:-}
+      ASSISTANT_EXPORT_DESKTOP: ${ASSISTANT_EXPORT_DESKTOP:-}
       ASSISTANT_PULSE_SINK: ${ASSISTANT_PULSE_SINK:-}
       # Voice input: one named Pulse source and the two Wyoming services. The
       # model list is the explicit allowlist; every detection outside it is
@@ -113,6 +125,12 @@ services:
       # The one SQLite database (ADR-0003). Only assistant mounts this volume;
       # restarting or rebuilding a service keeps it.
       - assistant-data:/app/data
+      # Takes are isolated from the database backup path: this volume holds
+      # only the owner's voice samples and the assistant is its only mounter.
+      - assistant-samples:/app/data/wake-samples
+      # Host-visible sample bundles. deploy.sh creates ./exports with the
+      # deploy user's ownership; the assistant writes only this directory.
+      - ./exports:/exports
       # Voice states are their own volume, nested under data.dir, so only this
       # subtree can ever be mounted into tts. The database and secrets stay on
       # assistant-data and are never exposed to another service.
@@ -337,6 +355,10 @@ volumes:
   # read-write under data.dir, tts mounts the same subtree read-only at /voices.
   # This is ADR-0003's one cross-service data exception, narrowed to voices.
   assistant-voices:
+  # The owner's wake-phrase takes. Separate from assistant-data so a database
+  # backup is not a voice-recording backup; delete it with the others only on
+  # purpose (`docker compose down -v`).
+  assistant-samples:
   # librespot's own cache: the Spotify Connect credentials and audio files. No
   # other service mounts it, so the credentials never reach the assistant or a
   # model service.

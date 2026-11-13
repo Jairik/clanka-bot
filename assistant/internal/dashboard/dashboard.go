@@ -26,6 +26,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/toolpolicy"
 	"github.com/Jairik/clanka-bot/assistant/internal/tz"
 	"github.com/Jairik/clanka-bot/assistant/internal/voicelib"
+	"github.com/Jairik/clanka-bot/assistant/internal/wakesample"
 )
 
 // Modules is the Tool module list and its health checks.
@@ -71,6 +72,10 @@ type Options struct {
 	// between turns; without one the handler plays synchronously.
 	Sounds       *sound.Service
 	PreviewQueue PreviewQueue
+	// VoiceSamples backs the wake-phrase recorder: takes on their own volume and
+	// submitted bundles in the host-visible export directory. The page is
+	// explanatory when it is nil.
+	VoiceSamples *wakesample.Service
 	// Voices, VoiceProbe and VoicePreview back the Voice page. The library is
 	// the same service the voice Tools and startup rescan use; the probe is
 	// required for an upload's header check and smoke test; the preview
@@ -144,6 +149,7 @@ type Handler struct {
 	voices         *voicelib.Service
 	voiceProbe     voicelib.Probe
 	voicePreview   VoicePreview
+	voiceSamples   *wakesample.Service
 	toolModules    ModuleProvider
 	zone           *tz.Service
 	now            func() time.Time
@@ -228,6 +234,7 @@ func New(opts Options) (*Handler, error) {
 		voices:         opts.Voices,
 		voiceProbe:     opts.VoiceProbe,
 		voicePreview:   opts.VoicePreview,
+		voiceSamples:   opts.VoiceSamples,
 		toolModules:    opts.ToolModules,
 		zone:           opts.Zone,
 		now:            now,
@@ -266,6 +273,16 @@ func New(opts Options) (*Handler, error) {
 	h.Handle("GET /api/ui/alerts", h.alertsPage)
 	h.Handle("GET /api/ui/notes", h.notesPage)
 	h.Handle("GET /api/ui/spotify", h.spotifyPage)
+	// The wake-phrase recorder: reads the phrase view, uploads one take as a
+	// raw WAV body, deletes one or all, and submits the set as a bundle. Every
+	// write goes through Mutating for identity and same-origin.
+	h.Handle("GET /api/ui/voice-samples", h.voiceSamplesPage)
+	h.Mutating("POST /voice-samples/takes/{slug}/{kind}", h.voiceSamplesUpload)
+	h.Mutating("POST /voice-samples/takes/{slug}/{kind}/{id}/delete", h.voiceSamplesDelete)
+	h.Mutating("POST /voice-samples/clear/{slug}/{kind}", h.voiceSamplesClear)
+	h.Mutating("POST /voice-samples/submit/{slug}", h.voiceSamplesSubmit)
+	h.Handle("/voice-samples/take/{slug}/{kind}/{id}", h.voiceSamplesAudio)
+	h.Handle("/voice-samples/bundle/{slug}/{name}", h.voiceSamplesBundle)
 	// The typed-request box. The one write goes through Mutating for identity
 	// and same-origin.
 	h.Mutating("POST /activity/ask", h.activityAsk)
@@ -442,6 +459,13 @@ func allowGet(w http.ResponseWriter, r *http.Request) bool {
 // accounts origin (see app).
 func contentSecurityPolicy(formAction string) string {
 	return "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action " + formAction
+}
+
+// appSecurityPolicy is the one document policy. The app is a single document
+// for every page, so media-src is document-wide rather than page-scoped; it
+// adds only blob: for a just-recorded take and 'self' for a kept one.
+func appSecurityPolicy() string {
+	return contentSecurityPolicy("'self' "+spotifyAccountsOrigin) + "; media-src 'self' blob:"
 }
 
 func setSecurityHeaders(w http.ResponseWriter) {

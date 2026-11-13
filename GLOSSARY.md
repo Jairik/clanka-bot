@@ -130,6 +130,20 @@ _Avoid_: World clock, timezone guess
 Any device other than the Pi that a user speaks, types to, or listens through: the phone web app, a desktop client, or a future wireless microphone.
 _Avoid_: Client, endpoint, remote
 
+### Wake phrases
+
+**Wake phrase**:
+The words a wake-word detector listens for, such as `clanker`, `volume up` or `volume down`. A phrase has a slug (its directory and bundle name, e.g. `volume-up`) and the spoken text (`volume up`).
+_Avoid_: Wake word name, trigger (for the phrase as a whole)
+
+**Voice sample**:
+One take of a Wake phrase, recorded in the Dashboard or with `record.py`, stored as canonical 16 kHz mono 16-bit WAV under a phrase's `real/positive` or `real/negative` directory. A negative is a near-miss or ordinary speech used to teach and measure false accepts.
+_Avoid_: Clip, recording (when the stored training artifact is meant)
+
+**Sample bundle**:
+One finished `.tar.gz` of a phrase's takes in the `real/positive` + `real/negative` layout, plus `manifest.json`, written by the Dashboard and imported on the desktop. It contains the owner's voice and leaves the Pi only through an explicit copy.
+_Avoid_: Dataset, export archive
+
 ### Outputs
 
 **Briefing**:

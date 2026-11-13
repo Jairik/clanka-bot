@@ -15,9 +15,20 @@ export type Recording = {
   cancel: () => void;
 };
 
-export async function startRecording(onLevel: (rms: number) => void): Promise<Recording> {
+export type CaptureOptions = {
+  /** Max captured seconds; defaults to MIC_MAX_SECONDS. */
+  maxSeconds?: number;
+  /**
+   * Processing the browser applies. Chat keeps the defaults; a training take
+   * turns them off so the clip keeps the room and the mic's real level.
+   */
+  processing?: { echoCancellation: boolean; noiseSuppression: boolean; autoGainControl: boolean };
+};
+
+export async function startRecording(onLevel: (rms: number) => void, options: CaptureOptions = {}): Promise<Recording> {
+  const processing = options.processing ?? { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
   const stream = await navigator.mediaDevices.getUserMedia({
-    audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    audio: { channelCount: 1, ...processing },
   });
   const ctx = new AudioContext();
   try {
@@ -55,13 +66,13 @@ export async function startRecording(onLevel: (rms: number) => void): Promise<Re
     stop: async () => {
       const rate = ctx.sampleRate;
       release();
-      return toPCM16(chunks, rate);
+      return toPCM16(chunks, rate, options.maxSeconds ?? MIC_MAX_SECONDS);
     },
   };
 }
 
 /** Box-filter downsample (a cheap low-pass that is plenty for speech) and quantize. */
-function toPCM16(chunks: Float32Array[], inRate: number): ArrayBuffer {
+function toPCM16(chunks: Float32Array[], inRate: number, maxSeconds: number): ArrayBuffer {
   const total = chunks.reduce((n, c) => n + c.length, 0);
   const input = new Float32Array(total);
   let o = 0;
@@ -70,7 +81,7 @@ function toPCM16(chunks: Float32Array[], inRate: number): ArrayBuffer {
     o += c.length;
   }
   const ratio = inRate / TARGET_RATE;
-  const outLen = Math.min(Math.floor(total / ratio), TARGET_RATE * MIC_MAX_SECONDS);
+  const outLen = Math.min(Math.floor(total / ratio), TARGET_RATE * maxSeconds);
   const out = new DataView(new ArrayBuffer(outLen * 2));
   for (let i = 0; i < outLen; i++) {
     const a = Math.floor(i * ratio);

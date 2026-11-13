@@ -10,6 +10,7 @@ import { SecretsPage } from "./pages/Secrets";
 import { SettingsPage } from "./pages/Settings";
 import { SoundsPage } from "./pages/Sounds";
 import { SpotifyPage } from "./pages/Spotify";
+import { VoiceSamplesPage } from "./pages/VoiceSamples";
 import { VoicesPage } from "./pages/Voices";
 import { SessionProvider, Shell, pageFor, type PageId } from "./shell";
 
@@ -22,6 +23,7 @@ const VIEWS: Record<PageId, () => React.JSX.Element> = {
   sounds: SoundsPage,
   voices: VoicesPage,
   personas: PersonasPage,
+  "voice-samples": VoiceSamplesPage,
   spotify: SpotifyPage,
   secrets: SecretsPage,
   settings: SettingsPage,

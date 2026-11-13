@@ -14,3 +14,7 @@ assistant/data/
 wakeword/training/real/
 wakeword/training/**/*.wav
 !wakeword/tests/fixtures/*.wav
+
+# Wake-phrase sample bundles exported from the Dashboard. They contain the
+# owner's voice and are copied off the Pi by hand, never committed.
+/exports/

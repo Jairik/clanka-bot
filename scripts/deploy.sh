@@ -173,6 +173,11 @@ main() {
 
 	require_clean_worktree
 
+	# Host-visible voice-sample bundles. Created before Compose so the bind
+	# mount is owned by the deploy user rather than root; the directory is
+	# gitignored because it holds the owner's recordings.
+	mkdir -p "$ROOT/exports"
+
 	if [[ -n "$requested" ]]; then
 		sha="$(resolve_sha "$requested")"
 		log "rolling back to $sha"

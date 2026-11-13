@@ -36,7 +36,12 @@ func (h *Handler) app(w http.ResponseWriter, r *http.Request) {
 	// which answers 303 to Spotify's authorize page. Browsers apply
 	// form-action to that redirect too, and the app is one document for every
 	// page, so the document allows exactly Spotify's accounts origin.
-	w.Header().Set("Content-Security-Policy", contentSecurityPolicy("'self' "+spotifyAccountsOrigin))
+	//
+	// media-src is on the document for the voice-sample recorder: a take is
+	// played back from a blob: URL before it is kept, and a kept take is
+	// same-origin. The app is one document for every page, so this cannot be
+	// narrowed to one route without making the recorder a separate document.
+	w.Header().Set("Content-Security-Policy", appSecurityPolicy())
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_, _ = w.Write(index)
 }

@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+# Desktop entry point for the wake-phrase pipeline. The argv is passed to the
+# Python orchestrator unchanged; `wakeword/train --help` documents every
+# subcommand. This wrapper exists so the documented command stays short and the
+# implementation can be imported by the tests.
+set -euo pipefail
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+exec python3 "$ROOT/wakeword/training/train_cli.py" "$@"

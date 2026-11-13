@@ -6,7 +6,7 @@ import {
   Activity, AlarmClock, Bell, Bot, HeartPulse, KeyRound, MessageSquare, Mic, Minus, MoreHorizontal, Music, Plus,
   Settings, Smile, StickyNote, Volume, Volume1, Volume2, VolumeX, Waves,
 } from "lucide-react";
-import { getJSON, navigate, postForm, useLocation } from "./api";
+import { APIVersionMismatch, getJSON, navigate, postForm, useLocation } from "./api";
 import { API_VERSION } from "./api-version";
 import { useLive } from "./events";
 import type { HealthView, Session, Volume as VolumeState } from "./types";
@@ -47,31 +47,40 @@ const SessionCtx = createContext<Session>({
 });
 export const useSession = () => useContext(SessionCtx);
 
+// The UI and the assistant ship as separate artifacts, so a page can be older
+// or newer than the server it reaches. Rendering anyway would show missing or
+// renamed fields; fail loudly and say which versions met.
+function VersionMismatch({ served }: { served: number }) {
+  return (
+    <div role="alert" className="mx-auto max-w-xl space-y-3 p-8">
+      <h1 className="font-serif text-2xl">Dashboard and assistant versions do not match</h1>
+      <p className="text-sm">
+        This Dashboard build expects API v{API_VERSION}; the assistant at this address serves API v{served}.
+      </p>
+      <p className="text-sm text-muted">
+        Deploy the <code className="font-mono">dashboard-web</code> and <code className="font-mono">assistant</code> images from the
+        same commit, or roll one back to the version the other expects.
+      </p>
+    </div>
+  );
+}
+
 export function SessionProvider({ children }: { children: ReactNode }) {
   const [s, setS] = useState<Session | null>(null);
   const [err, setErr] = useState("");
+  const [mismatch, setMismatch] = useState(0);
   useEffect(() => {
-    getJSON<Session>("/api/ui/session").then(setS, (e) => setErr(String(e?.message ?? e)));
+    getJSON<Session>("/api/ui/session").then(setS, (e) => {
+      // The response header is checked before the body, so this is the first
+      // place a mismatched assistant is caught.
+      if (e instanceof APIVersionMismatch) setMismatch(e.served);
+      else setErr(String(e?.message ?? e));
+    });
   }, []);
+  if (mismatch) return <VersionMismatch served={mismatch} />;
   if (err) return <div className="p-8 text-sm text-danger">Could not reach the assistant: {err}</div>;
   if (!s) return null;
-  // The UI and the assistant ship as separate artifacts, so a page can be
-  // older or newer than the server it reaches. Rendering anyway would show
-  // missing or renamed fields; fail loudly and say which versions met.
-  if (s.APIVersion !== API_VERSION) {
-    return (
-      <div role="alert" className="mx-auto max-w-xl space-y-3 p-8">
-        <h1 className="font-serif text-2xl">Dashboard and assistant versions do not match</h1>
-        <p className="text-sm">
-          This Dashboard build expects API v{API_VERSION}; the assistant at this address serves API v{s.APIVersion}.
-        </p>
-        <p className="text-sm text-muted">
-          Deploy the <code className="font-mono">dashboard-web</code> and <code className="font-mono">assistant</code> images from the
-          same commit, or roll one back to the version the other expects.
-        </p>
-      </div>
-    );
-  }
+  if (s.APIVersion !== API_VERSION) return <VersionMismatch served={s.APIVersion} />;
   return <SessionCtx.Provider value={s}>{children}</SessionCtx.Provider>;
 }
 

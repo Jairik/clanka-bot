@@ -39,8 +39,8 @@ func (h *Handler) app(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Security-Policy", appSecurityPolicy())
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
 			w.Header().Set("X-Dashboard-UI", "artifact")
-			if h.uiArtifact.version != "" {
-				w.Header().Set("X-Dashboard-UI-Version", h.uiArtifact.version)
+			if v := h.uiArtifact.reportedVersion(); v != "" {
+				w.Header().Set("X-Dashboard-UI-Version", v)
 			}
 			if coding != "" {
 				w.Header().Set("Content-Encoding", coding)
@@ -183,8 +183,8 @@ func (h *Handler) serveArtifactAsset(w http.ResponseWriter, name string, data []
 		w.Header().Set("Content-Type", "application/manifest+json")
 	}
 	w.Header().Set("X-Dashboard-UI", "artifact")
-	if h.uiArtifact.version != "" {
-		w.Header().Set("X-Dashboard-UI-Version", h.uiArtifact.version)
+	if v := h.uiArtifact.reportedVersion(); v != "" {
+		w.Header().Set("X-Dashboard-UI-Version", v)
 	}
 	if coding != "" {
 		w.Header().Set("Content-Encoding", coding)

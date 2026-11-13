@@ -23,7 +23,12 @@ the two constants together.
 - The same Vite build is embedded at assistant build time, so offline and
   artifact-stopped operation is the fallback path, not a second UI.
 - `X-Dashboard-UI` and `X-Dashboard-UI-Version` name the copy that answered,
-  which is how a UI-only deploy and a rollback are checked.
+  which is how a UI-only deploy and a rollback are checked. The version is the
+  artifact's own build (its image entrypoint fills it into the nginx template),
+  so rolling back the artifact alone is visible without restarting the assistant.
+- A failed artifact is skipped for a short cooldown after one timed-out attempt,
+  so a wedged container does not add its timeout to every asset on every load;
+  a missing file (an old tab during a UI-only deploy) is not an outage.
 - A view change that an older UI would misread requires bumping `APIVersion` in
   the same commit as the Go change and in `web/src/api-version.ts`.
 - `make web-image` ships a UI-only change; `make deploy` and `scripts/deploy.sh`

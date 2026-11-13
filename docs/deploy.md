@@ -228,7 +228,9 @@ The assistant reaches the artifact over the internal Compose network and keeps
 serving the document and assets on the Dashboard origin, so identity, Host and
 CSP checks stay where they are. `X-Dashboard-UI: artifact` and
 `X-Dashboard-UI-Version: <sha>` on the response say which copy a page came from.
-To go back to the copy embedded in the running assistant:
+The version is the build the artifact reports about itself, so after a `--no-deps`
+rollback of `dashboard-web` the header shows the old SHA without restarting the
+assistant. To go back to the copy embedded in the running assistant:
 
 ```sh
 docker compose stop dashboard-web

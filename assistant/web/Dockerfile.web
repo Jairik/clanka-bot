@@ -21,8 +21,9 @@ ARG WEB_VERSION=dev
 # The build is the artifact: no Node, no package manager and no shell tooling
 # beyond what the static server needs.
 COPY --from=build /src/internal/dashboard/ui/dist /usr/share/nginx/html
-COPY web/nginx.conf /etc/nginx/conf.d/default.conf
-# Reported by the assistant's X-Dashboard-UI-Version header and readable here
-# for a rollback check.
-RUN printf '%s\n' "$WEB_VERSION" > /usr/share/nginx/html/ui-version.txt
+# A template, not a config: the image entrypoint fills in the build SHA so the
+# assistant can report the build that actually answered, even after a --no-deps
+# rollback of this service alone.
+ENV DASHBOARD_UI_VERSION=$WEB_VERSION
+COPY web/nginx.conf /etc/nginx/templates/default.conf.template
 EXPOSE 8080

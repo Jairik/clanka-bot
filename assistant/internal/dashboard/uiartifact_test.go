@@ -31,6 +31,9 @@ func artifactServer(t *testing.T) *httptest.Server {
 				http.NotFound(w, r)
 				return
 			}
+			// The artifact reports its own build, as nginx does from the image
+			// entrypoint template.
+			w.Header().Set("X-Dashboard-UI-Version", "real-sha")
 			_, _ = io.WriteString(w, body)
 		}
 	}))
@@ -59,8 +62,8 @@ func TestUIDocumentComesFromTheStandaloneArtifact(t *testing.T) {
 	if got := rec.Header().Get("X-Dashboard-UI"); got != "artifact" {
 		t.Errorf("X-Dashboard-UI = %q, want artifact", got)
 	}
-	if got := rec.Header().Get("X-Dashboard-UI-Version"); got != "abc123" {
-		t.Errorf("X-Dashboard-UI-Version = %q, want abc123", got)
+	if got := rec.Header().Get("X-Dashboard-UI-Version"); got != "real-sha" {
+		t.Errorf("X-Dashboard-UI-Version = %q, want the artifact's own build", got)
 	}
 	if csp := rec.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "form-action 'self'") {
 		t.Errorf("artifact document lost the CSP: %q", csp)
@@ -154,5 +157,24 @@ func TestAPIVersionMatchesTheUI(t *testing.T) {
 	want := fmt.Sprintf("API_VERSION = %d;", dashboard.APIVersion)
 	if !strings.Contains(string(raw), want) {
 		t.Fatalf("web/src/api-version.ts must contain %q; it says:\n%s", want, raw)
+	}
+}
+
+// TestUIArtifactVersionFallsBackToTheConfiguredPin covers an artifact that does
+// not report a build (an older image, or a proxy in front of it).
+func TestUIArtifactVersionFallsBackToTheConfiguredPin(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/index.html" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = io.WriteString(w, "<!doctype html><title>artifact build</title>")
+	}))
+	t.Cleanup(server.Close)
+	handler := artifactHandler(t, server.URL)
+
+	rec := serve(handler, request(http.MethodGet, "/", owner))
+	if got := rec.Header().Get("X-Dashboard-UI-Version"); got != "abc123" {
+		t.Fatalf("X-Dashboard-UI-Version = %q, want the configured pin", got)
 	}
 }

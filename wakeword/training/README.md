@@ -48,6 +48,20 @@ where the assistant actually runs; include the noisy cases you care about
 (music playing, running water, a fan). Silence is not a take — the trim will
 keep the whole clip and you will hear it on playback.
 
+## Short recording session on the Pi
+
+Run `scripts/record-wakeword-pi.sh` in an interactive Pi terminal to collect
+25 positive takes and 15 negatives with three seconds per take. It uses the
+default Pulse microphone and the same play/keep/redo controls as `record.py`.
+From the desktop, launch it with
+`ssh -t rbpi@pi 'cd ~/clanka-bot && scripts/record-wakeword-pi.sh'`;
+capture still happens on the Pi.
+Arguments are forwarded, so `--positive`, `--negative`, `--device` and `--work`
+can override these defaults. Recordings stay outside Git in the existing work
+directory. Temporarily stop the assistant before recording to prevent spoken
+replies contaminating takes, then start it again afterward. The helper itself
+does not change service state.
+
 ## Retrain and deploy
 
 Stages run in order, and re-running a finished stage is cheap: clips and feature

@@ -104,15 +104,31 @@ func TestRemindersAndEveryOtherTableShareOneDatabase(t *testing.T) {
 	}
 }
 
+// makeDue moves a stored Reminder just inside the two-minute downtime grace, so
+// the next Manager speaks it at startup instead of waiting on its timer. Tests
+// use it to cross a restart deterministically: a short real duration would race
+// the store close on a loaded machine and fire before the restart happened.
+func makeDue(t *testing.T, st *store.Store) {
+	t.Helper()
+	if _, err := st.DB().Exec(`UPDATE reminders SET fires_at = ?`, time.Now().Add(-time.Second).UnixMilli()); err != nil {
+		t.Fatalf("move reminder due: %v", err)
+	}
+}
+
 // TestReminderSurvivesRestart is the persistence criterion: a Reminder set
-// before a restart still speaks after it, once.
+// before a restart survives it as pending, and speaks once when it comes due
+// while the process is down. The two phases are separate on purpose: a Reminder
+// that is already due has no observable pending state (its fire transaction
+// removes the row before it speaks), so asserting both on one restart would
+// race the timer.
 func TestReminderSurvivesRestart(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "data", "assistant.db")
 
+	// An hour out: the setting process cannot fire it before it exits. A short
+	// real duration used to race this process's teardown on a loaded machine.
 	firstStore := openReminderStore(t, path)
-	firstRec := newTraceRecorder()
-	first := storedManager(t, firstStore, nil, firstRec, nil)
-	started, err := first.StartDuration("check the oven", 150*time.Millisecond)
+	first := storedManager(t, firstStore, nil, newTraceRecorder(), nil)
+	started, err := first.StartDuration("check the oven", time.Hour)
 	if err != nil {
 		t.Fatalf("StartDuration: %v", err)
 	}
@@ -127,20 +143,38 @@ func TestReminderSurvivesRestart(t *testing.T) {
 		t.Fatalf("first store close: %v", err)
 	}
 
+	// Restart with the due time still ahead: the Reminder is recovered, pending
+	// and silent.
 	secondStore := openReminderStore(t, path)
-	defer secondStore.Close()
 	secondRec := newTraceRecorder()
 	second := storedManager(t, secondStore, nil, secondRec, nil)
 	if got := len(second.List()); got != 1 {
 		t.Fatalf("recovered reminders = %d, want 1", got)
 	}
-	if got := secondRec.wait(t, 3*time.Second); got != "check the oven" {
+	secondRec.expectSilence(t, 150*time.Millisecond)
+	second.Close()
+
+	// Time passed while the process was down. The next start finds it inside
+	// the downtime grace and speaks it immediately, then forgets it.
+	makeDue(t, secondStore)
+	if err := secondStore.Close(); err != nil {
+		t.Fatalf("second store close: %v", err)
+	}
+
+	thirdStore := openReminderStore(t, path)
+	defer thirdStore.Close()
+	thirdRec := newTraceRecorder()
+	third := storedManager(t, thirdStore, nil, thirdRec, nil)
+	if got := thirdRec.wait(t, 3*time.Second); got != "check the oven" {
 		t.Fatalf("spoken = %q, want the recovered reminder", got)
 	}
-	if got := countReminderRows(t, secondStore); got != 0 {
+	if got := len(third.List()); got != 0 {
+		t.Fatalf("pending reminders after firing = %d, want 0", got)
+	}
+	if got := countReminderRows(t, thirdStore); got != 0 {
 		t.Fatalf("persisted rows after firing = %d, want 0", got)
 	}
-	secondRec.expectSilence(t, 150*time.Millisecond)
+	thirdRec.expectSilence(t, 150*time.Millisecond)
 }
 
 // TestNoDuplicateSpeechAfterRestart proves at-most-once: once the fire

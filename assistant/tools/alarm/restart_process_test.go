@@ -183,6 +183,13 @@ func runRestartHelper(t *testing.T, mode string) {
 		case <-time.After(5 * time.Second):
 			t.Fatal("helper did not hear the recovered Alarm")
 		}
+		// The Alarm is spoken before its outcome is durable. Waiting for the
+		// terminal history row (and, for a one-off, the pending-row delete)
+		// keeps this exit from racing those writes: exiting on the spoken line
+		// alone let the deferred Close cancel the Ring and record
+		// interrupted/shutdown, or leave the finished one-off row behind, on a
+		// loaded machine.
+		waitFireDone(t, manager, st, mode == "fire-once")
 	case "silent":
 		select {
 		case text := <-alerts:
@@ -192,4 +199,46 @@ func runRestartHelper(t *testing.T, mode string) {
 	default:
 		t.Fatalf("unknown helper mode %q", mode)
 	}
+}
+
+// waitFireDone blocks until the firing Alarm's durable aftermath is complete:
+// its terminal history row, plus the pending-row delete for a one-off Alarm.
+// The Ring is spoken before either write, so this is the sync point between
+// speech and a clean shutdown.
+func waitFireDone(t *testing.T, manager *alarm.Manager, st *store.Store, oneOff bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		settled, err := fireSettled(manager, st, oneOff)
+		if err != nil {
+			t.Fatalf("helper fire state: %v", err)
+		}
+		if settled {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("helper fire never became durable")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// fireSettled reports whether the Ring outcome (and, for a one-off Alarm, the
+// delete of its finished row) has reached the database.
+func fireSettled(manager *alarm.Manager, st *store.Store, oneOff bool) (bool, error) {
+	events, err := manager.History(1)
+	if err != nil {
+		return false, err
+	}
+	if len(events) != 1 || events[0].Kind != "alarm" || events[0].State.Open() {
+		return false, nil
+	}
+	if !oneOff {
+		return true, nil
+	}
+	var rows int
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM alarms`).Scan(&rows); err != nil {
+		return false, err
+	}
+	return rows == 0, nil
 }

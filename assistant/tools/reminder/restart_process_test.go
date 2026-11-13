@@ -40,7 +40,10 @@ func TestReminderSurvivesProcessRestart(t *testing.T) {
 
 	runRestartChild(t, "set", path, speechPath, message)
 
-	// A parent-side check reads the row the first process committed.
+	// A parent-side check reads the row the first process committed, then moves
+	// it just inside the downtime grace. The set child must not race a real
+	// timer to the row, and the firing child must find it due across the
+	// restart rather than wait an hour for it.
 	st, err := store.Open(context.Background(), path)
 	if err != nil {
 		t.Fatalf("open store after set: %v", err)
@@ -50,11 +53,13 @@ func TestReminderSurvivesProcessRestart(t *testing.T) {
 		st.Close()
 		t.Fatalf("count rows: %v", err)
 	}
+	if rows != 1 {
+		st.Close()
+		t.Fatalf("persisted rows after first process = %d, want 1", rows)
+	}
+	makeDue(t, st)
 	if err := st.Close(); err != nil {
 		t.Fatalf("close store: %v", err)
-	}
-	if rows != 1 {
-		t.Fatalf("persisted rows after first process = %d, want 1", rows)
 	}
 
 	runRestartChild(t, "fire", path, speechPath, message)
@@ -145,7 +150,10 @@ func runRestartHelper(t *testing.T, mode string) {
 
 	switch mode {
 	case "set":
-		if _, err := m.StartDuration(message, 400*time.Millisecond); err != nil {
+		// An hour out: the child exits long before it is due, and the parent
+		// moves it due across the restart. A 400 ms duration used to race this
+		// process's own teardown and fire before the row could be observed.
+		if _, err := m.StartDuration(message, time.Hour); err != nil {
 			t.Fatalf("helper StartDuration: %v", err)
 		}
 	case "fire":
@@ -157,6 +165,10 @@ func runRestartHelper(t *testing.T, mode string) {
 		case <-time.After(5 * time.Second):
 			t.Fatal("helper did not hear the recovered Reminder")
 		}
+		// The message is spoken before its outcome is durable. Waiting for the
+		// terminal history row keeps this exit from racing that write, which a
+		// busy machine otherwise resolves as interrupted/shutdown.
+		waitReminderOutcome(t, m)
 	case "silent":
 		if list := m.List(); len(list) != 0 {
 			t.Fatalf("helper recovered %d reminders, want none", len(list))
@@ -168,5 +180,26 @@ func runRestartHelper(t *testing.T, mode string) {
 		}
 	default:
 		t.Fatalf("unknown helper mode %q", mode)
+	}
+}
+
+// waitReminderOutcome blocks until the firing Reminder's outcome is durable.
+// The message is spoken before the state is written, so this is the sync point
+// between speech and a clean shutdown.
+func waitReminderOutcome(t *testing.T, m *reminder.Manager) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		events, err := m.History(1)
+		if err != nil {
+			t.Fatalf("helper history: %v", err)
+		}
+		if len(events) == 1 && events[0].Kind == "reminder" && !events[0].State.Open() {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("helper reminder outcome never became durable: %+v", events)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }

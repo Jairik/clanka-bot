@@ -53,6 +53,10 @@ const (
 	defaultResults  = 10
 	defaultMaxItems = 20
 	maxResultLimit  = 20
+	// maxHealthTimeout bounds one live health request, whatever the configured
+	// request timeout is: the Dashboard snapshot has its own, smaller, shared
+	// budget for every check together.
+	maxHealthTimeout = 2 * time.Second
 )
 
 // Config is the tools.github section.
@@ -181,6 +185,13 @@ type Module struct {
 	token  func() (string, bool)
 	// classic resolves the optional notifications-only secret.
 	classic func() (string, bool)
+	// now ages the health answers; nil means time.Now. Tests inject one.
+	now func() time.Time
+	// tokenHealth and notificationsHealth remember the last check of each
+	// secret, so a Dashboard refresh does not have to fit a cold Tailscale
+	// MagicDNS lookup and TLS handshake inside its shared budget.
+	tokenHealth         memo[error]
+	notificationsHealth memo[tool.AuxHealth]
 }
 
 // NewModule builds the GitHub module with its code defaults.
@@ -253,29 +264,60 @@ func (m *Module) Register(r *tool.Registry, deps tool.Deps) error {
 // token is reported without the token itself. It does not probe notifications:
 // that API's classic-token contract would make a healthy fine-grained token look
 // like a broken module; the optional classic token has its own AuxHealth entry.
+//
+// The answer is remembered for a short TTL (healthOKTTL on success,
+// healthFailTTL on a rejection) because the shared Health budget cannot absorb
+// the cold DNS and TLS cost of the call. A refresh that has too little of that
+// budget left, or whose live check hits the snapshot's own deadline, reuses the
+// last real answer labelled with its age instead of calling a healthy token
+// broken. A rejection is never hidden: a live 401 is recorded and reported.
 func (m *Module) Health(ctx context.Context) error {
 	if m.client == nil {
 		return fmt.Errorf("github: module is not registered")
 	}
+	// The secret is local state and is checked before the cache: a token
+	// removed in the Dashboard must show up on the very next refresh.
 	if _, ok := m.token(); !ok {
 		return fmt.Errorf("github: %s is not configured; add it in Dashboard > Secrets or .env", SecretName)
 	}
+	now := m.clock()
+	if err, ok := m.tokenHealth.fresh(now); ok {
+		return err
+	}
+	if shortOfBudget(ctx) {
+		if err, age, ok := m.tokenHealth.last(now); ok {
+			return stale(err, age)
+		}
+	}
 	timeout := m.cfg.Timeout.Duration()
-	if timeout > 2*time.Second {
-		timeout = 2 * time.Second
+	if timeout > maxHealthTimeout {
+		timeout = maxHealthTimeout
 	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
+	checkCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	if _, err := m.client.Login(ctx); err != nil {
-		return fmt.Errorf("github: token check failed: %w", err)
+	if _, err := m.client.Login(checkCtx); err != nil {
+		if spentDeadline(err) {
+			// The snapshot ran out of time; that says nothing about the token.
+			// Keep the last real answer rather than remembering a timeout.
+			if prev, age, ok := m.tokenHealth.last(now); ok {
+				return stale(prev, age)
+			}
+			return fmt.Errorf("github: token check did not finish within the Health refresh budget; the next refresh retries: %w", err)
+		}
+		err = fmt.Errorf("github: token check failed: %w", err)
+		m.tokenHealth.record(now, err, true)
+		return err
 	}
+	m.tokenHealth.record(now, nil, false)
 	return nil
 }
 
 // AuxHealth is the separate status of the optional notifications token. An
 // absent secret is not-configured (not an error) and sends no request; a
 // present one is probed with one read-only notifications request that uses only
-// that token. The module's own Health never includes this result.
+// that token. The module's own Health never includes this result. The probe
+// reuses the same short-lived memo as Health: it pays the same DNS and TLS cost
+// inside the same shared budget.
 func (m *Module) AuxHealth(ctx context.Context) []tool.AuxHealth {
 	status := tool.AuxHealth{Name: notificationsHealthName}
 	switch {
@@ -283,24 +325,60 @@ func (m *Module) AuxHealth(ctx context.Context) []tool.AuxHealth {
 		status.State = tool.StatusError
 		status.Detail = "github: module is not registered"
 	case !m.hasClassic():
+		// Local state: a token added in the Dashboard appears on the next
+		// refresh, without waiting for any memo to expire.
 		status.State = tool.StatusNotConfigured
 		status.Detail = notificationsSetup
 	default:
-		timeout := m.cfg.Timeout.Duration()
-		if timeout > 2*time.Second {
-			timeout = 2 * time.Second
-		}
-		ctx, cancel := context.WithTimeout(ctx, timeout)
-		defer cancel()
-		if err := m.client.probeNotifications(ctx); err != nil {
-			status.State = tool.StatusError
-			status.Detail = "github: " + notificationsFailure(err)
+		now := m.clock()
+		if cached, ok := m.notificationsHealth.fresh(now); ok {
+			status = cached
+		} else if shortOfBudget(ctx) {
+			if last, age, ok := m.notificationsHealth.last(now); ok {
+				status = staleAux(last, age)
+			} else {
+				status = m.probeNotifications(ctx, now)
+			}
 		} else {
-			status.State = tool.StatusOK
-			status.Detail = "Notifications token accepted."
+			status = m.probeNotifications(ctx, now)
 		}
 	}
 	return []tool.AuxHealth{status}
+}
+
+// probeNotifications runs the one live read-only request and remembers it.
+func (m *Module) probeNotifications(ctx context.Context, now time.Time) tool.AuxHealth {
+	status := tool.AuxHealth{Name: notificationsHealthName}
+	timeout := m.cfg.Timeout.Duration()
+	if timeout > maxHealthTimeout {
+		timeout = maxHealthTimeout
+	}
+	checkCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	if err := m.client.probeNotifications(checkCtx); err != nil {
+		if spentDeadline(err) {
+			if last, age, ok := m.notificationsHealth.last(now); ok {
+				return staleAux(last, age)
+			}
+			status.State = tool.StatusError
+			status.Detail = "github: notifications check did not finish within the Health refresh budget; the next refresh retries"
+			return status
+		}
+		status.State = tool.StatusError
+		status.Detail = "github: " + notificationsFailure(err)
+		m.notificationsHealth.record(now, status, true)
+		return status
+	}
+	status.State = tool.StatusOK
+	status.Detail = "Notifications token accepted."
+	m.notificationsHealth.record(now, status, false)
+	return status
+}
+
+// staleAux keeps a reused notifications answer and says how old it is.
+func staleAux(last tool.AuxHealth, age time.Duration) tool.AuxHealth {
+	last.Detail = fmt.Sprintf("%s (last checked %s ago)", last.Detail, ago(age))
+	return last
 }
 
 func (m *Module) hasClassic() bool {

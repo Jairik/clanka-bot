@@ -40,13 +40,17 @@ export function HealthPage() {
           const bad = checks.filter(failing).length;
           const ok = checks.filter((c) => c.Status === "ok").length;
           const unchecked = checks.filter((c) => c.Status === "no-check").length;
+          const unconfigured = checks.filter((c) => c.Status === "not-configured").length;
           // Modules that declare no health check are neither ok nor failing.
           // Counting them in the denominator read "4/19 ok" next to the home
           // card's "12/12"; naming them is honest and matches that card, which
           // counts only real checks.
-          const summary = !checks.length
-            ? "none"
-            : [bad ? `${bad} failing` : `${ok} ok`, unchecked ? `${unchecked} no check` : ""].filter(Boolean).join(" · ");
+          const parts = [
+            bad ? `${bad} failing` : ok ? `${ok} ok` : "",
+            unchecked ? `${unchecked} no check` : "",
+            unconfigured ? `${unconfigured} not configured` : "",
+          ].filter(Boolean);
+          const summary = checks.length ? parts.join(" · ") : "none";
           return (
             <Section
               key={title}

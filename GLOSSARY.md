@@ -100,6 +100,18 @@ _Avoid_: Fuzzy search, autocomplete
 The number of whole calendar days from today to a fixed date such as Christmas, counted in local dates in the effective timezone. A DST change does not add or remove a day. It is not a Timer.
 _Avoid_: Timer, elapsed time
 
+**Note**:
+A short personal fact kept on the Pi and found later by meaning, not by an exact key. Notes are `LocalOnlyNo` by the owner's decision: the Agent path and Hermes may read and add them through the single prompt builder ([ADR-0005](docs/adr/0005-notes-and-lists-are-agent-visible.md)); deleting one is a confirm action.
+_Avoid_: Memory, memo, reminder
+
+**List**:
+One of the two fixed personal lists, `shopping` and `to-do`. New lists cannot be created by voice. Items are added, ticked or removed; a spoken removal resolves through the Name matcher. Lists are `LocalOnlyNo` for the same reason as a Note.
+_Avoid_: Todo app, checklist, wishlist
+
+**Recall**:
+The Note lookup that ranks every note by cosine similarity to the spoken query and returns the closest matches above a minimum score, or a truthful no-match. An exact substring hit wins before any embedding call.
+_Avoid_: Search, lookup, fuzzy match
+
 **City time**:
 The current local time in a named city, resolved from a shipped city-to-IANA table with embedded tzdata and no network lookup.
 _Avoid_: World clock, timezone guess

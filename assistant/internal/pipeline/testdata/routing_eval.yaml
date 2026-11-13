@@ -1147,12 +1147,117 @@ positives:
     - save this one to my favorites
     - like the song that's playing
     - save this song to my liked songs please
+  list.add:
+    - add milk to the shopping list
+    - put eggs on the shopping list
+    - add bread to my shopping list
+    - put toothpaste on the shopping list
+    - add butter to the shopping list please
+    - can you add coffee to the shopping list
+    - add apples to my shopping list
+    - put bananas on the shopping list
+    - add cheese to the shopping list
+    - put rice on my shopping list
+    - add orange juice to the shopping list
+    - put kitchen roll on my shopping list
+    - add frozen peas to the shopping list
+    - put yoghurt on the shopping list
+    - add cereal to my shopping list
+    - put pasta on the shopping list
+    - add carrots to the shopping list
+    - put onions on my shopping list
+    - add potatoes to the shopping list
+    - put tomatoes on the shopping list
+  list.read:
+    - what's on my shopping list
+    - read me the shopping list
+    - what is on my shopping list
+    - what's on my to-do list
+    - what is on the to-do list
+    - show me my to do list
+    - read out my to-do list
+    - what's left on my shopping list
+    - what do I need to buy
+    - what do I still need to buy
+    - what's on the list for shopping
+    - show me the shopping list
+    - read the to-do list
+    - tell me my shopping list
+    - read out my to do list
+    - show me the to-do list
+    - please read me the shopping list
+    - what's on the shopping list
+    - what's on my to do list
+    - show me my shopping list
+    - tell me the to-do list
+  list.remove:
+    - remove the old sofa from the to-do list
+    - take the library books off my to-do list
+    - delete the parcel from my to-do list
+    - cross off the dry cleaning from my to-do list
+    - remove the car tax from the to-do list
+    - take renew the passport off my to-do list
+    - delete book the flights from my to-do list
+    - cross off fix the gate from the to-do list
+    - remove the tent from the shopping list
+    - take the spare bulbs off the shopping list
+    - delete the batteries from the shopping list
+    - remove the paint from the shopping list
+    - take the birthday card off the shopping list
+    - remove the charcoal from the shopping list
+    - delete the foil from the shopping list
+    - take the olive oil off the shopping list
+    - remove the dish soap from the shopping list
+    - cross off the salt from the shopping list
+    - delete the flour from the shopping list
+    - take the washing up liquid off the shopping list
+  note.remember:
+    - remember that I parked on level 3
+    - remember I left my bike in the shed
+    - make a note that the boiler needs servicing
+    - note that I owe Sam ten pounds
+    - add a note that the spare key is under the pot
+    - remember the wifi password is in the drawer
+    - make a note that the bins go out on Tuesday
+    - note down that the plumber is coming Friday
+    - remember where I put the passport
+    - add a note that I need to renew the car insurance
+    - remember that the library books are due back
+    - remember the car is parked in bay 12
+    - make a note that the oven is on the blink
+    - note down the meeting is at four
+    - add a note that Sam's number is in the kitchen
+    - remember that I lent the drill to Alex
+    - remember the filter needs changing in March
+    - make a note that the front door code is 4321
+    - note that the parcel is behind the bin
+    - remember the spare batteries are in the hall cupboard
+  note.recall:
+    - what do I remember about the boiler
+    - what did I note about the plumber
+    - do I have a note about the spare key
+    - recall my note about the car insurance
+    - search my notes for the wifi password
+    - what do I know about the library books
+    - what have I noted about the bins
+    - find my note about the passport
+    - where did I park
+    - what are my notes about the bike
+    - what did I write down about Sam
+    - where did I leave the drill
+    - where did I put the spare key
+    - what do I remember about the front door code
+    - do I have a note about the oven
+    - recall my note about the meeting
+    - search my notes for the parcel
+    - what do I know about the car insurance
+    - what have I noted about Sam
+    - find my note about the batteries
 negatives:
   - what's a good running playlist for a marathon
   - recommend a playlist for studying
   - create a new playlist called road trip
   - delete my running playlist
-  - add milk to the shopping list
   - shuffle the deck of cards
   - who made the playlist feature in Spotify
   - how do I repeat a task every day
@@ -1379,6 +1484,33 @@ negatives:
   - add this song to my playlist
   - play the video on my phone
   - pause my gym membership
+  # Notes- and Lists-shaped but not a Fast path request: a third list, a
+  # destructive list-wide action, another device's store, or a note that is
+  # really an outward write.
+  - create a new shopping list
+  - make a list called camping
+  - delete my shopping list
+  - clear my shopping list
+  - share my shopping list with Sam
+  - how many items are on my shopping list
+  - add milk to the wish list
+  - what's on my to-do list app
+  - remember to call the dentist
+  - what did I say about the boiler
+  - forget my shopping list
+  - mark milk as done
+  - which list has milk on it
+  - write a note to my landlord
+  - summarize my notes
+  - search the web for shopping list apps
+  - create a note in the notes app
+  - delete all my notes
+  - forget everything I told you
+  - add a reminder to my shopping list
+  - put milk on the list
+  - take milk off the list
+  - what's in my notes
+  - delete the note about the boiler from my phone
 
 # Compound requests ask for more than one thing. They are kept separate so
 # the evaluation can report compound handling on its own.
@@ -1398,6 +1530,10 @@ compounds:
   - set a timer for 5 minutes and remind me to check the oven
   - stop talking and tell me the time
   - set an alarm for 7 and a timer for 10 minutes
+  - add milk to the shopping list and remind me to buy eggs
+  - remember that I parked on level 3 and set an alarm for 7
+  - what's on my to-do list and what's the weather
+  - remove milk from the shopping list and add eggs
   - cancel my alarm and set a new one for 7
   - what time is my alarm and what's the weather
   - set an alarm for 7 and turn the volume down

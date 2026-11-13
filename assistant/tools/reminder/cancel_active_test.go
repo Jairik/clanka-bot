@@ -10,6 +10,33 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/tools/reminder"
 )
 
+// TestCancelByIDStopsASpeakingReminder is the Dashboard's acknowledge path: a
+// fired Reminder has no pending row, and Cancel(id) must still stop the active
+// playback by the id its history row carries.
+func TestCancelByIDStopsASpeakingReminder(t *testing.T) {
+	speaker := &blockingSpeaker{started: make(chan struct{}, 1)}
+	queue := announce.New(speaker, testLogger())
+	t.Cleanup(queue.Close)
+	manager := reminder.NewManager(reminder.Options{Speaker: speaker, Queue: queue, Logger: testLogger()})
+	t.Cleanup(manager.Close)
+
+	item, err := manager.StartDuration("check the oven", 10*time.Millisecond)
+	if err != nil {
+		t.Fatalf("StartDuration: %v", err)
+	}
+	select {
+	case <-speaker.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the Reminder never started speaking")
+	}
+	if cancelled, err := manager.Cancel(item.ID); err != nil || cancelled != 1 {
+		t.Fatalf("Cancel(%s) = %d, %v; want the speaking Reminder", item.ID, cancelled, err)
+	}
+	if cancelled, err := manager.Cancel(item.ID); err != nil || cancelled != 0 {
+		t.Fatalf("second Cancel = %d, %v; want 0", cancelled, err)
+	}
+}
+
 // TestCancelQueryStopsASpeakingReminder covers the active map: the fired
 // Reminder has no pending row, so only retained metadata can match "oven".
 func TestCancelQueryStopsASpeakingReminder(t *testing.T) {

@@ -256,6 +256,7 @@ func New(opts Options) (*Handler, error) {
 	h.Handle("GET /api/ui/voices", h.voicesPage)
 	h.Handle("GET /api/ui/personas", h.personasPage)
 	h.Handle("GET /api/ui/alerts", h.alertsPage)
+	h.Handle("GET /api/ui/notes", h.notesPage)
 	h.Handle("GET /api/ui/spotify", h.spotifyPage)
 	// The typed-request box. The one write goes through Mutating for identity
 	// and same-origin.
@@ -299,6 +300,15 @@ func New(opts Options) (*Handler, error) {
 	h.Mutating("POST /alerts/{kind}/{id}/cancel", h.alertCancel)
 	h.Mutating("POST /alerts/alarms/{id}", h.alertAlarmUpdate)
 	h.Mutating("POST /alerts/alarms/{id}/reset", h.alertAlarmReset)
+	// The Notes page owns the two fixed Lists and every Note. Every write goes
+	// through Mutating for identity and same-origin.
+	h.Mutating("POST /notes", h.noteCreate)
+	h.Mutating("POST /notes/{id}", h.noteUpdate)
+	h.Mutating("POST /notes/{id}/delete", h.noteDelete)
+	h.Mutating("POST /notes/lists/{list}/items", h.listItemAdd)
+	h.Mutating("POST /notes/lists/{list}/items/{id}", h.listItemUpdate)
+	h.Mutating("POST /notes/lists/{list}/items/{id}/toggle", h.listItemToggle)
+	h.Mutating("POST /notes/lists/{list}/items/{id}/remove", h.listItemRemove)
 	h.Mutating("POST /secrets/{name}", h.secretsSet)
 	h.Mutating("POST /secrets/{name}/clear", h.secretsClear)
 	// Spotify Connect pairing and Web API auth are separate surfaces. The

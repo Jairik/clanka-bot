@@ -82,6 +82,15 @@ type Options struct {
 	Queue   *announce.Queue
 	Cues    CuePlayer
 	Quiet   QuietGate
+	// Notify pushes a due Reminder to the phone. Nil delivers nothing; a
+	// failure never blocks or repeats the spoken reminder.
+	Notify Notifier
+}
+
+// Notifier is the one Notification seam the Manager needs. tool.Notifier
+// satisfies it.
+type Notifier interface {
+	NotifyReminder(ctx context.Context, message string)
 }
 
 // Manager owns the live Reminders. Without a store it is the in-memory
@@ -96,6 +105,7 @@ type Manager struct {
 	queue   *announce.Queue
 	cues    CuePlayer
 	quiet   QuietGate
+	notify  Notifier
 
 	db      *sql.DB
 	history *alertstore.Store
@@ -134,6 +144,7 @@ func NewManager(opts Options) *Manager {
 		queue:          opts.Queue,
 		cues:           opts.Cues,
 		quiet:          opts.Quiet,
+		notify:         opts.Notify,
 		entries:        make(map[string]*entry),
 		active:         make(map[string]context.CancelFunc),
 		activeMessages: make(map[string]string),
@@ -274,6 +285,11 @@ func (m *Manager) fire(id string) {
 		m.logger.Error("reminder fire history", "reminder_id", r.ID, "error", err.Error())
 		return
 	}
+	// A due Reminder also reaches the phone. Send runs after the durable fire
+	// transaction and on every branch below, so a missing speaker or queue
+	// cannot suppress it. The Notification service applies notify.reminders
+	// and Quiet hours itself.
+	defer m.notifyDue(r.Message)
 	if queue == nil {
 		m.finishEvent(eventID, alertstore.StateMissed, "unavailable")
 		m.logger.Warn("reminder dropped: the Announcement queue is not configured", "reminder_id", r.ID)
@@ -369,6 +385,17 @@ func (m *Manager) ringCancelled(id string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.cancelled[id]
+}
+
+// notifyDue pushes one due Reminder to the phone. A failure is already logged
+// by the Notification service and never changes the spoken outcome.
+func (m *Manager) notifyDue(message string) {
+	if m.notify == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	m.notify.NotifyReminder(ctx, message)
 }
 
 // finishInterrupted records a cancelled playback as a user cancel when the

@@ -66,6 +66,10 @@ type Deps struct {
 	// voices and Spotify playlists. It reads the live threshold per lookup and
 	// never forces a guess; nil means a module cannot resolve spoken names.
 	Names *namematch.Matcher
+	// Embed is the local MiniLM sentence-embedding seam. note.recall uses it
+	// to rank notes by meaning; nil disables semantic recall but leaves exact
+	// matches working.
+	Embed Embedder
 	// Settings returns the live settings service once main has created it. It
 	// is a function because Tool modules register before the service exists;
 	// a module that needs a live setting reads it per action and must not
@@ -100,6 +104,13 @@ type Deps struct {
 type Notifier interface {
 	Send(ctx context.Context, n notify.Notification) error
 	NotifyMissed(ctx context.Context, alert notify.MissedAlert)
+	NotifyReminder(ctx context.Context, message string)
+}
+
+// Embedder is the local MiniLM embed seam. *embed.Client satisfies it. No
+// request leaves the Pi: the embed service is a Compose sidecar.
+type Embedder interface {
+	Embed(ctx context.Context, texts []string) ([][]float32, error)
 }
 
 // StatusState is one health-check outcome. The string values are stable for

@@ -55,8 +55,10 @@ type migration struct {
 // a message and the duration or clock time it is due. Version 9 holds Personas:
 // a named bundle of voice, personality prompt, Agent Filler and Unavailable
 // wording. The active Persona is an ordinary settings row, and selecting one
-// writes the bundle through the settings service in one transaction. The
-// versions stay contiguous in either merge order.
+// writes the bundle through the settings service in one transaction. Version 10
+// holds the personal Notes and the fixed shopping and to-do Lists (#32); the
+// row text is user content, so it never reaches a log. The versions stay
+// contiguous in either merge order.
 var migrations = []migration{
 	{
 		version: 1,
@@ -215,6 +217,38 @@ var migrations = []migration{
 				created_at  TEXT NOT NULL,
 				updated_at  TEXT NOT NULL
 			)`,
+		},
+	},
+	{
+		version: 10,
+		name:    "notes_and_lists",
+		statements: []string{
+			// text is user content. embedding is the MiniLM vector captured
+			// when the note was written, as little-endian float32; NULL means
+			// the embed service was unavailable and recall falls back to exact
+			// substring matches for that note. created_at and updated_at are
+			// Unix milliseconds so ordering never depends on the database
+			// locale.
+			`CREATE TABLE notes (
+				id         INTEGER PRIMARY KEY AUTOINCREMENT,
+				text       TEXT NOT NULL,
+				embedding  BLOB,
+				created_at INTEGER NOT NULL,
+				updated_at INTEGER NOT NULL
+			)`,
+			`CREATE INDEX notes_updated_at ON notes (updated_at)`,
+			// list_key is one of the fixed List keys (shopping, to-do); a
+			// CHECK keeps a stray write from creating a third list by voice or
+			// over the API. done is 0 or 1; position follows created_at, id.
+			`CREATE TABLE list_items (
+				id         INTEGER PRIMARY KEY AUTOINCREMENT,
+				list_key   TEXT NOT NULL CHECK (list_key IN ('shopping', 'to-do')),
+				text       TEXT NOT NULL,
+				done       INTEGER NOT NULL DEFAULT 0,
+				created_at INTEGER NOT NULL,
+				updated_at INTEGER NOT NULL
+			)`,
+			`CREATE INDEX list_items_list_key ON list_items (list_key, done, id)`,
 		},
 	},
 }

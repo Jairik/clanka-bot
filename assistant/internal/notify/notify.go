@@ -39,6 +39,8 @@ const (
 	URLKey = "notify.url"
 	// MissedAlertsKey controls whether a missed Timer or Alarm is pushed.
 	MissedAlertsKey = "notify.missed_alerts"
+	// RemindersKey controls whether a due Reminder is pushed to the phone.
+	RemindersKey = "notify.reminders"
 )
 
 // Secret names. The topic is generated on first use; the token is optional and
@@ -56,6 +58,8 @@ const (
 	// DefaultMissedAlerts pushes a Notification when a Ring reaches max_ring or
 	// a recovered missed row is found.
 	DefaultMissedAlerts = true
+	// DefaultReminders pushes a Notification when a Reminder is due.
+	DefaultReminders = true
 	// topicPrefix makes a generated topic recognisable without shortening its
 	// random suffix.
 	topicPrefix = "clanka-"
@@ -113,11 +117,13 @@ type Config struct {
 	URL string `yaml:"url"`
 	// MissedAlerts pushes a Notification for a missed Timer or Alarm.
 	MissedAlerts bool `yaml:"missed_alerts"`
+	// Reminders pushes a Notification when a Reminder is due.
+	Reminders bool `yaml:"reminders"`
 }
 
 // DefaultConfig is the shipped Notify configuration.
 func DefaultConfig() Config {
-	return Config{URL: DefaultURL, MissedAlerts: DefaultMissedAlerts}
+	return Config{URL: DefaultURL, MissedAlerts: DefaultMissedAlerts, Reminders: DefaultReminders}
 }
 
 // Validate checks the config layer before startup uses it.
@@ -140,6 +146,10 @@ func Definitions(cfg Config) []settings.Definition {
 		settings.Bool(MissedAlertsKey, DefaultMissedAlerts,
 			settings.WithConfig(cfg.MissedAlerts),
 			settings.WithDescription("Send a phone Notification when a Timer or Alarm reaches max_ring without an answer, or a missed alert is recovered at startup."),
+		),
+		settings.Bool(RemindersKey, DefaultReminders,
+			settings.WithConfig(cfg.Reminders),
+			settings.WithDescription("Send a phone Notification when a Reminder is due, alongside the spoken reminder. Quiet hours mute it."),
 		),
 	}
 }
@@ -414,6 +424,40 @@ func (s *Service) NotifyMissed(ctx context.Context, alert MissedAlert) {
 	}
 }
 
+// NotifyReminder pushes one due Reminder to the phone when the setting is on
+// and Quiet hours allow it. The message is user content, so it is never logged;
+// a failure logs only the kind and the error.
+func (s *Service) NotifyReminder(ctx context.Context, message string) {
+	if s == nil {
+		return
+	}
+	message = strings.TrimSpace(message)
+	if message == "" {
+		return
+	}
+	if !s.remindersEnabled() {
+		s.logger.Debug("reminder notification disabled")
+		return
+	}
+	err := s.Send(ctx, Notification{
+		Kind:     "reminder",
+		Title:    "Reminder",
+		Message:  message,
+		Priority: "high",
+		Tags:     []string{"bell"},
+	})
+	if err == nil {
+		return
+	}
+	var muted *MutedError
+	if errors.As(err, &muted) {
+		// Muted means dropped, matching the Quiet-hours spec.
+		s.logger.Info("reminder notification muted", "reason", muted.Reason)
+		return
+	}
+	s.logger.Warn("reminder notification failed", "error", err.Error())
+}
+
 // urlValue resolves the live base URL, falling back to the config layer.
 func (s *Service) urlValue() string {
 	s.mu.RLock()
@@ -442,6 +486,21 @@ func (s *Service) missedAlertsEnabled() bool {
 		}
 	}
 	return s.config.MissedAlerts
+}
+
+// remindersEnabled resolves the live due-Reminder switch.
+func (s *Service) remindersEnabled() bool {
+	s.mu.RLock()
+	reader := s.reader
+	s.mu.RUnlock()
+	if reader != nil {
+		if value, ok := reader.Get(RemindersKey); ok {
+			if enabled, ok := value.Value.(bool); ok {
+				return enabled
+			}
+		}
+	}
+	return s.config.Reminders
 }
 
 // token returns a stored server-issued access token, if any. It never invents

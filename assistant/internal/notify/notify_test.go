@@ -586,6 +586,71 @@ func TestNotifyMissedObeysSwitchAndQuiet(t *testing.T) {
 	}
 }
 
+func TestNotifyReminderSendsOneHighPriorityNotification(t *testing.T) {
+	server, requests := captureServer(t)
+	svc, err := New(Options{
+		Reader:  newFakeReader(map[string]any{URLKey: server.URL, RemindersKey: true}),
+		Secrets: newFakeSecrets(),
+		Config:  DefaultConfig(),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	svc.NotifyReminder(context.Background(), "check the oven")
+	req := waitForRequest(t, requests)
+	var payload publishRequest
+	if err := json.Unmarshal(req.Body, &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if payload.Title != "Reminder" || payload.Message != "check the oven" {
+		t.Fatalf("title/message = %q / %q", payload.Title, payload.Message)
+	}
+	if payload.Priority == nil || *payload.Priority != 4 {
+		t.Fatalf("priority = %v, want numeric 4 (high)", payload.Priority)
+	}
+	if len(payload.Tags) != 1 || payload.Tags[0] != "bell" {
+		t.Fatalf("tags = %v", payload.Tags)
+	}
+	select {
+	case extra := <-requests:
+		t.Fatalf("one Reminder sent two requests: %+v", extra)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestNotifyReminderObeysSwitchAndQuiet(t *testing.T) {
+	server, requests := captureServer(t)
+	secretSvc := newFakeSecrets()
+	svc, err := New(Options{
+		Reader:  newFakeReader(map[string]any{URLKey: server.URL, RemindersKey: false}),
+		Secrets: secretSvc,
+		Quiet:   quietService(t),
+		Config:  DefaultConfig(),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	// The switch is off, so nothing is attempted even though Quiet is on.
+	svc.NotifyReminder(context.Background(), "check the oven")
+	select {
+	case req := <-requests:
+		t.Fatalf("a disabled Reminder Notification was sent: %+v", req)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	// Switch on, Quiet on: still no network and no retry when the window ends.
+	svc.Bind(newFakeReader(map[string]any{URLKey: server.URL, RemindersKey: true}))
+	svc.NotifyReminder(context.Background(), "check the oven")
+	select {
+	case req := <-requests:
+		t.Fatalf("a quiet Reminder Notification was sent: %+v", req)
+	case <-time.After(100 * time.Millisecond):
+	}
+	if secretSvc.count(TopicSecret) != 0 {
+		t.Fatal("a quiet Reminder Notification provisioned a topic")
+	}
+}
+
 func TestMissedNotificationReasons(t *testing.T) {
 	cases := []struct {
 		reason string

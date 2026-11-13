@@ -89,8 +89,10 @@ func TestRemindersAndEveryOtherTableShareOneDatabase(t *testing.T) {
 	want := map[int]string{
 		1: "settings", 2: "secrets", 3: "timers", 4: "sounds",
 		5: "alert_events", 6: "voices", 7: "alarms", 8: "reminders",
-		// 9 is Personas (#65); the ledger stays contiguous.
-		9: "personas",
+		// 9 is Personas (#65); 10 is Notes and Lists (#32). The ledger stays
+		// contiguous.
+		9:  "personas",
+		10: "notes_and_lists",
 	}
 	if len(applied) != len(want) {
 		t.Fatalf("fresh migrations = %v, want %v", applied, want)

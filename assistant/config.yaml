@@ -147,6 +147,22 @@ tools:
     max_results: 20
   timer:
     alert_text: "Your timer is done."
+  note:
+    # Recall embeds the notes and the query, then keeps matches at or above
+    # this cosine floor. 0.35 separates a real paraphrase from an unrelated
+    # sentence on all-MiniLM-L6-v2; no match says so rather than guessing.
+    min_score: 0.35
+    # Notes one recall returns, closest first.
+    max_results: 3
+    # Longest note in runes, enforced on the voice and Dashboard paths.
+    max_text: 2000
+    # Notes a recall embeds, newest first. Older notes stay listed in the
+    # Dashboard but fall outside semantic recall.
+    max_notes: 500
+  list:
+    # Open items one fixed list can hold. The set of lists itself is fixed in
+    # code: shopping and to-do; no list can be created by voice.
+    max_items: 200
   voice:
     # One "faster"/"slower" step as a multiplier fraction. voice.rate is clamped
     # to [0.5, 2.0] and rounded to two decimals.
@@ -324,6 +340,9 @@ quiet:
 notify:
   url: "https://ntfy.sh"
   missed_alerts: true
+  # Push a due Reminder to the phone alongside the spoken message. Quiet hours
+  # mute it, like every Notification. The topic and token are secrets.
+  reminders: true
 
 # Exact-match Control phrases, entered just after STT. These are the config.yaml
 # layer of the live wording settings; a stored override applies on the next

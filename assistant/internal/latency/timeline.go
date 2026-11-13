@@ -24,6 +24,10 @@ const (
 	// SourceDashboard is the authenticated Dashboard's typed-request box. It
 	// is text-only for the request, so it never reports response latency.
 	SourceDashboard Source = "dashboard"
+	// SourceDashboardMic is speech recorded in the Dashboard and transcribed
+	// by the STT service. Nothing is played back for it, so it also never
+	// reports response latency.
+	SourceDashboardMic Source = "dashboard_mic"
 )
 
 // Stage is one measured pipeline stage. Each value is a duration measured by

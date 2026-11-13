@@ -286,6 +286,51 @@ func (f *voicesFixture) get(target string) *httptest.ResponseRecorder {
 	return rec
 }
 
+// voicesResp decodes the Voices view (encoding/json default field names).
+type voicesResp struct {
+	Flash, Error                                     string
+	HasLibrary, CanUpload, CanPreview                bool
+	MaxUpload, Revision, ActiveName, Default         string
+	Rate, RateSource, RateLabel, RateLower, RateEdit string
+	HasRate                                          bool
+	Voices                                           []voiceRow
+}
+
+type voiceRow struct {
+	Name, Origin, Status, Revision, Note, LastError, StaleNotice string
+	Builtin, Ready, Stale, Active, Unvalidated                   bool
+	PreviewURL, SelectAction, NoteAction                         string
+}
+
+func (v voicesResp) voice(t *testing.T, name string) voiceRow {
+	t.Helper()
+	for _, row := range v.Voices {
+		if row.Name == name {
+			return row
+		}
+	}
+	t.Fatalf("view has no voice %q: %+v", name, v.Voices)
+	return voiceRow{}
+}
+
+// view reads /api/ui/voices, which must be a 200.
+func (f *voicesFixture) view() (voicesResp, string) {
+	f.t.Helper()
+	var v voicesResp
+	rec := getJSON(f.t, f.handler, "/api/ui/voices", &v)
+	if rec.Code != http.StatusOK {
+		f.t.Fatalf("GET voices = %d: %s", rec.Code, rec.Body.String())
+	}
+	return v, rec.Body.String()
+}
+
+func decodeVoices(t *testing.T, rec *httptest.ResponseRecorder) voicesResp {
+	t.Helper()
+	var v voicesResp
+	decodeJSON(t, rec, &v)
+	return v
+}
+
 func (f *voicesFixture) post(target string, values url.Values) *httptest.ResponseRecorder {
 	f.t.Helper()
 	req := httptest.NewRequest(http.MethodPost, target, strings.NewReader(values.Encode()))
@@ -358,24 +403,24 @@ func loadVoicePath(t *testing.T, f *voicesFixture, name string) string {
 	return voice.Path
 }
 
-func TestVoicesPageListsTheLibraryAndSettings(t *testing.T) {
+func TestVoicesReadListsTheLibraryAndSettings(t *testing.T) {
 	f := newVoicesFixture(t)
-	rec := f.get("/voices")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	v, _ := f.view()
+	if !v.HasLibrary || !v.CanUpload || !v.CanPreview {
+		t.Errorf("view flags = library %v upload %v preview %v", v.HasLibrary, v.CanUpload, v.CanPreview)
 	}
-	body := rec.Body.String()
-	for _, want := range []string{
-		"Voices", "Upload a voice state", "32 MB", ".safetensors",
-		"alba", "Built-in", "test-revision-1", "Speech rate", "voice.rate",
-		"Browser preview", `href="/sounds"`, `href="/secrets"`, `href="/settings"`,
-	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("page lacks %q", want)
-		}
+	if v.MaxUpload != "32 MB" || v.Revision != "test-revision-1" {
+		t.Errorf("max upload %q revision %q", v.MaxUpload, v.Revision)
 	}
-	if !strings.Contains(body, `href="/voices" aria-current="page"`) {
-		t.Error("nav did not mark Voices current")
+	alba := v.voice(t, "alba")
+	if !alba.Builtin || alba.Origin != "Built-in" || !alba.Ready || alba.PreviewURL != "/voices/audio/alba" {
+		t.Errorf("alba = %+v, want a ready built-in with a preview URL", alba)
+	}
+	if !v.HasRate || v.Rate != "1" || v.RateEdit != "1" {
+		t.Errorf("rate = %q edit %q has=%v, want the effective 1", v.Rate, v.RateEdit, v.HasRate)
+	}
+	if v.ActiveName != "alba" || v.Default != "alba" {
+		t.Errorf("active %q default %q", v.ActiveName, v.Default)
 	}
 }
 
@@ -386,8 +431,8 @@ func TestVoicesUploadRejectsBadFilesBeforeTTS(t *testing.T) {
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 		}
-		if body := rec.Body.String(); !strings.Contains(body, "Only .safetensors") {
-			t.Fatalf("body = %s", body)
+		if v := decodeVoices(t, rec); !strings.Contains(v.Error, "Only .safetensors") {
+			t.Fatalf("error = %q", v.Error)
 		}
 		if calls := f.tts.validationCalls(); len(calls) != 0 {
 			t.Fatalf("TTS was called for a .pt file: %v", calls)
@@ -401,8 +446,8 @@ func TestVoicesUploadRejectsBadFilesBeforeTTS(t *testing.T) {
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 		}
-		if body := rec.Body.String(); !strings.Contains(body, "not a valid Pocket TTS voice state") {
-			t.Fatalf("body = %s", body)
+		if v := decodeVoices(t, rec); !strings.Contains(v.Error, "not a valid Pocket TTS voice state") {
+			t.Fatalf("error = %q", v.Error)
 		}
 		if calls := f.tts.validationCalls(); len(calls) != 0 {
 			t.Fatalf("TTS was called for a malformed header: %v", calls)
@@ -416,8 +461,8 @@ func TestVoicesUploadRejectsBadFilesBeforeTTS(t *testing.T) {
 		if rec.Code != http.StatusRequestEntityTooLarge {
 			t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 		}
-		if body := rec.Body.String(); !strings.Contains(body, "32 MB") {
-			t.Fatalf("body = %s", body)
+		if v := decodeVoices(t, rec); !strings.Contains(v.Error, "32 MB") {
+			t.Fatalf("error = %q", v.Error)
 		}
 		if calls := f.tts.validationCalls(); len(calls) != 0 {
 			t.Fatalf("TTS was called for an oversize file: %v", calls)
@@ -429,11 +474,15 @@ func TestVoicesUploadRejectsBadFilesBeforeTTS(t *testing.T) {
 func TestVoicesUploadValidatesPublishesAndSelects(t *testing.T) {
 	f := newVoicesFixture(t)
 	rec := f.upload("Jarvis.safetensors", stateBytes(t, 3, true), false)
-	if rec.Code != http.StatusSeeOther {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("upload status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	if location := rec.Header().Get("Location"); location != "/voices?flash=voice-uploaded" {
-		t.Fatalf("Location = %q", location)
+	uploaded := decodeVoices(t, rec)
+	if uploaded.Flash == "" || uploaded.Error != "" {
+		t.Fatalf("upload view = flash %q error %q", uploaded.Flash, uploaded.Error)
+	}
+	if row := uploaded.voice(t, "Jarvis"); !row.Ready {
+		t.Fatalf("the upload response does not list the ready voice: %+v", row)
 	}
 
 	calls := f.tts.validationCalls()
@@ -458,15 +507,15 @@ func TestVoicesUploadValidatesPublishesAndSelects(t *testing.T) {
 	}
 	assertNoStagedFiles(t, filepath.Join(f.dir, "voices"))
 
-	page := f.get("/voices").Body.String()
-	for _, want := range []string{"Jarvis", "Ready", "test-revision-1", "/voices/audio/Jarvis", "Use this voice", "Source / consent note"} {
-		if !strings.Contains(page, want) {
-			t.Errorf("page lacks %q", want)
-		}
+	v, _ := f.view()
+	row := v.voice(t, "Jarvis")
+	if row.Status != "Ready" || !row.Ready || row.Revision != "test-revision-1" || row.Origin != "Custom" ||
+		row.PreviewURL != "/voices/audio/Jarvis" || row.SelectAction != "/voices/active/Jarvis" || row.NoteAction != "/voices/note/Jarvis" {
+		t.Errorf("uploaded row = %+v", row)
 	}
 
 	rec = f.post("/voices/active/Jarvis", url.Values{})
-	if rec.Code != http.StatusSeeOther {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("select status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	if got := f.settings.String(voicelib.KeyName); got != "Jarvis" {
@@ -479,24 +528,29 @@ func TestVoicesUploadValidatesPublishesAndSelects(t *testing.T) {
 	if !containsString(f.observedKeys(), voicelib.KeyName) {
 		t.Fatalf("settings observer did not see voice.name: %v", f.observedKeys())
 	}
-	page = f.get("/voices").Body.String()
-	if !strings.Contains(page, "Active voice") {
-		t.Error("page does not mark the active voice")
+	v, _ = f.view()
+	if v.ActiveName != "Jarvis" || !v.voice(t, "Jarvis").Active || v.voice(t, "alba").Active {
+		t.Errorf("view does not mark Jarvis as the active voice: active %q", v.ActiveName)
 	}
 }
 
 func TestVoicesNamesWithSpacesRoundTripThroughURLs(t *testing.T) {
 	f := newVoicesFixture(t)
-	if rec := f.upload("My Voice.safetensors", stateBytes(t, 2, true), false); rec.Code != http.StatusSeeOther {
+	if rec := f.upload("My Voice.safetensors", stateBytes(t, 2, true), false); rec.Code != http.StatusOK {
 		t.Fatalf("upload = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	body := f.get("/voices").Body.String()
-	for _, want := range []string{"/voices/audio/My%20Voice", "/voices/active/My%20Voice", "/voices/note/My%20Voice"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("page lacks %q", want)
+	v, _ := f.view()
+	row := v.voice(t, "My Voice")
+	for got, want := range map[string]string{
+		row.PreviewURL:   "/voices/audio/My%20Voice",
+		row.SelectAction: "/voices/active/My%20Voice",
+		row.NoteAction:   "/voices/note/My%20Voice",
+	} {
+		if got != want {
+			t.Errorf("URL = %q, want %q", got, want)
 		}
 	}
-	if rec := f.post("/voices/active/My%20Voice", url.Values{}); rec.Code != http.StatusSeeOther {
+	if rec := f.post("/voices/active/My%20Voice", url.Values{}); rec.Code != http.StatusOK {
 		t.Fatalf("select = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	if got := f.settings.String(voicelib.KeyName); got != "My Voice" {
@@ -510,22 +564,22 @@ func TestVoicesNamesWithSpacesRoundTripThroughURLs(t *testing.T) {
 func TestVoicesUploadReplacesOnlyWithTheExplicitFlag(t *testing.T) {
 	f := newVoicesFixture(t)
 	first := stateBytes(t, 2, true)
-	if rec := f.upload("jarvis.safetensors", first, false); rec.Code != http.StatusSeeOther {
+	if rec := f.upload("jarvis.safetensors", first, false); rec.Code != http.StatusOK {
 		t.Fatalf("first upload = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	rec := f.upload("jarvis.safetensors", stateBytes(t, 3, true), false)
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("duplicate status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	if body := rec.Body.String(); !strings.Contains(body, "already exists") {
-		t.Fatalf("duplicate body = %s", body)
+	if v := decodeVoices(t, rec); !strings.Contains(v.Error, "already exists") {
+		t.Fatalf("duplicate error = %q", v.Error)
 	}
 	if before, after := first, mustRead(t, loadVoicePath(t, f, "jarvis")); !bytes.Equal(before, after) {
 		t.Fatal("a refused duplicate changed the file")
 	}
 
 	rec = f.upload("jarvis.safetensors", stateBytes(t, 4, false), true)
-	if rec.Code != http.StatusSeeOther {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("replace status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	if after := mustRead(t, loadVoicePath(t, f, "jarvis")); bytes.Equal(first, after) {
@@ -545,8 +599,8 @@ func TestVoicesUploadRollsBackAFinalPathFailure(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	if body := rec.Body.String(); !strings.Contains(body, "Nothing was published") {
-		t.Fatalf("body = %s", body)
+	if v := decodeVoices(t, rec); !strings.Contains(v.Error, "Nothing was published") {
+		t.Fatalf("error = %q", v.Error)
 	}
 	if _, ok := f.voices.Get("jarvis"); ok {
 		t.Fatal("failed upload entered the index")
@@ -557,7 +611,7 @@ func TestVoicesUploadRollsBackAFinalPathFailure(t *testing.T) {
 func TestVoicesRateSavesRejectsAndResets(t *testing.T) {
 	f := newVoicesFixture(t)
 	rec := f.post("/voices/rate", url.Values{"value": {"1.25"}})
-	if rec.Code != http.StatusSeeOther {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	if got := f.settings.Float(voicelib.KeyRate); got != 1.25 {
@@ -572,8 +626,12 @@ func TestVoicesRateSavesRejectsAndResets(t *testing.T) {
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("rate %q status = %d, body = %s", value, rec.Code, rec.Body.String())
 		}
-		if body := rec.Body.String(); !strings.Contains(body, "Rate must be a number") {
-			t.Fatalf("rate %q body = %s", value, body)
+		v := decodeVoices(t, rec)
+		if !strings.Contains(v.Error, "Rate must be a number") {
+			t.Fatalf("rate %q error = %q", value, v.Error)
+		}
+		if v.RateEdit != value || v.Rate != "1.25" {
+			t.Errorf("rate %q: edit %q effective %q, want the input preserved and the setting unchanged", value, v.RateEdit, v.Rate)
 		}
 		if got := f.settings.Float(voicelib.KeyRate); got != 1.25 {
 			t.Fatalf("rejected rate %q changed the setting to %v", value, got)
@@ -581,38 +639,38 @@ func TestVoicesRateSavesRejectsAndResets(t *testing.T) {
 	}
 
 	rec = f.post("/voices/rate/reset", url.Values{})
-	if rec.Code != http.StatusSeeOther {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("reset status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	if got := f.settings.Float(voicelib.KeyRate); got != 1.0 {
 		t.Fatalf("reset rate = %v, want 1.0", got)
 	}
-	page := f.get("/voices").Body.String()
-	if !strings.Contains(page, "Rate multiplier") || !strings.Contains(page, `value="1"`) {
-		t.Error("rate form does not show the effective value")
+	if v, _ := f.view(); v.Rate != "1" || v.RateEdit != "1" || v.RateSource == "override" {
+		t.Errorf("rate form after reset = %q / %q (%s), want the effective 1", v.Rate, v.RateEdit, v.RateSource)
 	}
 }
 
-func TestVoicesNoteIsSavedEscapedAndSurvivesRescan(t *testing.T) {
+func TestVoicesNoteRoundTripsInertlyAndSurvivesRescan(t *testing.T) {
 	f := newVoicesFixture(t)
-	if rec := f.upload("jarvis.safetensors", stateBytes(t, 2, true), false); rec.Code != http.StatusSeeOther {
+	if rec := f.upload("jarvis.safetensors", stateBytes(t, 2, true), false); rec.Code != http.StatusOK {
 		t.Fatalf("upload = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	note := `<b>cloned from a friend's clip</b> & recorded with permission`
+	note := `<b>cloned from a friend's clip</b> & recorded with permission <script>x</script>`
 	rec := f.post("/voices/note/jarvis", url.Values{"note": {note}})
-	if rec.Code != http.StatusSeeOther {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("note status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	voice, _ := f.voices.Get("jarvis")
 	if voice.Note != note {
 		t.Fatalf("stored note = %q, want verbatim %q", voice.Note, note)
 	}
-	page := f.get("/voices").Body.String()
-	if strings.Contains(page, note) || strings.Contains(page, "<b>cloned") {
-		t.Fatal("page rendered the note as HTML")
+	v, body := f.view()
+	if got := v.voice(t, "jarvis").Note; got != note {
+		t.Fatalf("view note = %q, want it unchanged", got)
 	}
-	if !strings.Contains(page, "&lt;b&gt;cloned from a friend&#39;s clip&lt;/b&gt;") {
-		t.Fatal("page does not show the escaped note")
+	noRawScript(t, body)
+	if strings.Contains(body, "<b>") {
+		t.Fatal("note is a raw tag in the body")
 	}
 
 	// A rescan (for example after TTS restarts) must keep the note.
@@ -626,7 +684,7 @@ func TestVoicesNoteIsSavedEscapedAndSurvivesRescan(t *testing.T) {
 
 func TestVoicesStaleIsFlaggedAndDisablesSelectionAndPreview(t *testing.T) {
 	f := newVoicesFixture(t)
-	if rec := f.upload("jarvis.safetensors", stateBytes(t, 2, true), false); rec.Code != http.StatusSeeOther {
+	if rec := f.upload("jarvis.safetensors", stateBytes(t, 2, true), false); rec.Code != http.StatusOK {
 		t.Fatalf("upload = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	f.tts.setRevision("test-revision-2")
@@ -638,15 +696,18 @@ func TestVoicesStaleIsFlaggedAndDisablesSelectionAndPreview(t *testing.T) {
 	}
 
 	synthBefore := len(f.tts.synthCalls())
-	page := f.get("/voices").Body.String()
-	for _, want := range []string{"Stale", "Re-export it on the desktop", "cannot be selected", "test-revision-2"} {
-		if !strings.Contains(page, want) {
-			t.Errorf("page lacks %q", want)
+	v, _ := f.view()
+	stale := v.voice(t, "jarvis")
+	if stale.Status != "Stale" || !stale.Stale || stale.Ready {
+		t.Errorf("stale row = %+v", stale)
+	}
+	for _, want := range []string{"Re-export it on the desktop", "cannot be selected", "test-revision-2"} {
+		if !strings.Contains(stale.StaleNotice, want) {
+			t.Errorf("stale notice lacks %q: %q", want, stale.StaleNotice)
 		}
 	}
-	if strings.Contains(page, "/voices/audio/jarvis") {
-		t.Error("stale voice still offers a preview")
-	}
+	// The row still carries its preview URL, so the app must gate the player
+	// on Ready; the server refuses it below either way.
 	rec := f.post("/voices/active/jarvis", url.Values{})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("select stale status = %d, body = %s", rec.Code, rec.Body.String())
@@ -665,13 +726,13 @@ func TestVoicesStaleIsFlaggedAndDisablesSelectionAndPreview(t *testing.T) {
 
 func TestVoicesBrowserPreviewIsAuthenticatedWAVAndKeepsTheActiveVoice(t *testing.T) {
 	f := newVoicesFixture(t)
-	if rec := f.upload("jarvis.safetensors", stateBytes(t, 2, true), false); rec.Code != http.StatusSeeOther {
+	if rec := f.upload("jarvis.safetensors", stateBytes(t, 2, true), false); rec.Code != http.StatusOK {
 		t.Fatalf("upload = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	if rec := f.post("/voices/rate", url.Values{"value": {"1.25"}}); rec.Code != http.StatusSeeOther {
+	if rec := f.post("/voices/rate", url.Values{"value": {"1.25"}}); rec.Code != http.StatusOK {
 		t.Fatalf("rate = %d", rec.Code)
 	}
-	if rec := f.post("/voices/active/jarvis", url.Values{}); rec.Code != http.StatusSeeOther {
+	if rec := f.post("/voices/active/jarvis", url.Values{}); rec.Code != http.StatusOK {
 		t.Fatalf("select = %d", rec.Code)
 	}
 	// Preview a different voice: the persistent active setting must not move.
@@ -722,10 +783,10 @@ func TestVoicesPreviewReportsAServiceFailure(t *testing.T) {
 	}
 }
 
-func TestVoicesPageRequiresTheOwner(t *testing.T) {
+func TestVoicesReadRequiresTheOwner(t *testing.T) {
 	f := newVoicesFixture(t)
 	rec := httptest.NewRecorder()
-	f.handler.ServeHTTP(rec, request(http.MethodGet, "/voices", ""))
+	f.handler.ServeHTTP(rec, request(http.MethodGet, "/api/ui/voices", ""))
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", rec.Code)
 	}
@@ -760,4 +821,26 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// TestVoicesWritesAnswerJSONWithTheRealStatus pins the write contract the
+// React app relies on: success is 200 with the refreshed view and a Flash, a
+// rejection is the view with the real 4xx status and an Error, never a
+// redirect.
+func TestVoicesWritesAnswerJSONWithTheRealStatus(t *testing.T) {
+	f := newVoicesFixture(t)
+	rec := f.post("/voices/rate", url.Values{"value": {"1.1"}})
+	if rec.Code != http.StatusOK || rec.Header().Get("Location") != "" {
+		t.Fatalf("rate status = %d", rec.Code)
+	}
+	if v := decodeVoices(t, rec); v.Flash == "" || v.Error != "" || v.Rate != "1.1" {
+		t.Fatalf("rate view = flash %q error %q rate %q", v.Flash, v.Error, v.Rate)
+	}
+	rec = f.post("/voices/active/nope", url.Values{})
+	if rec.Code == http.StatusOK || rec.Code == http.StatusSeeOther {
+		t.Fatalf("unknown voice status = %d, want an error", rec.Code)
+	}
+	if v := decodeVoices(t, rec); v.Error == "" {
+		t.Errorf("unknown voice view has no Error: %+v", v)
+	}
 }

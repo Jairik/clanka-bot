@@ -1,0 +1,344 @@
+// App frame: icon rail (desktop) / bottom tabs (mobile), a search-first top bar
+// with the speaker volume, and the page area. Home (/) is the chat.
+import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { Button, Drawer, Popover, SearchField, Tooltip } from "@heroui/react";
+import {
+  Activity, AlarmClock, Bell, Bot, HeartPulse, KeyRound, MessageSquare, Minus, MoreHorizontal, Music, Plus,
+  Settings, Smile, Volume, Volume1, Volume2, VolumeX, Waves,
+} from "lucide-react";
+import { getJSON, navigate, postForm, useLocation } from "./api";
+import type { HealthView, Session, Volume as VolumeState } from "./types";
+import { Range, cn } from "./ui";
+
+export type PageId = "home" | "activity" | "alerts" | "health" | "sounds" | "voices" | "personas" | "spotify" | "secrets" | "settings";
+
+export const PAGES: { id: PageId; path: string; title: string; blurb: string; icon: typeof Bot }[] = [
+  { id: "home", path: "/", title: "Chat", blurb: "", icon: MessageSquare },
+  { id: "activity", path: "/activity", title: "Activity", blurb: "Every request that reached the assistant, newest first.", icon: Activity },
+  { id: "alerts", path: "/alerts", title: "Alerts", blurb: "Timers, Alarms and Reminders, plus the Rings nobody answered.", icon: AlarmClock },
+  { id: "health", path: "/health", title: "Health", blurb: "Each Compose service, the location, and every Tool module check.", icon: HeartPulse },
+  { id: "sounds", path: "/sounds", title: "Sounds", blurb: "The sound library, Cue roles and Ring behaviour.", icon: Bell },
+  { id: "voices", path: "/voices", title: "Voices", blurb: "The speaking voice, its rate, and the voice library.", icon: Waves },
+  { id: "personas", path: "/personas", title: "Personas", blurb: "Bundles of voice, personality and wording, applied in one step.", icon: Smile },
+  { id: "spotify", path: "/spotify", title: "Spotify", blurb: "Connect pairing for playback and Web API auth for control.", icon: Music },
+  { id: "secrets", path: "/secrets", title: "Secrets", blurb: "Write-only values the Agent and Tool modules read.", icon: KeyRound },
+  { id: "settings", path: "/settings", title: "Settings", blurb: "Tools, wording, quiet hours and every other live setting.", icon: Settings },
+];
+export const pageFor = (path: string) => PAGES.find((p) => p.path === path.replace(/\/+$/, "") || (p.path === "/" && path === "/"));
+
+// ---------- session (who, and which optional services are wired) ----------
+
+const SessionCtx = createContext<Session>({ Owner: "", Typed: false, Mic: false, Volume: false, Activity: false });
+export const useSession = () => useContext(SessionCtx);
+
+export function SessionProvider({ children }: { children: ReactNode }) {
+  const [s, setS] = useState<Session | null>(null);
+  const [err, setErr] = useState("");
+  useEffect(() => {
+    getJSON<Session>("/api/ui/session").then(setS, (e) => setErr(String(e?.message ?? e)));
+  }, []);
+  if (err) return <div className="p-8 text-sm text-danger">Could not reach the assistant: {err}</div>;
+  if (!s) return null;
+  return <SessionCtx.Provider value={s}>{children}</SessionCtx.Provider>;
+}
+
+/** A red dot on Health when any check fails. Polled with the page's own one-minute cadence. */
+function useHealthAlarm() {
+  const [bad, setBad] = useState(false);
+  useEffect(() => {
+    const load = () =>
+      getJSON<HealthView>("/api/ui/health").then(
+        (h) => setBad([...(h.Services ?? []), ...(h.Modules ?? []), h.Location].some((c) => c && (c.Status === "error" || c.Status === "timed-out"))),
+        () => {},
+      );
+    void load();
+    const id = setInterval(load, 60_000);
+    return () => clearInterval(id);
+  }, []);
+  return bad;
+}
+
+export function Shell({ children }: { children: ReactNode }) {
+  const { path } = useLocation();
+  const page = pageFor(path)?.id;
+  const healthBad = useHealthAlarm();
+  return (
+    <div className="flex h-dvh">
+      <aside className="hidden w-[70px] shrink-0 flex-col border-r md:flex">
+        <a href="/" onClick={link("/")} className="flex h-[70px] shrink-0 items-center justify-center border-b" aria-label="Home">
+          <Bot className="size-6" strokeWidth={1.5} />
+        </a>
+        <nav className="flex flex-1 flex-col items-center gap-1 overflow-y-auto py-4" aria-label="Pages">
+          {PAGES.map(({ id, path: to, title, icon: I }) => (
+            <Tooltip key={id} delay={0} closeDelay={0}>
+              <Tooltip.Trigger>
+                <a
+                  href={to}
+                  onClick={link(to)}
+                  aria-label={title}
+                  aria-current={page === id ? "page" : undefined}
+                  className={cn(
+                    "relative flex size-10 items-center justify-center border border-transparent",
+                    page === id ? "border-border bg-surface-secondary text-foreground" : "text-muted hover:text-foreground",
+                  )}
+                >
+                  <I className="size-[18px]" strokeWidth={1.5} />
+                  {id === "health" && healthBad && <span className="absolute top-2 right-2 size-1.5 rounded-full bg-danger" />}
+                </a>
+              </Tooltip.Trigger>
+              <Tooltip.Content placement="right" offset={10}>
+                {title}
+              </Tooltip.Content>
+            </Tooltip>
+          ))}
+        </nav>
+        <Owner />
+      </aside>
+
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="pt-safe flex h-14 shrink-0 items-center gap-2 border-b px-3 md:h-[70px] md:px-6">
+          <a href="/" onClick={link("/")} className="flex size-9 items-center justify-center md:hidden" aria-label="Home">
+            <Bot className="size-5" strokeWidth={1.5} />
+          </a>
+          <form
+            className="min-w-0 flex-1"
+            onSubmit={(e) => {
+              e.preventDefault();
+              const q = String(new FormData(e.currentTarget).get("q") ?? "").trim();
+              navigate(q ? `/activity?q=${encodeURIComponent(q)}` : "/activity");
+            }}
+          >
+            <SearchField aria-label="Search activity" name="q" className="max-w-md">
+              <SearchField.Group className="border-0 bg-transparent shadow-none">
+                <SearchField.SearchIcon />
+                <SearchField.Input placeholder="Find anything" />
+              </SearchField.Group>
+            </SearchField>
+          </form>
+          <VolumeControl />
+        </header>
+        <main className="min-h-0 flex-1">{children}</main>
+        <BottomTabs page={page} healthBad={healthBad} />
+      </div>
+    </div>
+  );
+}
+
+/** Client-side navigation for a plain <a>, keeping middle-click/new-tab working. */
+export const link = (to: string) => (e: React.MouseEvent) => {
+  if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+  e.preventDefault();
+  navigate(to);
+};
+
+function Owner() {
+  const { Owner: owner } = useSession();
+  return (
+    <div className="flex h-[70px] shrink-0 items-center justify-center border-t" title={`Signed in as ${owner}`}>
+      <span className="flex size-9 items-center justify-center border text-[11px] uppercase">{owner.slice(0, 2)}</span>
+    </div>
+  );
+}
+
+/** Standard page frame: serif title and blurb, then the page body. */
+export function PageFrame({ id, children, right }: { id: PageId; children: ReactNode; right?: ReactNode }) {
+  const p = PAGES.find((x) => x.id === id)!;
+  useEffect(() => {
+    document.title = `${p.title} · clanka`;
+  }, [p.title]);
+  return (
+    <div className="h-full overflow-y-auto">
+      <div className="mx-auto max-w-4xl px-4 pt-6 pb-28 md:px-8 md:pt-10 md:pb-16">
+        <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
+          <div>
+            <h1 className="font-serif text-3xl tracking-tight">{p.title}</h1>
+            <p className="mt-1 text-sm text-muted">{p.blurb}</p>
+          </div>
+          {right}
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// ---------- volume ----------
+
+const VOL_STEP = 5;
+
+/**
+ * The Pi speaker. The icon toggles mute (Pulse mute, so the level is kept); the
+ * slider sets the level in 5% steps. Slider moves are coalesced so a drag is
+ * one write per settle, not one per pixel.
+ */
+export function VolumeControl() {
+  const { Volume: wired } = useSession();
+  const [state, setState] = useState<VolumeState | null>(null);
+  const [level, setLevel] = useState(0);
+  const [error, setError] = useState("");
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
+  const dragging = useRef(false);
+
+  useEffect(() => {
+    if (!wired) return;
+    const load = () =>
+      getJSON<VolumeState>("/api/ui/volume").then((v) => {
+        setState(v);
+        if (!dragging.current) setLevel(v.Percent);
+        setError(v.Error || "");
+      }, () => {});
+    void load();
+    // Voice commands change the volume too; keep the bar honest.
+    const id = setInterval(() => document.visibilityState === "visible" && load(), 15_000);
+    return () => clearInterval(id);
+  }, [wired]);
+
+  if (!wired) return null;
+
+  // A refused write answers 502 with the error text and often no level at
+  // all. Showing it is the difference between "the speaker did not take it"
+  // and a control that silently does nothing.
+  if (!state?.Available) {
+    return error ? (
+      <span className="max-w-40 truncate text-[11px] text-danger" role="status">
+        {error}
+      </span>
+    ) : null;
+  }
+
+  const write = async (body: Record<string, string>) => {
+    const res = await postForm<VolumeState>("/api/ui/volume", body);
+    if (res.view) {
+      setState(res.view);
+      if (!dragging.current) setLevel(res.view.Percent);
+    }
+    setError(res.ok ? "" : res.view?.Error || res.text || "The speaker did not accept that change.");
+  };
+  const setTo = (v: number) => {
+    const c = Math.max(0, Math.min(100, Math.round(v / VOL_STEP) * VOL_STEP));
+    setLevel(c);
+    setState((s) => (s ? { ...s, Muted: c === 0 ? s.Muted : false } : s));
+    dragging.current = true;
+    clearTimeout(timer.current);
+    timer.current = setTimeout(() => {
+      dragging.current = false;
+      void write({ percent: String(c) });
+    }, 250);
+  };
+  const toggle = () => void write({ muted: String(!state.Muted) });
+
+  const muted = state.Muted;
+  const eff = muted ? 0 : level;
+  const Icon = eff === 0 ? VolumeX : eff < 34 ? Volume : eff < 67 ? Volume1 : Volume2;
+  const label = muted ? "Muted" : `${level}%`;
+
+  return (
+    <div className="flex items-center gap-1">
+      <Button isIconOnly variant="ghost" onPress={toggle} aria-label={muted ? "Unmute speaker" : "Mute speaker"} aria-pressed={muted}>
+        <Icon className={cn("size-5", muted && "text-danger")} strokeWidth={1.5} />
+      </Button>
+      <div className="hidden w-28 sm:block">
+        <Range label="Speaker volume" value={eff} onChange={setTo} step={VOL_STEP} />
+      </div>
+      <span className="hidden w-12 text-right font-mono text-xs tabular-nums text-muted sm:inline">{label}</span>
+      {error && (
+        <span className="max-w-40 truncate text-[11px] text-danger" role="status">
+          {error}
+        </span>
+      )}
+      <Popover>
+        <Button size="sm" variant="ghost" className="font-mono text-xs tabular-nums text-muted sm:hidden" aria-label={`Volume ${label}`}>
+          {label}
+        </Button>
+        <Popover.Content placement="bottom end" className="w-[min(18rem,calc(100vw-1.5rem))]">
+          <Popover.Dialog className="p-4">
+            <div className="mb-3 flex items-center justify-between">
+              <Popover.Heading className="text-sm">Speaker</Popover.Heading>
+              <span className="font-mono text-sm tabular-nums">{label}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button isIconOnly variant="outline" onPress={() => setTo(eff - VOL_STEP)} aria-label="Down 5%">
+                <Minus className="size-4" />
+              </Button>
+              <Range label="Speaker volume" value={eff} onChange={setTo} step={VOL_STEP} />
+              <Button isIconOnly variant="outline" onPress={() => setTo(eff + VOL_STEP)} aria-label="Up 5%">
+                <Plus className="size-4" />
+              </Button>
+            </div>
+            <Button fullWidth variant={muted ? "primary" : "secondary"} className="mt-3" onPress={toggle}>
+              {muted ? "Unmute" : "Mute"}
+            </Button>
+          </Popover.Dialog>
+        </Popover.Content>
+      </Popover>
+    </div>
+  );
+}
+
+// ---------- mobile bottom tabs + "More" sheet ----------
+
+const TABS: PageId[] = ["home", "activity", "alerts"];
+
+function BottomTabs({ page, healthBad }: { page?: PageId; healthBad: boolean }) {
+  const [more, setMore] = useState(false);
+  const inMore = !!page && !TABS.includes(page);
+  const current = PAGES.find((p) => p.id === page);
+  const tab = (key: string, Icon: typeof Bot, label: string, active: boolean, onClick: () => void, dot?: boolean) => (
+    <button
+      key={key}
+      onClick={onClick}
+      aria-current={active ? "page" : undefined}
+      className={cn("flex flex-1 flex-col items-center justify-center gap-0.5 pt-2 pb-1.5 text-[11px]", active ? "text-foreground" : "text-muted")}
+    >
+      <span className={cn("relative flex h-7 w-12 items-center justify-center rounded-full transition-colors", active && "bg-default")}>
+        <Icon className="size-5" strokeWidth={1.5} />
+        {dot && <span className="absolute top-0.5 right-3 size-1.5 rounded-full bg-danger" />}
+      </span>
+      {label}
+    </button>
+  );
+  return (
+    <>
+      <nav className="pb-safe flex border-t bg-surface/95 backdrop-blur md:hidden" aria-label="Sections">
+        {TABS.map((id) => {
+          const p = PAGES.find((x) => x.id === id)!;
+          return tab(id, p.icon, p.title, page === id, () => navigate(p.path));
+        })}
+        {tab("more", MoreHorizontal, inMore && current ? current.title : "More", inMore, () => setMore(true), healthBad && page !== "health")}
+      </nav>
+      <Drawer>
+        <Drawer.Backdrop isOpen={more} onOpenChange={setMore}>
+          <Drawer.Content placement="bottom">
+            <Drawer.Dialog className="pb-safe">
+              <Drawer.Handle />
+              <Drawer.Header>
+                <Drawer.Heading className="text-sm">More</Drawer.Heading>
+              </Drawer.Header>
+              <Drawer.Body>
+                <div className="grid grid-cols-3 gap-2">
+                  {PAGES.filter((p) => !TABS.includes(p.id)).map(({ id, path: to, title, icon: I }) => (
+                    <button
+                      key={id}
+                      onClick={() => {
+                        navigate(to);
+                        setMore(false);
+                      }}
+                      className={cn(
+                        "relative flex flex-col items-center gap-1.5 border py-3.5 text-xs",
+                        page === id ? "border-foreground/30 bg-default" : "hover:bg-surface-secondary",
+                      )}
+                    >
+                      <I className="size-5" strokeWidth={1.5} />
+                      {title}
+                      {id === "health" && healthBad && <span className="absolute top-2 right-2 size-1.5 rounded-full bg-danger" />}
+                    </button>
+                  ))}
+                </div>
+              </Drawer.Body>
+            </Drawer.Dialog>
+          </Drawer.Content>
+        </Drawer.Backdrop>
+      </Drawer>
+    </>
+  );
+}

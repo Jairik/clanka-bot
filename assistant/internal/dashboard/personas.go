@@ -74,7 +74,7 @@ func (h *Handler) personasPage(w http.ResponseWriter, r *http.Request) {
 	if !allowGet(w, r) {
 		return
 	}
-	h.render(w, "personas_page", h.buildPersonasView(personasFlashMessage(r.URL.Query().Get("flash")), "", nil, "", nil))
+	h.writeJSON(w, http.StatusOK, h.buildPersonasView(personasFlashMessage(r.URL.Query().Get("flash")), "", nil, "", nil))
 }
 
 // personasCreate validates and stores one Persona. Selecting is a separate
@@ -93,6 +93,9 @@ func (h *Handler) personasCreate(w http.ResponseWriter, r *http.Request) {
 		status, message := personaErrorStatus(err)
 		h.logPersonaError("create", err)
 		form := h.personaForm("/personas", "Create a persona", "", false, in)
+		// Keep the typed name so a refused create can be corrected in place;
+		// the form keeps its "new" id.
+		form.Name = in.Name
 		h.personasFail(w, r, status, message, &form, "", nil)
 		return
 	}
@@ -168,28 +171,18 @@ func (h *Handler) personasReady(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-// personasSuccess answers htmx with the swapped content; a plain form gets a
-// 303 redirect, so both journeys work without JavaScript.
+// personasSuccess answers with the refreshed view, so the app can replace the
+// page state from one response.
 func (h *Handler) personasSuccess(w http.ResponseWriter, r *http.Request, flash string) {
-	if isHTMX(r) {
-		h.render(w, "personas_content", h.buildPersonasView(personasFlashMessage(flash), "", nil, "", nil))
-		return
-	}
-	http.Redirect(w, r, "/personas?flash="+url.QueryEscape(flash), http.StatusSeeOther)
+	h.writeJSON(w, http.StatusOK, h.buildPersonasView(personasFlashMessage(flash), "", nil, "", nil))
 }
 
 // personasFail re-renders the page with an error and, when supplied, the
-// rejected create or edit form values. htmx only swaps 2xx responses, so a
-// fragment error stays 200.
+// rejected create or edit form values. The status is the real one, so the app
+// can tell a refused write from a saved one.
 func (h *Handler) personasFail(w http.ResponseWriter, r *http.Request, status int, message string, create *personaFormView, editName string, edit *personaFormView) {
 	view := h.buildPersonasView("", message, create, editName, edit)
-	if isHTMX(r) {
-		h.render(w, "personas_content", view)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(status)
-	h.render(w, "personas_page", view)
+	h.writeJSON(w, status, view)
 }
 
 // buildPersonasView resolves the library, the active summary and every form

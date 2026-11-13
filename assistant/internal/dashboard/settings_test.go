@@ -121,11 +121,103 @@ func (f *settingsFixture) form(method, target string, values url.Values) *http.R
 	return req
 }
 
-func (f *settingsFixture) get(target string) *httptest.ResponseRecorder {
+// settingRow and settingsResp decode the Settings view (encoding/json default
+// field names).
+type settingRow struct {
+	Key, Label, Description, FormKind, Value, Edit, Display string
+	Bool                                                    bool
+	Source, SourceLabel, LowerLabel                         string
+	Restart, Override                                       bool
+	SaveAction, ResetAction                                 string
+}
+
+type settingsResp struct {
+	Flash       string
+	Error       string
+	HasSettings bool
+	Tools       []struct {
+		Name                              string
+		Enabled                           bool
+		EnabledSource, EnabledLabel       string
+		EnabledLower                      string
+		EnabledOverride                   bool
+		Permission, PermissionLabel       string
+		Declared                          string
+		PermissionSource, PermissionLower string
+		PermissionOverride                bool
+		LocalOnly                         bool
+		LocalOnlyLabel                    string
+		Options                           []struct {
+			Value, Label string
+			Selected     bool
+		}
+	}
+	Agent       []settingRow
+	ToolWording []struct {
+		Name              string
+		Control, Examples *settingRow
+	}
+	Quiet   []settingRow
+	Live    []settingRow
+	Restart []settingRow
+}
+
+// setting finds one setting by key across every group the view uses.
+func (v settingsResp) setting(key string) (settingRow, bool) {
+	var all []settingRow
+	all = append(all, v.Agent...)
+	all = append(all, v.Quiet...)
+	all = append(all, v.Live...)
+	all = append(all, v.Restart...)
+	for _, w := range v.ToolWording {
+		if w.Control != nil {
+			all = append(all, *w.Control)
+		}
+		if w.Examples != nil {
+			all = append(all, *w.Examples)
+		}
+	}
+	for _, row := range all {
+		if row.Key == key {
+			return row, true
+		}
+	}
+	return settingRow{}, false
+}
+
+func (v settingsResp) mustSetting(t *testing.T, key string) settingRow {
+	t.Helper()
+	row, ok := v.setting(key)
+	if !ok {
+		t.Fatalf("view has no setting %s", key)
+	}
+	return row
+}
+
+func (f *settingsFixture) get(target string) (settingsResp, *httptest.ResponseRecorder) {
 	f.t.Helper()
-	rec := httptest.NewRecorder()
-	f.handler.ServeHTTP(rec, request(http.MethodGet, target, owner))
-	return rec
+	var v settingsResp
+	rec := getJSON(f.t, f.handler, target, &v)
+	return v, rec
+}
+
+// view reads /api/ui/settings, which must be a 200.
+func (f *settingsFixture) view() (settingsResp, string) {
+	f.t.Helper()
+	v, rec := f.get("/api/ui/settings")
+	if rec.Code != http.StatusOK {
+		f.t.Fatalf("GET settings = %d: %s", rec.Code, rec.Body.String())
+	}
+	return v, rec.Body.String()
+}
+
+// postView posts a write and decodes the answered view.
+func (f *settingsFixture) postView(target string, values url.Values) (settingsResp, *httptest.ResponseRecorder) {
+	f.t.Helper()
+	rec := f.post(target, values)
+	var v settingsResp
+	decodeJSON(f.t, rec, &v)
+	return v, rec
 }
 
 func (f *settingsFixture) post(target string, values url.Values) *httptest.ResponseRecorder {
@@ -135,98 +227,125 @@ func (f *settingsFixture) post(target string, values url.Values) *httptest.Respo
 	return rec
 }
 
-func TestSettingsPageListsEveryToolWithEffectiveState(t *testing.T) {
+func TestSettingsReadListsEveryToolWithEffectiveState(t *testing.T) {
 	f := newSettingsFixture(t)
-	rec := f.get("/settings")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	v, body := f.view()
+	if !v.HasSettings {
+		t.Fatal("HasSettings = false with services wired")
 	}
-	body := rec.Body.String()
-	for _, want := range []string{
-		"Tools", "Settings", "time.now", "audio.volume_set", "weather.current",
-		"Local only", "Enabled", "Permission", "Effective", "Source",
-		"Restart required", "http.addr", "agent.model", "timezone",
-		"Control phrases", "Examples", "Request prefixes", "Filler", "Unavailable message",
-	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("page lacks %q", want)
+	tools := map[string]int{}
+	for i, row := range v.Tools {
+		tools[row.Name] = i
+	}
+	for _, name := range []string{"time.now", "audio.volume_set", "weather.current"} {
+		if _, ok := tools[name]; !ok {
+			t.Fatalf("view lacks Tool %s: %+v", name, tools)
 		}
 	}
+	for _, key := range []string{
+		"http.addr", "agent.model", "timezone",
+		"agent.filler", "agent.unavailable_message",
+	} {
+		if _, ok := v.setting(key); !ok {
+			t.Errorf("view lacks setting %s", key)
+		}
+	}
+	wording := map[string]bool{}
+	for _, w := range v.ToolWording {
+		wording[w.Name] = w.Control != nil && w.Examples != nil
+	}
+	if !wording["time.now"] {
+		t.Errorf("time.now lacks its Control phrases and Examples: %v", wording)
+	}
+	if !strings.Contains(body, "agent.request_prefixes") {
+		t.Error("view lacks the Request prefixes setting")
+	}
+
 	// weather.current is disabled in config.yaml, so its enabled source must be
 	// shown as the config layer rather than as a code default.
-	weather := pageSection(t, body, `id="tool-weather.current"`)
-	if !strings.Contains(weather, "Disabled") || !strings.Contains(weather, "config") {
-		t.Errorf("weather.current section does not show the configured disable: %s", weather)
+	weather := v.Tools[tools["weather.current"]]
+	if weather.Enabled || weather.EnabledSource != "config" || weather.EnabledLabel != "config.yaml" {
+		t.Errorf("weather.current = %+v, want disabled by config", weather)
 	}
 	// time.now is Local-only, which is code-declared and has no editor.
-	clock := pageSection(t, body, `id="tool-time.now"`)
-	if !strings.Contains(clock, "yes") {
-		t.Errorf("time.now section does not show Local-only: %s", clock)
-	}
-	if strings.Contains(clock, `name="local_only"`) {
-		t.Error("the page offers a Local-only editor")
+	clock := v.Tools[tools["time.now"]]
+	if !clock.LocalOnly || clock.LocalOnlyLabel != "yes" {
+		t.Errorf("time.now = %+v, want Local-only", clock)
 	}
 	// A declared act Tool offers only act and confirm; read is a loosening.
-	audio := pageSection(t, body, `id="tool-audio.volume_set"`)
-	if strings.Contains(audio, `value="read"`) {
-		t.Errorf("audio.volume_set offers the loosening read choice: %s", audio)
+	audio := v.Tools[tools["audio.volume_set"]]
+	var got []string
+	for _, option := range audio.Options {
+		got = append(got, option.Value)
 	}
-	for _, want := range []string{`value="act"`, `value="confirm"`} {
-		if !strings.Contains(audio, want) {
-			t.Errorf("audio.volume_set lacks %s", want)
-		}
+	if strings.Join(got, ",") != "act,confirm" {
+		t.Errorf("audio.volume_set options = %v, want act,confirm (no loosening)", got)
 	}
 	// A declared read Tool may be tightened through act to confirm.
-	for _, want := range []string{`value="read"`, `value="act"`, `value="confirm"`} {
-		if !strings.Contains(clock, want) {
-			t.Errorf("time.now lacks the %s choice", want)
-		}
+	got = nil
+	for _, option := range clock.Options {
+		got = append(got, option.Value)
 	}
-	// The page must not dump implementation JSON instead of forms.
+	if strings.Join(got, ",") != "read,act,confirm" {
+		t.Errorf("time.now options = %v, want read,act,confirm", got)
+	}
+	// The view carries typed rows, not implementation JSON blobs.
 	if strings.Contains(body, `{"key":`) {
-		t.Error("page contains raw settings JSON")
+		t.Error("view contains raw settings JSON")
 	}
 }
 
-func TestSettingsPageMarksOnlyRestartRequiredSettings(t *testing.T) {
+func TestSettingsReadMarksOnlyRestartRequiredSettings(t *testing.T) {
 	f := newSettingsFixture(t)
-	body := f.get("/settings").Body.String()
-	if got := strings.Count(body, "pill-restart"); got != 1 {
-		t.Fatalf("restart badges = %d, want exactly 1 for http.addr: %s", got, body)
+	v, _ := f.view()
+	var restart []string
+	for _, row := range v.Restart {
+		restart = append(restart, row.Key)
 	}
-	addrs := pageSection(t, body, `id="setting-http.addr"`)
-	if !strings.Contains(addrs, "Restart required") {
+	if strings.Join(restart, ",") != "http.addr" {
+		t.Fatalf("restart group = %v, want only http.addr", restart)
+	}
+	flagged := 0
+	for _, group := range [][]settingRow{v.Agent, v.Quiet, v.Live, v.Restart} {
+		for _, row := range group {
+			if row.Restart {
+				flagged++
+			}
+		}
+	}
+	if flagged != 1 {
+		t.Errorf("restart-flagged settings = %d, want exactly 1 (http.addr)", flagged)
+	}
+	if !v.mustSetting(t, "http.addr").Restart {
 		t.Error("http.addr is not marked restart-required")
 	}
-	model := pageSection(t, body, `id="setting-agent.model"`)
-	if strings.Contains(model, "Restart required") {
+	if v.mustSetting(t, "agent.model").Restart {
 		t.Error("the live model setting is marked restart-required")
 	}
 }
 
-func TestSettingsPageRendersFutureSettingsFromTheServiceList(t *testing.T) {
+func TestSettingsReadRendersFutureSettingsFromTheServiceList(t *testing.T) {
 	f := newSettingsFixture(t)
-	body := f.get("/settings").Body.String()
-	// sounds.wake is not one of the hardcoded wording keys; it is rendered
+	v, _ := f.view()
+	// sounds.wake is not one of the hardcoded wording keys; it is listed
 	// because it is in settings.Service.List.
-	if !strings.Contains(body, "sounds.wake") || !strings.Contains(body, "builtin/wake.wav") {
-		t.Errorf("future setting does not appear dynamically: %s", body)
-	}
-	if !strings.Contains(body, "/settings/values/sounds.wake") {
-		t.Error("future setting has no generated form action")
+	wake := v.mustSetting(t, "sounds.wake")
+	if wake.Value != "builtin/wake.wav" || wake.SaveAction != "/settings/values/sounds.wake" {
+		t.Errorf("future setting = %+v, want its value and a generated save action", wake)
 	}
 	// The Ring settings are per kind and appear from the same service list.
 	for _, key := range []string{"ring.timer.max_ring", "ring.alarm.ramp", "ring.timer.volume", "ring.alarm.speak_label"} {
-		if !strings.Contains(body, key) || !strings.Contains(body, "/settings/values/"+key) {
-			t.Errorf("Ring setting %q does not appear dynamically", key)
+		row := v.mustSetting(t, key)
+		if row.SaveAction != "/settings/values/"+key {
+			t.Errorf("Ring setting %q save action = %q", key, row.SaveAction)
 		}
 	}
-	threshold := pageSection(t, body, `id="setting-name_match.threshold"`)
-	if !strings.Contains(threshold, "0.62") || !strings.Contains(threshold, `step="any"`) {
-		t.Errorf("numeric threshold has no decimal editor: %s", threshold)
+	threshold := v.mustSetting(t, "name_match.threshold")
+	if threshold.Value != "0.62" || threshold.FormKind != "decimal" {
+		t.Errorf("numeric threshold = %+v, want a decimal editor holding 0.62", threshold)
 	}
-	if !strings.Contains(threshold, "/settings/values/name_match.threshold") {
-		t.Error("numeric threshold has no generated form action")
+	if threshold.SaveAction != "/settings/values/name_match.threshold" {
+		t.Errorf("numeric threshold save action = %q", threshold.SaveAction)
 	}
 }
 
@@ -234,7 +353,7 @@ func TestSettingsFloatFormSavesAndResets(t *testing.T) {
 	f := newSettingsFixture(t)
 
 	rec := f.post("/settings/values/name_match.threshold", url.Values{"value": {"0.74"}})
-	if rec.Code != http.StatusSeeOther {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("save status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	if got := f.settings.Float(namematch.KeyThreshold); got != 0.74 {
@@ -250,7 +369,7 @@ func TestSettingsFloatFormSavesAndResets(t *testing.T) {
 	}
 
 	rec = f.post("/settings/values/name_match.threshold/reset", url.Values{})
-	if rec.Code != http.StatusSeeOther {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("reset status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	if got := f.settings.Float(namematch.KeyThreshold); got != 0.62 {
@@ -261,24 +380,25 @@ func TestSettingsFloatFormSavesAndResets(t *testing.T) {
 func TestSettingsToolFormSavesTightensAndResets(t *testing.T) {
 	f := newSettingsFixture(t)
 
-	rec := f.post("/settings/tools/time.now", url.Values{"field": {"enabled"}, "value": {"false"}})
-	if rec.Code != http.StatusSeeOther {
+	saved, rec := f.postView("/settings/tools/time.now", url.Values{"field": {"enabled"}, "value": {"false"}})
+	if rec.Code != http.StatusOK {
 		t.Fatalf("save status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	if loc := rec.Header().Get("Location"); loc != "/settings?flash=saved" {
-		t.Errorf("save Location = %q", loc)
+	if !strings.HasPrefix(saved.Flash, "Saved.") {
+		t.Errorf("save Flash = %q", saved.Flash)
 	}
 	state := f.policy.State("time.now")
 	if state.Enabled || state.EnabledSource != settings.SourceOverride {
 		t.Fatalf("after disable: %+v", state)
 	}
-	timeNow := pageSection(t, f.get("/settings").Body.String(), `id="tool-time.now"`)
-	if !strings.Contains(timeNow, "Reset enabled to code default") || !strings.Contains(timeNow, `action="/settings/tools/time.now/reset"`) {
-		t.Errorf("overridden enabled field has no per-field reset: %s", timeNow)
+	for _, tool := range saved.Tools {
+		if tool.Name == "time.now" && (tool.Enabled || !tool.EnabledOverride || tool.EnabledLower != "code default") {
+			t.Errorf("overridden enabled field = %+v, want a per-field reset to the code default", tool)
+		}
 	}
 
 	rec = f.post("/settings/tools/time.now", url.Values{"field": {"permission"}, "value": {"confirm"}})
-	if rec.Code != http.StatusSeeOther {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("tighten status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	state = f.policy.State("time.now")
@@ -287,14 +407,14 @@ func TestSettingsToolFormSavesTightensAndResets(t *testing.T) {
 	}
 
 	rec = f.post("/settings/tools/time.now/reset", url.Values{"field": {"enabled"}})
-	if rec.Code != http.StatusSeeOther {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("enabled reset status = %d", rec.Code)
 	}
 	if state := f.policy.State("time.now"); !state.Enabled || state.EnabledSource != settings.SourceDefault {
 		t.Fatalf("after enabled reset: %+v", state)
 	}
 	rec = f.post("/settings/tools/time.now/reset", url.Values{"field": {"permission"}})
-	if rec.Code != http.StatusSeeOther {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("permission reset status = %d", rec.Code)
 	}
 	if state := f.policy.State("time.now"); state.Permission != tool.PermissionRead || state.PermissionSource != settings.SourceDefault {
@@ -310,20 +430,49 @@ func TestSettingsToolFormRejectsLooseningAndLocalOnlyWrites(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("loosening status = %d, want 400; body = %s", rec.Code, rec.Body.String())
 	}
-	if body := rec.Body.String(); !strings.Contains(body, "loosen") || !strings.Contains(body, "role=\"alert\"") {
-		t.Errorf("loosening error is not visible and accessible: %s", body)
+	var v settingsResp
+	decodeJSON(t, rec, &v)
+	if !strings.Contains(v.Error, "loosen") {
+		t.Errorf("loosening error is not reported: %q", v.Error)
 	}
 
 	rec = f.post("/settings/tools/audio.volume_set", url.Values{"field": {"permission"}, "value": {"act"}, "local_only": {"true"}})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("local-only write status = %d, want 400; body = %s", rec.Code, rec.Body.String())
 	}
-	if body := rec.Body.String(); !strings.Contains(body, "Local-only") {
-		t.Errorf("local-only rejection is not explained: %s", body)
+	v = settingsResp{}
+	decodeJSON(t, rec, &v)
+	if !strings.Contains(v.Error, "Local-only") {
+		t.Errorf("local-only rejection is not explained: %q", v.Error)
 	}
 	after := f.policy.State("audio.volume_set")
 	if after != before {
 		t.Fatalf("a rejected write changed the Tool: before %+v after %+v", before, after)
+	}
+}
+
+// TestSettingsFormsBoundTheRequestBody proves a settings write cannot read an
+// unbounded body into memory: the form read is capped like every other write
+// on this surface.
+func TestSettingsFormsBoundTheRequestBody(t *testing.T) {
+	f := newSettingsFixture(t)
+	// Twice the cap the server applies, so the read has to refuse it.
+	huge := url.Values{
+		"field": {"enabled"},
+		"value": {"false"},
+		"pad":   {strings.Repeat("x", 2<<20)},
+	}
+	rec := f.post("/settings/tools/time.now", huge)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("oversized form status = %d, want 400; body = %s", rec.Code, rec.Body.String())
+	}
+	var v settingsResp
+	decodeJSON(t, rec, &v)
+	if !strings.Contains(v.Error, "form") {
+		t.Errorf("oversized form error is not explained: %q", v.Error)
+	}
+	if state := f.policy.State("time.now"); !state.Enabled {
+		t.Fatalf("an oversized form still wrote the Tool: %+v", state)
 	}
 }
 
@@ -335,20 +484,21 @@ func TestSettingsWordingFormSavesResetsAndPreservesInvalidInput(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("invalid list status = %d, want 400; body = %s", rec.Code, rec.Body.String())
 	}
-	body := rec.Body.String()
-	if !strings.Contains(body, "repeated") {
-		t.Errorf("validation error missing: %s", body)
+	var rejected settingsResp
+	decodeJSON(t, rec, &rejected)
+	if !strings.Contains(rejected.Error, "repeated") {
+		t.Errorf("validation error missing: %q", rejected.Error)
 	}
-	if !strings.Contains(body, "same phrase\nsame phrase") {
-		t.Errorf("invalid textarea input was not preserved: %s", body)
+	if got := rejected.mustSetting(t, "tools.time.now.control_phrases").Edit; got != "same phrase\nsame phrase" {
+		t.Errorf("invalid textarea input was not preserved: %q", got)
 	}
 	// The failed edit must not have been stored.
 	if got := f.settings.Strings(wording.ControlPhrasesKey("time.now")); strings.Join(got, "|") != "what time is it" {
 		t.Errorf("control phrases after rejected write = %v", got)
 	}
 
-	rec = f.post("/settings/values/tools.time.now.control_phrases", url.Values{"value": {"what time is it\ncurrent time"}})
-	if rec.Code != http.StatusSeeOther {
+	saved, rec := f.postView("/settings/values/tools.time.now.control_phrases", url.Values{"value": {"what time is it\ncurrent time"}})
+	if rec.Code != http.StatusOK {
 		t.Fatalf("save status = %d; body = %s", rec.Code, rec.Body.String())
 	}
 	if got := f.settings.Strings(wording.ControlPhrasesKey("time.now")); strings.Join(got, "|") != "what time is it|current time" {
@@ -357,14 +507,14 @@ func TestSettingsWordingFormSavesResetsAndPreservesInvalidInput(t *testing.T) {
 	if value, _ := f.settings.Get(wording.ControlPhrasesKey("time.now")); value.Source != settings.SourceOverride {
 		t.Errorf("source = %q, want override", value.Source)
 	}
-	phraseSection := pageSection(t, f.get("/settings").Body.String(), `id="setting-tools.time.now.control_phrases"`)
-	if !strings.Contains(phraseSection, "Reset to config.yaml") || !strings.Contains(phraseSection, `action="/settings/values/tools.time.now.control_phrases/reset"`) {
-		t.Errorf("overridden wording has no lower-layer reset: %s", phraseSection)
+	phrases := saved.mustSetting(t, "tools.time.now.control_phrases")
+	if !phrases.Override || phrases.LowerLabel != "config.yaml" || phrases.ResetAction != "/settings/values/tools.time.now.control_phrases/reset" {
+		t.Errorf("overridden wording has no lower-layer reset: %+v", phrases)
 	}
 
 	// Filler is a single string, not a JSON editor.
 	rec = f.post("/settings/values/agent.filler", url.Values{"value": {"Just a moment."}})
-	if rec.Code != http.StatusSeeOther {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("filler save status = %d; body = %s", rec.Code, rec.Body.String())
 	}
 	if got := f.settings.String(wording.FillerKey); got != "Just a moment." {
@@ -372,7 +522,7 @@ func TestSettingsWordingFormSavesResetsAndPreservesInvalidInput(t *testing.T) {
 	}
 
 	rec = f.post("/settings/values/agent.filler/reset", url.Values{})
-	if rec.Code != http.StatusSeeOther {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("filler reset status = %d", rec.Code)
 	}
 	if value, _ := f.settings.Get(wording.FillerKey); value.Source != settings.SourceConfig || value.Value != "One moment." {
@@ -381,7 +531,7 @@ func TestSettingsWordingFormSavesResetsAndPreservesInvalidInput(t *testing.T) {
 
 	// The live model setting is served and writable through the same form.
 	rec = f.post("/settings/values/agent.model", url.Values{"value": {"other/model"}})
-	if rec.Code != http.StatusSeeOther {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("model save status = %d; body = %s", rec.Code, rec.Body.String())
 	}
 	if got := f.settings.String(agent.ModelKey); got != "other/model" {
@@ -389,93 +539,95 @@ func TestSettingsWordingFormSavesResetsAndPreservesInvalidInput(t *testing.T) {
 	}
 }
 
-func TestSettingsPageEscapesValuesAndPreservesSingleLineInput(t *testing.T) {
+func TestSettingsHostileValuesRoundTripInertlyAndSingleLineInputIsPreserved(t *testing.T) {
 	f := newSettingsFixture(t)
-	if _, err := f.settings.Set(f.ctx, wording.FillerKey, "<script>alert(1)</script>"); err != nil {
+	const hostile = "<script>alert(1)</script>"
+	if _, err := f.settings.Set(f.ctx, wording.FillerKey, hostile); err != nil {
 		t.Fatalf("set filler: %v", err)
 	}
-	body := f.get("/settings").Body.String()
-	if strings.Contains(body, "<script>alert(1)</script>") {
-		t.Error("a setting value was not HTML-escaped")
+	v, body := f.view()
+	if got := v.mustSetting(t, wording.FillerKey).Value; got != hostile {
+		t.Errorf("filler value = %q, want it unchanged", got)
 	}
-	if !strings.Contains(body, "&lt;script&gt;alert(1)&lt;/script&gt;") {
-		t.Error("page lacks the escaped setting value")
-	}
+	noRawScript(t, body)
 
 	rec := f.post("/settings/values/agent.filler", url.Values{"value": {"   "}})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("blank filler status = %d, want 400; body = %s", rec.Code, rec.Body.String())
 	}
-	if body := rec.Body.String(); !strings.Contains(body, `value="   "`) {
-		t.Errorf("rejected single-line input was not preserved: %s", body)
+	var rejected settingsResp
+	decodeJSON(t, rec, &rejected)
+	if got := rejected.mustSetting(t, wording.FillerKey).Edit; got != "   " {
+		t.Errorf("rejected single-line input was not preserved: %q", got)
 	}
-	if got := f.settings.String(wording.FillerKey); got != "<script>alert(1)</script>" {
+	if got := f.settings.String(wording.FillerKey); got != hostile {
 		t.Errorf("filler changed after a rejected write: %q", got)
 	}
 }
 
 func TestSettingsRestartSettingShowsAndKeepsTheRestartNotice(t *testing.T) {
 	f := newSettingsFixture(t)
-	rec := f.post("/settings/values/http.addr", url.Values{"value": {"127.0.0.1:9999"}})
-	if rec.Code != http.StatusSeeOther {
+	saved, rec := f.postView("/settings/values/http.addr", url.Values{"value": {"127.0.0.1:9999"}})
+	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d; body = %s", rec.Code, rec.Body.String())
 	}
-	if loc := rec.Header().Get("Location"); loc != "/settings?flash=restart" {
-		t.Errorf("Location = %q, want the restart flash", loc)
+	if !strings.Contains(saved.Flash, "Restart the assistant") {
+		t.Errorf("save Flash = %q, want the restart notice", saved.Flash)
 	}
-	body := f.get("/settings?flash=restart").Body.String()
-	if !strings.Contains(body, "Restart the assistant") {
-		t.Errorf("restart flash missing: %s", body)
+	if row := saved.mustSetting(t, "http.addr"); !row.Restart || row.Value != "127.0.0.1:9999" {
+		t.Errorf("http.addr after save = %+v", row)
 	}
-	if !strings.Contains(body, "pill-restart") {
-		t.Error("restart-required badge missing after saving")
+	// A reload with ?flash=restart keeps the notice, and the badge stays.
+	v, _ := f.get("/api/ui/settings?flash=restart")
+	if !strings.Contains(v.Flash, "Restart the assistant") {
+		t.Errorf("restart flash missing on the read: %q", v.Flash)
+	}
+	if !v.mustSetting(t, "http.addr").Restart {
+		t.Error("restart-required flag missing after saving")
 	}
 	if got := f.settings.String("http.addr"); got != "127.0.0.1:9999" {
 		t.Errorf("http.addr = %q", got)
 	}
 }
 
-func TestSettingsFormsWorkAsHTMXFragments(t *testing.T) {
+// TestSettingsWritesAnswerJSONWithTheRealStatus pins the write contract the
+// React app relies on: success is 200 with the refreshed view and a Flash, a
+// rejected edit is the view with the real 4xx status, an Error and the
+// preserved input.
+func TestSettingsWritesAnswerJSONWithTheRealStatus(t *testing.T) {
 	f := newSettingsFixture(t)
 
-	req := f.form(http.MethodPost, "/settings/values/agent.filler", url.Values{"value": {"Hold on."}})
-	req.Header.Set("HX-Request", "true")
-	rec := httptest.NewRecorder()
-	f.handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("htmx save status = %d; body = %s", rec.Code, rec.Body.String())
+	v, rec := f.postView("/settings/values/agent.filler", url.Values{"value": {"Hold on."}})
+	if rec.Code != http.StatusOK || rec.Header().Get("Location") != "" {
+		t.Fatalf("save status = %d; body = %s", rec.Code, rec.Body.String())
 	}
-	body := rec.Body.String()
-	if strings.Contains(body, "<html") {
-		t.Error("htmx response is a full page")
-	}
-	if !strings.Contains(body, `id="settings-content"`) || !strings.Contains(body, "Saved") {
-		t.Errorf("htmx response lacks the swapped content or flash: %s", body)
+	if !strings.HasPrefix(v.Flash, "Saved") || v.mustSetting(t, wording.FillerKey).Value != "Hold on." {
+		t.Errorf("save view = flash %q filler %+v", v.Flash, v.mustSetting(t, wording.FillerKey))
 	}
 	if got := f.settings.String(wording.FillerKey); got != "Hold on." {
 		t.Errorf("filler = %q", got)
 	}
 
-	req = f.form(http.MethodPost, "/settings/values/tools.time.now.control_phrases", url.Values{"value": {"x\nx"}})
-	req.Header.Set("HX-Request", "true")
-	rec = httptest.NewRecorder()
-	f.handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("htmx invalid status = %d, want a swap-friendly 200; body = %s", rec.Code, rec.Body.String())
+	v, rec = f.postView("/settings/values/tools.time.now.control_phrases", url.Values{"value": {"x\nx"}})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid status = %d, want 400; body = %s", rec.Code, rec.Body.String())
 	}
-	body = rec.Body.String()
-	if strings.Contains(body, "<html") {
-		t.Error("htmx error response is a full page")
+	if !strings.Contains(v.Error, "repeated") || v.Flash != "" {
+		t.Errorf("invalid view = error %q flash %q", v.Error, v.Flash)
 	}
-	if !strings.Contains(body, "repeated") || !strings.Contains(body, "x\nx") {
-		t.Errorf("htmx error lacks the message or preserved input: %s", body)
+	if got := v.mustSetting(t, "tools.time.now.control_phrases").Edit; got != "x\nx" {
+		t.Errorf("preserved input = %q", got)
+	}
+
+	if _, rec = f.postView("/settings/values/nope.key", url.Values{"value": {"x"}}); rec.Code != http.StatusNotFound {
+		t.Errorf("unknown setting status = %d, want 404", rec.Code)
 	}
 }
 
 func TestSettingsFormsRequireIdentityAndSameOrigin(t *testing.T) {
 	f := newSettingsFixture(t)
 
-	rec := serve(f.handler, request(http.MethodGet, "/settings", ""))
+	rec := serve(f.handler, request(http.MethodGet, "/api/ui/settings", ""))
 	if rec.Code != http.StatusForbidden {
 		t.Fatalf("unauthenticated page status = %d, want 403", rec.Code)
 	}
@@ -496,48 +648,49 @@ func TestSettingsFormsRequireIdentityAndSameOrigin(t *testing.T) {
 	}
 }
 
-func TestSettingsPageWithoutServicesExplainsTheWiring(t *testing.T) {
+func TestSettingsReadWithoutServicesIsEmptyAndReadOnly(t *testing.T) {
 	handler := newHandler(t, dashboard.Options{})
-	rec := serve(handler, request(http.MethodGet, "/settings", owner))
+	var v settingsResp
+	rec := getJSON(t, handler, "/api/ui/settings", &v)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d", rec.Code)
 	}
-	if body := rec.Body.String(); !strings.Contains(body, "not configured") {
-		t.Errorf("unwired page does not explain itself: %s", body)
+	if v.HasSettings || len(v.Tools) != 0 || len(v.Live) != 0 {
+		t.Errorf("unwired view = %+v, want empty with HasSettings false", v)
 	}
-}
-
-// pageSection returns the HTML from one element's id to the next Tool/setting
-// boundary. The tests use it to assert per-row controls without relying on
-// global text that another row could satisfy.
-func pageSection(t *testing.T, body, id string) string {
-	t.Helper()
-	start := strings.Index(body, id)
-	if start < 0 {
-		t.Fatalf("page lacks %s", id)
+	req := request(http.MethodPost, "/settings/values/agent.filler", owner)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	if rec := serve(handler, req); rec.Code != http.StatusNotFound {
+		t.Errorf("write without the services = %d, want 404", rec.Code)
 	}
-	section := body[start+len(id):]
-	end := len(section)
-	for _, next := range []string{`id="tool-`, `id="setting-`} {
-		if i := strings.Index(section, next); i >= 0 && i < end {
-			end = i
-		}
-	}
-	return section[:end]
 }
 
 func TestSettingsQuietHoursPanelSavesTheSameOverride(t *testing.T) {
 	f := newSettingsFixture(t)
-	rec := f.get("/settings")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d", rec.Code)
+	v, _ := f.view()
+	var quiet []string
+	for _, row := range v.Quiet {
+		quiet = append(quiet, row.Key)
 	}
-	body := rec.Body.String()
-	if !strings.Contains(body, "Quiet hours") || !strings.Contains(body, `id="setting-quiet.volume"`) {
-		t.Fatalf("the Quiet hours panel is missing: %s", body)
+	found := false
+	for _, key := range quiet {
+		found = found || key == "quiet.volume"
+	}
+	if !found {
+		t.Fatalf("the Quiet hours group lacks quiet.volume: %v", quiet)
+	}
+	if _, ok := func() (settingRow, bool) {
+		for _, row := range v.Live {
+			if strings.HasPrefix(row.Key, "quiet.") {
+				return row, true
+			}
+		}
+		return settingRow{}, false
+	}(); ok {
+		t.Error("a quiet.* setting leaked into the generic Live group")
 	}
 	resp := f.post("/settings/values/quiet.volume", url.Values{"value": {"40"}})
-	if resp.Code != http.StatusSeeOther {
+	if resp.Code != http.StatusOK {
 		t.Fatalf("save status = %d, body = %s", resp.Code, resp.Body.String())
 	}
 	value, _ := f.settings.Get(quietcore.VolumeKey)
@@ -545,7 +698,7 @@ func TestSettingsQuietHoursPanelSavesTheSameOverride(t *testing.T) {
 		t.Fatalf("quiet.volume = %+v, want a stored Dashboard override", value)
 	}
 	resp = f.post("/settings/values/quiet.start", url.Values{"value": {"21:15"}})
-	if resp.Code != http.StatusSeeOther {
+	if resp.Code != http.StatusOK {
 		t.Fatalf("start save status = %d, body = %s", resp.Code, resp.Body.String())
 	}
 	if got := f.settings.String(quietcore.StartKey); got != "21:15" {

@@ -114,8 +114,9 @@ ML services never touch audio devices.
 
 ### Dashboard over Tailscale
 
-The Dashboard is a separate listener served by `assistant`, using
-server-rendered Go templates and htmx. It is **off** until a Tailscale owner is
+The Dashboard is a separate listener served by `assistant`: a React app
+embedded in the binary (built by the image's `web` stage), so it needs no
+internet at runtime. It is **off** until a Tailscale owner is
 configured, and it is meant to be reached only through `tailscale serve`, never
 published to the LAN or the internet.
 
@@ -151,7 +152,7 @@ published to the LAN or the internet.
 
    Serve sends `https://<pi-name>.<tailnet>.ts.net/` to
    `http://127.0.0.1:8082`; opening that URL from any device in the tailnet
-   shows the Health page.
+   shows the Dashboard home. HTTPS also unlocks the browser microphone.
 
 4. **Limit the port to the owner in the tailnet policy.** Serve traffic is
    subject to the ACL at the destination port, 443. A grant scoped to the Pi's

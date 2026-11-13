@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -36,8 +35,6 @@ const (
 	dummyEnvValue    = "dummy-env-49-mnopqrstuvwx"
 	dummyNewValue    = "dummy-new-49-zyxwvutsrqpo"
 )
-
-var passwordInput = regexp.MustCompile(`<input[^>]*type="password"[^>]*>`)
 
 // lockedBuffer collects Dashboard logs from the test goroutine.
 type lockedBuffer struct {
@@ -91,11 +88,61 @@ func newSecretsFixture(t *testing.T, names ...string) *secretsFixture {
 	return &secretsFixture{t: t, ctx: ctx, handler: handler, secrets: svc, store: st, logs: logs}
 }
 
-func (f *secretsFixture) get(target string) *httptest.ResponseRecorder {
+// secretsResp decodes the Secrets view (encoding/json default field names).
+// There is deliberately no field that could carry a value: only metadata.
+type secretsResp struct {
+	Flash      string
+	Error      string
+	HasSecrets bool
+	Secrets    []secretRow
+}
+
+type secretRow struct {
+	Name, Anchor           string
+	Set                    bool
+	SetLabel               string
+	Source, SourceLabel    string
+	Last4, Updated         string
+	UpdatedISO             string
+	Stored                 bool
+	SetAction, ClearAction string
+}
+
+func (v secretsResp) secret(t *testing.T, name string) secretRow {
+	t.Helper()
+	for _, row := range v.Secrets {
+		if row.Name == name {
+			return row
+		}
+	}
+	t.Fatalf("view has no secret %s: %+v", name, v.Secrets)
+	return secretRow{}
+}
+
+func (f *secretsFixture) get(target string) (secretsResp, *httptest.ResponseRecorder) {
 	f.t.Helper()
-	rec := httptest.NewRecorder()
-	f.handler.ServeHTTP(rec, request(http.MethodGet, target, owner))
-	return rec
+	var v secretsResp
+	rec := getJSON(f.t, f.handler, target, &v)
+	return v, rec
+}
+
+// view reads /api/ui/secrets, which must be a 200.
+func (f *secretsFixture) view() (secretsResp, string) {
+	f.t.Helper()
+	v, rec := f.get("/api/ui/secrets")
+	if rec.Code != http.StatusOK {
+		f.t.Fatalf("GET secrets = %d: %s", rec.Code, rec.Body.String())
+	}
+	return v, rec.Body.String()
+}
+
+// postView posts a write and decodes the answered view.
+func (f *secretsFixture) postView(target string, values url.Values) (secretsResp, *httptest.ResponseRecorder) {
+	f.t.Helper()
+	rec := f.post(target, values)
+	var v secretsResp
+	decodeJSON(f.t, rec, &v)
+	return v, rec
 }
 
 func (f *secretsFixture) form(method, target string, values url.Values) *http.Request {
@@ -116,105 +163,63 @@ func (f *secretsFixture) post(target string, values url.Values) *httptest.Respon
 	return rec
 }
 
-func (f *secretsFixture) postHTMX(target string, values url.Values) *httptest.ResponseRecorder {
-	f.t.Helper()
-	req := f.form(http.MethodPost, target, values)
-	req.Header.Set("HX-Request", "true")
-	rec := httptest.NewRecorder()
-	f.handler.ServeHTTP(rec, req)
-	return rec
-}
-
-// secretArticle returns one rendered secret card so assertions cannot pass on
-// text belonging to a different secret.
-func secretArticle(t *testing.T, body, name string) string {
-	t.Helper()
-	marker := `id="secret-` + name + `"`
-	index := strings.Index(body, marker)
-	if index < 0 {
-		t.Fatalf("page has no card for %s", name)
-	}
-	start := strings.LastIndex(body[:index], "<article")
-	end := strings.Index(body[index:], "</article>")
-	if start < 0 || end < 0 {
-		t.Fatalf("card for %s is not a complete article", name)
-	}
-	return body[start : index+end+len("</article>")]
-}
-
-func TestSecretsPageListsEveryDeclaredSecretDynamically(t *testing.T) {
+func TestSecretsReadListsEveryDeclaredSecretDynamically(t *testing.T) {
 	f := newSecretsFixture(t)
-	rec := f.get("/secrets")
+	v, rec := f.get("/api/ui/secrets")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	body := rec.Body.String()
-	for _, want := range []string{"Secrets", "Write-only", "OPENROUTER_API_KEY", "SPOTIFY_REFRESH_TOKEN", "NTFY_TOKEN", "GITHUB_TOKEN"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("page lacks %q", want)
-		}
+	if !v.HasSecrets {
+		t.Error("HasSecrets = false with a service wired")
 	}
-	if !strings.Contains(body, `href="/secrets"`) || !strings.Contains(body, `aria-current="page"`) {
-		t.Error("nav does not mark the Secrets page current")
+	var names []string
+	for _, row := range v.Secrets {
+		names = append(names, row.Name)
 	}
-	inputs := passwordInput.FindAllString(body, -1)
-	if len(inputs) != 4 {
-		t.Fatalf("password inputs = %d, want one per secret", len(inputs))
+	want := []string{secretOpenRouter, secretSpotify, secretNtfy, secretGitHub}
+	if strings.Join(names, ",") != strings.Join(want, ",") {
+		t.Fatalf("secrets = %v, want %v in declaration order", names, want)
 	}
-	for _, tag := range inputs {
-		if !strings.Contains(tag, `autocomplete="new-password"`) {
-			t.Errorf("password input lacks autocomplete=new-password: %s", tag)
+	for _, row := range v.Secrets {
+		if row.Set || row.SetLabel != "not set" || row.SourceLabel != "none" || row.Source != "" && row.Source != "none" {
+			t.Errorf("unset secret %s = %+v, want not set / none", row.Name, row)
 		}
-		if strings.Contains(tag, "value=") {
-			t.Errorf("password input is prefilled: %s", tag)
+		if row.Stored {
+			t.Errorf("unset secret %s claims a stored value", row.Name)
 		}
-	}
-	for _, name := range []string{secretOpenRouter, secretSpotify, secretNtfy, secretGitHub} {
-		article := secretArticle(t, body, name)
-		if !strings.Contains(article, "not set") || !strings.Contains(article, "none") {
-			t.Errorf("unset card for %s does not say not set/none:\n%s", name, article)
-		}
-		if strings.Contains(article, "/clear") {
-			t.Errorf("unset card for %s offers a clear action", name)
+		if row.SetAction != "/secrets/"+row.Name || row.ClearAction != "/secrets/"+row.Name+"/clear" {
+			t.Errorf("actions for %s = %q / %q", row.Name, row.SetAction, row.ClearAction)
 		}
 	}
 }
 
-func TestSecretsPageRendersSetMetadataWithoutTheValue(t *testing.T) {
+func TestSecretsReadRendersSetMetadataWithoutTheValue(t *testing.T) {
 	t.Setenv(secretOpenRouter, dummyEnvValue)
 	f := newSecretsFixture(t)
 	if _, err := f.secrets.Set(f.ctx, secretSpotify, dummyStoredValue); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	rec := f.get("/secrets")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d", rec.Code)
-	}
-	body := rec.Body.String()
+	v, body := f.view()
 
-	env := secretArticle(t, body, secretOpenRouter)
-	for _, want := range []string{"set", ".env", "uvwx"} {
-		if !strings.Contains(env, want) {
-			t.Errorf("env card lacks %q:\n%s", want, env)
-		}
+	env := v.secret(t, secretOpenRouter)
+	if !env.Set || env.SetLabel != "set" || env.SourceLabel != ".env" || env.Last4 != "uvwx" || env.Stored {
+		t.Errorf("env secret = %+v, want set from .env with last4 uvwx", env)
 	}
-	if strings.Contains(env, "updated") {
-		t.Errorf("env card claims an update time:\n%s", env)
+	if env.Updated != "" || env.UpdatedISO != "" {
+		t.Errorf("env secret claims an update time: %+v", env)
 	}
 
-	stored := secretArticle(t, body, secretSpotify)
-	for _, want := range []string{"set", "stored", "ijkl", "updated", "UTC"} {
-		if !strings.Contains(stored, want) {
-			t.Errorf("stored card lacks %q:\n%s", want, stored)
-		}
+	stored := v.secret(t, secretSpotify)
+	if !stored.Set || stored.SourceLabel != "stored" || stored.Last4 != "ijkl" || !stored.Stored {
+		t.Errorf("stored secret = %+v, want stored with last4 ijkl", stored)
 	}
-	if !strings.Contains(stored, "Clear stored value") {
-		t.Errorf("stored card has no clear action:\n%s", stored)
+	if !strings.Contains(stored.Updated, "UTC") || stored.UpdatedISO == "" {
+		t.Errorf("stored secret update time = %q / %q, want a UTC timestamp", stored.Updated, stored.UpdatedISO)
 	}
 
 	for _, value := range []string{dummyEnvValue, dummyStoredValue} {
 		if strings.Contains(body, value) {
-			t.Errorf("page rendered the full secret value %q", value)
+			t.Errorf("JSON carried the full secret value %q", value)
 		}
 	}
 }
@@ -226,12 +231,15 @@ func TestSecretsReplaceWritesAndNeverExposesTheValue(t *testing.T) {
 		t.Fatalf("seed Set: %v", err)
 	}
 
-	rec := f.post("/secrets/"+secretOpenRouter, url.Values{"value": {dummyNewValue}})
-	if rec.Code != http.StatusSeeOther {
+	saved, rec := f.postView("/secrets/"+secretOpenRouter, url.Values{"value": {dummyNewValue}})
+	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	if got := rec.Header().Get("Location"); got != "/secrets?flash=secret-saved" {
-		t.Errorf("Location = %q", got)
+	if rec.Header().Get("Location") != "" {
+		t.Errorf("Location = %q, want no redirect", rec.Header().Get("Location"))
+	}
+	if saved.Flash != "Stored. The new value applies on the next request." {
+		t.Errorf("Flash = %q", saved.Flash)
 	}
 	// The replacement is the server-internal value the Agent provider reads.
 	value, ok := f.secrets.Get(secretOpenRouter)
@@ -239,20 +247,17 @@ func TestSecretsReplaceWritesAndNeverExposesTheValue(t *testing.T) {
 		t.Fatalf("Get after replace = %q, %v; want the new stored value", value, ok)
 	}
 
-	page := f.get("/secrets?flash=secret-saved")
-	if page.Code != http.StatusOK {
-		t.Fatalf("page status = %d", page.Code)
+	// The write's own response already carries the refreshed metadata.
+	row := saved.secret(t, secretOpenRouter)
+	if !row.Set || !row.Stored || row.SourceLabel != "stored" || row.Last4 != "rqpo" || row.Updated == "" {
+		t.Errorf("replaced secret = %+v, want stored with last4 rqpo and an update time", row)
 	}
-	body := page.Body.String()
-	article := secretArticle(t, body, secretOpenRouter)
-	for _, want := range []string{"set", "stored", "rqpo", "updated"} {
-		if !strings.Contains(article, want) {
-			t.Errorf("card lacks %q:\n%s", want, article)
-		}
+	// A plain read with the flash query shows the same notice.
+	page, _ := f.get("/api/ui/secrets?flash=secret-saved")
+	if page.Flash != saved.Flash {
+		t.Errorf("?flash= read = %q, want %q", page.Flash, saved.Flash)
 	}
-	if !strings.Contains(body, "Stored. The new value applies on the next request.") {
-		t.Error("page lacks the saved flash message")
-	}
+	body := rec.Body.String()
 	// Neither the replaced value nor the new one may appear anywhere.
 	for _, value := range []string{dummyStoredValue, dummyEnvValue, dummyNewValue} {
 		if strings.Contains(body, value) {
@@ -261,32 +266,6 @@ func TestSecretsReplaceWritesAndNeverExposesTheValue(t *testing.T) {
 		if strings.Contains(f.logs.String(), value) {
 			t.Errorf("logs contain the full secret value %q", value)
 		}
-	}
-	for _, tag := range passwordInput.FindAllString(article, -1) {
-		if strings.Contains(tag, "value=") {
-			t.Errorf("replaced secret input is prefilled: %s", tag)
-		}
-	}
-}
-
-func TestSecretsReplaceWorksAsAnHTMXFragment(t *testing.T) {
-	f := newSecretsFixture(t)
-	rec := f.postHTMX("/secrets/"+secretOpenRouter, url.Values{"value": {dummyNewValue}})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-	body := rec.Body.String()
-	if strings.Contains(body, "<html") {
-		t.Error("htmx response is a full page, want a fragment")
-	}
-	if !strings.Contains(body, `id="secrets-content"`) {
-		t.Error("fragment lacks the swap target id")
-	}
-	if !strings.Contains(body, "stored") || !strings.Contains(body, "rqpo") {
-		t.Errorf("fragment lacks the new metadata:\n%s", body)
-	}
-	if strings.Contains(body, dummyNewValue) {
-		t.Error("fragment rendered the full secret value")
 	}
 }
 
@@ -297,12 +276,12 @@ func TestSecretsClearFallsBackToEnvAndSaysSo(t *testing.T) {
 		t.Fatalf("Set: %v", err)
 	}
 
-	rec := f.post("/secrets/"+secretOpenRouter+"/clear", nil)
-	if rec.Code != http.StatusSeeOther {
+	cleared, rec := f.postView("/secrets/"+secretOpenRouter+"/clear", nil)
+	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	if got := rec.Header().Get("Location"); got != "/secrets?flash=secret-cleared-env" {
-		t.Errorf("Location = %q", got)
+	if cleared.Flash != "Stored value cleared. The .env value applies again." {
+		t.Errorf("Flash = %q, want the .env-applies-again message", cleared.Flash)
 	}
 	// Clearing exposes the .env value immediately: no restart, no second cache.
 	value, ok := f.secrets.Get(secretOpenRouter)
@@ -310,25 +289,11 @@ func TestSecretsClearFallsBackToEnvAndSaysSo(t *testing.T) {
 		t.Fatalf("Get after clear = %q, %v; want the .env fallback", value, ok)
 	}
 
-	page := f.get("/secrets?flash=secret-cleared-env")
-	if page.Code != http.StatusOK {
-		t.Fatalf("page status = %d", page.Code)
+	row := cleared.secret(t, secretOpenRouter)
+	if !row.Set || row.SourceLabel != ".env" || row.Last4 != "uvwx" || row.Stored || row.Updated != "" {
+		t.Errorf("cleared secret = %+v, want set from .env, not stored, no update time", row)
 	}
-	body := page.Body.String()
-	article := secretArticle(t, body, secretOpenRouter)
-	for _, want := range []string{"set", ".env", "uvwx"} {
-		if !strings.Contains(article, want) {
-			t.Errorf("card lacks %q:\n%s", want, article)
-		}
-	}
-	for _, unwanted := range []string{"stored", "updated", "/clear"} {
-		if strings.Contains(article, unwanted) {
-			t.Errorf("cleared card still shows %q:\n%s", unwanted, article)
-		}
-	}
-	if !strings.Contains(body, "Stored value cleared. The .env value applies again.") {
-		t.Error("page does not say the .env value applies again")
-	}
+	body := rec.Body.String()
 	for _, value := range []string{dummyEnvValue, dummyStoredValue} {
 		if strings.Contains(body, value) {
 			t.Errorf("page rendered the full secret value %q", value)
@@ -344,27 +309,27 @@ func TestSecretsClearWithoutAnEnvValueLeavesTheSecretUnset(t *testing.T) {
 	if _, err := f.secrets.Set(f.ctx, secretSpotify, dummyStoredValue); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	rec := f.post("/secrets/"+secretSpotify+"/clear", nil)
-	if rec.Code != http.StatusSeeOther {
+	cleared, rec := f.postView("/secrets/"+secretSpotify+"/clear", nil)
+	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d", rec.Code)
 	}
-	if got := rec.Header().Get("Location"); got != "/secrets?flash=secret-cleared-none" {
-		t.Errorf("Location = %q", got)
+	if cleared.Flash != "Stored value cleared. The secret is now unset." {
+		t.Errorf("Flash = %q, want the now-unset message", cleared.Flash)
 	}
 	if _, ok := f.secrets.Get(secretSpotify); ok {
 		t.Fatal("secret still resolves after clearing without an env value")
 	}
-	body := f.get("/secrets?flash=secret-cleared-none").Body.String()
-	article := secretArticle(t, body, secretSpotify)
-	if !strings.Contains(article, "not set") || !strings.Contains(article, "none") {
-		t.Errorf("card does not say not set/none:\n%s", article)
+	row := cleared.secret(t, secretSpotify)
+	if row.Set || row.SetLabel != "not set" || row.SourceLabel != "none" || row.Stored {
+		t.Errorf("cleared secret = %+v, want not set / none", row)
 	}
-	if strings.Contains(article, "/clear") {
-		t.Errorf("unset card still offers a clear action:\n%s", article)
-	}
-	if !strings.Contains(body, "Stored value cleared. The secret is now unset.") {
-		t.Error("page does not say the secret is now unset")
-	}
+}
+
+func decodeSecrets(t *testing.T, rec *httptest.ResponseRecorder) secretsResp {
+	t.Helper()
+	var v secretsResp
+	decodeJSON(t, rec, &v)
+	return v
 }
 
 func TestSecretsRejectsUnknownEmptyAndMalformedFormsWithoutEchoingTheValue(t *testing.T) {
@@ -374,16 +339,16 @@ func TestSecretsRejectsUnknownEmptyAndMalformedFormsWithoutEchoingTheValue(t *te
 	if unknown.Code != http.StatusNotFound {
 		t.Fatalf("unknown status = %d, want 404", unknown.Code)
 	}
-	if !strings.Contains(unknown.Body.String(), "Unknown secret.") {
-		t.Errorf("unknown body = %s", unknown.Body.String())
+	if v := decodeSecrets(t, unknown); v.Error != "Unknown secret." {
+		t.Errorf("unknown error = %q", v.Error)
 	}
 
 	empty := f.post("/secrets/"+secretOpenRouter, url.Values{"value": {""}})
 	if empty.Code != http.StatusBadRequest {
 		t.Fatalf("empty status = %d, want 400", empty.Code)
 	}
-	if !strings.Contains(empty.Body.String(), "Enter a value.") {
-		t.Errorf("empty body = %s", empty.Body.String())
+	if v := decodeSecrets(t, empty); v.Error != "Enter a value." {
+		t.Errorf("empty error = %q", v.Error)
 	}
 
 	// A whitespace-only value is empty after the service trims it; the page
@@ -406,8 +371,8 @@ func TestSecretsRejectsUnknownEmptyAndMalformedFormsWithoutEchoingTheValue(t *te
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("malformed status = %d, want 400", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "Could not read the form.") {
-		t.Errorf("malformed body = %s", rec.Body.String())
+	if v := decodeSecrets(t, rec); v.Error != "Could not read the form." {
+		t.Errorf("malformed error = %q", v.Error)
 	}
 
 	if _, ok := f.secrets.Get(secretOpenRouter); ok {
@@ -423,32 +388,25 @@ func TestSecretsRejectsUnknownEmptyAndMalformedFormsWithoutEchoingTheValue(t *te
 	}
 }
 
-func TestSecretsErrorsWorkAsHTMXFragments(t *testing.T) {
+// TestSecretsFailuresAnswerTheRealStatusWithTheViewAndNoValue: an error is the
+// metadata view with the real status and a fixed message, so the React app can
+// show it without ever being handed the submitted value.
+func TestSecretsFailuresAnswerTheRealStatusWithTheViewAndNoValue(t *testing.T) {
 	f := newSecretsFixture(t)
-	rec := f.postHTMX("/secrets/"+secretOpenRouter, url.Values{"value": {""}})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want a swap-friendly 200", rec.Code)
+	v, rec := f.postView("/secrets/"+secretOpenRouter, url.Values{"value": {""}})
+	if rec.Code != http.StatusBadRequest || v.Error != "Enter a value." || v.Flash != "" {
+		t.Fatalf("empty = %d %+v", rec.Code, v)
 	}
-	body := rec.Body.String()
-	if strings.Contains(body, "<html") {
-		t.Error("htmx error is a full page, want a fragment")
-	}
-	if !strings.Contains(body, `id="secrets-content"`) || !strings.Contains(body, `role="alert"`) {
-		t.Errorf("fragment lacks the swap target or alert role:\n%s", body)
-	}
-	if !strings.Contains(body, "Enter a value.") {
-		t.Errorf("fragment lacks the error message:\n%s", body)
+	if !v.HasSecrets || len(v.Secrets) != 4 {
+		t.Errorf("error view lost the metadata list: %+v", v)
 	}
 
-	unknown := f.postHTMX("/secrets/NOT_DECLARED", url.Values{"value": {dummyNewValue}})
-	if unknown.Code != http.StatusOK {
-		t.Fatalf("unknown htmx status = %d", unknown.Code)
+	v, rec = f.postView("/secrets/NOT_DECLARED", url.Values{"value": {dummyNewValue}})
+	if rec.Code != http.StatusNotFound || v.Error != "Unknown secret." {
+		t.Fatalf("unknown = %d %q", rec.Code, v.Error)
 	}
-	if strings.Contains(unknown.Body.String(), dummyNewValue) {
-		t.Error("unknown htmx error echoed the submitted value")
-	}
-	if !strings.Contains(unknown.Body.String(), "Unknown secret.") {
-		t.Errorf("unknown htmx body = %s", unknown.Body.String())
+	if strings.Contains(rec.Body.String(), dummyNewValue) {
+		t.Error("unknown error echoed the submitted value")
 	}
 }
 
@@ -462,15 +420,15 @@ func TestSecretsStoreFailureIsReportedWithoutTheValue(t *testing.T) {
 	if set.Code != http.StatusInternalServerError {
 		t.Fatalf("set status = %d, want 500", set.Code)
 	}
-	if !strings.Contains(set.Body.String(), "The secret could not be stored.") {
-		t.Errorf("set body = %s", set.Body.String())
+	if v := decodeSecrets(t, set); v.Error != "The secret could not be stored." {
+		t.Errorf("set error = %q", v.Error)
 	}
 	clear := f.post("/secrets/"+secretOpenRouter+"/clear", nil)
 	if clear.Code != http.StatusInternalServerError {
 		t.Fatalf("clear status = %d, want 500", clear.Code)
 	}
-	if !strings.Contains(clear.Body.String(), "The secret could not be cleared.") {
-		t.Errorf("clear body = %s", clear.Body.String())
+	if v := decodeSecrets(t, clear); v.Error != "The secret could not be cleared." {
+		t.Errorf("clear error = %q", v.Error)
 	}
 	for _, response := range []*httptest.ResponseRecorder{set, clear} {
 		if strings.Contains(response.Body.String(), dummyNewValue) {
@@ -550,20 +508,26 @@ func TestSecretsRoutesRequireIdentityAndSameOrigin(t *testing.T) {
 		})
 	}
 
+	// A GET on a write path is only the app shell (every unknown page path
+	// is a client route); it must not act on the secret.
 	rec := serve(f.handler, request(http.MethodGet, "/secrets/"+secretOpenRouter, owner))
-	if rec.Code != http.StatusNotFound {
-		t.Errorf("GET on the write route = %d, want 404", rec.Code)
+	if rec.Code != http.StatusOK || !strings.HasPrefix(rec.Header().Get("Content-Type"), "text/html") {
+		t.Errorf("GET on the write route = %d %q, want the app shell", rec.Code, rec.Header().Get("Content-Type"))
+	}
+	if _, ok := f.secrets.Get(secretOpenRouter); ok {
+		t.Error("a GET changed the secret")
 	}
 }
 
-func TestSecretsPageWithoutTheServiceIsReadOnly(t *testing.T) {
+func TestSecretsReadWithoutTheServiceIsReadOnly(t *testing.T) {
 	handler := newHandler(t, dashboard.Options{})
-	rec := serve(handler, request(http.MethodGet, "/secrets", owner))
+	var v secretsResp
+	rec := getJSON(t, handler, "/api/ui/secrets", &v)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "Secrets are not configured") {
-		t.Errorf("page does not explain the missing service:\n%s", rec.Body.String())
+	if v.HasSecrets || len(v.Secrets) != 0 {
+		t.Errorf("view without the service = %+v, want none", v)
 	}
 	req := request(http.MethodPost, "/secrets/"+secretOpenRouter, owner)
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
@@ -574,35 +538,31 @@ func TestSecretsPageWithoutTheServiceIsReadOnly(t *testing.T) {
 	}
 }
 
-func TestSecretsPageHidesShortSuffixes(t *testing.T) {
+func TestSecretsReadHidesShortSuffixes(t *testing.T) {
 	const short = "short-49"
 	f := newSecretsFixture(t)
 	if _, err := f.secrets.Set(f.ctx, secretNtfy, short); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
-	body := f.get("/secrets").Body.String()
-	article := secretArticle(t, body, secretNtfy)
-	if !strings.Contains(article, "last 4 hidden for a short value") {
-		t.Errorf("short value card does not explain the hidden suffix:\n%s", article)
+	v, body := f.view()
+	row := v.secret(t, secretNtfy)
+	if !row.Set || row.Last4 != "" {
+		t.Errorf("short secret = %+v, want set with the last 4 hidden", row)
 	}
-	if strings.Contains(article, short) || strings.Contains(article, "t-49") {
-		t.Errorf("short value or its suffix leaked:\n%s", article)
+	if strings.Contains(body, short) || strings.Contains(body, "t-49") {
+		t.Errorf("short value or its suffix leaked:\n%s", body)
 	}
 }
 
-// TestSecretsPageListsTheRealModuleDeclarations proves the page is fed by the
+// TestSecretsReadListsTheRealModuleDeclarations proves the view is fed by the
 // production module list, not a hand-maintained test list: adding the GitHub
 // Tool's GITHUB_TOKEN declaration is enough for its row to appear.
-func TestSecretsPageListsTheRealModuleDeclarations(t *testing.T) {
+func TestSecretsReadListsTheRealModuleDeclarations(t *testing.T) {
 	names := tools.NewSet().SecretNames()
 	f := newSecretsFixture(t, names...)
-	body := f.get("/secrets").Body.String()
-	if !strings.Contains(body, github.SecretName) {
-		t.Fatalf("the Secrets page does not show %s: %s", github.SecretName, body)
-	}
+	v, _ := f.view()
+	v.secret(t, github.SecretName)
 	for _, name := range names {
-		if !strings.Contains(body, name) {
-			t.Errorf("the Secrets page does not show the declared secret %s", name)
-		}
+		v.secret(t, name)
 	}
 }

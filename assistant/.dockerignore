@@ -1,0 +1,3 @@
+# Host build artefacts: the image builds the web app itself.
+web/node_modules
+internal/dashboard/ui/dist

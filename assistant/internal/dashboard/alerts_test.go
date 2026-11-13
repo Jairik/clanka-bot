@@ -301,11 +301,78 @@ func (f *alertsFixture) addSound(name string, d time.Duration) {
 	}
 }
 
-func (f *alertsFixture) get(target string) *httptest.ResponseRecorder {
+// alertsResp decodes the parts of the Scheduled alerts view the tests assert
+// on (encoding/json default field names).
+type alertsResp struct {
+	Flash       string
+	Error       string
+	HasManagers bool
+	ZoneName    string
+	Alerts      []struct {
+		KindKey, Kind, Label, Next, NextISO, Detail, CancelAction string
+	}
+	Alarms []struct {
+		ID, Title, Schedule                         string
+		SoundCurrent, VolumeCurrent, RampCurrent    string
+		SoundOverride, VolumeOverride, RampOverride bool
+		HasOverride                                 bool
+		Sounds                                      []struct {
+			Value, Label string
+			Selected     bool
+		}
+		Edit struct {
+			AlarmID, Sound, Volume, Ramp string
+			VolumeReset, RampReset       bool
+		}
+	}
+	Missed []struct{ Kind, Label, EndedBy string }
+}
+
+// get reads the alerts JSON (default view or any ?flash= variant).
+func (f *alertsFixture) get(target string) (alertsResp, *httptest.ResponseRecorder) {
 	f.t.Helper()
-	rec := httptest.NewRecorder()
-	f.handler.ServeHTTP(rec, request(http.MethodGet, target, owner))
-	return rec
+	var v alertsResp
+	rec := getJSON(f.t, f.handler, target, &v)
+	return v, rec
+}
+
+// view is get for the common case: a 200 /api/ui/alerts read.
+func (f *alertsFixture) view() alertsResp {
+	f.t.Helper()
+	v, rec := f.get("/api/ui/alerts")
+	if rec.Code != http.StatusOK {
+		f.t.Fatalf("GET alerts = %d: %s", rec.Code, rec.Body.String())
+	}
+	return v
+}
+
+// postView posts a write and decodes the answered view.
+func (f *alertsFixture) postView(target string, values url.Values) (alertsResp, *httptest.ResponseRecorder) {
+	f.t.Helper()
+	rec := f.post(target, values)
+	var v alertsResp
+	decodeJSON(f.t, rec, &v)
+	return v, rec
+}
+
+// alertRows returns the active alert rows of one kind key.
+func (v alertsResp) kindLabels(kind string) []string {
+	var labels []string
+	for _, row := range v.Alerts {
+		if row.KindKey == kind {
+			labels = append(labels, row.Label)
+		}
+	}
+	return labels
+}
+
+func (v alertsResp) hasLabel(label string) bool {
+	for _, row := range v.Alerts {
+		if row.Label == label {
+			return true
+		}
+	}
+	return false
 }
 
 func (f *alertsFixture) post(target string, values url.Values) *httptest.ResponseRecorder {
@@ -344,12 +411,13 @@ func waitFor(t *testing.T, timeout time.Duration, what string, cond func() bool)
 
 func TestAlertsPageWithoutManagersIsReadOnly(t *testing.T) {
 	handler := newHandler(t, dashboard.Options{})
-	rec := serve(handler, request(http.MethodGet, "/alerts", owner))
+	var v alertsResp
+	rec := getJSON(t, handler, "/api/ui/alerts", &v)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "Scheduled alerts are not configured") {
-		t.Error("page did not explain the missing module list")
+	if v.HasManagers || len(v.Alerts) != 0 || len(v.Alarms) != 0 {
+		t.Errorf("view without managers = %+v, want an empty read-only view", v)
 	}
 }
 
@@ -372,38 +440,48 @@ func TestAlertsPageListsEveryKindWithNextTimeAndLiveZone(t *testing.T) {
 		t.Fatalf("reminder.StartClock: %v", err)
 	}
 
-	rec := f.get("/alerts")
+	v, rec := f.get("/api/ui/alerts")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	body := rec.Body.String()
-	for _, want := range []string{
-		"Scheduled alerts",
-		"Active scheduled alerts",
-		"Alarm overrides",
-		"Missed alerts",
-		"Timer", "pasta", "10m0s of 10m0s left",
-		"Alarm", "work", "Every day", "07:00",
-		"Reminder", "call mum", "17:00",
-		"Europe/Berlin",
-		`datetime="2026-11-12T06:00:00Z"`,
-		`datetime="2026-11-12T16:00:00Z"`,
-		`href="/alerts" aria-current="page"`,
+	if !v.HasManagers || v.ZoneName != "Europe/Berlin" {
+		t.Errorf("HasManagers = %v, ZoneName = %q", v.HasManagers, v.ZoneName)
+	}
+	type row struct{ Kind, Label, Detail, Next, NextISO string }
+	byLabel := map[string]row{}
+	for _, a := range v.Alerts {
+		byLabel[a.Label] = row{a.Kind, a.Label, a.Detail, a.Next, a.NextISO}
+	}
+	for label, want := range map[string]row{
+		"pasta":    {Kind: "Timer", Detail: "10m0s of 10m0s left", NextISO: "2026-11-12T05:10:00Z"},
+		"work":     {Kind: "Alarm", Detail: "Every day", NextISO: "2026-11-12T06:00:00Z"},
+		"call mum": {Kind: "Reminder", NextISO: "2026-11-12T16:00:00Z"},
 	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("page lacks %q", want)
+		got, ok := byLabel[label]
+		if !ok {
+			t.Errorf("view lacks the %q alert: %+v", label, v.Alerts)
+			continue
+		}
+		if got.Kind != want.Kind || !strings.Contains(got.Detail, want.Detail) || got.NextISO != want.NextISO {
+			t.Errorf("%s = %+v, want kind %q detail %q iso %q", label, got, want.Kind, want.Detail, want.NextISO)
 		}
 	}
 	// The German local time is one hour ahead of UTC in November.
-	if !strings.Contains(body, "06:10") {
-		t.Error("the Timer's next time was not shown in the live zone")
+	if !strings.Contains(byLabel["pasta"].Next, "06:10") {
+		t.Errorf("the Timer's next time %q was not shown in the live zone", byLabel["pasta"].Next)
 	}
-	if strings.Contains(body, "<script>alert(1)</script>") {
-		t.Error("a reminder message was rendered as raw markup")
+	if !strings.Contains(byLabel["work"].Next, "07:00") || !strings.Contains(byLabel["call mum"].Next, "17:00") {
+		t.Errorf("alarm/reminder next times = %q / %q", byLabel["work"].Next, byLabel["call mum"].Next)
 	}
-	if !strings.Contains(body, "&lt;script&gt;alert(1)&lt;/script&gt;") {
-		t.Error("the reminder message was not escaped")
+	if len(v.Alarms) != 1 || !strings.Contains(v.Alarms[0].Title, "work") {
+		t.Errorf("alarm editors = %+v, want one for the work alarm", v.Alarms)
 	}
+	// A hostile reminder message round-trips exactly and cannot be raw markup.
+	if !v.hasLabel("Read <script>alert(1)</script>") {
+		t.Error("the hostile reminder message did not round-trip through JSON")
+	}
+	noRawScript(t, body)
 	if atomic.LoadInt64(f.embedCall) != 0 {
 		t.Fatalf("rendering the page called the embedder %d times", atomic.LoadInt64(f.embedCall))
 	}
@@ -437,12 +515,12 @@ func TestAlertsCancelStopsOneFutureTimerThroughItsManager(t *testing.T) {
 		t.Fatalf("rejected cancels removed the Timer: %+v", list)
 	}
 
-	rec = f.post(target, nil)
-	if rec.Code != http.StatusSeeOther {
+	v, rec := f.postView(target, nil)
+	if rec.Code != http.StatusOK {
 		t.Fatalf("cancel status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	if location := rec.Header().Get("Location"); location != "/alerts?flash=alert-cancelled" {
-		t.Fatalf("Location = %q", location)
+	if !strings.HasPrefix(v.Flash, "Cancelled.") || v.hasLabel("pasta") {
+		t.Fatalf("cancel view = flash %q alerts %+v, want the Timer gone", v.Flash, v.Alerts)
 	}
 	time.Sleep(450 * time.Millisecond)
 	if list := f.timer.List(); len(list) != 0 {
@@ -459,9 +537,9 @@ func TestAlertsCancelStopsOneFutureTimerThroughItsManager(t *testing.T) {
 		t.Fatalf("persisted timers = %d after cancel, want 0", rows)
 	}
 	// A second cancel is honest: zero matched, nothing written.
-	rec = f.post(target, nil)
-	if location := rec.Header().Get("Location"); location != "/alerts?flash=alert-gone" {
-		t.Fatalf("second cancel Location = %q", location)
+	v, rec = f.postView(target, nil)
+	if rec.Code != http.StatusOK || !strings.Contains(v.Flash, "already gone") {
+		t.Fatalf("second cancel = %d flash %q", rec.Code, v.Flash)
 	}
 }
 
@@ -477,9 +555,9 @@ func TestAlertsAlarmOverrideSaveResetAndVoiceShareOneRow(t *testing.T) {
 	id := set.ID
 	target := "/alerts/alarms/" + url.PathEscape(id)
 
-	rec := f.post(target, url.Values{"sound": {"birds"}, "volume": {"0"}, "ramp": {"10"}})
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("save status = %d, body = %s", rec.Code, rec.Body.String())
+	saved, rec := f.postView(target, url.Values{"sound": {"birds"}, "volume": {"0"}, "ramp": {"10"}})
+	if rec.Code != http.StatusOK || !strings.HasPrefix(saved.Flash, "Saved.") {
+		t.Fatalf("save status = %d flash %q, body = %s", rec.Code, saved.Flash, rec.Body.String())
 	}
 	row := f.alarm.List()
 	if len(row) != 1 {
@@ -489,11 +567,11 @@ func TestAlertsAlarmOverrideSaveResetAndVoiceShareOneRow(t *testing.T) {
 		row[0].RampSeconds == nil || *row[0].RampSeconds != 10 {
 		t.Fatalf("stored overrides = %+v, want birds / explicit 0 / 10s", row[0])
 	}
-	body := f.get("/alerts").Body.String()
-	for _, want := range []string{"birds", "0%", "10s", "Overrides set", "Clear all overrides"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("page lacks the saved override value %q", want)
-		}
+	if len(saved.Alarms) != 1 {
+		t.Fatalf("saved view alarms = %+v", saved.Alarms)
+	}
+	if got := saved.Alarms[0]; got.SoundCurrent != "birds" || got.VolumeCurrent != "0%" || got.RampCurrent != "10s" || !got.HasOverride {
+		t.Errorf("saved editor = %+v, want birds / 0%% / 10s with overrides set", got)
 	}
 
 	// The voice Tool and the page use one manager, so an alarm.update is
@@ -505,36 +583,38 @@ func TestAlertsAlarmOverrideSaveResetAndVoiceShareOneRow(t *testing.T) {
 	if row[0].Sound != "rain" {
 		t.Fatalf("voice update stored %q, want rain", row[0].Sound)
 	}
-	if body := f.get("/alerts").Body.String(); !strings.Contains(body, "rain") {
-		t.Error("the page did not show the voice-written sound")
+	if v := f.view(); len(v.Alarms) != 1 || v.Alarms[0].SoundCurrent != "rain" {
+		t.Errorf("the view did not show the voice-written sound: %+v", v.Alarms)
 	}
 
 	// Reset clears to NULL/kind defaults, never to an explicit 0.
-	rec = f.post(target+"/reset", nil)
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("reset status = %d, body = %s", rec.Code, rec.Body.String())
+	reset, rec := f.postView(target+"/reset", nil)
+	if rec.Code != http.StatusOK || !strings.HasPrefix(reset.Flash, "Reset.") {
+		t.Fatalf("reset status = %d flash %q, body = %s", rec.Code, reset.Flash, rec.Body.String())
 	}
 	row = f.alarm.List()
 	if row[0].Sound != "" || row[0].Volume != nil || row[0].RampSeconds != nil {
 		t.Fatalf("reset row = %+v, want all overrides cleared", row[0])
 	}
-	if body := f.get("/alerts").Body.String(); !strings.Contains(body, "Kind defaults") {
-		t.Error("the page did not show the cleared state")
+	if len(reset.Alarms) != 1 || reset.Alarms[0].HasOverride || reset.Alarms[0].SoundCurrent != "Default" ||
+		reset.Alarms[0].VolumeCurrent != "Default" || reset.Alarms[0].RampCurrent != "Default" {
+		t.Errorf("the view did not show the cleared state: %+v", reset.Alarms)
 	}
 
 	// An explicit 0 after a reset is a value, not a default; a second reset
 	// returns it to NULL.
-	if rec := f.post(target, url.Values{"volume": {"0"}}); rec.Code != http.StatusSeeOther {
+	zero, rec := f.postView(target, url.Values{"volume": {"0"}})
+	if rec.Code != http.StatusOK {
 		t.Fatalf("explicit-zero save status = %d", rec.Code)
 	}
 	row = f.alarm.List()
 	if row[0].Volume == nil || *row[0].Volume != 0 || row[0].RampSeconds != nil {
 		t.Fatalf("explicit-zero row = %+v, want volume 0 and ramp NULL", row[0])
 	}
-	if body := f.get("/alerts").Body.String(); !strings.Contains(body, "0%") {
-		t.Error("the page did not show the explicit 0% override")
+	if len(zero.Alarms) != 1 || zero.Alarms[0].VolumeCurrent != "0%" || !zero.Alarms[0].VolumeOverride {
+		t.Errorf("the view did not show the explicit 0%% override: %+v", zero.Alarms)
 	}
-	if rec := f.post(target+"/reset", nil); rec.Code != http.StatusSeeOther {
+	if rec := f.post(target+"/reset", nil); rec.Code != http.StatusOK {
 		t.Fatalf("second reset status = %d", rec.Code)
 	}
 	if row = f.alarm.List(); row[0].Volume != nil {
@@ -556,18 +636,28 @@ func TestAlertsAlarmOverrideRejectsInvalidInputWithoutPartialWrite(t *testing.T)
 	}
 	target := "/alerts/alarms/" + url.PathEscape(set.ID)
 
-	rec := f.post(target, url.Values{"sound": {"birds"}, "volume": {"150"}, "ramp": {"7"}})
+	rejected, rec := f.postView(target, url.Values{"sound": {"birds"}, "volume": {"150"}, "ramp": {"7"}})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("invalid volume status = %d, want 400", rec.Code)
 	}
-	body := rec.Body.String()
-	for _, want := range []string{`value="150"`, `value="7"`, "between 0 and 100", `role="alert"`} {
-		if !strings.Contains(body, want) {
-			t.Errorf("rejected form lacks %q", want)
+	if !strings.Contains(rejected.Error, "between 0 and 100") {
+		t.Errorf("rejected error = %q", rejected.Error)
+	}
+	if len(rejected.Alarms) != 1 {
+		t.Fatalf("rejected view alarms = %+v", rejected.Alarms)
+	}
+	edit := rejected.Alarms[0].Edit
+	if edit.AlarmID != set.ID || edit.Volume != "150" || edit.Ramp != "7" || edit.Sound != "birds" {
+		t.Errorf("rejected edit state = %+v, want the submitted input preserved", edit)
+	}
+	selected := ""
+	for _, option := range rejected.Alarms[0].Sounds {
+		if option.Selected {
+			selected = option.Value
 		}
 	}
-	if !strings.Contains(body, `value="birds" selected`) {
-		t.Error("the rejected form did not preserve the selected sound")
+	if selected != "birds" {
+		t.Errorf("the rejected form selected %q, want the submitted sound", selected)
 	}
 	row := f.alarm.List()
 	if len(row) != 1 || row[0].Sound != "" || row[0].Volume != nil || row[0].RampSeconds != nil {
@@ -592,25 +682,16 @@ func TestAlertsAlarmOverrideRejectsInvalidInputWithoutPartialWrite(t *testing.T)
 		t.Fatalf("invalid submissions wrote a value: %+v", row[0])
 	}
 
-	// The htmx journey gets a 200 fragment with the same preserved input and
-	// no full document.
-	rec = f.postWith(target, url.Values{"volume": {"abc"}}, func(req *http.Request) {
-		req.Header.Set("HX-Request", "true")
-	})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("htmx invalid status = %d", rec.Code)
+	// A non-numeric volume is a 400 too, with the text preserved verbatim.
+	rejected, rec = f.postView(target, url.Values{"volume": {"abc"}})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("non-numeric volume status = %d, want 400", rec.Code)
 	}
-	fragment := rec.Body.String()
-	if strings.Contains(fragment, "<html") || !strings.HasPrefix(strings.TrimSpace(fragment), `<div id="alerts-content">`) {
-		t.Fatalf("htmx error was not a content fragment: %s", fragment)
-	}
-	for _, want := range []string{`value="abc"`, `role="alert"`, "Volume must be a whole number"} {
-		if !strings.Contains(fragment, want) {
-			t.Errorf("htmx fragment lacks %q", want)
-		}
+	if !strings.Contains(rejected.Error, "Volume must be a whole number") || len(rejected.Alarms) != 1 || rejected.Alarms[0].Edit.Volume != "abc" {
+		t.Errorf("non-numeric view = error %q alarms %+v", rejected.Error, rejected.Alarms)
 	}
 	if row := f.alarm.List(); row[0].Volume != nil {
-		t.Fatalf("invalid htmx submission wrote %+v", row[0])
+		t.Fatalf("invalid submission wrote %+v", row[0])
 	}
 	if calls := atomic.LoadInt64(f.embedCall); calls != 0 {
 		t.Fatalf("invalid forms called the embedder %d times", calls)
@@ -634,8 +715,7 @@ func TestAlertsRingingCancelTargetsOnlyThatAlarm(t *testing.T) {
 
 	// The repeating Alarm is both a pending row and an open ringing event; the
 	// page must list it once, not once per source.
-	rec := f.get("/alerts")
-	if got := strings.Count(rec.Body.String(), `<tr class="alert-alarm">`); got != 1 {
+	if got := len(f.view().kindLabels("alarm")); got != 1 {
 		t.Fatalf("active Alarm rows while ringing = %d, want 1 (deduped)", got)
 	}
 
@@ -646,8 +726,8 @@ func TestAlertsRingingCancelTargetsOnlyThatAlarm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("set second: %v", err)
 	}
-	rec = f.post("/alerts/alarm/"+url.PathEscape(first.ID)+"/cancel", nil)
-	if rec.Code != http.StatusSeeOther {
+	rec := f.post("/alerts/alarm/"+url.PathEscape(first.ID)+"/cancel", nil)
+	if rec.Code != http.StatusOK {
 		t.Fatalf("ringing cancel status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	f.player.waitStart(t)
@@ -658,7 +738,7 @@ func TestAlertsRingingCancelTargetsOnlyThatAlarm(t *testing.T) {
 	if len(remaining) != 1 || remaining[0].ID != second.ID {
 		t.Fatalf("remaining Alarms = %+v, want only the second", remaining)
 	}
-	if rec := f.post("/alerts/alarm/"+url.PathEscape(second.ID)+"/cancel", nil); rec.Code != http.StatusSeeOther {
+	if rec := f.post("/alerts/alarm/"+url.PathEscape(second.ID)+"/cancel", nil); rec.Code != http.StatusOK {
 		t.Fatalf("second cancel status = %d", rec.Code)
 	}
 
@@ -730,35 +810,35 @@ func TestAlertsListsAndCancelsOneOffAlarmAndRingingTimer(t *testing.T) {
 		return false
 	})
 
-	rec := f.get("/alerts")
-	body := rec.Body.String()
-	for _, want := range []string{"wake once", "kettle", "Ringing now", "Fired; waiting for the speaker"} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("active page missing %q:\n%s", want, body)
-		}
+	v := f.view()
+	details := map[string]string{}
+	for _, a := range v.Alerts {
+		details[a.Label] = a.Detail
 	}
-	if got := strings.Count(body, `<tr class="alert-alarm">`); got != 1 {
+	if details["wake once"] != "Ringing now" || details["kettle"] != "Fired; waiting for the speaker" {
+		t.Fatalf("active alerts = %v, want the ringing one-off and the queued Timer", details)
+	}
+	if got := len(v.kindLabels("alarm")); got != 1 {
 		t.Fatalf("active Alarm rows = %d, want the one firing Alarm", got)
 	}
 	// A fired one-off has no next occurrence, so it must not get an override
 	// editor; only its active cancel row belongs on the page.
-	if !strings.Contains(body, "No Alarms are set.") || strings.Contains(body, `id="alarm-overrides-`+fired.ID+`"`) {
-		t.Fatalf("fired one-off Alarm got a nonexistent pending editor:\n%s", body)
+	if len(v.Alarms) != 0 {
+		t.Fatalf("fired one-off Alarm got a nonexistent pending editor: %+v", v.Alarms)
 	}
 
 	// Cancelling the ringing one-off frees the speaker for the queued Timer.
-	if rec := f.post("/alerts/alarm/"+url.PathEscape(fired.ID)+"/cancel", nil); rec.Code != http.StatusSeeOther {
+	if rec := f.post("/alerts/alarm/"+url.PathEscape(fired.ID)+"/cancel", nil); rec.Code != http.StatusOK {
 		t.Fatalf("cancel ringing one-off status = %d", rec.Code)
 	}
 	f.player.waitStart(t)
 
 	// The Timer now rings and stays on the page; cancel by its id ends it and
 	// records the user's cancel rather than a shutdown.
-	rec = f.get("/alerts")
-	if !strings.Contains(rec.Body.String(), "kettle") {
-		t.Fatalf("ringing Timer missing after it started:\n%s", rec.Body.String())
+	if v := f.view(); !v.hasLabel("kettle") {
+		t.Fatalf("ringing Timer missing after it started: %+v", v.Alerts)
 	}
-	if rec := f.post("/alerts/timer/"+url.PathEscape(timerItem.ID)+"/cancel", nil); rec.Code != http.StatusSeeOther {
+	if rec := f.post("/alerts/timer/"+url.PathEscape(timerItem.ID)+"/cancel", nil); rec.Code != http.StatusOK {
 		t.Fatalf("cancel ringing Timer status = %d", rec.Code)
 	}
 	waitFor(t, 3*time.Second, "both open Ring history rows to finish", func() bool {
@@ -778,10 +858,8 @@ func TestAlertsListsAndCancelsOneOffAlarmAndRingingTimer(t *testing.T) {
 		return seen["alarm/"+fired.ID] == "stopped/cancel" && seen["timer/"+timerItem.ID] == "stopped/cancel"
 	})
 
-	rec = f.get("/alerts")
-	body = rec.Body.String()
-	if strings.Contains(body, "wake once") || strings.Contains(body, "kettle") {
-		t.Fatalf("cancelled alerts stayed on the page:\n%s", body)
+	if v := f.view(); v.hasLabel("wake once") || v.hasLabel("kettle") {
+		t.Fatalf("cancelled alerts stayed in the view: %+v", v.Alerts)
 	}
 }
 
@@ -830,16 +908,16 @@ func TestAlertsCancelAlarmAndReminderByID(t *testing.T) {
 		t.Fatalf("reminder.StartClock: %v", err)
 	}
 
-	rec := f.post("/alerts/alarm/"+url.PathEscape(alarmSet.ID)+"/cancel", nil)
-	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/alerts?flash=alert-cancelled" {
-		t.Fatalf("alarm cancel status = %d, location = %q", rec.Code, rec.Header().Get("Location"))
+	v, rec := f.postView("/alerts/alarm/"+url.PathEscape(alarmSet.ID)+"/cancel", nil)
+	if rec.Code != http.StatusOK || !strings.HasPrefix(v.Flash, "Cancelled.") || v.hasLabel("work") {
+		t.Fatalf("alarm cancel status = %d, flash %q, alerts %+v", rec.Code, v.Flash, v.Alerts)
 	}
 	if rows := f.alarm.List(); len(rows) != 0 {
 		t.Fatalf("Alarm cancel left %+v", rows)
 	}
-	rec = f.post("/alerts/reminder/"+url.PathEscape(reminderItem.ID)+"/cancel", nil)
-	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/alerts?flash=alert-cancelled" {
-		t.Fatalf("reminder cancel status = %d, location = %q", rec.Code, rec.Header().Get("Location"))
+	v, rec = f.postView("/alerts/reminder/"+url.PathEscape(reminderItem.ID)+"/cancel", nil)
+	if rec.Code != http.StatusOK || !strings.HasPrefix(v.Flash, "Cancelled.") || v.hasLabel("call mum") {
+		t.Fatalf("reminder cancel status = %d, flash %q, alerts %+v", rec.Code, v.Flash, v.Alerts)
 	}
 	if rows := f.reminder.List(); len(rows) != 0 {
 		t.Fatalf("Reminder cancel left %+v", rows)
@@ -852,7 +930,10 @@ func TestAlertsCancelAlarmAndReminderByID(t *testing.T) {
 	}
 }
 
-func TestAlertsHTMXSaveResetAndCancelReturnFragments(t *testing.T) {
+// TestAlertsWritesAnswerTheRefreshedViewAsJSON pins the write contract the
+// React app relies on: save, reset and cancel each answer 200 with the
+// refreshed view and a Flash, never a redirect.
+func TestAlertsWritesAnswerTheRefreshedViewAsJSON(t *testing.T) {
 	f := newAlertsFixture(t)
 	f.addSound("birds", 100*time.Millisecond)
 	f.clock.Set(time.Date(2026, 11, 12, 5, 0, 0, 0, time.UTC))
@@ -865,63 +946,45 @@ func TestAlertsHTMXSaveResetAndCancelReturnFragments(t *testing.T) {
 		t.Fatalf("timer.Start: %v", err)
 	}
 
-	// Save: one htmx request returns the content fragment and writes the row.
-	rec := f.postWith("/alerts/alarms/"+url.PathEscape(set.ID), url.Values{"sound": {"birds"}}, func(req *http.Request) {
-		req.Header.Set("HX-Request", "true")
-	})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("htmx save status = %d, body = %s", rec.Code, rec.Body.String())
+	v, rec := f.postView("/alerts/alarms/"+url.PathEscape(set.ID), url.Values{"sound": {"birds"}})
+	if rec.Code != http.StatusOK || rec.Header().Get("Location") != "" {
+		t.Fatalf("save status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	checkAlertsFragment(t, rec.Body.String())
-	for _, want := range []string{"Saved.", "birds"} {
-		if !strings.Contains(rec.Body.String(), want) {
-			t.Errorf("htmx save fragment lacks %q", want)
-		}
+	if !strings.HasPrefix(v.Flash, "Saved.") || len(v.Alarms) != 1 || v.Alarms[0].SoundCurrent != "birds" {
+		t.Errorf("save view = flash %q alarms %+v", v.Flash, v.Alarms)
 	}
 	if rows := f.alarm.List(); rows[0].Sound != "birds" {
-		t.Fatalf("htmx save stored sound %q", rows[0].Sound)
+		t.Fatalf("save stored sound %q", rows[0].Sound)
 	}
 
-	// Reset: same route family, fragment response.
-	rec = f.postWith("/alerts/alarms/"+url.PathEscape(set.ID)+"/reset", nil, func(req *http.Request) {
-		req.Header.Set("HX-Request", "true")
-	})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("htmx reset status = %d", rec.Code)
-	}
-	checkAlertsFragment(t, rec.Body.String())
-	if !strings.Contains(rec.Body.String(), "Reset.") {
-		t.Error("htmx reset fragment lacks the reset notice")
+	v, rec = f.postView("/alerts/alarms/"+url.PathEscape(set.ID)+"/reset", nil)
+	if rec.Code != http.StatusOK || !strings.HasPrefix(v.Flash, "Reset.") {
+		t.Fatalf("reset status = %d flash %q", rec.Code, v.Flash)
 	}
 	if rows := f.alarm.List(); rows[0].Sound != "" {
-		t.Fatalf("htmx reset left %q", rows[0].Sound)
+		t.Fatalf("reset left %q", rows[0].Sound)
 	}
 
-	// Cancel: the htmx path swaps the content and removes the Timer.
-	rec = f.postWith("/alerts/timer/"+url.PathEscape(timerItem.ID)+"/cancel", nil, func(req *http.Request) {
-		req.Header.Set("HX-Request", "true")
-	})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("htmx cancel status = %d", rec.Code)
-	}
-	checkAlertsFragment(t, rec.Body.String())
-	if !strings.Contains(rec.Body.String(), "Cancelled.") {
-		t.Error("htmx cancel fragment lacks the cancellation notice")
+	v, rec = f.postView("/alerts/timer/"+url.PathEscape(timerItem.ID)+"/cancel", nil)
+	if rec.Code != http.StatusOK || !strings.HasPrefix(v.Flash, "Cancelled.") || v.hasLabel("pasta") {
+		t.Fatalf("cancel status = %d flash %q alerts %+v", rec.Code, v.Flash, v.Alerts)
 	}
 	if list := f.timer.List(); len(list) != 0 {
-		t.Fatalf("htmx cancel left %+v", list)
+		t.Fatalf("cancel left %+v", list)
 	}
 }
 
-// checkAlertsFragment asserts an htmx response is the swappable content block,
-// not a whole page.
-func checkAlertsFragment(t *testing.T, body string) {
-	t.Helper()
-	if strings.Contains(body, "<html") {
-		t.Fatalf("htmx response contains a full document: %s", body)
+// TestAlertsReadHonoursTheFlashQuery keeps ?flash= working on the JSON read,
+// for a client that reloads after a redirecting form.
+func TestAlertsReadHonoursTheFlashQuery(t *testing.T) {
+	f := newAlertsFixture(t)
+	v, rec := f.get("/api/ui/alerts?flash=alert-cancelled")
+	if rec.Code != http.StatusOK || !strings.HasPrefix(v.Flash, "Cancelled.") {
+		t.Fatalf("flash read = %d %q", rec.Code, v.Flash)
 	}
-	if !strings.HasPrefix(strings.TrimSpace(body), `<div id="alerts-content">`) {
-		t.Fatalf("htmx response is not the alerts content fragment: %s", body)
+	v, _ = f.get("/api/ui/alerts?flash=%3Cscript%3E")
+	if v.Flash != "" {
+		t.Errorf("an unknown flash name produced text %q", v.Flash)
 	}
 }
 
@@ -957,22 +1020,28 @@ func TestAlertsShowsMissedHistoryOnceFromTheSharedStore(t *testing.T) {
 		t.Fatalf("seed missed timer: %v", err)
 	}
 
-	rec := f.get("/alerts")
+	v, rec := f.get("/api/ui/alerts")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d", rec.Code)
 	}
-	body := rec.Body.String()
-	for _, want := range []string{"Missed alerts", "gym", "oldtimer", "Timer", "Alarm", "timeout"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("missed page lacks %q", want)
-		}
+	missed := map[string]string{}
+	count := map[string]int{}
+	for _, m := range v.Missed {
+		missed[m.Label] = m.Kind + "/" + m.EndedBy
+		count[m.Label]++
 	}
-	if strings.Count(body, "oldtimer") != 1 {
-		t.Fatalf("the missed history row appeared %d times, want once", strings.Count(body, "oldtimer"))
+	if !strings.HasPrefix(missed["gym"], "Alarm/") {
+		t.Errorf("missed rows = %v, want the Alarm gym row", missed)
+	}
+	if !strings.HasPrefix(missed["oldtimer"], "Timer/") || !strings.HasSuffix(missed["oldtimer"], "timeout") {
+		t.Errorf("missed rows = %v, want the Timer oldtimer row ended by timeout", missed)
+	}
+	if count["oldtimer"] != 1 {
+		t.Fatalf("the missed history row appeared %d times, want once", count["oldtimer"])
 	}
 	// The pending daily Alarm moved to tomorrow and is still listed.
-	if !strings.Contains(body, "Every day") {
-		t.Error("the repeating Alarm disappeared from the active list after being missed")
+	if got := v.kindLabels("alarm"); len(got) != 1 || got[0] != "gym" {
+		t.Errorf("the repeating Alarm disappeared from the active list after being missed: %+v", v.Alerts)
 	}
 	remaining := f.alarm.List()
 	if len(remaining) != 1 || remaining[0].ID != set.ID {

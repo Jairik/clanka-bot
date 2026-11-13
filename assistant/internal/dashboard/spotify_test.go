@@ -155,6 +155,35 @@ func (f *spotifyFixture) get(target string) *httptest.ResponseRecorder {
 	return serve(f.handler, request(http.MethodGet, target, owner))
 }
 
+// spotifyResp decodes the Spotify view (encoding/json default field names).
+type spotifyResp struct {
+	Flash, Error string
+	Pairing      struct {
+		Configured, Available, Paired bool
+		Label, Detail, Device         string
+	}
+	WebAPI struct {
+		State, Label, Detail                 string
+		ClientConfigured, RedirectConfigured bool
+		RedirectURI                          string
+		Set                                  bool
+		Source, SourceLabel                  string
+		CanConnect, CanVerify, CanDisconnect bool
+	}
+	Scopes []string
+}
+
+// view reads /api/ui/spotify, which must be a 200.
+func (f *spotifyFixture) view() (spotifyResp, string) {
+	f.t.Helper()
+	var v spotifyResp
+	rec := getJSON(f.t, f.handler, "/api/ui/spotify", &v)
+	if rec.Code != http.StatusOK {
+		f.t.Fatalf("GET spotify = %d: %s", rec.Code, rec.Body.String())
+	}
+	return v, rec.Body.String()
+}
+
 func (f *spotifyFixture) post(target string) *httptest.ResponseRecorder {
 	f.t.Helper()
 	req := request(http.MethodPost, target, owner)
@@ -195,33 +224,30 @@ func (f *spotifyFixture) callback(state, binding, query string) *httptest.Respon
 	return serve(f.handler, req)
 }
 
-func TestSpotifyPageShowsSeparatePairingAndWebAPIAuth(t *testing.T) {
+func TestSpotifyReadShowsSeparatePairingAndWebAPIAuth(t *testing.T) {
 	f := newSpotifyFixture(t)
 	f.writePairing(t, "paired")
-	rec := f.get("/spotify")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	v, body := f.view()
+	if !v.Pairing.Paired || v.Pairing.Device != "Clanka" || !strings.Contains(v.Pairing.Detail+v.Pairing.Label, "Paired as Clanka") {
+		t.Errorf("pairing = %+v, want paired as Clanka", v.Pairing)
 	}
-	body := rec.Body.String()
-	for _, want := range []string{
-		"Spotify Connect (librespot)",
-		"Web API auth",
-		"Paired as Clanka",
-		"not configured",
-		"Connect Web API",
-		spotifyTestRedirect,
-		"user-modify-playback-state",
-		"playlist-read-private",
-	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("page lacks %q", want)
+	if v.WebAPI.State != "not_configured" && v.WebAPI.Label != "not configured" {
+		t.Errorf("Web API = %+v, want not connected yet", v.WebAPI)
+	}
+	if v.WebAPI.Set || v.WebAPI.CanVerify || v.WebAPI.CanDisconnect {
+		t.Errorf("Web API offers verify/disconnect with no token: %+v", v.WebAPI)
+	}
+	if !v.WebAPI.CanConnect || v.WebAPI.RedirectURI != spotifyTestRedirect {
+		t.Errorf("Web API = %+v, want a connectable client with the redirect %s", v.WebAPI, spotifyTestRedirect)
+	}
+	scopes := strings.Join(v.Scopes, " ")
+	for _, want := range []string{"user-modify-playback-state", "playlist-read-private"} {
+		if !strings.Contains(scopes, want) {
+			t.Errorf("scopes %q lack %q", scopes, want)
 		}
 	}
-	if !strings.Contains(body, `href="/spotify"`) || !strings.Contains(body, `aria-current="page"`) {
-		t.Error("nav does not mark the Spotify page current")
-	}
 	if strings.Contains(body, "dash-access") || strings.Contains(body, "dash-refresh") {
-		t.Error("page rendered a Spotify token")
+		t.Error("view carried a Spotify token")
 	}
 }
 
@@ -278,12 +304,18 @@ func TestSpotifyCallbackStoresTheRefreshTokenAndRejectsReplay(t *testing.T) {
 	if stored, ok := f.secrets.Get(spotify.SecretName); !ok || stored != "dash-refresh-1" {
 		t.Fatalf("stored token = %q, %v", stored, ok)
 	}
-	page := f.get("/spotify").Body.String()
-	if !strings.Contains(page, "connected") {
-		t.Error("page does not show the Web API as connected")
+	v, page := f.view()
+	if !v.WebAPI.Set || v.WebAPI.SourceLabel != "stored" || !v.WebAPI.CanDisconnect || !strings.Contains(v.WebAPI.Label, "connected") {
+		t.Errorf("Web API after the callback = %+v, want connected from the store", v.WebAPI)
+	}
+	// The landing page's ?flash= read carries the closed message.
+	var landed spotifyResp
+	getJSON(t, f.handler, "/api/ui/spotify?flash=spotify-connected", &landed)
+	if !strings.HasPrefix(landed.Flash, "Spotify Web API connected") {
+		t.Errorf("?flash= read Flash = %q", landed.Flash)
 	}
 	if strings.Contains(page, "dash-access-1") || strings.Contains(page, "dash-refresh-1") {
-		t.Error("page rendered a token after the callback")
+		t.Error("view carried a token after the callback")
 	}
 	if strings.Contains(f.logs.String(), "dash-access-1") || strings.Contains(f.logs.String(), "dash-refresh-1") || strings.Contains(f.logs.String(), state) {
 		t.Errorf("logs contain a credential or state:\n%s", f.logs.String())
@@ -367,9 +399,12 @@ func TestSpotifyVerifyAndDisconnectKeepPairingSeparate(t *testing.T) {
 	if _, ok := f.secrets.Get(spotify.SecretName); ok {
 		t.Fatal("disconnect left the refresh token stored")
 	}
-	page := f.get("/spotify").Body.String()
-	if !strings.Contains(page, "Paired as Clanka") {
-		t.Error("disconnecting the Web API changed the Connect pairing status")
+	v, _ := f.view()
+	if !v.Pairing.Paired || !strings.Contains(v.Pairing.Detail+v.Pairing.Label, "Paired as Clanka") {
+		t.Errorf("disconnecting the Web API changed the Connect pairing status: %+v", v.Pairing)
+	}
+	if v.WebAPI.Set {
+		t.Errorf("Web API still set after disconnect: %+v", v.WebAPI)
 	}
 }
 
@@ -378,7 +413,7 @@ func TestHealthShowsSpotifyPairingAndWebAPIAuthSeparately(t *testing.T) {
 	f.writePairing(t, "paired")
 	state, binding := f.startConnect(t)
 	f.callback(state, binding, "code="+spotifyTestCode)
-	rec := f.get("/health")
+	rec := f.get("/api/ui/health")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("health = %d", rec.Code)
 	}
@@ -391,19 +426,24 @@ func TestHealthShowsSpotifyPairingAndWebAPIAuthSeparately(t *testing.T) {
 }
 
 // The Connect form's 303 lands on accounts.spotify.com, and browsers enforce
-// form-action on that redirect, so the Spotify page must allow exactly that
-// origin while every other page keeps form-action 'self'.
+// form-action on that redirect. Only the app document hosts the Connect form,
+// so only it allows exactly that origin; JSON reads and the assets keep
+// form-action 'self'.
 func TestSpotifyPageCSPAllowsOnlySpotifyAccountsAsFormTarget(t *testing.T) {
 	f := newSpotifyFixture(t)
-	csp := f.get("/spotify").Header().Get("Content-Security-Policy")
-	if !strings.Contains(csp, "form-action 'self' https://accounts.spotify.com") {
-		t.Errorf("spotify page CSP = %q", csp)
+	for _, target := range []string{"/spotify", "/", "/health"} {
+		csp := f.get(target).Header().Get("Content-Security-Policy")
+		if !strings.Contains(csp, "form-action 'self' https://accounts.spotify.com") {
+			t.Errorf("app document %s CSP = %q", target, csp)
+		}
+		if !strings.Contains(csp, "frame-ancestors 'none'") || !strings.Contains(csp, "script-src 'self';") {
+			t.Errorf("app document %s CSP lost the base policy: %q", target, csp)
+		}
 	}
-	if !strings.Contains(csp, "frame-ancestors 'none'") || !strings.Contains(csp, "script-src 'self';") {
-		t.Errorf("spotify page CSP lost the base policy: %q", csp)
-	}
-	other := f.get("/health").Header().Get("Content-Security-Policy")
-	if !strings.HasSuffix(other, "form-action 'self'") {
-		t.Errorf("other pages must keep form-action 'self', got %q", other)
+	for _, target := range []string{"/api/ui/spotify", "/api/ui/health", "/assets/app.js"} {
+		other := f.get(target).Header().Get("Content-Security-Policy")
+		if !strings.HasSuffix(other, "form-action 'self'") {
+			t.Errorf("%s must keep form-action 'self', got %q", target, other)
+		}
 	}
 }

@@ -125,6 +125,73 @@ func (f *soundsFixture) get(target string) *httptest.ResponseRecorder {
 	return rec
 }
 
+// soundsResp decodes the Sounds view (encoding/json default field names).
+type soundsResp struct {
+	Flash      string
+	Error      string
+	HasLibrary bool
+	MaxUpload  string
+	Sounds     []struct{ Name, Duration, Added, Origin, AudioURL string }
+	HasRoles   bool
+	Roles      []struct {
+		Role, Label, Key, Cap, Display, Source, SourceLabel, LowerLabel string
+		Override                                                        bool
+		Options                                                         []struct {
+			Value, Label string
+			Selected     bool
+		}
+	}
+	HasRing   bool
+	RingKinds []struct {
+		Kind, Label string
+		Settings    []settingRow
+	}
+}
+
+func (v soundsResp) hasSound(name string) bool {
+	for _, row := range v.Sounds {
+		if row.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func (v soundsResp) ringSetting(key string) (settingRow, bool) {
+	for _, kind := range v.RingKinds {
+		for _, row := range kind.Settings {
+			if row.Key == key {
+				return row, true
+			}
+		}
+	}
+	return settingRow{}, false
+}
+
+// view reads /api/ui/sounds, which must be a 200.
+func (f *soundsFixture) view() (soundsResp, string) {
+	f.t.Helper()
+	return f.viewAt("/api/ui/sounds")
+}
+
+func (f *soundsFixture) viewAt(target string) (soundsResp, string) {
+	f.t.Helper()
+	var v soundsResp
+	rec := getJSON(f.t, f.handler, target, &v)
+	if rec.Code != http.StatusOK {
+		f.t.Fatalf("GET %s = %d: %s", target, rec.Code, rec.Body.String())
+	}
+	return v, rec.Body.String()
+}
+
+// decode decodes a write response into the Sounds view.
+func decodeSounds(t *testing.T, rec *httptest.ResponseRecorder) soundsResp {
+	t.Helper()
+	var v soundsResp
+	decodeJSON(t, rec, &v)
+	return v
+}
+
 func (f *soundsFixture) post(target string, values url.Values) *httptest.ResponseRecorder {
 	f.t.Helper()
 	req := httptest.NewRequest(http.MethodPost, target, strings.NewReader(values.Encode()))
@@ -191,44 +258,74 @@ func testWAV(rate, channels int, duration time.Duration, amplitude float64) []by
 	return append(header, data...)
 }
 
-func TestSoundsPageListsLibraryRolesAndRingSettings(t *testing.T) {
+func TestSoundsReadListsLibraryRolesAndRingSettings(t *testing.T) {
 	f := newSoundsFixture(t, nil)
-	rec := f.get("/sounds")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	v, body := f.view()
+	if !v.HasLibrary || !v.HasRoles || !v.HasRing || v.MaxUpload != "10 MB" {
+		t.Errorf("view flags = library %v roles %v ring %v max %q", v.HasLibrary, v.HasRoles, v.HasRing, v.MaxUpload)
 	}
-	body := rec.Body.String()
-	for _, want := range []string{
-		"Sounds", "Upload a sound", "10 MB", "chime", "sounds.wake",
-		"sounds.timer_ring", "sounds.alarm_ring", "sounds.reminder", "sounds.error",
-		"Timer", "Alarm", "ring.timer.max_ring", "ring.alarm.ramp", "5m0s", "30s",
-		"ring.timer.volume", "ring.alarm.volume",
-		"ring.timer.future_field", "shown without a page change",
-		"Browser preview", "Play on Pi",
+	if !v.hasSound("chime") {
+		t.Errorf("library lacks the built-in chime: %+v", v.Sounds)
+	}
+	roles := map[string]string{}
+	for _, role := range v.Roles {
+		roles[role.Key] = role.Role
+	}
+	for _, key := range []string{"sounds.wake", "sounds.timer_ring", "sounds.alarm_ring", "sounds.reminder", "sounds.error"} {
+		if _, ok := roles[key]; !ok {
+			t.Errorf("roles lack %s: %v", key, roles)
+		}
+	}
+	kinds := map[string]bool{}
+	for _, kind := range v.RingKinds {
+		kinds[kind.Label] = true
+	}
+	if !kinds["Timer"] || !kinds["Alarm"] {
+		t.Errorf("Ring kinds = %v, want Timer and Alarm", kinds)
+	}
+	for key, want := range map[string]string{
+		"ring.timer.max_ring": "5m0s", "ring.alarm.ramp": "30s",
+		"ring.timer.future_field": "shown without a page change",
 	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("page lacks %q", want)
+		row, ok := v.ringSetting(key)
+		if !ok || row.Value != want {
+			t.Errorf("Ring setting %s = %+v (found %v), want value %q", key, row, ok, want)
+		}
+	}
+	for _, key := range []string{"ring.timer.volume", "ring.alarm.volume"} {
+		if _, ok := v.ringSetting(key); !ok {
+			t.Errorf("Ring settings lack %s", key)
 		}
 	}
 	if strings.Contains(body, "unrelated.key") {
-		t.Error("page rendered a non-Ring setting")
+		t.Error("view carried a non-Ring setting")
 	}
 }
 
 func TestSoundsUploadWAVAndMP3AppearWithDuration(t *testing.T) {
 	f := newSoundsFixture(t, nil)
 	rec := f.upload("My Birds!.wav", testWAV(8000, 2, 500*time.Millisecond, 0.2))
-	if rec.Code != http.StatusSeeOther {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("upload status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	if location := rec.Header().Get("Location"); location != "/sounds?flash=uploaded" {
-		t.Fatalf("Location = %q", location)
+	uploaded := decodeSounds(t, rec)
+	if !strings.HasPrefix(uploaded.Flash, "Uploaded.") {
+		t.Errorf("upload Flash = %q", uploaded.Flash)
 	}
-	page := f.get("/sounds").Body.String()
-	for _, want := range []string{"My-Birds", "500ms", "Uploaded", "/sounds/audio/My-Birds"} {
-		if !strings.Contains(page, want) {
-			t.Errorf("page lacks %q", want)
+	found := false
+	for _, row := range uploaded.Sounds {
+		if row.Name == "My-Birds" {
+			found = true
+			if row.Duration != "500ms" || row.Origin != "Uploaded" || row.AudioURL != "/sounds/audio/My-Birds" {
+				t.Errorf("uploaded row = %+v", row)
+			}
 		}
+	}
+	if !found {
+		t.Errorf("upload did not appear in the refreshed view: %+v", uploaded.Sounds)
+	}
+	if v, _ := f.view(); !v.hasSound("My-Birds") {
+		t.Error("a plain read does not list the upload")
 	}
 
 	file, err := os.Open(filepath.Join("..", "audio", "testdata", "tone.mp3"))
@@ -240,7 +337,7 @@ func TestSoundsUploadWAVAndMP3AppearWithDuration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rec := f.upload("tone.mp3", mp3); rec.Code != http.StatusSeeOther {
+	if rec := f.upload("tone.mp3", mp3); rec.Code != http.StatusOK {
 		t.Fatalf("mp3 upload status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	if _, ok := f.sounds.Find("tone"); !ok {
@@ -250,7 +347,7 @@ func TestSoundsUploadWAVAndMP3AppearWithDuration(t *testing.T) {
 
 func TestSoundsAudioServesCanonicalWAVWithRanges(t *testing.T) {
 	f := newSoundsFixture(t, nil)
-	if rec := f.upload("birds.wav", testWAV(16000, 1, 100*time.Millisecond, 0.2)); rec.Code != http.StatusSeeOther {
+	if rec := f.upload("birds.wav", testWAV(16000, 1, 100*time.Millisecond, 0.2)); rec.Code != http.StatusOK {
 		t.Fatalf("upload status = %d", rec.Code)
 	}
 	rec := f.get("/sounds/audio/birds")
@@ -290,8 +387,8 @@ func TestSoundsUploadRejectsUndecodableOversizeAndLeavesNoFile(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("undecodable status = %d", rec.Code)
 	}
-	if body := rec.Body.String(); !strings.Contains(body, "not a valid WAV or MP3") {
-		t.Fatalf("error body = %s", body)
+	if v := decodeSounds(t, rec); !strings.Contains(v.Error, "not a valid WAV or MP3") {
+		t.Fatalf("error = %q", v.Error)
 	}
 
 	oversize := make([]byte, audio.MaxUploadBytes+1)
@@ -299,8 +396,8 @@ func TestSoundsUploadRejectsUndecodableOversizeAndLeavesNoFile(t *testing.T) {
 	if rec.Code != http.StatusRequestEntityTooLarge {
 		t.Fatalf("oversize status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	if body := rec.Body.String(); !strings.Contains(body, "10 MB limit") {
-		t.Fatalf("oversize body = %s", body)
+	if v := decodeSounds(t, rec); !strings.Contains(v.Error, "10 MB limit") {
+		t.Fatalf("oversize error = %q", v.Error)
 	}
 	entries, err := os.ReadDir(f.sounds.LibraryDir())
 	if err != nil {
@@ -315,7 +412,7 @@ func TestSoundsUploadRejectsUndecodableOversizeAndLeavesNoFile(t *testing.T) {
 
 func TestSoundsRoleAssignmentEnforcesCapAndReset(t *testing.T) {
 	f := newSoundsFixture(t, nil)
-	if rec := f.upload("long.wav", testWAV(16000, 1, 1500*time.Millisecond, 0.2)); rec.Code != http.StatusSeeOther {
+	if rec := f.upload("long.wav", testWAV(16000, 1, 1500*time.Millisecond, 0.2)); rec.Code != http.StatusOK {
 		t.Fatalf("upload status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 
@@ -323,8 +420,8 @@ func TestSoundsRoleAssignmentEnforcesCapAndReset(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("wake assignment status = %d", rec.Code)
 	}
-	if body := rec.Body.String(); !strings.Contains(body, "cap") || !strings.Contains(body, "1s") {
-		t.Fatalf("wake error = %s", body)
+	if v := decodeSounds(t, rec); !strings.Contains(v.Error, "cap") || !strings.Contains(v.Error, "1s") {
+		t.Fatalf("wake error = %q", v.Error)
 	}
 	value, _ := f.settings.Get(sound.Key(sound.RoleWake))
 	if value.Source != settings.SourceDefault {
@@ -332,19 +429,26 @@ func TestSoundsRoleAssignmentEnforcesCapAndReset(t *testing.T) {
 	}
 
 	rec = f.post("/sounds/roles/timer_ring", url.Values{"value": {"long"}})
-	if rec.Code != http.StatusSeeOther {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("Timer Ring assignment status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	value, _ = f.settings.Get(sound.Key(sound.RoleTimerRing))
 	if value.Source != settings.SourceOverride || value.Value != "long" {
 		t.Fatalf("Timer Ring setting = %+v", value)
 	}
-	if page := f.get("/sounds").Body.String(); !strings.Contains(page, "Override") {
-		t.Fatal("page does not show the override")
+	assigned := decodeSounds(t, rec)
+	overridden := false
+	for _, role := range assigned.Roles {
+		if role.Role == "timer_ring" {
+			overridden = role.Override && role.SourceLabel == "Override" && role.Display == "long"
+		}
+	}
+	if !overridden {
+		t.Fatalf("view does not show the Timer Ring override: %+v", assigned.Roles)
 	}
 
 	rec = f.post("/sounds/roles/timer_ring/reset", url.Values{})
-	if rec.Code != http.StatusSeeOther {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("reset status = %d", rec.Code)
 	}
 	value, _ = f.settings.Get(sound.Key(sound.RoleTimerRing))
@@ -356,18 +460,18 @@ func TestSoundsRoleAssignmentEnforcesCapAndReset(t *testing.T) {
 func TestSoundsRingSettingsEditAndReset(t *testing.T) {
 	f := newSoundsFixture(t, nil)
 	rec := f.post("/sounds/values/ring.timer.max_ring", url.Values{"value": {"2m0s"}})
-	if rec.Code != http.StatusSeeOther {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("save status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	if got := f.settings.Duration("ring.timer.max_ring"); got != 2*time.Minute {
 		t.Fatalf("max_ring = %s, want 2m", got)
 	}
-	if page := f.get("/sounds").Body.String(); !strings.Contains(page, "2m0s") {
-		t.Fatal("page does not show the saved Ring value")
+	if v, _ := f.view(); func() string { row, _ := v.ringSetting("ring.timer.max_ring"); return row.Value }() != "2m0s" {
+		t.Fatal("view does not show the saved Ring value")
 	}
 
 	rec = f.post("/sounds/values/ring.timer.max_ring/reset", url.Values{})
-	if rec.Code != http.StatusSeeOther {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("reset status = %d", rec.Code)
 	}
 	if got := f.settings.Duration("ring.timer.max_ring"); got != 5*time.Minute {
@@ -376,28 +480,28 @@ func TestSoundsRingSettingsEditAndReset(t *testing.T) {
 
 	// The real #52 definitions save and reset through the same typed forms.
 	rec = f.post("/sounds/values/ring.timer.volume", url.Values{"value": {"45"}})
-	if rec.Code != http.StatusSeeOther {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("volume save status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	if got := f.settings.Int("ring.timer.volume"); got != 45 {
 		t.Fatalf("timer volume = %d, want 45", got)
 	}
 	rec = f.post("/sounds/values/ring.timer.volume/reset", url.Values{})
-	if rec.Code != http.StatusSeeOther {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("volume reset status = %d", rec.Code)
 	}
 	if got := f.settings.Int("ring.timer.volume"); got != 80 {
 		t.Fatalf("timer volume after reset = %d, want 80", got)
 	}
 	rec = f.post("/sounds/values/ring.alarm.ramp", url.Values{"value": {"1m0s"}})
-	if rec.Code != http.StatusSeeOther {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("alarm ramp save status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	if got := f.settings.Duration("ring.alarm.ramp"); got != time.Minute {
 		t.Fatalf("alarm ramp = %s, want 1m", got)
 	}
 	rec = f.post("/sounds/values/ring.alarm.ramp/reset", url.Values{})
-	if rec.Code != http.StatusSeeOther {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("alarm ramp reset status = %d", rec.Code)
 	}
 	if got := f.settings.Duration("ring.alarm.ramp"); got != 30*time.Second {
@@ -409,8 +513,8 @@ func TestSoundsRingSettingsEditAndReset(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("invalid duration status = %d", rec.Code)
 	}
-	if body := rec.Body.String(); !strings.Contains(body, "duration") {
-		t.Fatalf("invalid duration body = %s", body)
+	if v := decodeSounds(t, rec); !strings.Contains(v.Error, "duration") {
+		t.Fatalf("invalid duration error = %q", v.Error)
 	}
 	if got := f.settings.Duration("ring.alarm.ramp"); got != 30*time.Second {
 		t.Fatalf("invalid save changed the alarm ramp to %s", got)
@@ -429,11 +533,14 @@ func TestSoundsPreviewQueuesUntilTheReplyFinishes(t *testing.T) {
 
 	queue.TurnStarted()
 	rec := f.post("/sounds/preview/chime", url.Values{})
-	if rec.Code != http.StatusSeeOther {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("preview status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	if page := f.get("/sounds?flash=queued").Body.String(); !strings.Contains(page, "pending Confirmation") {
-		t.Fatal("page does not explain the preview queue")
+	if v := decodeSounds(t, rec); !strings.Contains(v.Flash, "pending Confirmation") {
+		t.Fatalf("preview response does not explain the queue: %q", v.Flash)
+	}
+	if v, _ := f.viewAt("/api/ui/sounds?flash=queued"); !strings.Contains(v.Flash, "pending Confirmation") {
+		t.Fatal("?flash=queued read does not explain the preview queue")
 	}
 	select {
 	case <-f.sink.started:
@@ -459,7 +566,7 @@ func TestSoundsPreviewWaitsForAPendingConfirmation(t *testing.T) {
 	defer queue.Close()
 	f := newSoundsFixture(t, queue)
 
-	if rec := f.post("/sounds/preview/chime", url.Values{}); rec.Code != http.StatusSeeOther {
+	if rec := f.post("/sounds/preview/chime", url.Values{}); rec.Code != http.StatusOK {
 		t.Fatalf("preview status = %d", rec.Code)
 	}
 	select {
@@ -506,67 +613,31 @@ func TestSoundsMutationsRequireIdentityAndSameOrigin(t *testing.T) {
 	}
 }
 
-func TestSoundsFormsWorkAsHTMXFragments(t *testing.T) {
+// TestSoundsWritesAnswerJSONWithTheRealStatus pins the write contract the
+// React app relies on: an upload or role write answers 200 with the refreshed
+// view and a Flash, and a rejection answers the view with the real 4xx status
+// and an Error.
+func TestSoundsWritesAnswerJSONWithTheRealStatus(t *testing.T) {
 	f := newSoundsFixture(t, nil)
-	body := &bytes.Buffer{}
-	writer := multipart.NewWriter(body)
-	part, _ := writer.CreateFormFile("file", "birds.wav")
-	part.Write(testWAV(16000, 1, 100*time.Millisecond, 0.2))
-	writer.Close()
-	req := httptest.NewRequest(http.MethodPost, "/sounds/upload", bytes.NewReader(body.Bytes()))
-	req.Host = "127.0.0.1:8082"
-	req.RemoteAddr = "127.0.0.1:12345"
-	req.Header.Set("Tailscale-User-Login", owner)
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-	req.Header.Set("Sec-Fetch-Site", "same-origin")
-	req.Header.Set("HX-Request", "true")
-	rec := httptest.NewRecorder()
-	f.handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("htmx upload status = %d", rec.Code)
+	rec := f.upload("birds.wav", testWAV(16000, 1, 100*time.Millisecond, 0.2))
+	if rec.Code != http.StatusOK || rec.Header().Get("Location") != "" {
+		t.Fatalf("upload status = %d", rec.Code)
 	}
-	content := rec.Body.String()
-	if !strings.Contains(content, `id="sounds-content"`) || strings.Contains(content, "<html") {
-		t.Fatalf("htmx response is not a fragment: %s", content)
-	}
-	if !strings.Contains(content, "Uploaded") {
-		t.Fatal("htmx fragment lacks the success notice")
+	if v := decodeSounds(t, rec); !strings.HasPrefix(v.Flash, "Uploaded.") || !v.hasSound("birds") {
+		t.Fatalf("upload view = flash %q sounds %+v", v.Flash, v.Sounds)
 	}
 
-	// A cap rejection over htmx stays 200 with role=alert so the swap shows it.
-	body.Reset()
-	writer = multipart.NewWriter(body)
-	part, _ = writer.CreateFormFile("file", "long.wav")
-	part.Write(testWAV(16000, 1, 1500*time.Millisecond, 0.2))
-	writer.Close()
-	req = httptest.NewRequest(http.MethodPost, "/sounds/upload", bytes.NewReader(body.Bytes()))
-	req.Host = "127.0.0.1:8082"
-	req.RemoteAddr = "127.0.0.1:12345"
-	req.Header.Set("Tailscale-User-Login", owner)
-	req.Header.Set("Content-Type", writer.FormDataContentType())
-	req.Header.Set("Sec-Fetch-Site", "same-origin")
-	req.Header.Set("HX-Request", "true")
-	rec = httptest.NewRecorder()
-	f.handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("htmx long upload status = %d", rec.Code)
+	// A cap rejection on upload is not a failure of the upload itself (the
+	// library has no cap), but on a role it is a 400 with the message.
+	if rec := f.upload("long.wav", testWAV(16000, 1, 1500*time.Millisecond, 0.2)); rec.Code != http.StatusOK {
+		t.Fatalf("long upload status = %d", rec.Code)
 	}
-
-	req = httptest.NewRequest(http.MethodPost, "/sounds/roles/wake", strings.NewReader("value=long"))
-	req.Host = "127.0.0.1:8082"
-	req.RemoteAddr = "127.0.0.1:12345"
-	req.Header.Set("Tailscale-User-Login", owner)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Sec-Fetch-Site", "same-origin")
-	req.Header.Set("HX-Request", "true")
-	rec = httptest.NewRecorder()
-	f.handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("htmx cap error status = %d, want 200", rec.Code)
+	rec = f.post("/sounds/roles/wake", url.Values{"value": {"long"}})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("cap error status = %d, want 400", rec.Code)
 	}
-	fragment := rec.Body.String()
-	if !strings.Contains(fragment, `role="alert"`) || !strings.Contains(fragment, "cap") || strings.Contains(fragment, "<html") {
-		t.Fatalf("htmx cap error fragment = %s", fragment)
+	if v := decodeSounds(t, rec); !strings.Contains(v.Error, "cap") || v.Flash != "" {
+		t.Fatalf("cap error view = error %q flash %q", v.Error, v.Flash)
 	}
 }
 
@@ -605,7 +676,7 @@ func TestSoundsPreviewIsCancelledByBargeIn(t *testing.T) {
 	sink := &blockingPreviewSink{started: make(chan struct{}), canceled: make(chan struct{})}
 	f.sounds.Bind(f.settings, sink)
 
-	if rec := f.post("/sounds/preview/chime", url.Values{}); rec.Code != http.StatusSeeOther {
+	if rec := f.post("/sounds/preview/chime", url.Values{}); rec.Code != http.StatusOK {
 		t.Fatalf("preview status = %d", rec.Code)
 	}
 	select {
@@ -621,21 +692,20 @@ func TestSoundsPreviewIsCancelledByBargeIn(t *testing.T) {
 	}
 }
 
-func TestSoundsPageEscapesAManuallyDroppedName(t *testing.T) {
+func TestSoundsHostileLibraryNameRoundTripsInertly(t *testing.T) {
 	f := newSoundsFixture(t, nil)
-	if err := os.WriteFile(filepath.Join(f.sounds.LibraryDir(), "evil<script>.wav"), testWAV(16000, 1, 100*time.Millisecond, 0.2), 0o600); err != nil {
+	const hostile = "evil<script>"
+	if err := os.WriteFile(filepath.Join(f.sounds.LibraryDir(), hostile+".wav"), testWAV(16000, 1, 100*time.Millisecond, 0.2), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := f.sounds.Rescan(context.Background()); err != nil {
 		t.Fatalf("Rescan: %v", err)
 	}
-	body := f.get("/sounds").Body.String()
-	if !strings.Contains(body, "evil&lt;script&gt;") {
-		t.Fatal("escaped library name is missing")
+	v, body := f.view()
+	if !v.hasSound(hostile) {
+		t.Fatalf("hostile library name did not round-trip exactly: %+v", v.Sounds)
 	}
-	if strings.Contains(body, "<script>") {
-		t.Fatal("library name was rendered as markup")
-	}
+	noRawScript(t, body)
 }
 
 func TestSoundsAudioRouteServesAManuallyDroppedNameWithSpaces(t *testing.T) {
@@ -646,9 +716,13 @@ func TestSoundsAudioRouteServesAManuallyDroppedNameWithSpaces(t *testing.T) {
 	if err := f.sounds.Rescan(context.Background()); err != nil {
 		t.Fatalf("Rescan: %v", err)
 	}
-	page := f.get("/sounds").Body.String()
-	if !strings.Contains(page, `/sounds/audio/my%20birds`) {
-		t.Fatalf("page lacks the escaped audio URL: %s", page)
+	v, _ := f.view()
+	urls := map[string]string{}
+	for _, row := range v.Sounds {
+		urls[row.Name] = row.AudioURL
+	}
+	if urls["my birds"] != "/sounds/audio/my%20birds" {
+		t.Fatalf("audio URL = %q, want the path-escaped name: %v", urls["my birds"], urls)
 	}
 	if rec := f.get("/sounds/audio/my%20birds"); rec.Code != http.StatusOK {
 		t.Fatalf("escaped audio status = %d, want 200", rec.Code)

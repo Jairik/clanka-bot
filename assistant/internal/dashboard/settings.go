@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -116,7 +115,17 @@ func (h *Handler) settingsPage(w http.ResponseWriter, r *http.Request) {
 	if !allowGet(w, r) {
 		return
 	}
-	h.render(w, "settings_page", h.buildSettingsView(flashMessage(r.URL.Query().Get("flash")), "", nil))
+	h.writeJSON(w, http.StatusOK, h.buildSettingsView(flashMessage(r.URL.Query().Get("flash")), "", nil))
+}
+
+// maxSettingsFormBytes bounds a settings form body. The forms carry one
+// field, but the read is bounded like every other write on this surface.
+const maxSettingsFormBytes = 1 << 20
+
+// parseSettingsForm reads a bounded settings form body.
+func parseSettingsForm(w http.ResponseWriter, r *http.Request) error {
+	r.Body = http.MaxBytesReader(w, r.Body, maxSettingsFormBytes)
+	return r.ParseForm()
 }
 
 // settingsToolSave changes one Tool field. Both the enabled flag and the
@@ -127,7 +136,7 @@ func (h *Handler) settingsToolSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := r.PathValue("name")
-	if err := r.ParseForm(); err != nil {
+	if err := parseSettingsForm(w, r); err != nil {
 		h.settingsFail(w, r, http.StatusBadRequest, "Could not read the form.", nil)
 		return
 	}
@@ -168,7 +177,7 @@ func (h *Handler) settingsToolReset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := r.PathValue("name")
-	if err := r.ParseForm(); err != nil {
+	if err := parseSettingsForm(w, r); err != nil {
 		h.settingsFail(w, r, http.StatusBadRequest, "Could not read the form.", nil)
 		return
 	}
@@ -202,7 +211,7 @@ func (h *Handler) settingsValueSave(w http.ResponseWriter, r *http.Request) {
 		h.settingsFail(w, r, http.StatusNotFound, "Unknown setting.", nil)
 		return
 	}
-	if err := r.ParseForm(); err != nil {
+	if err := parseSettingsForm(w, r); err != nil {
 		h.settingsFail(w, r, http.StatusBadRequest, "Could not read the form.", nil)
 		return
 	}
@@ -254,32 +263,18 @@ func (h *Handler) settingsReady(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-// settingsSuccess answers an htmx submission with just the swapped content;
-// a plain browser form gets the redirect, so both journeys work without JS.
+// settingsSuccess answers with the refreshed view, so the app can replace the
+// page state from one response.
 func (h *Handler) settingsSuccess(w http.ResponseWriter, r *http.Request, flash string) {
-	if isHTMX(r) {
-		h.render(w, "settings_content", h.buildSettingsView(flashMessage(flash), "", nil))
-		return
-	}
-	http.Redirect(w, r, "/settings?flash="+url.QueryEscape(flash), http.StatusSeeOther)
+	h.writeJSON(w, http.StatusOK, h.buildSettingsView(flashMessage(flash), "", nil))
 }
 
 // settingsFail re-renders the page with an error and, when supplied, the
-// rejected input. htmx only swaps 2xx responses by default, so a fragment
-// error stays 200; a plain form gets the real 4xx status.
+// rejected input. The status is the real one, so the app can tell a refused
+// write from a saved one.
 func (h *Handler) settingsFail(w http.ResponseWriter, r *http.Request, status int, message string, edit *editState) {
 	view := h.buildSettingsView("", message, edit)
-	if isHTMX(r) {
-		h.render(w, "settings_content", view)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(status)
-	h.render(w, "settings_page", view)
-}
-
-func isHTMX(r *http.Request) bool {
-	return strings.EqualFold(r.Header.Get("HX-Request"), "true")
+	h.writeJSON(w, status, view)
 }
 
 func flashMessage(flash string) string {

@@ -53,7 +53,7 @@ func (h *Handler) secretsPage(w http.ResponseWriter, r *http.Request) {
 	if !allowGet(w, r) {
 		return
 	}
-	h.render(w, "secrets_page", h.buildSecretsView(secretsFlashMessage(r.URL.Query().Get("flash")), ""))
+	h.writeJSON(w, http.StatusOK, h.buildSecretsView(secretsFlashMessage(r.URL.Query().Get("flash")), ""))
 }
 
 // secretsSet stores one replacement value. The submitted value is handed
@@ -109,27 +109,17 @@ func (h *Handler) secretsReady(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
-// secretsSuccess answers htmx with the swapped content and a plain browser
-// form with a redirect, so both journeys work without JavaScript.
+// secretsSuccess answers with the refreshed view, so the app can replace the
+// page state from one response.
 func (h *Handler) secretsSuccess(w http.ResponseWriter, r *http.Request, flash string) {
-	if isHTMX(r) {
-		h.render(w, "secrets_content", h.buildSecretsView(secretsFlashMessage(flash), ""))
-		return
-	}
-	http.Redirect(w, r, "/secrets?flash="+url.QueryEscape(flash), http.StatusSeeOther)
+	h.writeJSON(w, http.StatusOK, h.buildSecretsView(secretsFlashMessage(flash), ""))
 }
 
 // secretsFail re-renders only metadata and a fixed message. Rejected input is
 // deliberately not preserved: echoing a secret would defeat write-only.
 func (h *Handler) secretsFail(w http.ResponseWriter, r *http.Request, status int, message string) {
 	view := h.buildSecretsView("", message)
-	if isHTMX(r) {
-		h.render(w, "secrets_content", view)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(status)
-	h.render(w, "secrets_page", view)
+	h.writeJSON(w, status, view)
 }
 
 // secretsError maps a service error to a safe status and message, then logs

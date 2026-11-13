@@ -135,6 +135,80 @@ func (s *PulseSink) Stop(_ context.Context) error {
 	return nil
 }
 
+// VolumeState is the sink's current level and mute flag. Mute is separate
+// from the level so unmuting restores the previous volume.
+type VolumeState struct {
+	Percent int
+	Muted   bool
+}
+
+// Volume reads the sink's level (the first channel's percent) and mute flag.
+func (s *PulseSink) Volume(ctx context.Context) (VolumeState, error) {
+	out, err := s.runPactl(ctx, "get-sink-volume", s.target())
+	if err != nil {
+		return VolumeState{}, err
+	}
+	percent, ok := parsePactlPercent(out)
+	if !ok {
+		return VolumeState{}, fmt.Errorf("audio: pactl get-sink-volume: no percent in %q", truncate(out, 120))
+	}
+	out, err = s.runPactl(ctx, "get-sink-mute", s.target())
+	if err != nil {
+		return VolumeState{}, err
+	}
+	return VolumeState{Percent: percent, Muted: strings.Contains(strings.ToLower(out), "yes")}, nil
+}
+
+// SetMute mutes or unmutes the sink without touching its level.
+func (s *PulseSink) SetMute(ctx context.Context, muted bool) error {
+	flag := "0"
+	if muted {
+		flag = "1"
+	}
+	_, err := s.runPactl(ctx, "set-sink-mute", s.target(), flag)
+	return err
+}
+
+func (s *PulseSink) target() string {
+	if s.device == "" {
+		return "@DEFAULT_SINK@"
+	}
+	return s.device
+}
+
+func (s *PulseSink) runPactl(ctx context.Context, args ...string) (string, error) {
+	out, err := exec.CommandContext(ctx, s.pactl, args...).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("audio: pactl %s: %w: %s", args[0], err, strings.TrimSpace(string(out)))
+	}
+	return string(out), nil
+}
+
+// parsePactlPercent reads the first "NN%" from pactl's volume line, for
+// example "Volume: front-left: 42598 /  65% / -11.23 dB, ...".
+func parsePactlPercent(out string) (int, bool) {
+	end := strings.IndexByte(out, '%')
+	if end < 0 {
+		return 0, false
+	}
+	start := end
+	for start > 0 && out[start-1] >= '0' && out[start-1] <= '9' {
+		start--
+	}
+	n, err := strconv.Atoi(out[start:end])
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n]
+}
+
 func (s *PulseSink) pactlVolume(ctx context.Context, amount string) error {
 	target := s.device
 	if target == "" {

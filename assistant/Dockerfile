@@ -1,9 +1,23 @@
-# Build the assistant on the target architecture, then ship a small runtime image.
+# Build the Dashboard's React app, then the assistant on the target
+# architecture, then ship a small runtime image.
+
+# The web bundle is plain JS/CSS, so it builds on the host platform even for
+# an arm64 image; nothing in it depends on the target architecture.
+FROM --platform=$BUILDPLATFORM node:22-alpine AS web
+WORKDIR /src/web
+RUN corepack enable
+COPY web/package.json web/pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY web/ ./
+# Vite writes to ../internal/dashboard/ui/dist, which the Go build embeds.
+RUN mkdir -p ../internal/dashboard/ui && pnpm build
+
 FROM golang:1.25-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
+COPY --from=web /src/internal/dashboard/ui/dist ./internal/dashboard/ui/dist
 RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/assistant ./cmd/assistant
 
 FROM alpine:3.22

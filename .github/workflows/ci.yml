@@ -26,6 +26,29 @@ jobs:
       - name: Test
         run: go test -count=1 ./...
 
+  web:
+    name: Dashboard web app
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: assistant/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          # The action reads the packageManager field from this file. It
+          # resolves the path from the repository root, not from the step's
+          # working-directory, so it has to name the app's own package.json.
+          package_json_file: assistant/web/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: assistant/web/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      # Typecheck and production build (the same bundle the image embeds).
+      - run: pnpm build
+
   tts-test:
     name: TTS Python tests
     runs-on: ubuntu-latest

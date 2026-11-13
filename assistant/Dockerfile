@@ -30,8 +30,10 @@ COPY --chmod=0644 config.yaml /app/config.yaml
 # directories. Compose runs the container as the host UID for the Pulse socket,
 # so all three must be writable by it; the SQLite file is created 0600 by the
 # process and takes are 0600.
-RUN mkdir -p /app/data/voices /app/data/wake-samples && chmod 0777 /app/data /app/data/voices /app/data/wake-samples
+RUN chmod 0755 /app && mkdir -p /app/data/voices /app/data/wake-samples && chmod 0777 /app/data /app/data/voices /app/data/wake-samples
 WORKDIR /app
 USER assistant
+# Catch unreadable config or a non-traversable parent before publishing an image.
+RUN test -x /app && test -r /app/config.yaml
 EXPOSE 8080 8081 8082
 ENTRYPOINT ["/usr/local/bin/assistant"]

@@ -45,7 +45,17 @@ jobs:
           node-version: 22
           cache: pnpm
           cache-dependency-path: assistant/web/pnpm-lock.yaml
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: assistant/go.mod
+          cache-dependency-path: assistant/go.sum
       - run: pnpm install --frozen-lockfile
+      # The view types are generated from the Go structs; a stale file means the
+      # contract has drifted and a page would render undefined.
+      - run: go run ./cmd/gentypes
+        working-directory: assistant
+      - run: git diff --exit-code -- web/src/types.ts
+        working-directory: assistant
       # Typecheck and production build (the same bundle the image embeds).
       - run: pnpm build
 

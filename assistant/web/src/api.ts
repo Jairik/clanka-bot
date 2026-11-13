@@ -2,7 +2,7 @@
 // the action URLs the server put in each view, and answer with the refreshed
 // view (Error set and a 4xx/5xx status when the write was refused).
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import type { DataPage, PageViews } from "./types";
+import type { DataPage, PageViews, WriteResult } from "./types";
 
 export class HttpError extends Error {
   constructor(
@@ -24,7 +24,7 @@ export async function getJSON<T>(path: string, signal?: AbortSignal): Promise<T>
  * CSRF guard accepts. A refused write still returns the view, so the caller
  * gets both the error text and the preserved state.
  */
-export async function postForm<T>(action: string, body?: Record<string, string> | FormData | Blob, init?: RequestInit): Promise<{ ok: boolean; status: number; view: T | null; text: string }> {
+export async function postForm<T>(action: string, body?: Record<string, string> | FormData | Blob, init?: RequestInit): Promise<WriteResult<T>> {
   const payload = body instanceof FormData || body instanceof Blob ? body : new URLSearchParams(body ?? {});
   // A take uploads as one raw WAV body, not multipart: the server bounds and
   // validates exactly the bytes the browser produced.

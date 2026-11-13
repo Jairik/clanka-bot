@@ -30,6 +30,7 @@ build-arm64: ## Build all images for the Pi under QEMU (not for latency work).
 	DOCKER_DEFAULT_PLATFORM=linux/arm64 docker compose build
 
 web: ## Build the Dashboard React app into the Go embed directory.
+	cd assistant && go run ./cmd/gentypes
 	cd assistant/web && pnpm install --frozen-lockfile && pnpm build
 
 web-dev: ## Dashboard dev server; proxies to a local assistant (see assistant/web/README.md).

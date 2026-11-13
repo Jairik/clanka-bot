@@ -14,6 +14,9 @@ export const session = (over: Partial<Session> = {}): Session => ({
 });
 
 export const emptyActivity = (requests: Request[] = []): ActivityView => ({
+  Owner: "owner@example.com",
+  Page: "activity",
+  Error: "",
   Notice: "",
   Draft: "",
   HasActivity: true,
@@ -37,6 +40,7 @@ export const req = (over: Partial<Request> & { ID: string }): Request => ({
   Tool: "",
   Outcome: "ok",
   OutcomeText: "OK",
+  OutcomePill: "ok",
   Response: "900 ms",
   Measured: true,
   Error: "",

@@ -30,7 +30,13 @@ cd "$REPO"
 SHA=${GIT_SHA:-$(git rev-parse --short HEAD)}
 PROJECT=${PROJECT:-clanka-bot}
 NETWORK=${NETWORK:-${PROJECT}_default}
-SINK=${SINK:-bluez_output.5C_41_5A_94_78_A3.1}
+# The sink whose mute guards the run: the current default (the Echo Dot on the
+# Pi) unless SINK names another.
+SINK=${SINK:-$(pactl get-default-sink 2>/dev/null || true)}
+if [ -z "$SINK" ]; then
+  echo "refusing to run: no default sink; set SINK to the speaker's pactl name" >&2
+  exit 1
+fi
 TURNS=${TURNS:-15}
 SAMPLE_INTERVAL=${SAMPLE_INTERVAL:-2}
 CLIENT=${CLIENT:-clanka-ram-load-client}

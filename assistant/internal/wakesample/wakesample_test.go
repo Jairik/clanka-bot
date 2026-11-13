@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -232,6 +233,47 @@ func TestAddEnforcesThePerKindLimit(t *testing.T) {
 	}
 	if _, err := service.Add("clanker", Positive, toneWAV(1, true)); err == nil {
 		t.Fatal("accepted take 101")
+	}
+}
+
+func TestConcurrentAddsKeepEveryTake(t *testing.T) {
+	// Two phones keeping a take for the same phrase at once must both land:
+	// Add numbers takes from a directory listing, so without serialization
+	// both choose the same id and the second rename replaces the first.
+	service := newStore(t, Options{})
+	const n = 8
+	inputs := make([][]byte, n)
+	for i := range inputs {
+		audio := make([]int16, SampleRate)
+		for j := range audio {
+			audio[j] = int16(math.Sin(float64(j)*(0.01+float64(i)*0.0003)) * 5000)
+		}
+		inputs[i] = EncodeWAV(audio)
+	}
+	var wg sync.WaitGroup
+	ids := make([]string, n)
+	errs := make([]error, n)
+	for i := range inputs {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			take, err := service.Add("clanker", Positive, inputs[i])
+			ids[i], errs[i] = take.ID, err
+		}(i)
+	}
+	wg.Wait()
+	seen := map[string]bool{}
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("Add %d: %v", i, err)
+		}
+		if seen[ids[i]] {
+			t.Fatalf("duplicate take id %q", ids[i])
+		}
+		seen[ids[i]] = true
+	}
+	if got := service.Count("clanker", Positive); got != n {
+		t.Fatalf("stored %d takes, want %d", got, n)
 	}
 }
 

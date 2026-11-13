@@ -30,8 +30,17 @@ const matches = (r: Request, filter: ActivityFilter) =>
           ? isProblem(r)
           : true;
 
-/** Case-insensitive match over everything the row shows. */
-const haystack = (r: Request) => `${r.Transcript} ${r.Reply} ${r.Tool} ${r.PathLabel} ${r.Error}`.toLowerCase();
+/** Case-insensitive match over everything the row shows, including the raw
+ * path and the call names the server also searches. */
+const haystack = (r: Request) =>
+  [
+    r.Transcript, r.Reply, r.Tool, r.PathLabel, r.Path,
+    r.Path.replaceAll("_", " "),
+    r.Error,
+    ...(r.Calls ?? []).map((c) => c.Name),
+  ]
+    .join(" ")
+    .toLowerCase();
 
 /** Order is preserved: the caller passes newest-first. */
 export function filterActivity(requests: Request[], filter: string, query: string): Request[] {

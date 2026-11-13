@@ -117,6 +117,8 @@ describe("ActivityPage durable history", () => {
     "/api/ui/activity": () => json({ ...emptyActivity([live]), HasHistory: true, Next: "live-next" }),
     "/api/ui/activity?q=blue": () => json({ ...emptyActivity([old]), HasHistory: true, Filter: "all", Query: "blue", Next: "c1" }),
     "/api/ui/activity?q=blue&before=c1": () => json({ ...emptyActivity([older]), HasHistory: true, Query: "blue", Next: "" }),
+    "/api/ui/activity?before=live-next": () => json({ ...emptyActivity([old]), HasHistory: true, Next: "c1" }),
+    "/api/ui/activity?before=c1": () => json({ ...emptyActivity([older]), HasHistory: true, Next: "" }),
   });
 
   it("searches the durable history and pages below the first page", async () => {
@@ -139,6 +141,26 @@ describe("ActivityPage durable history", () => {
     // The loader asks for the next cursor and appends its page.
     await user.click(screen.getByRole("button", { name: "Load older" }));
     expect(await screen.findByText("oldest blue note")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Load older" })).toBeNull();
+  });
+
+  it("pages the plain history below the first page instead of repeating it", async () => {
+    stubFetch(routes());
+    const user = userEvent.setup();
+    render(
+      <Providers>
+        <ActivityPage />
+      </Providers>,
+    );
+    expect(await screen.findByText("live at the pi")).toBeTruthy();
+
+    await user.click(await screen.findByRole("button", { name: "Load older" }));
+    expect(await screen.findByText("old blue timer")).toBeTruthy();
+
+    // The second click must follow the loaded page's cursor, not refetch page 2.
+    await user.click(screen.getByRole("button", { name: "Load older" }));
+    expect(await screen.findByText("oldest blue note")).toBeTruthy();
+    expect(screen.getAllByText("old blue timer")).toHaveLength(1);
     expect(screen.queryByRole("button", { name: "Load older" })).toBeNull();
   });
 });

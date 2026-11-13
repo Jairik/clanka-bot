@@ -327,9 +327,16 @@ func (h *Handler) activityEntries(ctx context.Context, q activityQuery) ([]activ
 	}
 	next := ""
 	if page.Next != "" && len(entries) > 0 {
-		// Continue below the last row actually shown, so a ring-only row at
-		// the top cannot make the next page skip a durable one.
-		next = entries[len(entries)-1].Cursor
+		// Continue below the last row that has a durable position: a ring-only
+		// row at the tail (a write still in flight) has no cursor, and page.Next
+		// is where the store stopped.
+		next = page.Next
+		for i := len(entries) - 1; i >= 0; i-- {
+			if entries[i].Cursor != "" {
+				next = entries[i].Cursor
+				break
+			}
+		}
 	}
 	return entries, next
 }

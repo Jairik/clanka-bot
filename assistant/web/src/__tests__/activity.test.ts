@@ -36,6 +36,16 @@ describe("activity filters", () => {
     expect(filterActivity(rows, "all", "  ").map((r) => r.ID)).toEqual(["a", "b", "c"]);
   });
 
+  it("searches the raw path and call names the server also matches", () => {
+    const rows = [
+      req({ ID: "p", Path: "agent_path", PathLabel: "Agent path" }),
+      req({ ID: "c", Path: "fast_path", PathLabel: "Other", Calls: [{ Name: "notes.search", LocalOnly: true, Result: "" }] }),
+    ];
+    expect(filterActivity(rows, "all", "agent_path").map((r) => r.ID)).toEqual(["p"]);
+    expect(filterActivity(rows, "all", "agent path").map((r) => r.ID)).toEqual(["p"]);
+    expect(filterActivity(rows, "all", "notes.search").map((r) => r.ID)).toEqual(["c"]);
+  });
+
   it("falls back to All for an unknown filter", () => {
     expect(asFilter("nonsense")).toBe("all");
     expect(filterActivity([voice, typed], "nonsense", "")).toHaveLength(2);

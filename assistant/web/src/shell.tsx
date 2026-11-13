@@ -180,15 +180,23 @@ export function VolumeControl() {
   const [error, setError] = useState("");
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
   const dragging = useRef(false);
+  // The last value the server reported. A write that never reaches it must put
+  // the control back here: the slider is optimistic, and showing a level the
+  // speaker never took is worse than showing the old one.
+  const lastServer = useRef<VolumeState | null>(null);
 
   useEffect(() => {
     if (!wired) return;
     const load = () =>
-      getJSON<VolumeState>("/api/ui/volume").then((v) => {
-        setState(v);
-        if (!dragging.current) setLevel(v.Percent);
-        setError(v.Error || "");
-      }, () => {});
+      getJSON<VolumeState>("/api/ui/volume").then(
+        (v) => {
+          lastServer.current = v;
+          setState(v);
+          if (!dragging.current) setLevel(v.Percent);
+          setError(v.Error || "");
+        },
+        () => {},
+      );
     void load();
     // Voice commands change the volume too; keep the bar honest.
     const id = setInterval(() => document.visibilityState === "visible" && load(), 15_000);
@@ -209,12 +217,25 @@ export function VolumeControl() {
   }
 
   const write = async (body: Record<string, string>) => {
-    const res = await postForm<VolumeState>("/api/ui/volume", body);
-    if (res.view) {
-      setState(res.view);
-      if (!dragging.current) setLevel(res.view.Percent);
+    try {
+      const res = await postForm<VolumeState>("/api/ui/volume", body);
+      if (res.view) {
+        lastServer.current = res.view;
+        setState(res.view);
+        if (!dragging.current) setLevel(res.view.Percent);
+      }
+      setError(res.ok ? "" : res.view?.Error || res.text || "The speaker did not accept that change.");
+    } catch {
+      // A dropped request throws out of fetch instead of answering. Say so the
+      // same way a refusal is said, and restore the last value the server
+      // reported so the slider and the mute icon stay truthful.
+      setError("Couldn't reach the speaker.");
+      const last = lastServer.current;
+      if (last) {
+        setState(last);
+        setLevel(last.Percent);
+      }
     }
-    setError(res.ok ? "" : res.view?.Error || res.text || "The speaker did not accept that change.");
   };
   const setTo = (v: number) => {
     const c = Math.max(0, Math.min(100, Math.round(v / VOL_STEP) * VOL_STEP));

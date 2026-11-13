@@ -188,7 +188,12 @@ function Overview() {
   const agent = requests.filter((r) => r.Path === "agent_path").slice(-14).map(totalMS);
   const amax = Math.max(1, ...agent);
 
-  const checks = health ? [...(health.Services ?? []), health.Location, ...(health.Modules ?? [])].filter((c) => c && c.Status !== "not-configured" && c.Status !== "no-check") : [];
+  // Only checks that actually answer count: a module that declares no health
+  // check is neither ok nor failing. unchecked is reported separately so the
+  // number cannot read as "everything is wired" when 15 modules are not.
+  const allChecks = health ? [...(health.Services ?? []), health.Location, ...(health.Modules ?? [])].filter((c) => !!c) : [];
+  const checks = allChecks.filter((c) => c.Status !== "not-configured" && c.Status !== "no-check");
+  const unchecked = allChecks.filter((c) => c.Status === "no-check").length;
   const down = checks.filter((c) => c.Status === "error" || c.Status === "timed-out");
   const next = alerts?.Alerts?.[0];
   const unset = (secrets?.Secrets ?? []).filter((s) => !s.Set);
@@ -227,12 +232,17 @@ function Overview() {
             ? "Checking…"
             : down.length
               ? `**${down[0].Name}**: ${down[0].Detail || down[0].StatusLabel}.` + (down.length > 1 ? ` **${down.length - 1} more** need attention.` : "")
-              : "Every service and module check is **healthy**."}
+              : unchecked
+                ? "Every check that is wired is **healthy**."
+                : "Every service and module check is **healthy**."}
         </Say>
         {health && (
-          <div className="mt-auto text-3xl tabular-nums">
-            {checks.length - down.length}
-            <span className="text-muted">/{checks.length}</span>
+          <div className="mt-auto flex flex-wrap items-baseline gap-x-2">
+            <span className="text-3xl tabular-nums">
+              {checks.length - down.length}
+              <span className="text-muted">/{checks.length}</span>
+            </span>
+            {unchecked > 0 && <span className="text-xs text-muted">{unchecked} no check</span>}
           </div>
         )}
       </Card>

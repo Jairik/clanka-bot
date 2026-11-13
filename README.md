@@ -1,6 +1,6 @@
 # clanka-bot
 
-My lovely always-on voice assistant for stuff written in go. Kind of like a lobotomized jarvis,
+My lovely always-on voice assistant for stuff written in go. Kind of like a lobotomized jarvis.
 
 ## Run the prototype
 

@@ -4,14 +4,14 @@
 // Download or the copy command shown after Submit.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button, Input, Tabs } from "@heroui/react";
-import { Check, Clipboard, Download, Mic, Play, RotateCcw, Square, Trash2, X } from "lucide-react";
+import { Check, Clipboard, Download, Mic, Play, Plus, RotateCcw, Square, Trash2, X } from "lucide-react";
 import { getJSON, navigate, useLocation } from "../api";
 import { useActions } from "../forms";
 import { micSupported, startRecording, type Recording } from "../mic";
 import { PageFrame } from "../shell";
 import { SampleBatch } from "./SampleBatch";
 import { trainingClip } from "../wake-sample";
-import type { VoiceSampleBundle, VoiceSampleTake, VoiceSamplesView } from "../types";
+import type { VoiceSampleBundle, VoiceSamplePhrase, VoiceSampleTake, VoiceSamplesView } from "../types";
 import { Badge, Empty, Lede, Notice, Section } from "../ui";
 
 type Kind = "positive" | "negative";
@@ -33,7 +33,17 @@ export function VoiceSamplesPage() {
   const phrase = params.get("phrase") ?? "";
   const [data, setData] = useState<VoiceSamplesView | null>(null);
   const [loadError, setLoadError] = useState("");
-  const actions = useActions<VoiceSamplesView>(setData);
+  // Adding or removing a phrase answers with the view for the phrase it
+  // selected (the new one, or the first after a removal); follow it in the
+  // URL so a reload stays there.
+  const applyView = useCallback(
+    (view: VoiceSamplesView) => {
+      setData(view);
+      if (view.Slug && view.Slug !== phrase) navigate(`/voice-samples?phrase=${encodeURIComponent(view.Slug)}`);
+    },
+    [phrase],
+  );
+  const actions = useActions<VoiceSamplesView>(applyView);
   const [kind, setKind] = useState<Kind>("positive");
  const [batchBusy, setBatchBusy] = useState(false);
  const [batchDirty, setBatchDirty] = useState(false);
@@ -63,7 +73,14 @@ export function VoiceSamplesPage() {
       )}
       {data?.HasStore && (
         <div className="space-y-2.5">
-          {!batchBusy && !batchDirty && !singleBusy && <PhrasePicker data={data} onSelect={(slug) => navigate(`/voice-samples?phrase=${encodeURIComponent(slug)}`)} />}
+          {!batchBusy && !batchDirty && !singleBusy && (
+            <PhrasePicker
+              data={data}
+              pending={actions.pending}
+              onRun={actions.run}
+              onSelect={(slug) => navigate(`/voice-samples?phrase=${encodeURIComponent(slug)}`)}
+            />
+          )}
           <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
             <Tabs selectedKey={kind} onSelectionChange={(key) => { if (!batchBusy && !batchDirty && !singleBusy) setKind(String(key) as Kind); }} className="w-auto">
               <Tabs.ListContainer>
@@ -124,63 +141,145 @@ export function VoiceSamplesPage() {
 
 // ---------- phrase picker ----------
 
-function PhrasePicker({ data, onSelect }: { data: VoiceSamplesView; onSelect: (slug: string) => void }) {
+export function PhrasePicker({
+  data,
+  pending,
+  onRun,
+  onSelect,
+}: {
+  data: VoiceSamplesView;
+  pending: string;
+  onRun: ReturnType<typeof useActions<VoiceSamplesView>>["run"];
+  onSelect: (slug: string) => void;
+}) {
   const [draft, setDraft] = useState("");
-  const [error, setError] = useState("");
-  const choose = () => {
-    const slug = slugify(draft);
-    if (!slug) {
-      setError("Use one to four words, letters and digits only.");
-      return;
-    }
-    setError("");
-    setDraft("");
-    onSelect(slug);
+  const phrases = data.Phrases ?? [];
+  const selected = phrases.find((p) => p.Selected);
+  const preview = slugify(draft);
+  const add = async () => {
+    if (!draft.trim()) return;
+    // The server normalises and checks the name; the preview below is only a hint.
+    const ok = await onRun(data.AddPhraseAction, { phrase: draft, current: data.Slug });
+    if (ok) setDraft("");
   };
   return (
     <Section title="Phrase" summary={data.Phrase} defaultOpen>
       <Lede>
-        Record takes of the phrase this detector should hear. A new phrase becomes its own sample set and bundle name; the desktop CLI reads the phrase from the bundle.
+        Record takes of the phrase this detector should hear. Each phrase is its own sample set and bundle name; the desktop CLI reads the phrase from the bundle. A{" "}
+        <Mark /> means the phrase still needs samples or a trained model.
       </Lede>
       <div className="flex flex-wrap gap-2 px-3.5 pb-3">
-        {(data.Phrases ?? []).map((phrase) => (
+        {phrases.map((phrase) => (
           <Button
             key={phrase.Slug}
             size="sm"
             variant={phrase.Selected ? "primary" : "secondary"}
             onPress={() => onSelect(phrase.Slug)}
             aria-pressed={phrase.Selected}
+            aria-label={`${phrase.Text}. ${phrase.StatusLabel}`}
           >
             {phrase.Text}
+            {/* The tooltip is a native title on the mark: a Tooltip trigger would
+                wrap this button in a second button role. */}
+            {phrase.NeedsAttention && <Mark title={phrase.StatusLabel} />}
           </Button>
         ))}
       </div>
-      <form
-        className="flex flex-wrap items-center gap-2 border-t px-3.5 py-3"
-        onSubmit={(e) => {
-          e.preventDefault();
-          choose();
-        }}
-      >
-        <Input
-          aria-label="New phrase"
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          placeholder="or type a new phrase, e.g. hey clanka"
-          className="w-full max-w-xs text-sm"
-          spellCheck={false}
-        />
-        <Button size="sm" type="submit" variant="secondary" isDisabled={!draft.trim()}>
-          Use phrase
-        </Button>
-        <span className="text-[11px] text-subtle">Up to four words. Spaces become dashes in the bundle name.</span>
-        {error && <span className="w-full text-xs text-danger">{error}</span>}
-      </form>
+      {selected && <PhraseStatus phrase={selected} note={data.ModelNote} pending={pending} onRemove={() => void onRun(selected.RemoveAction)} />}
+      {data.AddPhraseAction && (
+        <form
+          className="flex flex-wrap items-center gap-2 border-t px-3.5 py-3"
+          onSubmit={(e) => {
+            e.preventDefault();
+            void add();
+          }}
+        >
+          <Input
+            aria-label="New phrase"
+            aria-describedby="new-phrase-hint"
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder="New phrase, e.g. Hey Clanka"
+            className="w-full max-w-xs text-sm"
+            spellCheck={false}
+          />
+          <Button size="sm" type="submit" variant="secondary" isDisabled={!draft.trim()} isPending={pending === data.AddPhraseAction}>
+            <Plus className="size-3.5" /> Add phrase
+          </Button>
+          <span id="new-phrase-hint" className="text-[11px] text-subtle">
+            {draft.trim() ? (
+              preview ? (
+                <>
+                  Saved as <span className="font-mono text-foreground">{preview}</span>, kept even before the first take.
+                </>
+              ) : (
+                "Use one to four words of letters and digits."
+              )
+            ) : (
+              "Up to four words. Saved right away, even with no takes."
+            )}
+          </span>
+        </form>
+      )}
     </Section>
   );
 }
 
+/** The monochrome "needs attention" mark; the spoken label lives on its button. */
+function Mark({ title }: { title?: string }) {
+  return (
+    <span aria-hidden title={title} className="inline-flex size-4 items-center justify-center border border-current font-mono text-[10px] font-semibold leading-none">
+      !
+    </span>
+  );
+}
+
+function PhraseStatus({
+  phrase,
+  note,
+  pending,
+  onRemove,
+}: {
+  phrase: VoiceSamplePhrase;
+  note: string;
+  pending: string;
+  onRemove: () => void;
+}) {
+  const missing = phrase.Missing ?? [];
+  return (
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t px-3.5 py-2.5 text-xs">
+      <span className="flex items-center gap-1.5" role="status">
+        {missing.length ? (
+          <>
+            <Mark />
+            <span>Needs: {missing.join(", ")}.</span>
+          </>
+        ) : (
+          <>
+            <Check className="size-3.5" aria-hidden />
+            <span>{phrase.Model === "trained" ? "Samples complete; trained model served." : "Samples complete."}</span>
+          </>
+        )}
+      </span>
+      <span className="font-mono text-[11px] tabular-nums text-muted">
+        {phrase.Positives} + / {phrase.Negatives} − · model {phrase.Model}
+      </span>
+      {phrase.RemoveAction && (
+        <span className="ml-auto flex items-center gap-2">
+          {!phrase.CanRemove && <span className="text-[11px] text-subtle">Delete its takes to remove it.</span>}
+          <Button size="sm" variant="ghost" className="text-muted" isDisabled={!phrase.CanRemove} isPending={pending === phrase.RemoveAction} onPress={onRemove}>
+            <Trash2 className="size-3.5" /> Remove phrase
+          </Button>
+        </span>
+      )}
+      {note && <p className="w-full text-[11px] text-subtle">{note}</p>}
+    </div>
+  );
+}
+
+// Mirrors wakesample.SlugFor for the live hint only; the server decides.
 function slugify(value: string): string {
+  if (/[/\\<>:"|?*.]/.test(value)) return "";
   const words = value
     .trim()
     .toLowerCase()

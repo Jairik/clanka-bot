@@ -421,8 +421,8 @@ without the other.
       months; a **reconnect needed** state means Connect again.
 - [ ] Playback (#72, code-complete, live acceptance pending): after pairing and
       Web API connect, say "play Radiohead"; the Tools target only the Connect
-      device named `SPOTIFY_DEVICE_NAME` (`Clanka`). Check that "pause",
-      "resume" and "next" act on the music, that music dips during a reply, a
+      device named `SPOTIFY_DEVICE_NAME` (`Clanka`). Check that "skip", "pause"
+      and "next" advance the track and "resume" resumes it, that music dips during a reply, a
       Timer Ring and after the wake word, and that "what's playing" answers.
       Ducking uses `pactl` against Soloist's `spotify` Pulse sink input, so it
       needs the same Pulse socket the Assistant already mounts.

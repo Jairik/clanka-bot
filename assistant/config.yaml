@@ -442,13 +442,16 @@ control_phrases:
   # Playback and timer controls are single words, which embed poorly, so they
   # are matched exactly instead. "louder", "quieter" and "mute" still run
   # volume_set's Extract, so the direction and the zero level come from the
-  # phrase. "stop", "pause", "resume", "next", "cancel" and "snooze" are shared
+  # phrase. "stop", "resume", "next", "cancel" and "snooze" are shared
   # intents: they reach a ringing alert, the current reply or music before any
   # Tool. Snooze on a Timer acts as stop; #53 gives an Alarm its real snooze.
-  # Resume and next reach music while it holds Focus (spotify.play claims it);
-  # with nothing in Focus they fall through to the semantic Fast path.
+  # "skip" and "pause" both use the next intent, so they advance the Spotify
+  # track while music holds Focus. "next" does the same. Resume reaches music
+  # the same way (spotify.play claims it). With nothing in Focus these fall
+  # through to the semantic Fast path.
   "stop": stop
-  "pause": pause
+  "skip": next
+  "pause": next
   "resume": resume
   "next": next
   "cancel": cancel

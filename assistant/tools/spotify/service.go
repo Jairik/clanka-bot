@@ -49,7 +49,8 @@ type Playlists interface {
 
 // Service is the state shared by the Spotify Tools: the Player and the one
 // Music Focus claim. Playing music claims Focus at the Music priority, so a
-// Ring or a reply holding higher Focus receives "pause" and "stop" first.
+// Ring or a reply holding higher Focus receives "stop" first. "skip" and
+// "pause" are the next intent, so they advance the track while music holds Focus.
 type Service struct {
 	player    Player
 	focus     *focus.Registry

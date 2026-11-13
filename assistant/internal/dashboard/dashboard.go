@@ -182,6 +182,9 @@ type Handler struct {
 	// live fans out the SSE stream: activity deltas plus sampled volume, alert
 	// and health changes.
 	live *liveHub
+	// wakeModels caches the wakeword service's advertised models for the
+	// voice-samples status marks (see voicesamples.go).
+	wakeModels wakeModelCache
 	// askLock serialises every typed request with a one-slot semaphore. The
 	// voice loop is already single-turn; this gives the Dashboard the same
 	// one-request-at-a-time behaviour and one pending Confirmation at a time.
@@ -309,10 +312,13 @@ func New(opts Options) (*Handler, error) {
 	h.Handle("GET /api/ui/alerts", h.alertsPage)
 	h.Handle("GET /api/ui/notes", h.notesPage)
 	h.Handle("GET /api/ui/spotify", h.spotifyPage)
-	// The wake-phrase recorder: reads the phrase view, uploads one take as a
-	// raw WAV body, deletes one or all, and submits the set as a bundle. Every
+	// The wake-phrase recorder: reads the phrase view, adds or removes a
+	// phrase, uploads one take as a raw WAV body, deletes one or all, and
+	// submits the set as a bundle. Every
 	// write goes through Mutating for identity and same-origin.
 	h.Handle("GET /api/ui/voice-samples", h.voiceSamplesPage)
+	h.Mutating("POST /voice-samples/phrases", h.voiceSamplesAddPhrase)
+	h.Mutating("POST /voice-samples/phrases/{slug}/remove", h.voiceSamplesRemovePhrase)
 	h.Mutating("POST /voice-samples/capture", h.voiceSamplesCapture)
 	h.Mutating("POST /voice-samples/takes/{slug}/{kind}", h.voiceSamplesUpload)
 	h.Mutating("POST /voice-samples/takes/{slug}/{kind}/{id}/delete", h.voiceSamplesDelete)

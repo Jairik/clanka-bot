@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/wakesample"
@@ -29,6 +31,13 @@ type voiceSamplesView struct {
 	// store; the page then explains the missing piece instead of a dead button.
 	RecordingAvailable bool
 	Phrases            []voicePhraseView
+	// AddPhraseAction stores a new phrase with no takes (form field
+	// "phrase", plus "current" so a refusal keeps the page where it was).
+	AddPhraseAction string
+	// ModelsKnown is true when the wakeword service answered, so each
+	// phrase's Model is "trained" or "missing" rather than "unknown".
+	ModelsKnown bool
+	ModelNote   string
 
 	Slug   string
 	Phrase string
@@ -57,11 +66,28 @@ type voiceSamplesView struct {
 	Bundles []voiceBundleView
 }
 
-// voicePhraseView is one selectable phrase.
+// voicePhraseView is one selectable phrase and what it still lacks.
 type voicePhraseView struct {
 	Slug     string
 	Text     string
 	Selected bool
+	Builtin  bool
+	// Stored is false only for a phrase that exists in the URL alone (an
+	// old link); recording into it stores it.
+	Stored    bool
+	Positives int
+	Negatives int
+	// Model is "trained", "missing" or "unknown" (see ModelNote).
+	Model string
+	// Missing lists the gaps in plain words; NeedsAttention is the `!` mark
+	// and StatusLabel its accessible label and tooltip.
+	Missing        []string
+	NeedsAttention bool
+	StatusLabel    string
+	// CanRemove is an empty custom phrase; RemoveAction is set for every
+	// stored custom phrase so the page can explain why it is disabled.
+	CanRemove    bool
+	RemoveAction string
 }
 
 // voiceTakeView is one stored clip and its two actions.
@@ -94,7 +120,7 @@ func (h *Handler) voiceSamplesPage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	slug := strings.TrimSpace(r.URL.Query().Get("phrase"))
-	h.writeJSON(w, http.StatusOK, h.buildVoiceSamplesView(slug, "", ""))
+	h.writeJSON(w, http.StatusOK, h.buildVoiceSamplesView(r.Context(), slug, "", ""))
 }
 
 // voiceSamplesUpload accepts one take as a raw WAV body. The size and format
@@ -140,7 +166,7 @@ func (h *Handler) voiceSamplesUpload(w http.ResponseWriter, r *http.Request) {
 	if kind == wakesample.Negative {
 		flash = fmt.Sprintf("Kept negative take %d.", h.voiceSamples.Count(r.PathValue("slug"), kind))
 	}
-	h.writeJSON(w, http.StatusOK, h.buildVoiceSamplesView(r.PathValue("slug"), flash, ""))
+	h.writeJSON(w, http.StatusOK, h.buildVoiceSamplesView(r.Context(), r.PathValue("slug"), flash, ""))
 }
 
 // voiceSamplesDelete removes one take. A missing id is a no-op, so a double
@@ -158,7 +184,7 @@ func (h *Handler) voiceSamplesDelete(w http.ResponseWriter, r *http.Request) {
 		h.voiceSamplesFail(w, r, http.StatusBadRequest, "That take could not be deleted.", r.PathValue("slug"))
 		return
 	}
-	h.writeJSON(w, http.StatusOK, h.buildVoiceSamplesView(r.PathValue("slug"), "Deleted the take.", ""))
+	h.writeJSON(w, http.StatusOK, h.buildVoiceSamplesView(r.Context(), r.PathValue("slug"), "Deleted the take.", ""))
 }
 
 // voiceSamplesClear removes every take of one kind.
@@ -177,7 +203,7 @@ func (h *Handler) voiceSamplesClear(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.logger.Info("voice samples cleared", "kind", string(kind), "takes", count)
-	h.writeJSON(w, http.StatusOK, h.buildVoiceSamplesView(r.PathValue("slug"), fmt.Sprintf("Deleted all %d %s takes.", count, kind), ""))
+	h.writeJSON(w, http.StatusOK, h.buildVoiceSamplesView(r.Context(), r.PathValue("slug"), fmt.Sprintf("Deleted all %d %s takes.", count, kind), ""))
 }
 
 // voiceSamplesSubmit writes the finished set as a .tar.gz and returns the view
@@ -194,7 +220,7 @@ func (h *Handler) voiceSamplesSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 	// Counts only: the bundle name is a phrase and timestamp, no audio.
 	h.logger.Info("voice sample bundle", "positives", bundle.Positives, "negatives", bundle.Negatives, "bytes", bundle.Bytes)
-	h.writeJSON(w, http.StatusOK, h.buildVoiceSamplesView(slug, "Bundle ready: "+bundle.Name, ""))
+	h.writeJSON(w, http.StatusOK, h.buildVoiceSamplesView(r.Context(), slug, "Bundle ready: "+bundle.Name, ""))
 }
 
 // voiceSamplesAudio serves one kept take for playback in the browser.
@@ -254,6 +280,102 @@ func (h *Handler) voiceSamplesBundle(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, name, bundle.CreatedAt, file)
 }
 
+// voiceSamplesAddPhrase stores a new phrase right away, with no takes, so it
+// survives a reload. The answer selects it and its flash names the slug the
+// owner's words became.
+func (h *Handler) voiceSamplesAddPhrase(w http.ResponseWriter, r *http.Request) {
+	if !h.voiceSamplesReady(w, r) {
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		h.voiceSamplesFail(w, r, http.StatusBadRequest, "Could not read the phrase.", "")
+		return
+	}
+	entered := strings.TrimSpace(r.PostForm.Get("phrase"))
+	current := strings.TrimSpace(r.PostForm.Get("current"))
+	slug, err := h.voiceSamples.AddPhrase(entered)
+	switch {
+	case errors.Is(err, wakesample.ErrInvalidPhrase):
+		h.voiceSamplesFail(w, r, http.StatusBadRequest, fmt.Sprintf("“%s” is not a valid phrase name: %s.", entered, wakesample.ErrInvalidPhrase), current)
+		return
+	case errors.Is(err, wakesample.ErrPhraseExists):
+		h.voiceSamplesFail(w, r, http.StatusConflict, fmt.Sprintf("“%s” already exists (%s); pick it above.", wakesample.PhraseText(slug), slug), current)
+		return
+	case err != nil:
+		h.voiceSamplesFail(w, r, http.StatusBadRequest, err.Error(), current)
+		return
+	}
+	h.logger.Info("voice sample phrase added")
+	flash := fmt.Sprintf("Added “%s”. Its takes and bundles are named %s.", wakesample.PhraseText(slug), slug)
+	h.writeJSON(w, http.StatusOK, h.buildVoiceSamplesView(r.Context(), slug, flash, ""))
+}
+
+// voiceSamplesRemovePhrase deletes an empty custom phrase. A phrase with takes
+// is refused, never emptied here: Delete all on each tab is the explicit step.
+func (h *Handler) voiceSamplesRemovePhrase(w http.ResponseWriter, r *http.Request) {
+	if !h.voiceSamplesReady(w, r) {
+		return
+	}
+	slug := r.PathValue("slug")
+	err := h.voiceSamples.RemovePhrase(slug)
+	switch {
+	case err == nil:
+		h.logger.Info("voice sample phrase removed")
+		h.writeJSON(w, http.StatusOK, h.buildVoiceSamplesView(r.Context(), "", fmt.Sprintf("Removed “%s”.", wakesample.PhraseText(slug)), ""))
+	case errors.Is(err, wakesample.ErrPhraseHasTakes):
+		h.voiceSamplesFail(w, r, http.StatusConflict, fmt.Sprintf("“%s” still has takes, so it was not removed. Delete them on the Positives and Negatives tabs first.", wakesample.PhraseText(slug)), slug)
+	case errors.Is(err, wakesample.ErrPhraseNotFound):
+		h.voiceSamplesFail(w, r, http.StatusNotFound, "That phrase is not stored.", "")
+	case errors.Is(err, wakesample.ErrBuiltinPhrase):
+		h.voiceSamplesFail(w, r, http.StatusBadRequest, "A built-in phrase cannot be removed.", slug)
+	case errors.Is(err, wakesample.ErrInvalidPhrase):
+		h.voiceSamplesFail(w, r, http.StatusBadRequest, "That phrase name is not valid.", "")
+	default:
+		h.voiceSamplesFail(w, r, http.StatusInternalServerError, "The phrase could not be removed.", slug)
+	}
+}
+
+// wakeModelCache keeps the wakeword service's advertised models briefly. The
+// batch recorder refreshes the view after every take, and an unreachable
+// service would otherwise add its timeout to each one. It caches the same
+// describe answer Health reads; it is not a second list of models.
+type wakeModelCache struct {
+	mu      sync.Mutex
+	at      time.Time
+	models  map[string]bool
+	err     error
+	checked bool
+}
+
+const (
+	wakeModelCacheTTL     = 30 * time.Second
+	wakeModelCacheFailTTL = 10 * time.Second
+)
+
+// wakeModelsForStatus returns the advertised models, whether they are known,
+// and a one-line note on where the answer came from.
+func (h *Handler) wakeModelsForStatus(ctx context.Context) (map[string]bool, bool, string) {
+	if strings.TrimSpace(h.wakeword.Addr) == "" {
+		return nil, false, "The wakeword service is not configured, so trained models cannot be checked."
+	}
+	cache := &h.wakeModels
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	now := h.now()
+	ttl := wakeModelCacheTTL
+	if cache.err != nil {
+		ttl = wakeModelCacheFailTTL
+	}
+	if !cache.checked || now.Sub(cache.at) >= ttl {
+		cache.models, cache.err = h.advertisedWakeModels(ctx)
+		cache.at, cache.checked = now, true
+	}
+	if cache.err != nil {
+		return nil, false, "The wakeword service did not answer, so trained models are unknown."
+	}
+	return cache.models, true, "A phrase has a trained model when the wakeword service advertises it, e.g. volume-up as volume_up."
+}
+
 // voiceSamplesReady guards the write and audio routes against an unwired
 // store; the page still renders an explanation.
 func (h *Handler) voiceSamplesReady(w http.ResponseWriter, r *http.Request) bool {
@@ -265,12 +387,12 @@ func (h *Handler) voiceSamplesReady(w http.ResponseWriter, r *http.Request) bool
 }
 
 func (h *Handler) voiceSamplesFail(w http.ResponseWriter, r *http.Request, status int, message, slug string) {
-	h.writeJSON(w, status, h.buildVoiceSamplesView(slug, "", message))
+	h.writeJSON(w, status, h.buildVoiceSamplesView(r.Context(), slug, "", message))
 }
 
-// buildVoiceSamplesView resolves the phrase, takes, prompts and bundles from
-// one bounded snapshot.
-func (h *Handler) buildVoiceSamplesView(slug, flash, errorText string) voiceSamplesView {
+// buildVoiceSamplesView resolves the phrase, takes, prompts and bundles
+// from one bounded snapshot.
+func (h *Handler) buildVoiceSamplesView(ctx context.Context, slug, flash, errorText string) voiceSamplesView {
 	maxTakes := wakesample.MaxTakes
 	if h.voiceSamples != nil {
 		maxTakes = h.voiceSamples.TakeLimit()
@@ -283,18 +405,24 @@ func (h *Handler) buildVoiceSamplesView(slug, flash, errorText string) voiceSamp
 		MaxBytes:   fmt.Sprintf("%d KB", wakesample.MaxTakeBytes/1024),
 		Prompts:    wakesample.Prompts,
 	}
-	phrases := wakesample.BuiltinPhrases
+	var statuses []wakesample.PhraseStatus
 	if h.voiceSamples != nil {
 		view.HasStore = true
 		view.RecordingAvailable = true
-		phrases = nil
-		for _, stored := range h.voiceSamples.Phrases() {
-			phrases = append(phrases, wakesample.PhraseText(stored))
+		view.AddPhraseAction = "/voice-samples/phrases"
+		var models map[string]bool
+		models, view.ModelsKnown, view.ModelNote = h.wakeModelsForStatus(ctx)
+		statuses = h.voiceSamples.Statuses(models, view.ModelsKnown)
+	} else {
+		for _, phrase := range wakesample.BuiltinPhrases {
+			if builtin, ok := wakesample.SlugFor(phrase); ok {
+				statuses = append(statuses, wakesample.PhraseStatus{Slug: builtin, Builtin: true})
+			}
 		}
 	}
 	slug = strings.TrimSpace(slug)
 	if slug == "" {
-		slug, _ = wakesample.SlugFor(phrases[0])
+		slug = statuses[0].Slug
 	} else if !wakesample.ValidSlug(slug) {
 		if errorText == "" {
 			errorText = "That phrase name is not valid. Use letters, digits and single dashes."
@@ -305,22 +433,25 @@ func (h *Handler) buildVoiceSamplesView(slug, flash, errorText string) voiceSamp
 	view.Slug = slug
 	view.Phrase = wakesample.PhraseText(slug)
 	selected := false
-	for _, phrase := range phrases {
-		phraseSlug, ok := wakesample.SlugFor(phrase)
-		if !ok {
-			continue
-		}
-		option := voicePhraseView{Slug: phraseSlug, Text: wakesample.PhraseText(phraseSlug)}
-		if phraseSlug == slug {
+	for _, status := range statuses {
+		stored := h.voiceSamples != nil
+		option := phraseOption(status, stored)
+		if status.Slug == slug {
 			option.Selected = true
 			selected = true
 		}
 		view.Phrases = append(view.Phrases, option)
 	}
 	if !selected && wakesample.ValidSlug(slug) {
-		// A new phrase is not stored yet, so it is not in Phrases; add it so
-		// the selector shows where the owner is.
-		view.Phrases = append(view.Phrases, voicePhraseView{Slug: slug, Text: view.Phrase, Selected: true})
+		// A phrase only in the URL (an old link) is not stored yet; show it so
+		// the selector says where the owner is. Its first kept take stores it.
+		status := wakesample.PhraseStatus{Slug: slug, Model: wakesample.ModelUnknown}
+		if view.ModelsKnown {
+			status.Model = wakesample.ModelMissing
+		}
+		option := phraseOption(status, false)
+		option.Selected = true
+		view.Phrases = append(view.Phrases, option)
 	}
 	if h.voiceSamples == nil {
 		return view
@@ -375,6 +506,47 @@ func (h *Handler) buildVoiceSamplesView(slug, flash, errorText string) voiceSamp
 		}
 	}
 	return view
+}
+
+// phraseOption turns one status into the picker's chip.
+func phraseOption(status wakesample.PhraseStatus, stored bool) voicePhraseView {
+	option := voicePhraseView{
+		Slug:      status.Slug,
+		Text:      wakesample.PhraseText(status.Slug),
+		Builtin:   status.Builtin,
+		Stored:    stored || status.Builtin,
+		Positives: status.Positives,
+		Negatives: status.Negatives,
+		Model:     modelLabel(status.Model),
+		Missing:   status.Missing(),
+	}
+	if !stored && !status.Builtin {
+		option.Missing = append([]string{"not saved yet"}, option.Missing...)
+	}
+	option.NeedsAttention = len(option.Missing) > 0
+	if option.NeedsAttention {
+		option.StatusLabel = "Needs attention: " + strings.Join(option.Missing, ", ")
+	} else if status.Model == wakesample.ModelUnknown {
+		option.StatusLabel = "Samples complete; trained model unknown"
+	} else {
+		option.StatusLabel = "Samples complete and a trained model is served"
+	}
+	if stored && !status.Builtin {
+		option.RemoveAction = "/voice-samples/phrases/" + url.PathEscape(status.Slug) + "/remove"
+		option.CanRemove = status.Positives == 0 && status.Negatives == 0
+	}
+	return option
+}
+
+func modelLabel(state wakesample.ModelState) string {
+	switch state {
+	case wakesample.ModelTrained:
+		return "trained"
+	case wakesample.ModelMissing:
+		return "missing"
+	default:
+		return "unknown"
+	}
 }
 
 // humanBytes keeps a take or bundle size readable without a units package.

@@ -158,8 +158,12 @@ _Avoid_: Client, endpoint, remote
 ### Wake phrases
 
 **Wake phrase**:
-The words a wake-word detector listens for, such as `clanker`, `volume up` or `volume down`. A phrase has a slug (its directory and bundle name, e.g. `volume-up`) and the spoken text (`volume up`).
+The words a wake-word detector listens for, such as `clanker`, `volume up` or `volume down`. A phrase has a slug (its directory and bundle name, e.g. `volume-up`) and the spoken text (`volume up`). The three named here are built in; a custom phrase is one the owner adds on the Dashboard, and exists as soon as its directory does, before its first Voice sample. Its trained Wake model is named after the slug with underscores (`volume_up`).
 _Avoid_: Wake word name, trigger (for the phrase as a whole)
+
+**Trained phrase**:
+A Wake phrase whose Wake model the wakeword service advertises. That advertised list is the only signal: a `.tflite` on the desktop that is not in the deployed image does not count.
+_Avoid_: Installed phrase, phrase with a model file
 
 **Voice sample**:
 One take of a Wake phrase, recorded in the Dashboard or with `record.py`, stored as canonical 16 kHz mono 16-bit WAV under a phrase's `real/positive` or `real/negative` directory. A negative is a near-miss or ordinary speech used to teach and measure false accepts.

@@ -338,9 +338,11 @@ func New(opts Options) (*Handler, error) {
 	h.Mutating("POST /secrets/{name}/clear", h.secretsClear)
 	// Spotify Connect pairing and Web API auth are separate surfaces. The
 	// callback is a cross-site top-level GET from accounts.spotify.com, so it
-	// uses its own state/owner/cookie validation rather than Mutating.
-	h.Handle("/spotify/callback", h.spotifyCallback)
-	h.Mutating("/spotify/connect", h.spotifyConnect)
+	// uses its own state/owner/cookie validation rather than Mutating. Connect
+	// is a plain GET link: a form POST would make the browser apply
+	// form-action to Spotify's redirect, forcing its origin into the policy.
+	h.Handle("GET /spotify/callback", h.spotifyCallback)
+	h.Handle("GET /spotify/connect", h.spotifyConnect)
 	h.Mutating("/spotify/verify", h.spotifyVerify)
 	h.Mutating("/spotify/disconnect", h.spotifyDisconnect)
 	// Everything else is the React app: hashed assets, or index.html for any
@@ -472,7 +474,7 @@ const reactAriaStyleHash = "'sha256-38RhXrc7EdReTKsOm23ZPOCUgniTUUcjky8QOOrQx6o=
 // for every page, so media-src is document-wide rather than page-scoped; it
 // adds only blob: for a just-recorded take and 'self' for a kept one.
 func appSecurityPolicy() string {
-	return contentSecurityPolicy("'self' "+spotifyAccountsOrigin, "'self' "+reactAriaStyleHash) + "; media-src 'self' blob:"
+	return contentSecurityPolicy("'self'", "'self' "+reactAriaStyleHash) + "; media-src 'self' blob:"
 }
 
 func setSecurityHeaders(w http.ResponseWriter) {

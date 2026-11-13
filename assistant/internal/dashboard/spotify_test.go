@@ -191,12 +191,12 @@ func (f *spotifyFixture) post(target string) *httptest.ResponseRecorder {
 	return serve(f.handler, req)
 }
 
-// startConnect performs the same-origin POST and returns the state and binding
-// cookie from the redirect. It also teaches the fake token server the PKCE
-// challenge from the authorize URL.
+// startConnect follows the same-origin GET link and returns the state and
+// binding cookie from the redirect. It also teaches the fake token server the
+// PKCE challenge from the authorize URL.
 func (f *spotifyFixture) startConnect(t *testing.T) (string, string) {
 	t.Helper()
-	rec := f.post("/spotify/connect")
+	rec := f.get("/spotify/connect")
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("connect status = %d, body = %s", rec.Code, rec.Body.String())
 	}
@@ -253,7 +253,7 @@ func TestSpotifyReadShowsSeparatePairingAndWebAPIAuth(t *testing.T) {
 
 func TestSpotifyConnectStartsAPKCEFlowOnlyFromASameOriginPost(t *testing.T) {
 	f := newSpotifyFixture(t)
-	rec := f.post("/spotify/connect")
+	rec := f.get("/spotify/connect")
 	if rec.Code != http.StatusSeeOther {
 		t.Fatalf("connect status = %d", rec.Code)
 	}
@@ -283,14 +283,12 @@ func TestSpotifyConnectStartsAPKCEFlowOnlyFromASameOriginPost(t *testing.T) {
 		t.Fatalf("binding cookie = %+v", cookie)
 	}
 
-	// A cross-origin POST is rejected before it can start a flow.
+	// A POST is not a route: the browser cannot submit Spotify's origin as a
+	// form target, so the document policy needs no exception for it.
 	req := request(http.MethodPost, "/spotify/connect", owner)
-	req.Header.Set("Sec-Fetch-Site", "cross-site")
-	if rec := serve(f.handler, req); rec.Code != http.StatusForbidden {
-		t.Fatalf("cross-origin connect = %d, want 403", rec.Code)
-	}
-	if rec := f.get("/spotify/connect"); rec.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("GET connect = %d, want 405", rec.Code)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	if rec := serve(f.handler, req); rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST connect = %d, want 405", rec.Code)
 	}
 }
 
@@ -425,16 +423,14 @@ func TestHealthShowsSpotifyPairingAndWebAPIAuthSeparately(t *testing.T) {
 	}
 }
 
-// The Connect form's 303 lands on accounts.spotify.com, and browsers enforce
-// form-action on that redirect. Only the app document hosts the Connect form,
-// so only it allows exactly that origin; JSON reads and the assets keep
-// form-action 'self'.
-func TestSpotifyPageCSPAllowsOnlySpotifyAccountsAsFormTarget(t *testing.T) {
+// Connect is a GET link, so the document never needs Spotify's origin as a
+// form target. This keeps form-action 'self' on every document and JSON read.
+func TestSpotifyPageCSPKeepsFormActionSelf(t *testing.T) {
 	f := newSpotifyFixture(t)
 	for _, target := range []string{"/spotify", "/", "/health"} {
 		csp := f.get(target).Header().Get("Content-Security-Policy")
-		if !strings.Contains(csp, "form-action 'self' https://accounts.spotify.com") {
-			t.Errorf("app document %s CSP = %q", target, csp)
+		if !strings.Contains(csp, "form-action 'self'") || strings.Contains(csp, "accounts.spotify.com") {
+			t.Errorf("app document %s CSP = %q, want form-action 'self' only", target, csp)
 		}
 		if !strings.Contains(csp, "frame-ancestors 'none'") || !strings.Contains(csp, "script-src 'self';") {
 			t.Errorf("app document %s CSP lost the base policy: %q", target, csp)

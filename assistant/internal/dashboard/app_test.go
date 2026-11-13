@@ -24,8 +24,8 @@ func TestAppServesIndexForTheRootAndEveryClientRoute(t *testing.T) {
 				t.Errorf("Content-Type = %q, want HTML", ct)
 			}
 			csp := rec.Header().Get("Content-Security-Policy")
-			if !strings.Contains(csp, "form-action 'self' https://accounts.spotify.com") {
-				t.Errorf("document CSP = %q, want form-action to allow Spotify accounts", csp)
+			if !strings.Contains(csp, "form-action 'self'") || strings.Contains(csp, "accounts.spotify.com") {
+				t.Errorf("document CSP = %q, want form-action 'self' with no external origin", csp)
 			}
 			// React Aria injects one stylesheet at runtime; it is allowed by
 			// hash, never by 'unsafe-inline'.
@@ -161,4 +161,41 @@ func TestSessionReportsOwnerAndWiredServices(t *testing.T) {
 	if v := read(t, dashboard.Options{Activity: activityStoreForTest()}); !v.Activity {
 		t.Errorf("activity = %+v, want Activity", v)
 	}
+}
+
+// TestNoViewOffersAnOffOriginFormTarget keeps every write a same-origin target.
+// The Spotify exception is gone (Connect is a GET link); this fails if a page
+// starts pointing a form at another origin.
+func TestNoViewOffersAnOffOriginFormTarget(t *testing.T) {
+	handler := newHandler(t, dashboard.Options{})
+	pages := []string{"activity", "alerts", "health", "notes", "personas", "secrets", "settings", "sounds", "spotify", "voice-samples", "voices"}
+	for _, page := range pages {
+		var view any
+		decodeJSON(t, serve(handler, request(http.MethodGet, "/api/ui/"+page, owner)), &view)
+		for _, action := range formActions(view) {
+			if !strings.HasPrefix(action, "/") || strings.HasPrefix(action, "//") {
+				t.Errorf("%s offers an off-origin form target %q", page, action)
+			}
+		}
+	}
+}
+
+// formActions collects every JSON field whose name ends in Action.
+func formActions(v any) []string {
+	var actions []string
+	switch value := v.(type) {
+	case map[string]any:
+		for key, item := range value {
+			if text, ok := item.(string); ok && strings.HasSuffix(key, "Action") && text != "" {
+				actions = append(actions, text)
+				continue
+			}
+			actions = append(actions, formActions(item)...)
+		}
+	case []any:
+		for _, item := range value {
+			actions = append(actions, formActions(item)...)
+		}
+	}
+	return actions
 }

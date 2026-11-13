@@ -185,7 +185,8 @@ func (s *Service) ExportDir() string { return s.exportDir }
 func (s *Service) TakeLimit() int { return s.maxTakes }
 
 // BuiltinPhrases are the phrases the issue names. A stored phrase directory is
-// also selectable, so a new phrase survives a page reload.
+// also selectable: AddPhrase creates one with no takes, so a new phrase
+// survives a page reload before its first take.
 var BuiltinPhrases = []string{"clanker", "volume up", "volume down"}
 
 // PhraseText turns a slug into the phrase the bundle records: hyphen-separated
@@ -248,7 +249,7 @@ func (s *Service) Phrases() []string {
 	if err == nil {
 		var extra []string
 		for _, entry := range entries {
-			if entry.IsDir() && ValidSlug(entry.Name()) && !seen[entry.Name()] {
+			if entry.IsDir() && ValidSlug(entry.Name()) && !seen[entry.Name()] && !s.isExportDir(entry.Name()) {
 				seen[entry.Name()] = true
 				extra = append(extra, entry.Name())
 			}

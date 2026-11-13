@@ -1252,16 +1252,30 @@ func TestNotificationsTokenHealthIsSeparate(t *testing.T) {
 
 // delayedListener hides a completed TCP connect from the server for a while,
 // so the client's TLS handshake has to wait. The kernel completes the connect
-// immediately; the server simply does not answer.
+// immediately; the server simply does not answer. held is closed as soon as
+// the stall begins, so a test can prove the client really waited on it.
 type delayedListener struct {
 	net.Listener
 	delay time.Duration
 	once  sync.Once
+	held  chan struct{}
 }
 
 func (l *delayedListener) Accept() (net.Conn, error) {
-	l.once.Do(func() { time.Sleep(l.delay) })
-	return l.Listener.Accept()
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	// Stall the connection, not the accept call. Sleeping at entry to Accept
+	// would start the clock while the test is still setting up, so the server
+	// could release the client before the full delay had passed and the
+	// elapsed assertion below would fail intermittently (under -race, the
+	// setup step cost enough to shave 10-15 ms off a 2.5 s budget).
+	l.once.Do(func() {
+		close(l.held)
+		time.Sleep(l.delay)
+	})
+	return conn, nil
 }
 
 // TestIssueCreateToleratesASlowServePhase is the #68 regression. A cold DNS
@@ -1271,8 +1285,8 @@ func (l *delayedListener) Accept() (net.Conn, error) {
 // the Tool reported a transport failure right after the Confirmation. The
 // connect phases must live inside the configured request timeout instead.
 //
-// This drives the real client through a fake GitHub server whose listener
-// accepts 2.5 s late: the old 2 s phase budget fails the handshake, and the
+// This drives the real client through a fake GitHub server that holds the
+// connection for 2.5 s: the old 2 s phase budget fails the handshake, and the
 // configured 4 s timeout succeeds.
 func TestIssueCreateToleratesASlowServePhase(t *testing.T) {
 	var mu sync.Mutex
@@ -1285,7 +1299,9 @@ func TestIssueCreateToleratesASlowServePhase(t *testing.T) {
 		w.WriteHeader(http.StatusCreated)
 		fmt.Fprint(w, `{"number":68,"title":"Slow serve","html_url":"https://github.com/acme/widgets/issues/68"}`)
 	}))
-	server.Listener = &delayedListener{Listener: server.Listener, delay: 2500 * time.Millisecond}
+	// stalled is closed the moment the listener holds the client's connection.
+	stalled := make(chan struct{})
+	server.Listener = &delayedListener{Listener: server.Listener, delay: 2500 * time.Millisecond, held: stalled}
 	server.StartTLS()
 	t.Cleanup(server.Close)
 
@@ -1304,6 +1320,13 @@ func TestIssueCreateToleratesASlowServePhase(t *testing.T) {
 	_, _, err := reg.ExecutePending(context.Background())
 	if err != nil {
 		t.Fatalf("create after a slow handshake = %v, want success", err)
+	}
+	// The listener closes stalled just before it sleeps, so this is a sync
+	// point on the stall itself rather than another wall-clock guess.
+	select {
+	case <-stalled:
+	default:
+		t.Fatal("the client never reached the stalled listener")
 	}
 	if elapsed := time.Since(started); elapsed < 2500*time.Millisecond {
 		t.Fatalf("elapsed = %s, want the server to have stalled", elapsed)

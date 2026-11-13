@@ -9,6 +9,7 @@ import {
 import { getJSON, navigate, postForm, useLocation } from "./api";
 import type { HealthView, Session, Volume as VolumeState } from "./types";
 import { Range, cn } from "./ui";
+import { snapVolume, VOL_STEP } from "./volume";
 
 export type PageId = "home" | "activity" | "alerts" | "notes" | "health" | "sounds" | "voices" | "personas" | "voice-samples" | "spotify" | "secrets" | "settings";
 
@@ -166,8 +167,6 @@ export function PageFrame({ id, children, right }: { id: PageId; children: React
 
 // ---------- volume ----------
 
-const VOL_STEP = 5;
-
 /**
  * The Pi speaker. The icon toggles mute (Pulse mute, so the level is kept); the
  * slider sets the level in 5% steps. Slider moves are coalesced so a drag is
@@ -238,7 +237,7 @@ export function VolumeControl() {
     }
   };
   const setTo = (v: number) => {
-    const c = Math.max(0, Math.min(100, Math.round(v / VOL_STEP) * VOL_STEP));
+    const c = snapVolume(v);
     setLevel(c);
     setState((s) => (s ? { ...s, Muted: c === 0 ? s.Muted : false } : s));
     dragging.current = true;

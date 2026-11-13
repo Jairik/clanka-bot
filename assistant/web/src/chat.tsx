@@ -5,7 +5,9 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { Button, Tooltip } from "@heroui/react";
 import { ArrowUp, AudioLines, Bot, ChevronDown, Keyboard, Lock, Mic, MonitorSmartphone, RotateCcw, Square, X } from "lucide-react";
 import { getJSON, postForm } from "./api";
-import { MIC_MAX_SECONDS, micSupported, startRecording, type Recording } from "./mic";
+import { isTypedSource } from "./activity";
+import { MIC_MAX_SECONDS, micSupported } from "./mic";
+import { useRecorder } from "./recorder";
 import { useSession } from "./shell";
 import type { ActivityView, Request } from "./types";
 import { Badge, Fold, cn, foldOpen, type Tone } from "./ui";
@@ -36,6 +38,15 @@ const ChatCtx = createContext<Chat>(null!);
 export const useChat = () => useContext(ChatCtx);
 
 const POLL_MS = 4000;
+
+/**
+ * Pending-request ids. The clock alone is not enough: two sends in the same
+ * millisecond would share an id, and settle/dismiss/retry act on one id.
+ */
+export const createRequestId = (clock: () => number = Date.now) => {
+  let seq = 0;
+  return () => `p${clock()}-${(seq += 1)}`;
+};
 
 export function ChatProvider({ children }: { children: ReactNode }) {
   const [view, setView] = useState<ActivityView | null>(null);
@@ -74,8 +85,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   // Two sends in the same millisecond must not share an id: settle, dismiss
   // and retry act on one id, and React needs unique keys.
-  const seq = useRef(0);
-  const nextId = useCallback(() => `p${Date.now()}-${(seq.current += 1)}`, []);
+  const nextId = useRef(createRequestId()).current;
 
   const send = useCallback((text: string) => {
     const id = nextId();
@@ -137,7 +147,7 @@ export const totalMS = (r: Request) => (r.Stages ?? []).reduce((n, s) => n + par
 
 export const isFailed = (r: Request) => r.Outcome === "failed";
 export const outcomeTone = (o: string): Tone => (o === "failed" ? "bad" : o === "cancelled" ? "warn" : "neutral");
-export const isTyped = (source: string) => source === "dashboard" || source === "debug";
+export const isTyped = isTypedSource;
 
 const SOURCE_ICON: Record<string, typeof Mic> = { voice: Mic, dashboard: Keyboard, dashboard_mic: MonitorSmartphone, debug: Keyboard };
 export const sourceIcon = (s: string) => SOURCE_ICON[s] ?? Keyboard;
@@ -337,64 +347,10 @@ export function Composer({ placeholder = "Ask clanka…", onSent, toolbar, class
   const { send, sendAudio } = useChat();
   const session = useSession();
   const [text, setText] = useState("");
-  const [rec, setRec] = useState<{ start: number } | null>(null);
-  const [levels, setLevels] = useState<number[]>(() => Array(28).fill(0.06));
-  const [now, setNow] = useState(Date.now());
-  const [micError, setMicError] = useState("");
-  const [starting, setStarting] = useState(false);
-  const recording = useRef<Recording | null>(null);
+  const { phase, elapsed, levels, error: micError, start, stop, cancel } = useRecorder({ onSend: sendAudio, onSent });
   const canMic = session.Mic && micSupported();
+  const recording = phase === "recording";
 
-  useEffect(() => {
-    if (!rec) return;
-    const id = setInterval(() => setNow(Date.now()), 200);
-    return () => clearInterval(id);
-  }, [rec]);
-  useEffect(() => () => recording.current?.cancel(), []);
-
-  const finish = useCallback(
-    async (submit: boolean) => {
-      const r = recording.current;
-      recording.current = null;
-      setRec(null);
-      setLevels(Array(28).fill(0.06));
-      if (!r) return;
-      if (!submit) return r.cancel();
-      const pcm = await r.stop();
-      sendAudio(pcm);
-      onSent?.();
-    },
-    [onSent, sendAudio],
-  );
-  useEffect(() => {
-    if (rec && now - rec.start >= MIC_MAX_SECONDS * 1000) void finish(true);
-  }, [now, rec, finish]);
-
-  const start = async () => {
-    // getUserMedia blocks on the browser's permission prompt, so a second
-    // press can arrive before the first call resolves. Without this guard the
-    // second recording replaces the first in `recording.current`, and the
-    // first stream's tracks are never stopped: a live mic the user cannot
-    // cancel until the page reloads.
-    if (recording.current || starting) return;
-    setStarting(true);
-    setMicError("");
-    try {
-      let last = 0;
-      recording.current = await startRecording((rms) => {
-        const t = performance.now();
-        if (t - last < 50) return;
-        last = t;
-        setLevels((l) => [...l.slice(1), Math.max(0.06, Math.min(1, rms * 6))]);
-      });
-      setRec({ start: Date.now() });
-      setNow(Date.now());
-    } catch (e) {
-      setMicError(e instanceof DOMException && e.name === "NotAllowedError" ? "Microphone access was blocked." : "Could not start the microphone.");
-    } finally {
-      setStarting(false);
-    }
-  };
   const submit = () => {
     const t = text.trim();
     if (!t) return;
@@ -413,7 +369,7 @@ export function Composer({ placeholder = "Ask clanka…", onSent, toolbar, class
       variant="ghost"
       size="sm"
       onPress={start}
-      isDisabled={!canMic || starting}
+      isDisabled={!canMic || phase === "starting"}
       aria-label={canMic ? "Talk" : session.Mic ? "The microphone needs HTTPS" : "Speech recognition is not configured"}
     >
       <AudioLines className="size-4" />
@@ -422,9 +378,9 @@ export function Composer({ placeholder = "Ask clanka…", onSent, toolbar, class
 
   return (
     <div className={cn("border bg-surface-secondary", className)}>
-      {rec ? (
+      {recording ? (
         <div className="flex min-h-[6.25rem] items-center gap-2 px-2">
-          <Button isIconOnly variant="ghost" onPress={() => void finish(false)} aria-label="Cancel recording">
+          <Button isIconOnly variant="ghost" onPress={cancel} aria-label="Cancel recording">
             <X className="size-5" />
           </Button>
           {/* Red is reserved for "recording". */}
@@ -438,9 +394,9 @@ export function Composer({ placeholder = "Ask clanka…", onSent, toolbar, class
             ))}
           </div>
           <span className="w-12 text-right font-mono text-xs tabular-nums text-muted">
-            {Math.floor((now - rec.start) / 1000)}s
+            {elapsed}s / {MIC_MAX_SECONDS}s
           </span>
-          <Button isIconOnly variant="danger" onPress={() => void finish(true)} aria-label="Stop and send">
+          <Button isIconOnly variant="danger" onPress={stop} aria-label="Stop and send">
             <Square className="size-4 fill-current" />
           </Button>
         </div>

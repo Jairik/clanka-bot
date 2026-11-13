@@ -1,0 +1,77 @@
+// The Activity filter and hour-bucket rules, without a DOM.
+import { describe, expect, it } from "vitest";
+import { asFilter, bucketActivity, filterActivity, isProblem, isTypedSource } from "../activity";
+import { req } from "./harness";
+
+const voice = req({ ID: "v", Source: "voice" });
+const typed = req({ ID: "t", Source: "dashboard" });
+const mic = req({ ID: "m", Source: "dashboard_mic" });
+const failed = req({ ID: "f", Source: "voice", Outcome: "failed", Error: "boom" });
+const cancelled = req({ ID: "c", Source: "voice", Outcome: "cancelled" });
+
+describe("activity filters", () => {
+  it("keeps every request for All", () => {
+    expect(filterActivity([voice, typed, mic], "all", "").map((r) => r.ID)).toEqual(["v", "t", "m"]);
+  });
+
+  it("puts only keyboard requests under Typed", () => {
+    expect(filterActivity([voice, typed, mic], "typed", "").map((r) => r.ID)).toEqual(["t"]);
+  });
+
+  it("puts the two spoken paths under Voice until a mic filter exists", () => {
+    expect(filterActivity([voice, typed, mic], "voice", "").map((r) => r.ID)).toEqual(["v", "m"]);
+  });
+
+  it("counts a failure, a cancel and an error as problems", () => {
+    expect([failed, cancelled, req({ ID: "e", Error: "nope" }), voice].filter(isProblem).map((r) => r.ID)).toEqual(["f", "c", "e"]);
+    expect(filterActivity([voice, failed], "problems", "").map((r) => r.ID)).toEqual(["f"]);
+  });
+
+  it("searches transcripts, replies, tools, paths and errors", () => {
+    const rows = [req({ ID: "a", Transcript: "weather tomorrow" }), req({ ID: "b", Reply: "It will rain" }), req({ ID: "c", Error: "timeout" })];
+    expect(filterActivity(rows, "all", "WEATHER").map((r) => r.ID)).toEqual(["a"]);
+    expect(filterActivity(rows, "all", "rain").map((r) => r.ID)).toEqual(["b"]);
+    expect(filterActivity(rows, "all", "timeout").map((r) => r.ID)).toEqual(["c"]);
+    expect(filterActivity(rows, "all", "  ").map((r) => r.ID)).toEqual(["a", "b", "c"]);
+  });
+
+  it("falls back to All for an unknown filter", () => {
+    expect(asFilter("nonsense")).toBe("all");
+    expect(filterActivity([voice, typed], "nonsense", "")).toHaveLength(2);
+  });
+
+  it("only treats the keyboard sources as typed", () => {
+    expect(isTypedSource("dashboard")).toBe(true);
+    expect(isTypedSource("debug")).toBe(true);
+    expect(isTypedSource("dashboard_mic")).toBe(false);
+    expect(isTypedSource("voice")).toBe(false);
+  });
+});
+
+describe("activity buckets", () => {
+  const now = new Date("2026-11-13T12:00:00");
+
+  it("groups one hour and keeps input order", () => {
+    const a = req({ ID: "a", TimeISO: "2026-11-13T10:05:00" });
+    const b = req({ ID: "b", TimeISO: "2026-11-13T10:59:00" });
+    const buckets = bucketActivity([a, b], now);
+    expect(buckets).toHaveLength(1);
+    expect(buckets[0].list.map((r) => r.ID)).toEqual(["a", "b"]);
+  });
+
+  it("keeps the same hour one week apart in different buckets", () => {
+    const thisWeek = req({ ID: "now", TimeISO: "2026-11-13T09:00:00" });
+    const lastWeek = req({ ID: "then", TimeISO: "2026-11-06T09:00:00" });
+    const buckets = bucketActivity([thisWeek, lastWeek], now);
+    expect(buckets).toHaveLength(2);
+    expect(buckets[0].key).not.toBe(buckets[1].key);
+    expect(buckets[0].key).toContain("2026");
+  });
+
+  it("labels today by hour and older days by date", () => {
+    const today = bucketActivity([req({ ID: "a", TimeISO: "2026-11-13T09:00:00" })], now)[0];
+    const older = bucketActivity([req({ ID: "b", TimeISO: "2026-11-01T09:00:00" })], now)[0];
+    expect(today.title).not.toContain("·");
+    expect(older.title).toContain("·");
+  });
+});

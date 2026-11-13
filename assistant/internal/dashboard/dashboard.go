@@ -402,6 +402,15 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// application does not expose any other Tailscale header downstream.
 	stripTailscaleHeaders(r.Header)
 	ctx := context.WithValue(r.Context(), loginKey{}, login)
+	// One central gzip for the document and the JSON views. A HEAD, a Range
+	// request and a precompressed asset (which sets Content-Encoding itself)
+	// pass through untouched.
+	if r.Method != http.MethodHead && r.Header.Get("Range") == "" && acceptsEncoding(r.Header.Get("Accept-Encoding"), "gzip") {
+		cw := &compressWriter{ResponseWriter: w}
+		defer func() { _ = cw.Close() }()
+		h.mux.ServeHTTP(cw, r.WithContext(ctx))
+		return
+	}
 	h.mux.ServeHTTP(w, r.WithContext(ctx))
 }
 
@@ -480,6 +489,9 @@ func setSecurityHeaders(w http.ResponseWriter) {
 	// is React Aria's hashed sheet, so no 'unsafe-inline' exception is needed.
 	// Nothing is cached because every page is identity-scoped.
 	w.Header().Set("Cache-Control", "no-store")
+	// Every dashboard response has a compressed and a plain form, even when
+	// this client accepts neither.
+	w.Header().Set("Vary", "Accept-Encoding")
 	w.Header().Set("Content-Security-Policy", contentSecurityPolicy("'self'", "'self'"))
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Content-Type-Options", "nosniff")

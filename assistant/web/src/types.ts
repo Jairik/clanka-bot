@@ -222,6 +222,54 @@ export type PersonasView = Flashable & {
   Rows: { Name: string; Voice: string; VoiceStatus: string; Active: boolean; SelectAction: string; Edit: PersonaForm }[] | null;
 };
 
+// ---------- voice samples ----------
+export type VoiceSamplePhrase = { Slug: string; Text: string; Selected: boolean };
+export type VoiceSampleTake = {
+  ID: string;
+  Duration: string;
+  Size: string;
+  Added: string;
+  AudioURL: string;
+  DeleteAction: string;
+};
+export type VoiceSampleBundle = {
+  Name: string;
+  Size: string;
+  Created: string;
+  DownloadURL: string;
+  HostPath: string;
+  SCP: string;
+  Taildrop: string;
+  Positives: number;
+  Negatives: number;
+  HasCopyPath: boolean;
+};
+export type VoiceSamplesView = Flashable & {
+  HasStore: boolean;
+  RecordingAvailable: boolean;
+  Phrases: VoiceSamplePhrase[] | null;
+  Slug: string;
+  Phrase: string;
+  PositiveCount: number;
+  NegativeCount: number;
+  MinTakes: number;
+  MaxTakes: number;
+  MaxSeconds: string;
+  MaxBytes: string;
+  Positives: VoiceSampleTake[] | null;
+  Negatives: VoiceSampleTake[] | null;
+  Prompts: string[] | null;
+  NextPrompt: string;
+  NextNegativePrompt: string;
+  UploadPositive: string;
+  UploadNegative: string;
+  SubmitAction: string;
+  ClearPositive: string;
+  ClearNegative: string;
+  CanSubmit: boolean;
+  Bundles: VoiceSampleBundle[] | null;
+};
+
 // ---------- alerts ----------
 export type ScheduledAlert = {
   KindKey: string;
@@ -352,6 +400,7 @@ export type SpotifyView = Flashable & {
 
 export type PageViews = {
   activity: ActivityView;
+  "voice-samples": VoiceSamplesView;
   health: HealthView;
   settings: SettingsView;
   secrets: SecretsView;

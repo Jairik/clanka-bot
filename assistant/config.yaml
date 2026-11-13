@@ -233,6 +233,35 @@ voice:
   # clamped to [0.5, 2.0].
   rate: 1.0
 
+# Personal wake-phrase samples recorded in the Dashboard (/voice-samples).
+# Takes are canonical 16 kHz mono 16-bit WAV; a submitted set is a .tar.gz in
+# the same real/positive + real/negative layout training/record.py writes. The
+# Pi only records and exports; training runs on the desktop with
+# `wakeword/train import ...`. Nothing is uploaded, logged or added to the
+# activity feed, and samples are excluded from the repo and from backups.
+voice_samples:
+  # Draft takes. Empty means data.dir/wake-samples. Compose mounts the
+  # separate assistant-samples volume there, so the database backup path does
+  # not include the owner's voice. A relative path resolves under data.dir; an
+  # absolute path names a volume path.
+  dir: "wake-samples"
+  # Finished bundles. Empty means data.dir/exports. Compose sets the absolute
+  # /exports, bind-mounted from ./exports, so the scp command below names a
+  # real host path.
+  export_dir: "exports"
+  # ExportDir as the Pi's host sees it. Empty hides the scp and Taildrop
+  # commands; set it to the bind mount's host path (for example
+  # /home/rbpi/clanka-bot/exports) or accept the Download button instead.
+  host_dir: ""
+  # The desktop's Tailscale SSH name, used only to build the copy command:
+  # `scp <user>@<host>:<bundle> .`. Both empty hides that line.
+  ssh_user: ""
+  ssh_host: ""
+  # Taildrop target for `tailscale file cp <bundle> <desktop>:`. Empty hides it.
+  desktop: ""
+  # Each kind (positive, negative) is capped; 0 uses the built-in 100.
+  max_takes: 100
+
 # Microphone capture. Only this process opens the Pulse source (ADR-0001).
 capture:
   # Named Pulse source from `pactl list short sources`. Empty uses the default.

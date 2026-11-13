@@ -443,6 +443,21 @@ without the other.
       database or secrets. Back it up with `assistant-data`.
       `docker compose down -v` deletes both: back them up first if the
       settings, sounds, voices or secrets matter.
+- [ ] Personal wake-phrase samples recorded on the Dashboard's
+      `/voice-samples` page live in the separate `assistant-samples` volume at
+      `/app/data/wake-samples`, not on `assistant-data`, so a database backup
+      does not take the owner's voice with it. Finished `.tar.gz` bundles are
+      written to `/exports`, bind-mounted from `./exports` in the checkout
+      (`scripts/deploy.sh` creates it with the deploy user's ownership). They contain the owner's
+      voice: they are gitignored, never uploaded, never logged, and are not
+      part of a backup that leaves the host. To copy one to the desktop, set
+      `ASSISTANT_VOICE_SAMPLES_HOST_DIR=/home/rbpi/clanka-bot/exports`,
+      `ASSISTANT_EXPORT_SSH_USER=rbpi`, `ASSISTANT_EXPORT_SSH_HOST=pi` and
+      optionally `ASSISTANT_EXPORT_DESKTOP=<desktop>` in `.env`; leave them
+      empty to hide the copy lines and use Download. Then run
+      `wakeword/train import rbpi@pi:/home/rbpi/clanka-bot/exports/<bundle>
+      .` on the desktop. `docker compose down -v` deletes the takes; copy the
+      bundles off first.
 - [ ] The `librespot-cache` volume holds Spotify Connect credentials and audio
       cache; only `librespot` mounts it. The `librespot-status` volume holds a
       metadata-only heartbeat (pairing/session/device/timestamp) and is mounted

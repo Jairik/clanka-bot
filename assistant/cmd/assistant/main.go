@@ -54,6 +54,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/voicecmd"
 	"github.com/Jairik/clanka-bot/assistant/internal/voicelib"
 	"github.com/Jairik/clanka-bot/assistant/internal/voicesample"
+	"github.com/Jairik/clanka-bot/assistant/internal/wakesample"
 	"github.com/Jairik/clanka-bot/assistant/internal/wording"
 	"github.com/Jairik/clanka-bot/assistant/internal/wyoming"
 	"github.com/Jairik/clanka-bot/assistant/tools"
@@ -909,6 +910,21 @@ func run() error {
 		if announcements != nil {
 			previewQueue = announcements
 		}
+		wakesampleSvc, err := wakesample.New(wakesample.Options{
+			Dir:       cfg.VoiceSamplesDir(),
+			ExportDir: cfg.VoiceSamplesExportDir(),
+			HostDir:   cfg.VoiceSamples.HostDir,
+			SSHUser:   cfg.VoiceSamples.SSHUser,
+			SSHHost:   cfg.VoiceSamples.SSHHost,
+			Desktop:   cfg.VoiceSamples.Desktop,
+			MaxTakes:  cfg.VoiceSamples.MaxTakes,
+		})
+		if err != nil {
+			return fmt.Errorf("voice samples: %w", err)
+		}
+		if cfg.VoiceSamples.HostDir == "" {
+			logger.Info("voice sample copy commands hidden", "reason", "voice_samples.host_dir is empty")
+		}
 		dashboardHandler, err := dashboard.New(dashboard.Options{
 			Owner:         cfg.Dashboard.Owner,
 			Hosts:         cfg.Dashboard.Hosts,
@@ -927,6 +943,10 @@ func run() error {
 			Voices:        voiceSvc,
 			VoiceProbe:    voiceProbe,
 			VoicePreview:  voicePreview,
+			// The wake-phrase recorder stores takes on its own volume and
+			// exports bundles to the host-visible bind mount. It is a file
+			// store only: no audio leaves the box without an explicit copy.
+			VoiceSamples: wakesampleSvc,
 			// One module list reaches the Timer, Alarm and Reminder managers
 			// for the Scheduled alerts page; no second registry is created.
 			ToolModules: toolSet,

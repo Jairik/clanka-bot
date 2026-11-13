@@ -12,7 +12,7 @@ import { ChevronDown } from "lucide-react";
 export type Actions<T> = {
   /** Action URL currently in flight, if any. */
   pending: string;
-  run: (action: string, body?: Record<string, string> | FormData) => Promise<boolean>;
+  run: (action: string, body?: Record<string, string> | FormData | Blob) => Promise<boolean>;
   flash: string;
   error: string;
   clear: () => void;
@@ -33,7 +33,7 @@ export function useActions<T extends Flashable>(set: (v: T) => void): Actions<T>
     return () => clearTimeout(id);
   }, [flash]);
 
-  const run = async (action: string, body?: Record<string, string> | FormData) => {
+  const run = async (action: string, body?: Record<string, string> | FormData | Blob) => {
     setPending(action);
     setError("");
     setFlash("");

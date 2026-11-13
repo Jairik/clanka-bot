@@ -11,7 +11,7 @@ import (
 
 func TestAppServesIndexForTheRootAndEveryClientRoute(t *testing.T) {
 	handler := newHandler(t, dashboard.Options{})
-	for _, target := range []string{"/", "/alerts", "/health", "/settings", "/spotify", "/unknown/deep/route"} {
+	for _, target := range []string{"/", "/alerts", "/health", "/settings", "/spotify", "/voice-samples", "/unknown/deep/route"} {
 		t.Run(target, func(t *testing.T) {
 			rec := serve(handler, request(http.MethodGet, target, owner))
 			if rec.Code != http.StatusOK {

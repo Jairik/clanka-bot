@@ -25,10 +25,11 @@ FROM alpine:3.22
 RUN apk add --no-cache ca-certificates tzdata pulseaudio-utils && adduser -D -u 10001 assistant
 COPY --from=build /out/assistant /usr/local/bin/assistant
 COPY config.yaml /app/config.yaml
-# The named data volume and the separate voices volume are seeded from these
+# The named data, voices and wake-sample volumes are seeded from these
 # directories. Compose runs the container as the host UID for the Pulse socket,
-# so both must be writable by it; the SQLite file is created 0600 by the process.
-RUN mkdir -p /app/data/voices && chmod 0777 /app/data /app/data/voices
+# so all three must be writable by it; the SQLite file is created 0600 by the
+# process and takes are 0600.
+RUN mkdir -p /app/data/voices /app/data/wake-samples && chmod 0777 /app/data /app/data/voices /app/data/wake-samples
 WORKDIR /app
 USER assistant
 EXPOSE 8080 8081 8082

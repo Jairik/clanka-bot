@@ -3,14 +3,14 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { Button, Drawer, Popover, SearchField, Tooltip } from "@heroui/react";
 import {
-  Activity, AlarmClock, Bell, Bot, HeartPulse, KeyRound, MessageSquare, Minus, MoreHorizontal, Music, Plus,
+  Activity, AlarmClock, Bell, Bot, HeartPulse, KeyRound, MessageSquare, Mic, Minus, MoreHorizontal, Music, Plus,
   Settings, Smile, StickyNote, Volume, Volume1, Volume2, VolumeX, Waves,
 } from "lucide-react";
 import { getJSON, navigate, postForm, useLocation } from "./api";
 import type { HealthView, Session, Volume as VolumeState } from "./types";
 import { Range, cn } from "./ui";
 
-export type PageId = "home" | "activity" | "alerts" | "notes" | "health" | "sounds" | "voices" | "personas" | "spotify" | "secrets" | "settings";
+export type PageId = "home" | "activity" | "alerts" | "notes" | "health" | "sounds" | "voices" | "personas" | "voice-samples" | "spotify" | "secrets" | "settings";
 
 export const PAGES: { id: PageId; path: string; title: string; blurb: string; icon: typeof Bot }[] = [
   { id: "home", path: "/", title: "Chat", blurb: "", icon: MessageSquare },
@@ -21,6 +21,7 @@ export const PAGES: { id: PageId; path: string; title: string; blurb: string; ic
   { id: "sounds", path: "/sounds", title: "Sounds", blurb: "The sound library, Cue roles and Ring behaviour.", icon: Bell },
   { id: "voices", path: "/voices", title: "Voices", blurb: "The speaking voice, its rate, and the voice library.", icon: Waves },
   { id: "personas", path: "/personas", title: "Personas", blurb: "Bundles of voice, personality and wording, applied in one step.", icon: Smile },
+  { id: "voice-samples", path: "/voice-samples", title: "Voice samples", blurb: "Record takes for a wake phrase, then export the set for desktop training.", icon: Mic },
   { id: "spotify", path: "/spotify", title: "Spotify", blurb: "Connect pairing for playback and Web API auth for control.", icon: Music },
   { id: "secrets", path: "/secrets", title: "Secrets", blurb: "Write-only values the Agent and Tool modules read.", icon: KeyRound },
   { id: "settings", path: "/settings", title: "Settings", blurb: "Tools, wording, quiet hours and every other live setting.", icon: Settings },

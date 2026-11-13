@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -128,6 +129,11 @@ type Service struct {
 	desktop   string
 	maxTakes  int
 	now       func() time.Time
+
+	// mu serializes the writers. Add picks the next take number from a
+	// directory listing, so two concurrent keeps would otherwise choose the
+	// same id and the second rename would silently replace the first.
+	mu sync.Mutex
 }
 
 var slugPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+){0,3}$`)
@@ -330,6 +336,8 @@ func (s *Service) Count(slug string, kind Kind) int {
 // Add validates and stores one take. It refuses an over-limit set and an exact
 // duplicate of a take already kept, which is what a repeated tap looks like.
 func (s *Service) Add(slug string, kind Kind, data []byte) (Take, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	dir, err := s.kindDir(slug, kind)
 	if err != nil {
 		return Take{}, err
@@ -422,6 +430,8 @@ func digestSamples(samples []int16) string {
 // Delete removes one take. A missing id is not an error, so a double tap is
 // harmless.
 func (s *Service) Delete(slug string, kind Kind, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	dir, err := s.kindDir(slug, kind)
 	if err != nil {
 		return err
@@ -438,6 +448,8 @@ func (s *Service) Delete(slug string, kind Kind, id string) error {
 
 // Clear removes every take of one kind.
 func (s *Service) Clear(slug string, kind Kind) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	dir, err := s.kindDir(slug, kind)
 	if err != nil {
 		return err
@@ -480,6 +492,8 @@ func (s *Service) Path(slug string, kind Kind, id string) (string, error) {
 // .tar.gz in the same layout the desktop recorder writes. The set must be a
 // finished one: 5 to 100 positives.
 func (s *Service) Submit(slug string) (Bundle, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if !ValidSlug(slug) {
 		return Bundle{}, errors.New("invalid phrase")
 	}
@@ -501,9 +515,10 @@ func (s *Service) Submit(slug string) (Bundle, error) {
 	name := ""
 	var path string
 	for attempt := 0; attempt < 30; attempt++ {
-		name = fmt.Sprintf("%s-%s.tar.gz", slug, now.Add(time.Duration(attempt)*time.Second).Format("20060102-150405"))
-		path = filepath.Join(s.exportDir, name)
-		if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
+		candidate := fmt.Sprintf("%s-%s.tar.gz", slug, now.Add(time.Duration(attempt)*time.Second).Format("20060102-150405"))
+		if _, err := os.Stat(filepath.Join(s.exportDir, candidate)); errors.Is(err, os.ErrNotExist) {
+			name = candidate
+			path = filepath.Join(s.exportDir, name)
 			break
 		}
 	}

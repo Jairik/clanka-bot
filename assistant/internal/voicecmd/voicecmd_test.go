@@ -302,6 +302,43 @@ func TestReadAndWriteFailuresDoNotPanicOrChime(t *testing.T) {
 	}
 }
 
+// hangingSink blocks like a wedged pactl until its context ends.
+type hangingSink struct{}
+
+func (hangingSink) Volume(ctx context.Context) (audio.VolumeState, error) {
+	<-ctx.Done()
+	return audio.VolumeState{}, ctx.Err()
+}
+
+func (hangingSink) SetVolume(ctx context.Context, _ int) error {
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestAHangingSinkDoesNotStallTheVoiceLoop(t *testing.T) {
+	handler, err := voicecmd.New(
+		voicecmd.Config{Step: 10, Cooldown: time.Second},
+		voicecmd.Deps{
+			Sink:        hangingSink{},
+			Focus:       func() (bool, bool) { return true, false },
+			SinkTimeout: 50 * time.Millisecond,
+		},
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	done := make(chan struct{})
+	go func() {
+		handler.Handle(context.Background(), voicecmd.VolumeUpModel)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Handle still blocked on a hanging sink; the wake stream would stop being read")
+	}
+}
+
 func TestUnknownModelIsIgnored(t *testing.T) {
 	f := newFixture(t, 10, time.Second, 40, true, false)
 	f.handler.Handle(context.Background(), "play_jazz")

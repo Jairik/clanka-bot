@@ -34,6 +34,10 @@ const (
 	VolumeDownModel = "volume_down"
 )
 
+// DefaultSinkTimeout bounds one sink call when Deps.SinkTimeout is unset. It
+// matches the Dashboard's volume timeout.
+const DefaultSinkTimeout = 3 * time.Second
+
 // Sink is the volume seam audio.volume_set uses in production. It is a
 // pointer-free interface so tests can supply a fake without Pulse.
 type Sink interface {
@@ -65,6 +69,10 @@ type Deps struct {
 	Cue func(ctx context.Context)
 	// Now is the clock; tests advance it. Nil uses time.Now.
 	Now func() time.Time
+	// SinkTimeout bounds each Volume/SetVolume call. Handle runs on the voice
+	// loop's reading goroutine, so a wedged pactl must not stop the wake
+	// stream from being fed. Zero uses DefaultSinkTimeout.
+	SinkTimeout time.Duration
 	// Logger is optional. Ignored detections log at debug level so a healthy
 	// run does not grow the log with every phrase the room happens to say.
 	Logger *slog.Logger
@@ -96,6 +104,9 @@ func New(cfg Config, deps Deps) (*Handler, error) {
 	}
 	if deps.Now == nil {
 		deps.Now = time.Now
+	}
+	if deps.SinkTimeout <= 0 {
+		deps.SinkTimeout = DefaultSinkTimeout
 	}
 	if deps.Logger == nil {
 		deps.Logger = slog.Default()
@@ -129,7 +140,9 @@ func (h *Handler) Handle(ctx context.Context, name string) {
 	h.last = now
 	h.mu.Unlock()
 
-	state, err := h.deps.Sink.Volume(ctx)
+	sinkCtx, cancel := context.WithTimeout(ctx, h.deps.SinkTimeout)
+	defer cancel()
+	state, err := h.deps.Sink.Volume(sinkCtx)
 	if err != nil {
 		h.deps.Logger.Warn("voicecmd: read volume", "model", name, "error", err.Error())
 		return
@@ -139,7 +152,7 @@ func (h *Handler) Handle(ctx context.Context, name string) {
 		h.deps.Logger.Debug("voicecmd: no change", "model", name, "volume", state.Percent, "capped", capped)
 		return
 	}
-	if err := h.deps.Sink.SetVolume(ctx, target); err != nil {
+	if err := h.deps.Sink.SetVolume(sinkCtx, target); err != nil {
 		h.deps.Logger.Warn("voicecmd: set volume", "model", name, "error", err.Error())
 		return
 	}

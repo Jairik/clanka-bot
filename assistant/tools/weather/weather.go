@@ -231,24 +231,41 @@ func fetchCurrent(ctx context.Context, deps Deps, cache *cache, city string) (Ou
 	startNext()
 	delay := time.NewTimer(deps.FallbackDelay)
 	defer delay.Stop()
-	var lastErr error
-	for completed := 0; completed < len(providers); {
+	// A ToolError ("I couldn't find that place") is a definitive answer about
+	// the request, so no further provider starts: wttr.in would otherwise
+	// guess some place for a name the geocoder rejected. It must not cancel a
+	// provider already in flight, though: a fast keyless geocoder miss can
+	// arrive while WeatherAPI is about to answer, and that answer still wins.
+	var lastErr, sayErr error
+	for completed := 0; completed < started; {
 		select {
 		case <-ctx.Done():
+			if sayErr != nil {
+				return Out{}, sayErr
+			}
 			return Out{}, ctx.Err()
 		case reply := <-results:
 			completed++
-			var toolErr *tool.ToolError
-			if reply.err == nil || errors.As(reply.err, &toolErr) {
-				return reply.out, reply.err
+			if reply.err == nil {
+				return reply.out, nil
 			}
-			lastErr = reply.err
+			var toolErr *tool.ToolError
+			if errors.As(reply.err, &toolErr) {
+				if sayErr == nil {
+					sayErr = reply.err
+				}
+			} else {
+				lastErr = reply.err
+			}
 		case <-delay.C:
 		}
-		if started < len(providers) && ctx.Err() == nil {
+		if sayErr == nil && started < len(providers) && ctx.Err() == nil {
 			startNext()
 			delay.Reset(deps.FallbackDelay)
 		}
+	}
+	if sayErr != nil {
+		return Out{}, sayErr
 	}
 	return Out{}, lastErr
 }

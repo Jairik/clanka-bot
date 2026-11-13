@@ -153,9 +153,10 @@ tools:
   timer:
     alert_text: "Your timer is done."
   note:
-    # Recall embeds the notes and the query, then keeps matches at or above
-    # this cosine floor. 0.35 separates a real paraphrase from an unrelated
-    # sentence on all-MiniLM-L6-v2; no match says so rather than guessing.
+    # Recall embeds only the query, compares it with each note's cached
+    # vector and keeps matches at or above this cosine floor. 0.35 separates a
+    # real paraphrase from an unrelated sentence on all-MiniLM-L6-v2; no match
+    # says so rather than guessing.
     min_score: 0.35
     # Notes one recall returns, closest first.
     max_results: 3

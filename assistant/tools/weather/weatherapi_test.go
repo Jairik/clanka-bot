@@ -95,6 +95,39 @@ func TestWeatherAPIRecoversThroughOpenMeteo(t *testing.T) {
 	}
 }
 
+// TestAFastGeocoderMissDoesNotCancelASlowerWeatherAPIAnswer keeps an
+// in-flight primary alive when the keyless geocoder rejects the name first,
+// and still never asks wttr.in to guess the place.
+func TestAFastGeocoderMissDoesNotCancelASlowerWeatherAPIAnswer(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		time.Sleep(300 * time.Millisecond)
+		fmt.Fprint(w, weatherAPIJSON)
+	}))
+	defer api.Close()
+	geocoding := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"results":[]}`)
+	}))
+	defer geocoding.Close()
+	var guessed atomic.Int32
+	wttr := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		guessed.Add(1)
+		http.Error(w, "unexpected", http.StatusInternalServerError)
+	}))
+	defer wttr.Close()
+	def := weather.New(weather.Deps{
+		APIKey: fixedKey("test-key"), WeatherAPIURL: api.URL,
+		GeocodingURL: geocoding.URL, ForecastURL: geocoding.URL, FallbackURL: wttr.URL,
+		FallbackDelay: 20 * time.Millisecond,
+	})
+	out := execute(t, def, weather.In{City: "Berlin"})
+	if out.City != "Berlin" || out.Condition != "partly cloudy" {
+		t.Fatalf("result = %+v, want the WeatherAPI answer", out)
+	}
+	if guessed.Load() != 0 {
+		t.Fatalf("wttr.in was asked %d times after the geocoder rejected the name", guessed.Load())
+	}
+}
+
 // TestWeatherAPIAndOpenMeteoFailureReachesWttr retains the final independent fallback.
 func TestWeatherAPIAndOpenMeteoFailureReachesWttr(t *testing.T) {
 	failed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

@@ -435,9 +435,10 @@ func (m *Module) newIssueCreate(timeout time.Duration) tool.Tool[IssueCreateIn, 
 			created, err := m.client.createIssue(ctx, repo, title, body)
 			if err != nil {
 				// Do not log the title or body: they are the user's private
-				// content. The status alone is enough for local diagnosis.
-				status := apiStatus(err)
-				logger.Warn("github issue create failed", "repo", repo, "status", status)
+				// content. The status plus the failure kind is enough for local
+				// diagnosis, and a definitive status is never reported as 0.
+				logger.Warn("github issue create failed",
+					"repo", repo, "status", apiStatus(err), "kind", failureKind(err))
 				return IssueCreateOut{}, &tool.ToolError{Say: issueCreateFailure(err)}
 			}
 			// A success log carries only identifiers, never the title or body.
@@ -483,7 +484,7 @@ func (m *Module) newPRList(timeout time.Duration) tool.Tool[PRListIn, PRListOut]
 			}
 			total, prs, err := m.client.reviewRequestedPRs(ctx, repo, limit)
 			if err != nil {
-				logger.Warn("github pr list failed", "status", apiStatus(err))
+				logger.Warn("github pr list failed", "status", apiStatus(err), "kind", failureKind(err))
 				return PRListOut{}, &tool.ToolError{Say: prListFailure(err)}
 			}
 			logger.Info("github pr list", "returned", len(prs), "total", total)
@@ -520,7 +521,7 @@ func (m *Module) newNotifications(timeout time.Duration) tool.Tool[Notifications
 			}
 			items, err := m.client.unreadNotifications(ctx, limit)
 			if err != nil {
-				logger.Warn("github notifications failed", "status", apiStatus(err))
+				logger.Warn("github notifications failed", "status", apiStatus(err), "kind", failureKind(err))
 				return NotificationsOut{}, &tool.ToolError{Say: notificationsFailure(err)}
 			}
 			logger.Info("github notifications", "count", len(items))
@@ -551,21 +552,29 @@ func issueCreateFailure(err error) string {
 	case errors.Is(err, errRateLimited):
 		return "GitHub's rate limit is reached. Try again later."
 	case errors.Is(err, errForbidden):
-		return "GitHub refused the request. Check the token's permissions."
+		// A fine-grained token without Issues: write on the repository lands
+		// here, so name the exact permission instead of "check permissions".
+		return "GitHub refused the issue write. The GITHUB_TOKEN needs Issues: write on that repository."
 	case errors.Is(err, errNotFound):
 		return "GitHub couldn't find that repository. Check the name and the token's access."
-	case errors.Is(err, context.DeadlineExceeded):
-		// The registry's own deadline fired; as with a transport failure, the
-		// POST may have created the issue, so the outcome is unknown and there
-		// is no retry.
+	}
+	var transport *transportError
+	if errors.As(err, &transport) {
+		if requestNotSent(err) {
+			// DNS, TCP connect or certificate verification failed, so no part
+			// of the POST was delivered: saying "not sent" is honest and
+			// actionable, and it is not the ambiguous case.
+			return "I couldn't reach GitHub, so the issue wasn't sent. Try again in a moment."
+		}
+		return "I couldn't confirm whether the GitHub issue was created, so I didn't retry it."
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		// The registry's own deadline fired; the POST may have created the
+		// issue, so the outcome is unknown and there is no retry.
 		return "I couldn't confirm whether the GitHub issue was created, so I didn't retry it."
 	}
 	var apiErr *apiError
 	if errors.As(err, &apiErr) && apiErr.Status >= 500 {
-		return "I couldn't confirm whether the GitHub issue was created, so I didn't retry it."
-	}
-	var transport *transportError
-	if errors.As(err, &transport) {
 		return "I couldn't confirm whether the GitHub issue was created, so I didn't retry it."
 	}
 	return "I couldn't create the GitHub issue right now."
@@ -605,9 +614,14 @@ func notificationsFailure(err error) string {
 	return "I couldn't read your GitHub notifications right now."
 }
 
-// apiStatus returns a non-2xx status for a local log line, or 0. It never
-// returns a response body.
+// apiStatus returns a definitive HTTP status for a local log line, or 0 when
+// the failure was not an HTTP response. It reads the status a mapped sentinel
+// kept, so a 401/403/404/429 is not logged as 0. It never returns a body.
 func apiStatus(err error) int {
+	var withStatus *statusError
+	if errors.As(err, &withStatus) {
+		return withStatus.Status
+	}
 	var apiErr *apiError
 	if errors.As(err, &apiErr) {
 		return apiErr.Status

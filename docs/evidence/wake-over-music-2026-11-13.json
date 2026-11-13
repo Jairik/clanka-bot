@@ -1,0 +1,223 @@
+{
+  "schema": "wake-over-music/v1",
+  "kind": "operator-measurement",
+  "issue": 70,
+  "wake_word": "clanker",
+  "host": {
+    "device": "raspberrypi (Raspberry Pi 5, aarch64, kernel 6.12.115+rpt-rpi-2712)",
+    "pipewire": "1.2.7",
+    "pipewire_pulse": "PulseAudio (on PipeWire 1.2.7), protocol 35, pactl 16.1",
+    "capture_source": "alsa_input.usb-Generalplus_OSM09-00.mono-fallback",
+    "playback_sink": "bluez_output.5C_41_5A_94_78_A3.1",
+    "aec_source": "aec_mic_source",
+    "aec_sink": "aec_music_sink",
+    "aec_method": "webrtc",
+    "aec_args": "rate=48000",
+    "note": "record-first run 2026-11-13: 3 sessions x 3 volumes, raw real-mic and aec_mic_source recorded together, offline real-time replay through the deployed wakeword service; source gain 150% for the run, sink 100%, module unloaded afterwards"
+  },
+  "volumes": [
+    35,
+    65,
+    100
+  ],
+  "targets": {
+    "hit_rate": 0.8,
+    "false_wakes_per_hour": 6.0
+  },
+  "cells": [
+    {
+      "volume": 35,
+      "aec": "off",
+      "trials": 24,
+      "hits": 0,
+      "false_wakes": 0,
+      "exposure_min": 3.861,
+      "started_at": "2026-11-13T14:01:06.647220+00:00",
+      "ended_at": "2026-11-13T14:06:28.410154+00:00",
+      "note": "raw real-mic; 0/24 clanker and 0/12 volume_up; no detection at all"
+    },
+    {
+      "volume": 35,
+      "aec": "on",
+      "trials": 24,
+      "hits": 0,
+      "false_wakes": 0,
+      "exposure_min": 3.861,
+      "started_at": "2026-11-13T14:01:06.647220+00:00",
+      "ended_at": "2026-11-13T14:06:28.410154+00:00",
+      "note": "aec_mic_source; music RMS -50.0 dBFS; 0/24 clanker"
+    },
+    {
+      "volume": 65,
+      "aec": "off",
+      "trials": 24,
+      "hits": 0,
+      "false_wakes": 0,
+      "exposure_min": 3.862,
+      "started_at": "2026-11-13T14:06:29.243328+00:00",
+      "ended_at": "2026-11-13T14:11:51.012405+00:00",
+      "note": "raw real-mic; 0/24 clanker and 0/12 volume_up; no detection at all"
+    },
+    {
+      "volume": 65,
+      "aec": "on",
+      "trials": 24,
+      "hits": 0,
+      "false_wakes": 0,
+      "exposure_min": 3.862,
+      "started_at": "2026-11-13T14:06:29.243328+00:00",
+      "ended_at": "2026-11-13T14:11:51.012405+00:00",
+      "note": "aec_mic_source; music RMS -50.27 dBFS; 0/24 clanker"
+    },
+    {
+      "volume": 100,
+      "aec": "off",
+      "trials": 24,
+      "hits": 0,
+      "false_wakes": 0,
+      "exposure_min": 3.862,
+      "started_at": "2026-11-13T14:11:51.797792+00:00",
+      "ended_at": "2026-11-13T14:17:13.572711+00:00",
+      "note": "raw real-mic; 0/24 clanker and 0/12 volume_up; no detection at all"
+    },
+    {
+      "volume": 100,
+      "aec": "on",
+      "trials": 24,
+      "hits": 0,
+      "false_wakes": 0,
+      "exposure_min": 3.862,
+      "started_at": "2026-11-13T14:11:51.797792+00:00",
+      "ended_at": "2026-11-13T14:17:13.572711+00:00",
+      "note": "aec_mic_source; music RMS -49.48 dBFS; 0/24 clanker"
+    }
+  ],
+  "decision": {
+    "status": "pending",
+    "max_volume": null,
+    "note": "Pending and inconclusive. Both fixed targets exist, but the hit-rate target fails in every cell (0/24); the false-wake count is 0 only because the detector never fired. The blocker is the acoustic path: with the Echo at 100% and the mic at 150% source gain, the clips reach the cleaned capture at about -46 dBFS and are not intelligible; a digital fixture still detects. No music.max_volume cap is justified by this run."
+  },
+  "acoustics": [
+    {
+      "volume": 35,
+      "aec": "off",
+      "alignment_s": 0.1996,
+      "music_rms_dbfs": -28.38,
+      "clip_rms_dbfs": -28.09,
+      "clip_peak": 8569,
+      "volume_up_trials": 12,
+      "volume_up_hits": 0,
+      "volume_up_false_triggers": 0
+    },
+    {
+      "volume": 35,
+      "aec": "on",
+      "alignment_s": 0.1996,
+      "music_rms_dbfs": -50.0,
+      "clip_rms_dbfs": -45.43,
+      "clip_peak": 3720,
+      "volume_up_trials": 12,
+      "volume_up_hits": 0,
+      "volume_up_false_triggers": 0
+    },
+    {
+      "volume": 65,
+      "aec": "off",
+      "alignment_s": 0.2696,
+      "music_rms_dbfs": -28.21,
+      "clip_rms_dbfs": -27.95,
+      "clip_peak": 9228,
+      "volume_up_trials": 12,
+      "volume_up_hits": 0,
+      "volume_up_false_triggers": 0
+    },
+    {
+      "volume": 65,
+      "aec": "on",
+      "alignment_s": 0.2696,
+      "music_rms_dbfs": -50.27,
+      "clip_rms_dbfs": -48.24,
+      "clip_peak": 2844,
+      "volume_up_trials": 12,
+      "volume_up_hits": 0,
+      "volume_up_false_triggers": 0
+    },
+    {
+      "volume": 100,
+      "aec": "off",
+      "alignment_s": 0.2695,
+      "music_rms_dbfs": -27.95,
+      "clip_rms_dbfs": -27.37,
+      "clip_peak": 7399,
+      "volume_up_trials": 12,
+      "volume_up_hits": 0,
+      "volume_up_false_triggers": 0
+    },
+    {
+      "volume": 100,
+      "aec": "on",
+      "alignment_s": 0.2695,
+      "music_rms_dbfs": -49.48,
+      "clip_rms_dbfs": -46.15,
+      "clip_peak": 2897,
+      "volume_up_trials": 12,
+      "volume_up_hits": 0,
+      "volume_up_false_triggers": 0
+    }
+  ],
+  "commands": {
+    "model": "volume_up",
+    "threshold": 0.98,
+    "note": "12 trials per cell, same sessions and exposure as the clanker cells; 0 hits and 0 false triggers everywhere.",
+    "cells": [
+      {
+        "volume": 35,
+        "aec": "off",
+        "trials": 12,
+        "hits": 0,
+        "false_triggers": 0,
+        "exposure_min": 3.861
+      },
+      {
+        "volume": 35,
+        "aec": "on",
+        "trials": 12,
+        "hits": 0,
+        "false_triggers": 0,
+        "exposure_min": 3.861
+      },
+      {
+        "volume": 65,
+        "aec": "off",
+        "trials": 12,
+        "hits": 0,
+        "false_triggers": 0,
+        "exposure_min": 3.862
+      },
+      {
+        "volume": 65,
+        "aec": "on",
+        "trials": 12,
+        "hits": 0,
+        "false_triggers": 0,
+        "exposure_min": 3.862
+      },
+      {
+        "volume": 100,
+        "aec": "off",
+        "trials": 12,
+        "hits": 0,
+        "false_triggers": 0,
+        "exposure_min": 3.862
+      },
+      {
+        "volume": 100,
+        "aec": "on",
+        "trials": 12,
+        "hits": 0,
+        "false_triggers": 0,
+        "exposure_min": 3.862
+      }
+    ]
+  }
+}

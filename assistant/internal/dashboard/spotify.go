@@ -350,7 +350,7 @@ func spotifyPill(state spotify.PairingState) string {
 	switch state {
 	case spotify.PairingPaired:
 		return "ok"
-	case spotify.PairingUnavailable:
+	case spotify.PairingUnavailable, spotify.PairingExpired:
 		return "error"
 	default:
 		return "not-configured"

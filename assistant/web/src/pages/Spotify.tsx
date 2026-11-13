@@ -1,4 +1,4 @@
-// Spotify: Connect pairing (librespot) and Web API auth are separate grants.
+// Spotify: Connect pairing (the Soloist receiver) and Web API auth are separate grants.
 // Connect is a plain GET link so the browser never treats Spotify's redirect as
 // a form target; Verify and Disconnect are form posts and come back as
 // /spotify?flash=...
@@ -55,10 +55,10 @@ export function SpotifyPage() {
                 <p className="text-sm">{p.Detail}</p>
               </div>
               <Meta items={[["Device", p.Configured && p.Device && <span className="font-mono">{p.Device}</span>], ["Last heartbeat", p.Updated && <time dateTime={p.UpdatedISO}>{p.Updated}</time>]]} />
-              {!p.Configured && <p className="text-xs text-muted">The librespot status volume is not mounted, so pairing cannot be reported. The container may still be running.</p>}
+              {!p.Configured && <p className="text-xs text-muted">The Soloist status directory is not mounted, so pairing cannot be reported. The container may still be running.</p>}
               {p.Configured && !p.Available && (
                 <p className="text-xs text-muted">
-                  The heartbeat is missing or stale. Check <code>docker compose ps librespot</code> and <code>docker compose logs librespot</code>.
+                  The heartbeat is missing or stale. Check <code>docker compose ps soloist</code> and <code>docker compose logs soloist</code>.
                 </p>
               )}
               <ol className="list-decimal space-y-1 pl-5 text-xs text-muted">
@@ -66,7 +66,7 @@ export function SpotifyPage() {
                 <li>
                   Play something in Spotify, open <span className="text-foreground">Devices</span>, and choose <code className="text-foreground">{p.Device || "Clanka"}</code>.
                 </li>
-                <li>The first connection caches credentials on librespot's own volume; later starts reuse them.</li>
+                <li>The first connection caches credentials in Soloist's private data directory; later starts reuse them.</li>
               </ol>
             </div>
           </Section>

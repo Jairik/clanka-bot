@@ -11,8 +11,8 @@ import (
 	"strings"
 )
 
-// PulseStreams sets the volume of the Pulse sink inputs that belong to
-// librespot, found by application name. It shells out to pactl like the
+// PulseStreams sets the volume of the Pulse sink inputs that belong to the
+// music receiver, found by application name. It shells out to pactl like the
 // Assistant's other Pulse code, so it needs the same Pulse socket.
 type PulseStreams struct {
 	pactl string
@@ -21,10 +21,10 @@ type PulseStreams struct {
 
 // NewPulseStreams builds the stream controller. pactl is looked up beside the
 // given pacat binary (or on PATH); match is a case-insensitive substring of
-// the stream's application name or process binary, "librespot" when empty.
+// the stream's application name or process binary, "spotify" when empty.
 func NewPulseStreams(pacat, match string) *PulseStreams {
 	if strings.TrimSpace(match) == "" {
-		match = "librespot"
+		match = "spotify"
 	}
 	pactl := "pactl"
 	if dir := filepath.Dir(pacat); pacat != "" && dir != "." {
@@ -64,9 +64,12 @@ func (p *PulseStreams) SetPercent(ctx context.Context, percent int) error {
 	return firstErr
 }
 
-// matches reports whether the stream belongs to the music player.
+// matches reports whether the stream belongs to the music player. Soloist's
+// Pulse application name is "spotify"; the Assistant's own reply stream is
+// "clanka-assistant", so it is never ducked. media.name is deliberately
+// ignored: a browser playing the Spotify web player must not be ducked.
 func (p *PulseStreams) matches(in sinkInput) bool {
-	for _, key := range []string{"application.name", "application.process.binary", "media.name"} {
+	for _, key := range []string{"application.name", "application.process.binary"} {
 		if strings.Contains(strings.ToLower(in.Properties[key]), p.match) {
 			return true
 		}

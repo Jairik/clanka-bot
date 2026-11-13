@@ -495,7 +495,7 @@ func TestComposeServiceChecksCoverTheSevenServices(t *testing.T) {
 	for _, link := range links {
 		names = append(names, link.Name)
 	}
-	want := []string{"embed", "assistant", "wakeword", "stt", "tts", "web-search", "librespot"}
+	want := []string{"embed", "assistant", "wakeword", "stt", "tts", "web-search", "soloist"}
 	if strings.Join(names, ",") != strings.Join(want, ",") {
 		t.Fatalf("services = %v, want %v", names, want)
 	}
@@ -515,36 +515,43 @@ func TestComposeServiceChecksCoverTheSevenServices(t *testing.T) {
 	if links[5].Check == nil {
 		t.Error("web-search check is not wired")
 	}
-	// The default config has no librespot status volume, so the row is
+	// The default config has no Soloist status directory, so the row is
 	// explicitly unconfigured rather than a fabricated failure.
 	if links[6].Check != nil {
-		t.Error("librespot check = wired without a status file")
+		t.Error("soloist check = wired without a status file")
 	}
 }
 
-func TestLibrespotServiceCheckReadsTheHeartbeat(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "librespot.status")
+func TestSoloistServiceCheckReadsTheHeartbeat(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "soloist.status")
 	cfg := config.Default()
 	cfg.Spotify.PairingStatusFile = path
 	links := dashboard.ComposeServiceChecks(cfg)
 	var check dashboard.ServiceCheck
 	for _, link := range links {
-		if link.Name == "librespot" {
+		if link.Name == "soloist" {
 			check = link
 		}
 	}
 	if check.Check == nil {
-		t.Fatal("librespot check is not wired for a configured status file")
+		t.Fatal("soloist check is not wired for a configured status file")
 	}
 	if err := check.Check(context.Background()); err == nil {
 		t.Fatal("a missing heartbeat was reported healthy")
 	}
 	updated := time.Now().UTC().Format(time.RFC3339)
-	if err := os.WriteFile(path, []byte("version=1\nstate=paired\nsession=unknown\ndevice=Clanka\nupdated="+updated+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("version=2\nstate=paired\nsession=idle\ndevice=Clanka\nexpires_days=89\nupdated="+updated+"\n"), 0o600); err != nil {
 		t.Fatalf("write heartbeat: %v", err)
 	}
 	if err := check.Check(context.Background()); err != nil {
 		t.Fatalf("fresh heartbeat check: %v", err)
+	}
+	// An expired build answers but cannot play, so the row must fail.
+	if err := os.WriteFile(path, []byte("version=2\nstate=paired\nsession=idle\ndevice=Clanka\nexpires_days=-1\nupdated="+updated+"\n"), 0o600); err != nil {
+		t.Fatalf("write expired heartbeat: %v", err)
+	}
+	if err := check.Check(context.Background()); err == nil {
+		t.Fatal("an expired receiver build was reported healthy")
 	}
 }
 

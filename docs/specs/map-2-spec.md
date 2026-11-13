@@ -64,10 +64,10 @@ Status: **grilled, ready for `/to-tickets`** (2026-11-11). Built from [map-2-bri
 
 ### Spotify
 - Account has Premium (confirmed 2026-11-11).
-- Playback runs on the Pi through librespot into the same Pulse sink ([ADR-0004](../adr/0004-spotify-plays-through-the-pi.md)). "Play on <device>" transfer is a later extra.
+- Playback runs on the Pi through the Soloist Connect receiver into the same Pulse sink ([ADR-0004](../adr/0004-spotify-plays-through-the-pi.md)). "Play on <device>" transfer is a later extra.
 - Tools: `spotify.play` (resume, or search: track/artist/album/playlist/liked songs), `pause`, `next`, `previous`, `shuffle`, `repeat`, `volume`, `now_playing`, `queue_add`, `like`, `play_playlist` (with shuffle). Playlist names resolve through a local cache of the user's playlists (refreshed at startup and every 6 hours) and the shared name matcher. "pause"/"next"/"resume" reach Spotify through Focus intents, not their own Control phrases.
 - Wake word over music: a spike ticket comes first in phase 4 and measures wake-word hit rate at three music volumes with PipeWire `echo-cancel` on the host (sink as reference). `music.max_volume` is the fallback cap if AEC can't hold accuracy.
-- Auth: librespot pairs once by zeroconf and keeps its cached credentials on the volume. The Web API OAuth refresh token is stored in the secrets table through the Dashboard Connect button. The health page shows the two separately.
+- Auth: Soloist pairs once by zeroconf and keeps its cached credentials in its private data directory. The Web API OAuth refresh token is stored in the secrets table through the Dashboard Connect button. The health page shows the two separately.
 
 ### Quick wins (phase 2)
 - In: `assistant.repeat`, `assistant.help` (generated from the registry), `time.in_city`, `date.countdown`, `calc.evaluate`, `units.convert`, `random.flip`/`roll`/`pick`, `system.status`, quieter/mute for `audio.volume`, Quiet hours, `notify.phone`.

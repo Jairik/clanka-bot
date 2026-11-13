@@ -228,13 +228,13 @@ A named bundle of a voice, a personality prompt and the Filler and Unavailable w
 _Avoid_: Character, mode, skin, profile
 
 **Spotify Connect pairing**:
-The one-time grant where the Spotify app hands a Connect receiver its cached credentials over zeroconf. The `librespot` container keeps those credentials on its own volume; it is separate from Web API auth and survives container restarts.
+The one-time grant where the Spotify app hands a Connect receiver its cached credentials over zeroconf. The `soloist` container keeps those credentials in its private host data directory; it is separate from Web API auth and survives container restarts and image updates.
 _Avoid_: Login, Spotify password, account link
 
 **Spotify Web API auth**:
 The Authorization Code with PKCE grant whose refresh token is stored in the write-only secrets table. It authorises control calls such as play, pause, search and queue, not the audio path; the refresh token is never a config value or a file.
 _Avoid_: Spotify login, API key, client secret
 
-**Librespot**:
-The Spotify Connect receiver container. It advertises a device over mDNS on the host network and plays into the Assistant's Pulse sink ([ADR-0004](docs/adr/0004-spotify-plays-through-the-pi.md)).
-_Avoid_: Spotify player, Spotify daemon
+**Soloist**:
+The Spotify Connect receiver: Spotify's official proprietary binary, run by the `soloist` container. It advertises a device over mDNS on the host network, plays into the Assistant's Pulse sink ([ADR-0004](docs/adr/0004-spotify-plays-through-the-pi.md)), and expires periodically; the operator refreshes it with `make soloist-update`.
+_Avoid_: Spotify player, Spotify daemon, librespot

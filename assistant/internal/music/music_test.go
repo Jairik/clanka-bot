@@ -107,8 +107,9 @@ func TestNilDuckerIsANoOp(t *testing.T) {
 	restore()
 }
 
-// fakePactl lists two sink inputs (librespot and the assistant's reply) and
-// records every set-sink-input-volume call.
+// fakePactl lists three sink inputs (Soloist, the assistant's reply and a
+// browser playing the Spotify web player) and records every
+// set-sink-input-volume call.
 func fakePactl(t *testing.T) (pacat, log string) {
 	t.Helper()
 	dir := t.TempDir()
@@ -116,8 +117,9 @@ func fakePactl(t *testing.T) (pacat, log string) {
 	script := `#!/bin/sh
 if [ "$1" = "--format=json" ]; then
 cat <<'JSON'
-[{"index":7,"properties":{"application.name":"librespot","media.name":"Radiohead"}},
- {"index":9,"properties":{"application.name":"clanka-assistant","media.name":"assistant-reply"}}]
+[{"index":7,"properties":{"application.name":"spotify","application.process.binary":"soloist","media.name":"Radiohead"}},
+ {"index":9,"properties":{"application.name":"clanka-assistant","media.name":"assistant-reply"}},
+ {"index":11,"properties":{"application.name":"firefox","media.name":"Spotify - web player"}}]
 JSON
 exit 0
 fi
@@ -129,15 +131,15 @@ echo "$@" >> '` + log + `'
 	return filepath.Join(dir, "pacat"), log
 }
 
-func TestPulseStreamsSetsOnlyTheLibrespotInput(t *testing.T) {
+func TestPulseStreamsSetsOnlyTheReceiverInput(t *testing.T) {
 	pacat, log := fakePactl(t)
-	streams := music.NewPulseStreams(pacat, "")
+	streams := music.NewPulseStreams(pacat, "spotify")
 	if err := streams.SetPercent(t.Context(), 25); err != nil {
 		t.Fatalf("SetPercent: %v", err)
 	}
 	raw, _ := os.ReadFile(log)
 	if got := strings.TrimSpace(string(raw)); got != "set-sink-input-volume 7 25%" {
-		t.Fatalf("pactl calls = %q, want only the librespot input 7", got)
+		t.Fatalf("pactl calls = %q, want only the Soloist input 7", got)
 	}
 }
 

@@ -1,16 +1,16 @@
 # clanka-bot
 
-My lovely always-on voice assistant for stuff written in go. Kind of like a lobotomized jarvis,
+My lovely always-on voice assistant for stuff written in go. Kind of like a lobotomized jarvis.
 
 ## Run the prototype
 
 The prototype is the `assistant` Go service in Docker, with a `wakeword`
 (openWakeWord), an `stt` (Moonshine Voice), a `tts` (Pocket TTS) service, an
 internal `web-search` (SearXNG) service for Agent-path lookups, and a
-`librespot` Spotify Connect receiver.
+`soloist` Spotify Connect receiver.
 `assistant` owns the microphone and speaker, and also exposes a health endpoint
 and a localhost-only debug entry that accepts a typed transcript (entering the
-pipeline just after STT). librespot is the one music exception: it plays into
+pipeline just after STT). Soloist is the one music exception: it plays into
 the same Pulse sink as the Assistant's speech (ADR-0004).
 
 ```sh
@@ -171,26 +171,27 @@ the Secrets page. GitHub text is labelled to the model as untrusted facts.
 Spotify has two separate grants, and the Dashboard's `/spotify` page and Health
 panel show them separately:
 
-- **Connect pairing** is the librespot container. It advertises a Spotify
-  Connect device over mDNS, plays into the same Pulse sink as the Assistant's
-  speech, and caches its credentials in its own `librespot-cache` volume. The
-  Assistant never mounts that volume.
+- **Connect pairing** is the `soloist` container, Spotify's official Soloist
+  receiver. It advertises a Connect device over mDNS, plays into the same
+  Pulse sink as the Assistant's speech, and keeps its credentials in a private
+  host directory (`~/.cache/clanka/soloist/data`). The Assistant mounts only a
+  metadata-only status directory.
 - **Web API auth** is an OAuth refresh token in the write-only secrets table
   (`SPOTIFY_REFRESH_TOKEN`). It is used only for control calls such as
   play/pause, search, queue and now-playing; the audio itself always comes from
-  librespot on the Pi.
+  Soloist on the Pi.
 
 **Pair once.** Put the phone or desktop on the same LAN, open Spotify, play
 something, open **Devices**, and choose `Clanka` (or `SPOTIFY_DEVICE_NAME`).
-The first connection writes `credentials.json` to `librespot-cache`, so later
-container restarts reconnect without pairing again. librespot uses host
-networking because Docker's bridge network hides mDNS from the LAN; no port is
-published. Its container runs a small Avahi responder restricted to the
-default-route LAN interface, so the host needs no Avahi or D-Bus mount. If the
-device does not appear on a multi-homed host, set
-`SPOTIFY_ZEROCONF_INTERFACE` to the LAN interface name (for example `wlan0`).
-On a host that runs Avahi, `avahi-browse -t _spotify-connect._tcp` is a quick
-local check.
+The first connection stores credentials in Soloist's private data directory,
+so later restarts reconnect without pairing again. Soloist uses host networking
+because Docker's bridge network hides mDNS from the LAN; no port is published.
+It handles discovery itself, so the host needs no Avahi or D-Bus mount. The
+proprietary binary is downloaded on the deployment host by
+`scripts/soloist-setup.sh` (deploy runs it) and mounted read-only; it is never
+committed or baked into an image. Re-run `make soloist-update` before the
+official build expires; Health warns first and reports an expired build as an
+error.
 
 **Register the Web API app.** Create an app in the Spotify Developer Dashboard
 (development mode is fine; its owner needs Premium and it allows five users),
@@ -222,12 +223,13 @@ code, verifier or state. Spotify development-mode refresh tokens have a
 six-month lifetime; when the page says **reconnect needed**, click Connect
 again. Refreshing an access token does not extend that lifetime.
 
-**Troubleshooting.** `docker compose logs librespot` shows discovery and login
-errors; `docker compose ps` shows the heartbeat healthcheck. The Health page
-reports a stale or missing heartbeat as unavailable rather than guessing. A
-librespot container with no credentials still advertises the device, so
-"not paired" is a normal first-run state. `librespot-cache` contains
-credentials: treat it like the secrets database and do not copy it around.
+**Troubleshooting.** `docker compose logs soloist` shows discovery and login
+errors; `docker compose ps` shows the daemon/heartbeat/expiry healthcheck. The
+Health page reports a stale or missing heartbeat as unavailable rather than
+guessing. A receiver with no credentials still advertises the device, so
+"not paired" is a normal first-run state. The private data directory contains
+credentials and the API key: treat it like the secrets database and do not
+copy it around.
 
 **Playback Tools (#72).** `spotify.play` (resume, or search a track, artist,
 album, playlist or "my liked songs"), `spotify.pause`, `spotify.next`,
@@ -241,8 +243,8 @@ that claim so a bare "resume" still works; "stop" or a missing device releases
 it. Playing, pausing and volume need Spotify Premium and a paired device.
 
 Music ducks locally (ADR-0004): while a reply, a Ring or the turn after the
-wake word is active, the Assistant lowers the librespot Pulse stream
-(`pactl set-sink-input-volume`, matched by application name `librespot`) to 25%
+wake word is active, the Assistant lowers Soloist's Pulse stream
+(`pactl set-sink-input-volume`, matched by application name `spotify`) to 25%
 and restores it to 100% afterwards. That is separate from Spotify's own volume,
 which `spotify.volume` sets over the Web API.
 
@@ -254,7 +256,7 @@ device that is already louder is lowered to it when play starts.
 **Playlist and library Tools (#73).** `spotify.play_playlist` ("play my running
 playlist on shuffle"), `spotify.shuffle`, `spotify.repeat` (this song, the
 playlist or album, or off), `spotify.previous`, `spotify.queue_add` and
-`spotify.like` use the same Player, auth client and librespot device as above;
+`spotify.like` use the same Player, auth client and Soloist device as above;
 `play_playlist` also claims music Focus and honours `music.max_volume` like
 `spotify.play`. The assistant keeps a local cache of your playlists (`GET
 /me/playlists`, at most 20 pages of 50), loaded in the background at startup
@@ -279,10 +281,9 @@ with that scope list needs no reconnect; a grant made before it existed must
 click **Connect Web API** again.
 
 Status: code and tests only, exercised against an httptest fake Web API, a fake
-`pactl` and fake Focus holders. No real Spotify account, librespot playback,
-Pulse ducking or speaker has been exercised; those are the open live-acceptance
-items on #72, and the same holds for the #73 Tools and the playlist cache (no
-live Spotify call, no real playlist, no spoken test).
+`pactl` and fake Focus holders. The receiver's live pairing and playback are
+accepted on the Pi for #71; live Pulse ducking, voice commands and the #73
+playlist cache still need their own acceptance.
 
 
 Agent path replies are spoken as they are generated: the first chunk is flushed
@@ -1017,11 +1018,11 @@ only on the localhost debug listener and behind the authenticated Dashboard.
 
 Per [ADR-0001](docs/adr/0001-middleware-owns-all-audio-io.md) and
 [ADR-0004](docs/adr/0004-spotify-plays-through-the-pi.md), only the `assistant`
-and `librespot` containers mount the host's Pulse socket; `tts` and the other
+and `soloist` containers mount the host's Pulse socket; `tts` and the other
 model services do computation only. Compose runs both audio containers as
 `${ASSISTANT_UID}` (default 1000) so they can read the host Pulse cookie.
-`assistant` plays replies through `pacat`; librespot uses the PulseAudio
-backend and the same named sink. Set `ASSISTANT_PULSE_SINK` to a sink name
+`assistant` plays replies through `pacat`; Soloist uses the Pulse default
+sink, which is the same named sink the Assistant uses. Set `ASSISTANT_PULSE_SINK` to a sink name
 from `pactl list short sinks`; empty uses the default sink for both. On the Pi
 this is the Echo Dot once Bluetooth A2DP is set up.
 

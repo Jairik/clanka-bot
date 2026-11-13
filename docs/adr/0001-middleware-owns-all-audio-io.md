@@ -11,4 +11,4 @@ Only the Go `assistant` process opens the mic and the speaker (one named Pulse s
 
 - Echo cancellation is not done in Go. Go assumes its source is already cleaned, either by the mic's hardware or by PipeWire's `echo-cancel` module on the host. Where that happens is decided in the Hardware plan.
 - Only the `assistant` container mounts the PulseAudio socket. This supersedes the compose sketch in the Docker emulation research, where `wakeword` and `tts` mounted it.
-- [ADR-0004](0004-spotify-plays-through-the-pi.md) adds one deliberate second Pulse client: the `librespot` music container. It is not a model service and it never opens the mic; it exists so music can be ducked locally. The ML containers (`wakeword`, `stt`, `tts`, `embed`, `web-search`) still never touch an audio device.
+- [ADR-0004](0004-spotify-plays-through-the-pi.md) adds one deliberate second Pulse client: the `soloist` music container. It is not a model service and it never opens the mic; it exists so music can be ducked locally. The ML containers (`wakeword`, `stt`, `tts`, `embed`, `web-search`) still never touch an audio device.

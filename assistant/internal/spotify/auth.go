@@ -80,7 +80,7 @@ func (e *TokenError) Unwrap() error {
 }
 
 // WebAPIState is the truthful Web API auth state. It is separate from Connect
-// pairing: a paired librespot does not imply a Web API token, and vice versa.
+// pairing: a paired Soloist receiver does not imply a Web API token, and vice versa.
 type WebAPIState string
 
 const (
@@ -468,8 +468,8 @@ func (a *Auth) Invalidate(token string) {
 	a.mu.Unlock()
 }
 
-// Disconnect clears the stored refresh token. It does not touch librespot's
-// cached Connect credentials; pairing is a separate grant.
+// Disconnect clears the stored refresh token. It does not touch the Soloist
+// receiver's cached Connect credentials; pairing is a separate grant.
 func (a *Auth) Disconnect(ctx context.Context) (secrets.Metadata, error) {
 	if a == nil || a.store == nil {
 		return secrets.Metadata{}, ErrStore

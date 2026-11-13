@@ -1,7 +1,7 @@
 // Package spotify is the Spotify Tool domain. #71 landed its shared auth seam
 // (the PKCE Web API grant, the refresh-token secret and the reusable Web API
 // client). #72 adds the playback Tools on that seam: play, pause, next, volume
-// and now_playing, driving the librespot device on the Pi. #73 adds the
+// and now_playing, driving the Soloist device on the Pi. #73 adds the
 // playlist cache and the playlist and library Tools on the same Service.
 package spotify
 
@@ -61,7 +61,7 @@ func (m *Module) Register(r *tool.Registry, deps tool.Deps) error {
 }
 
 // registerPlayback builds the Player against the one Web API client and the
-// librespot device name from the spotify config, then adds the Tools. With the
+// receiver device name from the spotify config, then adds the Tools. With the
 // Web API unconfigured the Tools still register and speak "not connected".
 func (m *Module) registerPlayback(r *tool.Registry, deps tool.Deps) error {
 	maxVolume := func() int {

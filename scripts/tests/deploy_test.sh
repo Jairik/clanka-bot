@@ -120,6 +120,13 @@ new_scenario() {
 	mkdir -p "$SCENARIO/health"
 	set_services assistant
 	printf 'clanka/assistant:test\n' >"$SCENARIO/images"
+	# The receiver setup must never reach the network in a test. Pre-create
+	# its binary and key in the scenario directory.
+	mkdir -p "$SCENARIO/soloist"
+	printf '#!/bin/sh\nexit 0\n' >"$SCENARIO/soloist/soloist"
+	chmod +x "$SCENARIO/soloist/soloist"
+	printf 'test-key\n' >"$SCENARIO/soloist/api-key"
+	chmod 600 "$SCENARIO/soloist/api-key"
 	echo healthy >"$SCENARIO/health/default"
 	: >"$SCENARIO/calls"
 	: >"$SCENARIO/env"
@@ -146,7 +153,8 @@ new_repo() {
 	mkdir -p "$repo/scripts"
 	cp "$DEPLOY_SRC" "$repo/scripts/deploy.sh"
 	cp "$MAKE_SRC" "$repo/Makefile" 2>/dev/null || true
-	chmod +x "$repo/scripts/deploy.sh"
+	cp "$REPO_ROOT/scripts/soloist-setup.sh" "$repo/scripts/soloist-setup.sh"
+	chmod +x "$repo/scripts/deploy.sh" "$repo/scripts/soloist-setup.sh"
 	cat >"$repo/docker-compose.yml" <<'YAML'
 services:
   assistant:
@@ -173,6 +181,9 @@ run_deploy() {
 		STUB_DOCKER_DIR="$SCENARIO" PATH="$STUB_BIN:$PATH" \
 			DEPLOY_HEALTH_TIMEOUT="${DEPLOY_HEALTH_TIMEOUT:-5}" \
 			DEPLOY_POLL_INTERVAL="${DEPLOY_POLL_INTERVAL:-0.1}" \
+			SOLOIST_DIR="$SCENARIO/soloist" \
+			SOLOIST_BINARY="$SCENARIO/soloist/soloist" \
+			SOLOIST_LEGACY_DIR="$SCENARIO/legacy" \
 			bash scripts/deploy.sh "$@"
 	) >"$OUT" 2>&1
 	STATUS=$?
@@ -278,6 +289,19 @@ test_waits_for_every_service() {
 	assert_status 0 "multi-service deploy succeeds"
 	assert_out_contains "deploy waits for all services" "all 2 service"
 	assert_calls_contains "deploy checks the second service" "docker compose ps -q tts"
+}
+
+test_provisions_the_receiver_before_compose_up() {
+	local repo
+	repo=$(new_repo)
+	new_scenario
+	set_services assistant soloist
+	set_health assistant healthy
+	set_health soloist healthy
+	run_deploy "$repo"
+	assert_status 0 "deploy with a receiver succeeds"
+	assert_out_contains "deploy prepares the receiver" "using existing receiver binary"
+	assert_calls_contains "receiver setup runs before compose up" "docker compose up -d --build --remove-orphans"
 }
 
 test_rollback_removes_orphans_from_a_newer_service_set() {
@@ -442,6 +466,7 @@ run_test test_help
 run_test test_refuses_dirty_worktree
 run_test test_deploys_current_branch
 run_test test_waits_for_every_service
+run_test test_provisions_the_receiver_before_compose_up
 run_test test_rollback_removes_orphans_from_a_newer_service_set
 run_test test_reports_timeout_with_diagnostics
 run_test test_reports_unhealthy_service

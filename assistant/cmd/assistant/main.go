@@ -298,17 +298,17 @@ func run() error {
 	// overlapping on the single speaker. The wake chime uses the raw sink:
 	// it plays before any reply is chosen.
 	playSink := speech.NewSerialSink(sink)
-	// ADR-0004: librespot plays into the same Pulse server, so a reply, a Ring
-	// and the wake word duck its stream locally with pactl, never through the
-	// Web API. One refcounted Ducker serves all three.
+	// ADR-0004: the Soloist receiver plays into the same Pulse server, so a
+	// reply, a Ring and the wake word duck its stream locally with pactl,
+	// never through the Web API. One refcounted Ducker serves all three.
 	// Without the Web API app there is no music to duck, so the Ducker stays
 	// nil (a no-op that never spawns pactl).
 	var musicDucker *music.Ducker
 	if cfg.Spotify.Enabled() {
-		musicDucker = music.NewDucker(music.NewPulseStreams(cfg.Playback.Binary, ""), music.DefaultDuckPercent, logger)
+		musicDucker = music.NewDucker(music.NewPulseStreams(cfg.Playback.Binary, cfg.Spotify.StreamMatch), music.DefaultDuckPercent, logger)
 		// A crash while ducked, or Pulse's stream-restore remembering the
-		// ducked level, must not leave the music quiet. Best effort: librespot
-		// may not be running yet.
+		// ducked level, must not leave the music quiet. Best effort: the
+		// receiver may not be running yet.
 		resetCtx, cancelReset := context.WithTimeout(ctx, 2*time.Second)
 		if err := musicDucker.Reset(resetCtx); err != nil {
 			logger.Warn("music startup volume reset", "error", err.Error())

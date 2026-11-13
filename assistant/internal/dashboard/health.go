@@ -70,13 +70,13 @@ func checkViewOf(check tool.StatusCheck) checkView {
 }
 
 // spotifyChecks reports the two Spotify grants independently. It reads only
-// status metadata: pairing comes from librespot's heartbeat file, Web API auth
+// status metadata: pairing comes from the Soloist heartbeat file, Web API auth
 // from the token manager's last safe result.
 func (h *Handler) spotifyChecks() []checkView {
 	pairing := spotify.PairingStatus{
 		State:  spotify.PairingNotConfigured,
 		Label:  "not configured",
-		Detail: "librespot pairing is not configured in this deployment.",
+		Detail: "Soloist pairing is not configured in this deployment.",
 	}
 	if h.spotifyPairing != nil {
 		pairing = h.spotifyPairing.Status()
@@ -86,9 +86,15 @@ func (h *Handler) spotifyChecks() []checkView {
 	case spotify.PairingPaired:
 		pairingView.Status = string(tool.StatusOK)
 		pairingView.StatusLabel = "paired"
+		if pairing.ExpiryKnown && pairing.ExpiresDays <= 14 {
+			pairingView.StatusLabel = "paired, update soon"
+		}
 	case spotify.PairingNotPaired:
 		pairingView.Status = string(tool.StatusNotConfigured)
 		pairingView.StatusLabel = "not paired"
+	case spotify.PairingExpired:
+		pairingView.Status = string(tool.StatusError)
+		pairingView.StatusLabel = "build expired"
 	case spotify.PairingUnavailable:
 		pairingView.Status = string(tool.StatusError)
 		pairingView.StatusLabel = "unavailable"

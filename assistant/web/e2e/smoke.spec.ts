@@ -73,6 +73,22 @@ test("the mic reaches its recording state and can be cancelled", async ({ page }
   await expect(page.getByRole("button", { name: "Talk" })).toBeVisible();
 });
 
+test("the app and its script arrive precompressed", async ({ page, request }) => {
+  await page.goto("/");
+  const doc = await request.get("/", { headers: { "Accept-Encoding": "br" } });
+  expect(doc.headers()["content-encoding"]).toBe("br");
+
+  const src = await page.evaluate(() => document.querySelector('script[type="module"]')?.getAttribute("src") ?? "");
+  const path = new URL(src, "http://127.0.0.1:8099").pathname;
+  const plain = await request.get(path, { headers: { "Accept-Encoding": "identity" } });
+  const br = await request.get(path, { headers: { "Accept-Encoding": "br" } });
+  expect(br.headers()["content-encoding"]).toBe("br");
+  const plainBytes = Number(plain.headers()["content-length"]);
+  const brBytes = Number(br.headers()["content-length"]);
+  expect(plainBytes).toBeGreaterThan(0);
+  expect(brBytes).toBeLessThan(plainBytes / 2);
+});
+
 test("a refused volume write shows the server's text", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Mute speaker" }).click();

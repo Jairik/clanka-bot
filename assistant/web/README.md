@@ -11,6 +11,10 @@ pnpm test         # vitest: logic and component tests, no network or devices
 pnpm dev          # Vite on :5173, proxying to a local assistant
 ```
 
+The build also writes `.gz` and `.br` siblings of the text assets (JS, CSS,
+HTML, SVG, JSON). The Go handler serves the smallest encoding the client
+accepts; the JSON views, which cannot be precompressed, are gzipped on the fly.
+
 `pnpm dev` proxies `/api/*` and the write routes to `DASHBOARD_URL`
 (default `http://127.0.0.1:8082`) and adds `Tailscale-User-Login:
 $DASHBOARD_OWNER` (default `dev`), standing in for `tailscale serve`. Start the

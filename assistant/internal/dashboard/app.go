@@ -5,6 +5,7 @@ import (
 	"io/fs"
 	"net/http"
 	"path"
+	"strconv"
 	"strings"
 )
 
@@ -25,7 +26,15 @@ func (h *Handler) app(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	index, err := fs.ReadFile(h.ui, "index.html")
+	// The document is static too: serve its build-time sibling when one was
+	// emitted, and let the central gzip handle it otherwise.
+	serveName, coding := "index.html", ""
+	if r.Header.Get("Range") == "" {
+		if name, enc := precompressed(h.ui, "index.html", r.Header.Get("Accept-Encoding")); name != "" {
+			serveName, coding = name, enc
+		}
+	}
+	index, err := fs.ReadFile(h.ui, serveName)
 	if err != nil {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusServiceUnavailable)
@@ -43,6 +52,10 @@ func (h *Handler) app(w http.ResponseWriter, r *http.Request) {
 	// narrowed to one route without making the recorder a separate document.
 	w.Header().Set("Content-Security-Policy", appSecurityPolicy())
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if coding != "" {
+		w.Header().Set("Content-Encoding", coding)
+		w.Header().Set("Content-Length", strconv.Itoa(len(index)))
+	}
 	_, _ = w.Write(index)
 }
 
@@ -60,7 +73,16 @@ func isAssetPath(name string) bool {
 }
 
 func (h *Handler) appFile(w http.ResponseWriter, r *http.Request, name string) {
-	f, err := h.ui.Open(name)
+	// The build emits .gz/.br siblings for text assets; serve one when the
+	// client accepts it rather than compressing the same bytes on every hit.
+	served, coding := "", ""
+	if r.Header.Get("Range") == "" {
+		served, coding = precompressed(h.ui, name, r.Header.Get("Accept-Encoding"))
+	}
+	if served == "" {
+		served = name
+	}
+	f, err := h.ui.Open(served)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			http.NotFound(w, r)
@@ -80,6 +102,15 @@ func (h *Handler) appFile(w http.ResponseWriter, r *http.Request, name string) {
 		// stale. private: they are still identity-gated.
 		w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
 	}
+	if coding != "" {
+		// The sibling has no useful extension: ServeContent is given the
+		// original name so the content type still comes from it.
+		w.Header().Set("Content-Encoding", coding)
+		w.Header().Set("Accept-Ranges", "none")
+		// ServeContent leaves the length to chunking when an encoding is set;
+		// the sibling's size is exact, so send it.
+		w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
+	}
 	seeker, ok := f.(interface {
 		fs.File
 		Read([]byte) (int, error)
@@ -89,5 +120,30 @@ func (h *Handler) appFile(w http.ResponseWriter, r *http.Request, name string) {
 		http.Error(w, "asset unavailable", http.StatusInternalServerError)
 		return
 	}
-	http.ServeContent(w, r, info.Name(), info.ModTime(), seeker)
+	http.ServeContent(w, r, name, info.ModTime(), seeker)
+}
+
+// precompressed chooses the best build-time encoding the client accepts. Only
+// text assets get siblings; fonts and images always fall through to the plain
+// file.
+func precompressed(fsys fs.FS, name, accept string) (string, string) {
+	switch path.Ext(name) {
+	case ".js", ".css", ".html", ".svg", ".json":
+	default:
+		return "", ""
+	}
+	if _, err := fs.Stat(fsys, name); err != nil {
+		return "", ""
+	}
+	if acceptsEncoding(accept, "br") {
+		if _, err := fs.Stat(fsys, name+".br"); err == nil {
+			return name + ".br", "br"
+		}
+	}
+	if acceptsEncoding(accept, "gzip") {
+		if _, err := fs.Stat(fsys, name+".gz"); err == nil {
+			return name + ".gz", "gzip"
+		}
+	}
+	return "", ""
 }

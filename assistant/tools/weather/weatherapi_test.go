@@ -80,7 +80,12 @@ func TestWeatherAPIRecoversThroughOpenMeteo(t *testing.T) {
 			def := weather.New(weather.Deps{
 				APIKey: fixedKey("test-key"), WeatherAPIURL: api.URL,
 				GeocodingURL: geocoding, ForecastURL: forecast, FallbackURL: redirect.URL,
-				FallbackDelay: 10 * time.Millisecond,
+				// The canary must never be consulted: Open-Meteo answers these
+				// cases. Ten milliseconds let a starved scheduler start the
+				// fallback first and fail the result assertion, so give the
+				// direct path a head start the local server cannot lose while
+				// staying inside the registry's one-second budget.
+				FallbackDelay: 500 * time.Millisecond,
 			})
 			out := execute(t, def, weather.In{City: "Berlin"})
 			if out.Condition != "overcast" || out.TemperatureC != 3.9 || redirected.Load() != 0 {

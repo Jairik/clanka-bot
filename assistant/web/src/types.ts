@@ -62,7 +62,7 @@ export type HealthView = {
 };
 
 // ---------- wake word ----------
-export type WakewordModel = { Name: string; Threshold: string };
+export type WakewordModel = { Name: string; Threshold: string; Command: boolean; Enabled: boolean };
 export type WakewordSettings = {
   Enabled: boolean;
   Addr: string;

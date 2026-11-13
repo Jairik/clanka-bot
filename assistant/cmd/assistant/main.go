@@ -51,6 +51,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/toolpolicy"
 	"github.com/Jairik/clanka-bot/assistant/internal/tz"
 	"github.com/Jairik/clanka-bot/assistant/internal/voice"
+	"github.com/Jairik/clanka-bot/assistant/internal/voicecmd"
 	"github.com/Jairik/clanka-bot/assistant/internal/voicelib"
 	"github.com/Jairik/clanka-bot/assistant/internal/voicesample"
 	"github.com/Jairik/clanka-bot/assistant/internal/wording"
@@ -816,7 +817,47 @@ func run() error {
 			}
 			return clip.PCM, clip.Format, true
 		}
-		loop, err := newVoiceLoop(cfg, session, p, sink, announcements, wakeCue, activityStore.Observe, musicDucker, logger)
+		// Wake-free command models (#81): a detection runs the volume step and
+		// Cue with no STT and no routing. The handler reads Focus and the live
+		// music cap per detection, so a Dashboard change applies immediately.
+		var wakeCommands map[string]voice.WakeCommand
+		if models := cfg.Wakeword.CommandModels(); len(models) > 0 {
+			handler, err := voicecmd.New(
+				voicecmd.Config{Step: cfg.Wakeword.Commands.Step, Cooldown: cfg.Wakeword.Commands.Cooldown.Duration()},
+				voicecmd.Deps{
+					Sink: sink,
+					Focus: func() (bool, bool) {
+						return focusRegistry.Held(focus.Reply), focusRegistry.Held(focus.Music)
+					},
+					MaxVolume: func() int { return spotify.MaxVolume(settingsSvc) },
+					// The wake Cue is the fixed short acknowledgement: the Cue
+					// role list is code, and adding a sixth role for one sound
+					// would widen the settings surface for no new choice.
+					Cue: func(cueCtx context.Context) {
+						go func() {
+							if err := cues.Play(cueCtx, sound.RoleWake); err != nil {
+								logger.Warn("voice command cue", "error", err.Error())
+							}
+						}()
+					},
+					Logger: logger,
+				},
+			)
+			if err != nil {
+				return fmt.Errorf("voice commands: %w", err)
+			}
+			wakeCommands = make(map[string]voice.WakeCommand, len(models))
+			for _, name := range models {
+				wakeCommands[name] = handler.Handle
+			}
+			logger.Info("wake-free commands enabled",
+				"models", models,
+				"step", cfg.Wakeword.Commands.Step,
+				"cooldown", cfg.Wakeword.Commands.Cooldown.Duration().String(),
+				"thresholds", cfg.Wakeword.ModelThresholds(),
+			)
+		}
+		loop, err := newVoiceLoop(cfg, session, p, sink, announcements, wakeCue, activityStore.Observe, musicDucker, wakeCommands, logger)
 		if err != nil {
 			return err
 		}
@@ -956,6 +997,8 @@ func run() error {
 		"spotify_pairing_status", cfg.Spotify.PairingStatusFile != "",
 		"speech_enabled", cfg.VoiceEnabled(),
 		"wakeword_addr", cfg.Wakeword.Addr,
+		"wakeword_models", cfg.Wakeword.WakeModels(),
+		"wakeword_commands", cfg.Wakeword.CommandModels(),
 		"stt_addr", cfg.STT.Addr,
 		"agent_filler", settingsSvc.String(wording.FillerKey),
 		"tools", len(registry.Names()),
@@ -983,7 +1026,7 @@ func run() error {
 // STT, the live wake Cue, and the shared reply Session. The pipeline is the
 // Barge-in seam that drops a waiting Confirmation, and the Announcement queue
 // stops unprompted speech as soon as a wake word starts a turn.
-func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingDropper, sink audio.Sink, announcements *announce.Queue, wakeCue func() ([]byte, audio.Format, bool), observer latency.Observer, ducker voice.Ducker, logger *slog.Logger) (*voice.Loop, error) {
+func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingDropper, sink audio.Sink, announcements *announce.Queue, wakeCue func() ([]byte, audio.Format, bool), observer latency.Observer, ducker voice.Ducker, wakeCommands map[string]voice.WakeCommand, logger *slog.Logger) (*voice.Loop, error) {
 	captureFormat := audio.Format{Rate: cfg.Capture.Rate, Width: cfg.Capture.Width, Channels: cfg.Capture.Channels}
 	frameBytes := cfg.Capture.Rate * cfg.Capture.Width * cfg.Capture.Channels * cfg.Capture.FrameMS / 1000
 	if frameBytes <= 0 {
@@ -992,8 +1035,11 @@ func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingD
 	wireFormat := wyoming.Format{Rate: captureFormat.Rate, Width: captureFormat.Width, Channels: captureFormat.Channels}
 
 	// The explicit allowlist is both what the service is asked to detect and
-	// what the loop accepts, so an unlisted model never starts a turn.
+	// what the loop accepts, so an unlisted model never starts a turn. The
+	// detect list also carries the enabled command models; the loop keeps the
+	// two lists apart, so a command never starts a turn.
 	names := cfg.Wakeword.WakeModels()
+	detectModels := cfg.Wakeword.DetectModels()
 	wakeClient := wyoming.NewClient(cfg.Wakeword.Addr, wyoming.WithTimeout(cfg.Wakeword.Timeout.Duration()))
 	sttClient := wyoming.NewClient(cfg.STT.Addr, wyoming.WithTimeout(cfg.STT.Timeout.Duration()))
 
@@ -1012,18 +1058,16 @@ func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingD
 		"pulse_source", cfg.Capture.Source,
 		"wakeword_addr", cfg.Wakeword.Addr,
 		"wakeword_models", names,
+		"wakeword_commands", cfg.Wakeword.CommandModels(),
 		"wakeword_thresholds", cfg.Wakeword.ModelThresholds(),
 		"stt_addr", cfg.STT.Addr,
 		"stt_model", cfg.STT.Model,
 		"endpoint_silence", cfg.STT.Endpoint.Silence.Duration().String(),
 	)
 
-	// WakeCommands is empty until #81 registers its trained command models; a
-	// configured command name would be added to the detect allowlist above and
-	// handled here without opening STT.
 	deps := voice.Deps{
 		Source:    audio.NewPulseSource(cfg.Capture.Binary, cfg.Capture.Source, captureFormat),
-		Wake:      voice.NewWyomingWake(wakeClient, names, wireFormat, cfg.Wakeword.ModelThresholds()),
+		Wake:      voice.NewWyomingWake(wakeClient, detectModels, wireFormat, cfg.Wakeword.ModelThresholds()),
 		STT:       voice.NewWyomingSTT(sttClient, wyoming.TranscribeOptions{Name: cfg.STT.Model, Language: cfg.STT.Language}, wireFormat),
 		Player:    audio.NewPCMPlayer(sink),
 		Responder: voice.NewPipelineResponder(session, tool.DevicePi),
@@ -1034,6 +1078,7 @@ func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingD
 		Ducker:    ducker,
 		Logger:    logger,
 	}
+	deps.WakeCommands = wakeCommands
 	// Leave the seam absent rather than storing a typed nil: a text-only setup
 	// has no speech to stop.
 	if announcements != nil {

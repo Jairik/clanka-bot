@@ -54,7 +54,10 @@ export function SettingsPage() {
               <ul className="divide-y divide-separator">
                 {data.Wakeword.Models.map((model) => (
                   <li key={model.Name} className="flex items-center justify-between gap-3 px-3.5 py-3">
-                    <span className="font-mono text-sm">{model.Name}</span>
+                    <span className="flex flex-wrap items-center gap-2">
+                      <span className="font-mono text-sm">{model.Name}</span>
+                      {model.Command && <Badge tone={model.Enabled ? "neutral" : "warn"}>command{model.Enabled ? "" : " · off"}</Badge>}
+                    </span>
                     <span className="text-xs text-muted">threshold {model.Threshold}</span>
                   </li>
                 ))}

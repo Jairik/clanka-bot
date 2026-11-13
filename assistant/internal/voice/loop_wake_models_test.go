@@ -12,7 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/audio"
 	"github.com/Jairik/clanka-bot/assistant/internal/voice"
+	"github.com/Jairik/clanka-bot/assistant/internal/voicecmd"
 	"github.com/Jairik/clanka-bot/assistant/internal/wyoming"
 )
 
@@ -294,5 +296,77 @@ func TestWyomingWakeDropsADetectionOutsideTheAllowlist(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("detections did not close")
+	}
+}
+
+// commandSink is the volume seam for a real voicecmd.Handler in a loop test.
+type commandSink struct {
+	mu      sync.Mutex
+	percent int
+	sets    []int
+}
+
+func (s *commandSink) Volume(context.Context) (audio.VolumeState, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return audio.VolumeState{Percent: s.percent}, nil
+}
+
+func (s *commandSink) SetVolume(_ context.Context, percent int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.percent = percent
+	s.sets = append(s.sets, percent)
+	return nil
+}
+
+func (s *commandSink) writes() []int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]int(nil), s.sets...)
+}
+
+func TestLoopRunsARealVolumeCommandWithoutSTTOrRouting(t *testing.T) {
+	source := &scriptSource{frames: append(repeat(loudFrame(), 8), repeat(silentFrame(), 400)...)}
+	wake := &fakeWake{afterWords: 3, names: []string{"volume_up", "clanker"}, maxFires: 2}
+	stt := &fakeSTT{text: "what time is it"}
+	responder := &fakeResponder{calls: make(chan string, 1)}
+	sink := &commandSink{percent: 40}
+
+	handler, err := voicecmd.New(
+		voicecmd.Config{Step: 10, Cooldown: time.Second},
+		voicecmd.Deps{
+			Sink:  sink,
+			Focus: func() (bool, bool) { return true, false },
+			Cue:   func(context.Context) {},
+		},
+	)
+	if err != nil {
+		t.Fatalf("voicecmd.New: %v", err)
+	}
+
+	loop := newLoop(t, voice.Config{FrameBytes: frameBytes, Endpoint: endpointConfig(300 * time.Millisecond)},
+		voice.Deps{
+			Source: source, Wake: wake, STT: stt, Responder: responder,
+			WakeWords:    []string{"clanker"},
+			WakeCommands: map[string]voice.WakeCommand{"volume_up": handler.Handle},
+		})
+	runLoop(t, loop)
+
+	select {
+	case <-responder.calls:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the following wake word did not start a turn")
+	}
+	if got := sink.writes(); len(got) != 1 || got[0] != 50 {
+		t.Fatalf("volume writes = %v, want one step to 50", got)
+	}
+	// The command opened no STT stream and routed nothing; only the clanker
+	// turn after it did.
+	if opens := stt.openCount(); opens != 1 {
+		t.Fatalf("STT opened %d streams, want only the wake turn", opens)
+	}
+	if got := responder.wakeWords(); len(got) != 1 || got[0] != "clanker" {
+		t.Fatalf("wake words = %v, want [clanker]", got)
 	}
 }

@@ -361,6 +361,62 @@ single-model run only by the second detector being active. If the six-cell run
 used `okay_nabu` at another threshold, keep that value and record it. A cell
 with zero exposure minutes is invalid here too.
 
+### 5.2 Wake-free command models (#81)
+
+`volume_up` and `volume_down` are detected by the same service but handled
+without STT: one volume step and a short Cue while music or a reply holds Focus.
+They need their own false-trigger number because a false accept changes the
+volume, not just the log. The deploy default is threshold **0.7**
+(`wakeword.commands.threshold`); record the threshold actually in the command
+model's `wakeword.thresholds` entry for the run.
+
+Use the same positive-trial and music-only exposure method as §3.4–3.5, with
+three changes:
+
+1. **The utterance is the bare phrase** (`volume up` or `volume down`), spoken
+   once per trial at the normal distance. A hit is one `voice: command` log line
+   with that model name; that line is written before the cooldown, so a
+   detection suppressed by the cooldown still counts as a false trigger (it is
+   also the conservative count for a detection that cannot step at a rail).
+2. **Music must hold Focus for every trial.** Start music and confirm it is
+   playing before the first phrase; a command outside music/reply Focus is
+   ignored by design and would score as a miss. Do not say the wake word during
+   a command cell. A reply that a stray wake starts must finish before the next
+   trial, and its speech is not music exposure.
+3. **Never play the phrase through the AEC reference speaker**, for the same
+   reason as §3.4: it is part of the reference signal and would test the
+   canceller, not the room.
+
+The target is chosen before measuring: **at least 80% hits per phrase, and at
+most 1 false trigger per hour of music**, with AEC on, at the highest music
+volume in the grid. The AEC-off rows are recorded for comparison but do not
+block the feature; a miss at the top volume is the signal to lower
+`music.max_volume` or keep commands off. Until these cells are filled the
+feature stays off (`WAKEWORD_COMMANDS_ENABLED=false`).
+
+| Music volume | AEC | `volume up` hits/trials | False triggers | Exposure (min) | False triggers/h | Window (start–end) |
+| ---: | --- | ---: | ---: | ---: | ---: | --- |
+|  | off |  |  |  |  |  |
+|  | on |  |  |  |  |  |
+|  | off |  |  |  |  |  |
+|  | on |  |  |  |  |  |
+|  | off |  |  |  |  |  |
+|  | on |  |  |  |  |  |
+
+| Music volume | AEC | `volume down` hits/trials | False triggers | Exposure (min) | False triggers/h | Window (start–end) |
+| ---: | --- | ---: | ---: | ---: | ---: | --- |
+|  | off |  |  |  |  |  |
+|  | on |  |  |  |  |  |
+|  | off |  |  |  |  |  |
+|  | on |  |  |  |  |  |
+|  | off |  |  |  |  |  |
+|  | on |  |  |  |  |  |
+
+Report each phrase separately: a shared rate can hide one phrase doing all the
+damage. The operator-target columns are not part of the six-cell recorder in
+§4; attach these counts to #81 and reference this section, and record the
+combined command false-trigger rate alongside the wake result in #70.
+
 ## 6. Decision — pending
 
 **No `music.max_volume` is recommended.** The decision stays pending until:

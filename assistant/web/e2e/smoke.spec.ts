@@ -192,6 +192,8 @@ test.describe("accessibility", () => {
   test("the skip link reaches the main content", async ({ page, isMobile }) => {
     test.skip(isMobile, "the desktop rail has the skip link");
     await page.goto("/");
+    // Session loading can outlast navigation; send Tab only after the app mounts.
+    await expect(page.getByRole("link", { name: "Skip to content" })).toBeAttached();
     await page.keyboard.press("Tab");
     const focused = page.locator(":focus");
     await expect(focused).toHaveText("Skip to content");

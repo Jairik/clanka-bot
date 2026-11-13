@@ -29,8 +29,10 @@ assistant with `ASSISTANT_DASHBOARD_OWNER=dev`.
   with no Go counterpart live in `src/types.manual.ts`.
 - Writes: form-encoded `POST` to the action URL in the view. The answer is the
   refreshed view, with `Error` and a 4xx/5xx status when the write was refused.
-- Spotify Connect/Verify/Disconnect are real form posts (Connect leaves for
-  accounts.spotify.com) and return to `/spotify?flash=...`.
+- Spotify Verify/Disconnect are form posts and return to `/spotify?flash=...`.
+  Connect is a GET link to `/spotify/connect`, which redirects to
+  accounts.spotify.com; a navigation is not a form submission, so the document
+  policy keeps `form-action 'self'`.
 - The CSP allows only same-origin scripts and styles: no inline `<script>` or
   `<style>` (the theme bootstrap is `public/theme.js`).
 

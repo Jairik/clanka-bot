@@ -78,9 +78,6 @@ type spotifyWebAPIView struct {
 }
 
 // spotifyPage renders the separate Connect pairing and Web API auth cards.
-// spotifyAccountsOrigin is where the Connect form's redirect lands.
-const spotifyAccountsOrigin = "https://accounts.spotify.com"
-
 func (h *Handler) spotifyPage(w http.ResponseWriter, r *http.Request) {
 	if !allowGet(w, r) {
 		return
@@ -88,11 +85,14 @@ func (h *Handler) spotifyPage(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, http.StatusOK, h.buildSpotifyView(spotifyFlashMessage(r.URL.Query().Get("flash")), ""))
 }
 
-// spotifyConnect starts the PKCE flow. It is a same-origin POST, so the
-// Dashboard's Mutating guard is the CSRF check; the response is a redirect to
-// Spotify, never a rendered credential.
+// spotifyConnect starts the PKCE flow from a plain same-origin GET link. It is
+// deliberately not a form POST: browsers apply form-action to a form's redirect
+// chain, which would force accounts.spotify.com into the document policy. The
+// state is generated server-side and validated on the callback, so a
+// cross-site trigger can only start a flow the owner must still authorize. The
+// response is a redirect to Spotify, never a rendered credential.
 func (h *Handler) spotifyConnect(w http.ResponseWriter, r *http.Request) {
-	if !allowPost(w, r) {
+	if !allowGet(w, r) {
 		return
 	}
 	if h.spotify == nil {

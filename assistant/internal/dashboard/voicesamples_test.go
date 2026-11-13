@@ -378,7 +378,7 @@ func TestVoiceSampleMediaCSPIsDocumentOnly(t *testing.T) {
 	f := newVoiceSamplesFixture(t, wakesample.Options{})
 	doc := f.get("/voice-samples")
 	csp := doc.Header().Get("Content-Security-Policy")
-	for _, want := range []string{"media-src 'self' blob:", "script-src 'self'", "form-action 'self' https://accounts.spotify.com", "frame-ancestors 'none'"} {
+	for _, want := range []string{"media-src 'self' blob:", "script-src 'self'", "form-action 'self'", "frame-ancestors 'none'"} {
 		if !strings.Contains(csp, want) {
 			t.Errorf("document CSP %q lacks %q", csp, want)
 		}

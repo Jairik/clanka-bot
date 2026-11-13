@@ -1,6 +1,7 @@
 // Spotify: Connect pairing (librespot) and Web API auth are separate grants.
-// Connect/Verify/Disconnect are real form posts: Connect has to leave for
-// accounts.spotify.com, and all three come back as /spotify?flash=...
+// Connect is a plain GET link so the browser never treats Spotify's redirect as
+// a form target; Verify and Disconnect are form posts and come back as
+// /spotify?flash=...
 import { useEffect } from "react";
 import { Button } from "@heroui/react";
 import { navigate, useLocation, usePageData } from "../api";
@@ -9,6 +10,15 @@ import { Dot, Empty, Lede, Meta, Notice, Section, SourceBadge, type Tone } from 
 
 // A pill is a plain string on the wire; anything but ok/error is neutral.
 const tone = (pill: string): Tone => (pill === "ok" ? "ok" : pill === "error" ? "bad" : "neutral");
+
+function ConnectButton({ label }: { label: string }) {
+  // A navigation, not a form submission: form-action only covers form targets.
+  return (
+    <Button size="sm" variant="primary" onPress={() => window.location.assign("/spotify/connect")}>
+      {label}
+    </Button>
+  );
+}
 
 function PostButton({ action, children, variant = "secondary" }: { action: string; children: string; variant?: "primary" | "secondary" | "danger-soft" }) {
   return (
@@ -105,7 +115,7 @@ export function SpotifyPage() {
                 </div>
               )}
               <div className="flex flex-wrap gap-2 pt-1">
-                {w.CanConnect && <PostButton action="/spotify/connect" variant="primary">{w.Set ? "Reconnect Web API" : "Connect Web API"}</PostButton>}
+                {w.CanConnect && <ConnectButton label={w.Set ? "Reconnect Web API" : "Connect Web API"} />}
                 {w.CanVerify && <PostButton action="/spotify/verify">Verify stored token</PostButton>}
                 {w.CanDisconnect && <PostButton action="/spotify/disconnect" variant="danger-soft">Disconnect</PostButton>}
               </div>

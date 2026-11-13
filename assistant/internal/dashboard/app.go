@@ -41,10 +41,11 @@ func (h *Handler) app(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("The dashboard UI is not built. Run `make web` (or rebuild the assistant image), then restart.\n"))
 		return
 	}
-	// The Spotify Connect button is a real form POST to /spotify/connect,
-	// which answers 303 to Spotify's authorize page. Browsers apply
-	// form-action to that redirect too, and the app is one document for every
-	// page, so the document allows exactly Spotify's accounts origin.
+	// The Spotify Connect button is a same-origin GET link to /spotify/connect,
+	// which answers 303 to Spotify's authorize page. A form POST would make the
+	// browser apply form-action to that redirect, so the policy would have to
+	// name Spotify's origin; a navigation is not a form submission and the
+	// document keeps form-action 'self'.
 	//
 	// media-src is on the document for the voice-sample recorder: a take is
 	// played back from a blob: URL before it is kept, and a kept take is

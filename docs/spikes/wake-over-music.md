@@ -1,21 +1,185 @@
 # Spike: wake word over music with PipeWire echo-cancel (#70)
 
-Status: **PARTIAL — prep only.** Date: 2026-11-12. Issue:
+Status: **measured 2026-11-13 — negative/inconclusive on the acoustic path.**
+Earlier revision: prep only, 2026-11-12. Issue:
 [Jairik/clanka-bot#70](https://github.com/Jairik/clanka-bot/issues/70).
 
-This document, `scripts/wake_over_music.py` and its tests are the repeatable
-prep for the measurement. **No physical experiment has run.** Nobody spoke a
-wake word over music, no microphone was opened, no audio was played, no
-PipeWire module was loaded, and no host mixer, daemon or user audio state was
-changed while preparing this. There are no measured counts and no
-`music.max_volume` recommendation here.
+Sections 1–8 are the original prep and remain the reference for the host
+echo-cancel path, the room protocol and the recorder. Section 0 is the
+record-first run that replaced the six separate live cells. The measured
+counts are in §5 and the decision in §6. **Both acceptance criteria are not
+met:** every cell is 0/24, and the blocker is the acoustic path, not the AEC
+arithmetic.
 
-**Acceptance criteria status: NOT MET (both).** The six-cell table is blank and
-the cap is undecided. Both acceptance boxes on #70 stay unchecked, and #70 stays
-open.
+Do not read the prep as evidence that echo cancellation holds. The measured
+counts live in §5 and the decision block in §6.
 
-Do not read this doc as evidence that echo cancellation holds. It only makes the
-run repeatable and hard to fake.
+## 0. Run 2026-11-13 — record first, detect offline
+
+### 0.1 Targets, fixed before any audio was played
+
+| Measurement | Target per cell |
+| --- | --- |
+| `clanker` hits | **≥ 80%** of trials |
+| `clanker` false wakes | **≤ 1 per 10 music-only minutes** |
+| `volume up` hits | **≥ 80%** of trials |
+| `volume up` false triggers | **0 per cell** |
+
+Decision rule, also fixed before the run:
+
+- AEC **on** meets both `clanker` targets at 100% → recommend **no
+  `music.max_volume` cap**.
+- Otherwise the cap is the **highest measured volume whose AEC-on cell met both
+  targets**. If no AEC-on cell passes, that is a failed result, not a quiet cap:
+  say so in §6 and do not ship the AEC path as the answer.
+
+One false wake in a cell's music-only minutes would be 10× the per-10-minute
+budget only if the exposure were 10 minutes; with this run's ~3 minutes per cell
+the arithmetic is `60 / exposure_min` per event. The exact conversion is in the
+evidence file.
+
+### 0.2 Protocol actually used
+
+The speaker is active for one bounded block, then silent for the rest of the
+work:
+
+1. Load the runtime `module-echo-cancel` with the real mic and the Echo Dot
+   sink. Route **all** music into `aec_music_sink`; the module forwards it to
+   the Echo, so the room hears the same sound in every session.
+2. Three sessions, one per music volume (35%, 65%, 100% of the music stream;
+   the Echo sink stays at 100%). Each session is ~5 minutes: 20 s warm-up,
+   24 `clanker` clips and 12 `volume up` clips played **directly to the bluez
+   sink** (outside the AEC reference) at ~5 s spacing, then 120 s of music
+   only.
+3. Each session records the **raw real-mic source** and **`aec_mic_source`** at
+   the same time (16 kHz mono WAV). One session therefore yields the AEC-off
+   and AEC-on cells together, and three sessions yield all six cells.
+4. After the third session: stop playback, restore the Echo sink to its
+   original unmuted 100%, unload echo-cancel, restore `.env`, restart the
+   assistant and confirm the stack is healthy. The speaker stays silent from
+   here on.
+5. Replay both WAVs of each session through the real wakeword service over
+   Wyoming, in real time so the service's 2 s refractory period behaves as in
+   production, with `clanker` at its deployed 0.5 and `volume up` at its
+   deployed 0.98. Count hits and false wakes offline.
+
+`scripts/wake_over_music_run.py` implements steps 2–5 (`record`, `detect`,
+`count`); `scripts/wake_over_music.py` still validates the six-cell evidence
+matrix.
+
+### 0.3 Assumptions recorded for this run
+
+1. **Music source:** public-domain 78 rpm transfers with vocals from the
+   Internet Archive Great 78 Project, downloaded to a dedicated directory on
+   the Pi and concatenated into one loudness-normalised 18.3-minute bed. URL,
+   licence note and the exact files are in §0.5. Audio is not committed.
+2. **Positive trials are not a person in the room.** The wake clips come from
+   the held-out-voice Pocket TTS fixtures already used by
+   `wakeword/tests/run_detection_test.sh`, played from the Echo Dot's position.
+   That tests the word, the room path and the canceller, but it is not the
+   owner's voice or a human distance/turn-taking pattern.
+3. **Clip routing:** clips go directly to `bluez_output.5C_41_5A_94_78_A3.1`,
+   so they are not part of the AEC reference. Only the music enters
+   `aec_music_sink`.
+4. **Volume definition:** the three levels are the music stream's own volume
+   (`paplay --volume`, linear 0–65536). The Echo sink stays unmuted at 100% and
+   the clip stream stays at 100%, so the wake level is comparable across
+   volumes.
+5. **Hit window:** a detection counts for a clip when its stream timestamp is
+   within 0.5 s before to 2.0 s after the logged clip onset. Clip onsets are
+   ≥ 5 s apart, so windows never overlap. False wakes are detections outside
+   every clip window (both models), so only music-only time can produce them.
+6. **Statistical limit:** each cell has under 4 minutes of music-only exposure.
+   A zero false-wake count cannot demonstrate a 1/hour rate; it only bounds the
+   rate very loosely. The hit-rate counts are the stronger half of this run.
+   The table reports the exposure so the limit is visible rather than implied.
+
+### 0.4 Host configuration actually used
+
+| Item | Value |
+| --- | --- |
+| Host | `raspberrypi`, Raspberry Pi 5, aarch64, kernel `6.12.115+rpt-rpi-2712` |
+| PipeWire | 1.2.7 (compiled and linked) |
+| Pulse-compatible server | `PulseAudio (on PipeWire 1.2.7)`, protocol 35, `pactl` 16.1 |
+| Echo-cancel module | runtime `module-echo-cancel`, index `536870916`, no drop-in |
+| AEC library | `libspa-aec-webrtc.so` (default; `aec_method` not set) |
+| AEC arguments | `rate=48000` only |
+| Real playback sink | `bluez_output.5C_41_5A_94_78_A3.1` (Echo Dot-3LG, A2DP SBC) |
+| Real capture source | `alsa_input.usb-Generalplus_OSM09-00.mono-fallback` |
+| Virtual sink / source | `aec_music_sink` / `aec_mic_source` |
+| Assistant image | `42fb047` (the integration/map-2 commit deployed on the Pi) |
+| Music path | music streams into `aec_music_sink`; the module forwards to the Echo |
+| Clip path | clips stream directly to the bluez sink, outside the AEC reference |
+| Source gain | **150%** for the run (measurement gain; restored to 100% afterwards) |
+| Sink gain | **100%**, unmuted (the original state, restored afterwards) |
+
+Runtime module command:
+
+```sh
+pactl load-module module-echo-cancel \
+  source_master=alsa_input.usb-Generalplus_OSM09-00.mono-fallback \
+  sink_master=bluez_output.5C_41_5A_94_78_A3.1 \
+  source_name=aec_mic_source \
+  sink_name=aec_music_sink \
+  rate=48000
+```
+
+The module was unloaded after the run. No persistent drop-in was written. The
+Bluetooth card ended on its original `a2dp-sink` profile.
+
+### 0.5 Music, clips and session shape
+
+The music bed is three public-domain 78 rpm vocal transfers from the Internet
+Archive Great 78 Project, played in sequence twice and loudness-normalised to
+`I=-18 LUFS, TP=-2` (48 kHz stereo FLAC, 18.3 minutes):
+
+| Track | Artist / date | Item |
+| --- | --- | --- |
+| Swanee River Moon | Stellar Quartette | `78_swanee-river-moon_stellar-quartette-h-pitman-clark_gbia0548603b` |
+| Old Folks At Home (Swanee River) | Emma Calvé, 1916 | `78_old-folks-at-home-swanee-river_emma-calv-foster_gbia0521028a` |
+| Silver Swanee | Broadway Melody Makers, 1922 | `78_silver-swanee_broadway-melody-makers-eddie-cantor-jean-schwartz_gbia0421644b` |
+
+The items are pre-1929 US recordings in the archive's `78rpm` collection. They
+carry no explicit `licenseurl`; they are treated as public domain and the URLs
+are recorded here. The audio itself is not committed.
+
+Positive clips are the repo's held-out-voice Pocket TTS fixtures
+(`wakeword/tests/fixtures/positive/clanker_0{0,1,2}.wav` and
+`wakeword/tests/fixtures/volume_up/positive/volume_up_0{0,1,2}.wav`),
+gain-normalised to about -18 dBFS mean with peaks at or below -1.5 dBFS so the
+two models are comparable. They are not the owner's voice.
+
+Each session: a 0.2 s 1 kHz sync tone into a quiet room (to measure the parec
+start offset), 20 s warm-up, 24 `clanker` + 12 `volume up` clips at 5 s spacing,
+then 120 s of music only. Each session was 321.7 s.
+
+| Session | Music stream | Window (local, -05:00) | Duration |
+| ---: | ---: | --- | ---: |
+| 1 | 35% | 09:01:06 – 09:06:29 | 321.65 s |
+| 2 | 65% | 09:06:29 – 09:11:51 | 321.70 s |
+| 3 | 100% | 09:11:51 – 09:17:14 | 321.70 s |
+
+### 0.6 Acoustic-path caveat measured during prep
+
+Before the sessions, a full-scale 1 kHz tone through the Echo at sink 100% and
+source 150% was only about **2 dB above the broadband noise floor** at the mic
+(about 18 dB in a 100 Hz band around 1 kHz). AVRCP volume-up reached the Echo
+and then stopped increasing, so the Echo was already at its maximum. The
+recorded clips are present in the WAVs (the cleaned source shows a clear burst
+against a low residual), but the dry-run detector did not fire on them even at
+a 0.1 threshold. The real sessions were run anyway, at the product's 100% sink
+and the measured 150% source gain, and the counts below are reported as
+measured. A low hit rate in this run is evidence about the acoustic path (the
+Echo's level at this mic), not proof that the AEC arithmetic works or fails;
+§6 keeps that distinction.
+
+### 0.7 Recordings
+
+Raw and cleaned WAVs for all three sessions are on the Pi only, under
+`~/wake-over-music/run/` and `~/clanka-backups/20261113-091805/wake-over-music/`.
+They may contain room audio from the owner's home and were not copied off the
+Pi or committed. The committed artifacts are the manifest format, the scripts
+and the counts.
 
 ## 1. What the spike decides
 
@@ -65,8 +229,8 @@ Observed on the prep dev box on 2026-11-12 (read-only `pactl list short`):
 
 | Role | Dev-box name | Pi placeholder |
 | --- | --- | --- |
-| Real playback sink (`sink_master`) | `alsa_output.pci-0000_00_1f.3.analog-stereo` | `<echo-dot-sink>` from `pactl list short sinks` |
-| Real mic (`source_master`) | `alsa_input.usb-046d_0825_EC865510-02.mono-fallback` | `<usb-mic-source>` from `pactl list short sources` |
+| Real playback sink (`sink_master`) | `alsa_output.pci-0000_00_1f.3.analog-stereo` | `bluez_output.5C_41_5A_94_78_A3.1` |
+| Real mic (`source_master`) | `alsa_input.usb-046d_0825_EC865510-02.mono-fallback` | `alsa_input.usb-Generalplus_OSM09-00.mono-fallback` |
 | Virtual sink (`sink_name`) | `aec_music_sink` | `aec_music_sink` |
 | Cleaned source (`source_name`) | `aec_mic_source` | `aec_mic_source` |
 
@@ -76,8 +240,9 @@ follows the wrong sink is worse than no measurement.
 
 ### 2.2 Apply (operator only)
 
-These commands change host audio. The implementation agent did **not** run
-them. Run them as the PipeWire user, not root, while the assistant is idle.
+These commands change host audio. Run them as the PipeWire user, not root,
+while the assistant is idle. The 2026-11-13 run used the runtime form with the
+Pi names above and unloaded it afterwards; the persistent form was not used.
 
 Inspect first:
 
@@ -199,7 +364,10 @@ one produced the level.
   (or the real sink in the AEC-off state), at the volume being tested.
 - The assistant is healthy and its logs are visible:
   `docker compose logs -f assistant`. A hit is the `voice: wake` log line
-  (model `okay_nabu`) and/or the wake Cue. The log line is the count of record.
+  (model `okay_nabu`) and/or the wake Cue. The log line is the count of record
+  for a live human run. The 2026-11-13 record-first run counted the wakeword
+  service's `detection` events at offline replay instead (§0.2), with the
+  assistant stopped during the sessions.
 - Close other wake-word sources: no TV, no second assistant, no phone hotword in
   the room.
 
@@ -245,7 +413,10 @@ For each cell, the operator speaks the wake word once per trial from the room:
 or recorded `okay nabu` played into `aec_music_sink` becomes part of the
 reference signal and is cancelled by design; the test would measure the
 canceller's own output, not a person in the room. It also sounds like a false
-wake test to the assistant.
+wake test to the assistant. The 2026-11-13 run played the clips **directly to
+the bluez sink**, outside the reference, from the Echo's position; that is a
+separate physical source but not a human in the room, and §0.3 states that
+caveat.
 
 **Never substitute a digital loopback for room acoustics.** Playing a sample
 into a null sink whose monitor feeds the mic is the #29 prototype pattern; it
@@ -284,6 +455,12 @@ A cell with zero exposure minutes is invalid, not "zero false wakes".
 `scripts/wake_over_music.py` is bookkeeping only. It never plays audio, opens a
 microphone, or calls `pactl`. It refuses incomplete or impossible counts and
 reports `UNMEASURED` until all six cells have operator counts.
+
+`scripts/wake_over_music_run.py` is the record-first harness used for the
+2026-11-13 run: `record` plays the music and clips and captures both mic paths,
+`detect` replays one WAV through the real service in real time, and `count`
+joins the manifest and detections into a cell. Its tests are in
+`scripts/tests/test_wake_over_music_run.py`.
 
 ```sh
 # 1. Blank template; choose the three volumes you will actually use.
@@ -326,145 +503,147 @@ A synthetic arithmetic fixture lives at
 can check percentages and false-wake rates. Its report says `SYNTHETIC`, exits
 1, and must never be copied into an evidence file or the issue.
 
-## 5. The six cells
+## 5. The six cells — measured 2026-11-13
 
-Fill this table only from the recorder after real runs. Leave it blank until
-then. `Hits/trials` and `False wakes/h` are derived by the recorder, not typed
-by hand.
+Filled from `docs/evidence/wake-over-music-2026-11-13.json`, which
+`scripts/wake_over_music.py report` accepts as MEASURED. Each cell has 24
+`clanker` trials and 12 `volume up` trials in the same session; the exposure is
+the time outside every clip window. Counts are detections from **offline
+real-time replay** of the saved WAVs through the deployed wakeword service
+(`clanker` 0.5, `volume_up` 0.98).
 
-| Music volume | AEC | Hits/trials | False wakes | Exposure (min) | False wakes/h | Window (start–end) |
+| Music volume | AEC | Hits/trials | False wakes | Exposure (min) | False wakes/h | Window (UTC) |
 | ---: | --- | ---: | ---: | ---: | ---: | --- |
-|  | off |  |  |  |  |  |
-|  | on |  |  |  |  |  |
-|  | off |  |  |  |  |  |
-|  | on |  |  |  |  |  |
-|  | off |  |  |  |  |  |
-|  | on |  |  |  |  |  |
+| 35 | off | 0/24 | 0 | 3.861 | 0.0 | 14:01:06–14:06:28 |
+| 35 | on | 0/24 | 0 | 3.861 | 0.0 | 14:01:06–14:06:28 |
+| 65 | off | 0/24 | 0 | 3.862 | 0.0 | 14:06:29–14:11:51 |
+| 65 | on | 0/24 | 0 | 3.862 | 0.0 | 14:06:29–14:11:51 |
+| 100 | off | 0/24 | 0 | 3.862 | 0.0 | 14:11:51–14:17:13 |
+| 100 | on | 0/24 | 0 | 3.862 | 0.0 | 14:11:51–14:17:13 |
 
-### 5.1 Two models loaded (follow-up, #79)
+### 5.0 Levels and the shape of the negative result
 
-The six cells stay on the default single model so they remain comparable with
-the baseline. #79 makes the wake list a setting (`WAKEWORD_MODELS`) with
-per-model thresholds; every extra model adds its own false wakes, so the
-combined rate has to be measured, not inferred. This row is outside the
-recorder's six-cell matrix: use the same positive-trial and music-only exposure
-method (§3.4–3.5), count one false wake per `voice: wake` line, and attach the
-result to #70. The log line's `model` field says which detector fired.
+| Volume | AEC | Music-only RMS | Clip-window RMS | Clip peak | Sync alignment |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| 35 | off | -28.38 dBFS | -28.09 dBFS | 8569 | +0.200 s |
+| 35 | on | -50.00 dBFS | -45.43 dBFS | 3720 | +0.200 s |
+| 65 | off | -28.21 dBFS | -27.95 dBFS | 9228 | +0.270 s |
+| 65 | on | -50.27 dBFS | -48.24 dBFS | 2844 | +0.270 s |
+| 100 | off | -27.95 dBFS | -27.37 dBFS | 7399 | +0.270 s |
+| 100 | on | -49.48 dBFS | -46.15 dBFS | 2897 | +0.270 s |
 
-| Configuration | Models | Hits/trials | False wakes | Exposure (min) | False wakes/h |
-| --- | --- | ---: | ---: | ---: | ---: |
-| Two models loaded | `clanker` + `okay_nabu` |  |  |  |  |
+The cleaned cells show the AEC doing its job on the music: the music-only RMS
+falls by about 21–22 dB and the residual is near the cleaned noise floor. But
+the clips are also only about -46 dBFS in the cleaned capture, a few dB above
+that residual, and far below the level at which the detector works on this
+Pi. The raw cells are worse: the clip is buried in the music (clip-window RMS
+within 0.6 dB of music-only).
 
-Run the combined row with `okay_nabu` at the documented default (`0.5`) and
-`clanker` at its configured per-model threshold, so the row differs from a
-single-model run only by the second detector being active. If the six-cell run
-used `okay_nabu` at another threshold, keep that value and record it. A cell
-with zero exposure minutes is invalid here too.
+Two controls separate the detections from the acoustic path:
 
-### 5.2 Wake-free command models (#81)
+- **Digital positive:** `clanker_00.wav`, padded to 3 s, detects at 1.80 s
+  through the same service and threshold.
+- **Real positive, amplified:** a real AEC clip amplified offline by +30 dB
+  still does not detect, and the stack's STT transcribes it as "Hmm." while
+  the digital fixture transcribes as "Clanker." The word is not intelligible at
+  this mic/speaker placement, not merely quiet.
 
-`volume_up` and `volume_down` are detected by the same service but handled
-without STT: one volume step and a short Cue while music or a reply holds Focus.
-They need their own false-trigger number because a false accept changes the
-volume, not just the log. The deploy default is threshold **0.7**
-(`wakeword.commands.threshold`); record the threshold actually in the command
-model's `wakeword.thresholds` entry for the run.
+A zero false-wake count over 3.86 min is also a weak bound: with no events, the
+95% upper bound is roughly 46 false wakes/hour. It cannot support a 1/hour
+claim, and here it is doubly uninformative because the detector never fired at
+all, including on the positives.
 
-Use the same positive-trial and music-only exposure method as §3.4–3.5, with
-three changes:
+### 5.1 Two models loaded (follow-up, #79) — not run
 
-1. **The utterance is the bare phrase** (`volume up` or `volume down`), spoken
-   once per trial at the normal distance. A hit is one `voice: command` log line
-   with that model name; that line is written before the cooldown, so a
-   detection suppressed by the cooldown still counts as a false trigger (it is
-   also the conservative count for a detection that cannot step at a rail).
-2. **Music must hold Focus for every trial.** Start music and confirm it is
-   playing before the first phrase; a command outside music/reply Focus is
-   ignored by design and would score as a miss. Do not say the wake word during
-   a command cell. A reply that a stray wake starts must finish before the next
-   trial, and its speech is not music exposure.
-3. **Never play the phrase through the AEC reference speaker**, for the same
-   reason as §3.4: it is part of the reference signal and would test the
-   canceller, not the room.
+The six cells stayed on the single default `clanker` model. The two-model
+follow-up was not run; it needs its own positive and music-only exposure.
 
-The target is chosen before measuring: **at least 80% hits per phrase, and at
-most 1 false trigger per hour of music**, with AEC on, at the highest music
-volume in the grid. The AEC-off rows are recorded for comparison but do not
-block the feature; a miss at the top volume is the signal to lower
-`music.max_volume` or keep commands off. Until these cells are filled the
-feature stays off (`WAKEWORD_COMMANDS_ENABLED=false`).
+### 5.2 Wake-free command models (#81) — `volume up` measured, `volume down` absent
 
-| Music volume | AEC | `volume up` hits/trials | False triggers | Exposure (min) | False triggers/h | Window (start–end) |
+Same sessions, same exposure, same real-time replay. `volume up` used the
+deployed per-model threshold **0.98**; commands stay disabled in the product.
+
+| Music volume | AEC | `volume up` hits/trials | False triggers | Exposure (min) | False triggers/h | Window (UTC) |
 | ---: | --- | ---: | ---: | ---: | ---: | --- |
-|  | off |  |  |  |  |  |
-|  | on |  |  |  |  |  |
-|  | off |  |  |  |  |  |
-|  | on |  |  |  |  |  |
-|  | off |  |  |  |  |  |
-|  | on |  |  |  |  |  |
+| 35 | off | 0/12 | 0 | 3.861 | 0.0 | 14:01:06–14:06:28 |
+| 35 | on | 0/12 | 0 | 3.861 | 0.0 | 14:01:06–14:06:28 |
+| 65 | off | 0/12 | 0 | 3.862 | 0.0 | 14:06:29–14:11:51 |
+| 65 | on | 0/12 | 0 | 3.862 | 0.0 | 14:06:29–14:11:51 |
+| 100 | off | 0/12 | 0 | 3.862 | 0.0 | 14:11:51–14:17:13 |
+| 100 | on | 0/12 | 0 | 3.862 | 0.0 | 14:11:51–14:17:13 |
 
-| Music volume | AEC | `volume down` hits/trials | False triggers | Exposure (min) | False triggers/h | Window (start–end) |
-| ---: | --- | ---: | ---: | ---: | ---: | --- |
-|  | off |  |  |  |  |  |
-|  | on |  |  |  |  |  |
-|  | off |  |  |  |  |  |
-|  | on |  |  |  |  |  |
-|  | off |  |  |  |  |  |
-|  | on |  |  |  |  |  |
+`volume down` has no shipped model, so it has no live rows. The target was
+>= 80% hits and 0 false triggers per cell; the hit half fails in every cell for
+the same acoustic reason. The feature stays off (`wakeword.commands.enabled:
+false`), and #81 stays open.
 
-Report each phrase separately: a shared rate can hide one phrase doing all the
-damage. The operator-target columns are not part of the six-cell recorder in
-§4; attach these counts to #81 and reference this section, and record the
-combined command false-trigger rate alongside the wake result in #70.
+## 6. Decision — no cap, and the run is inconclusive on the acoustic path
 
-## 6. Decision — pending
+**No `music.max_volume` value is recommended.** The decision rule fixed in
+§0.1 requires an AEC-on cell with >= 80% hits and <= 1 false wake per 10
+music-only minutes. Every cell is 0/24, so no AEC-on volume passed and there is
+no measured volume to use as a cap. The zero false-wake counts are not evidence
+that the detector is quiet: it never fired at all, including on the positives.
 
-**No `music.max_volume` is recommended.** The decision stays pending until:
+The blocker is the **acoustic path**, not the music level:
 
-1. all six cells have real operator counts and timestamps;
-2. the operator states an accuracy target (`--target-hit-rate`, and a false-wake
-   budget if one applies); and
-3. the recorded host configuration shows the AEC path that produced the AEC-on
-   cells.
+- AEC removes 21–22 dB of music (raw music-only -28 dBFS, cleaned -50 dBFS).
+- The clips reach the cleaned capture at about -46 dBFS, only a few dB above
+  the residual and far below the detector's usable input level.
+- A digital fixture detects through the same service; a real clip amplified
+  +30 dB does not, and STT cannot transcribe it.
 
-After that, write the decision into the evidence file's `decision` block
-(`status: "decided"`, `max_volume` null or an integer) and into #70. Nothing in
-this repo should hard-code a default cap before those counts exist.
+Fix the coupling first — a louder Echo output, a closer speaker, or a
+higher-gain/cleaner mic — then repeat the same record-first run. Until then:
 
-## 7. Versions, config and mounts to record
+- keep `music.max_volume` unset (no cap);
+- keep `wakeword.commands.enabled: false` (`volume up` 0/12);
+- do not make the echo-cancel drop-in persistent.
 
-| Item | Prep dev box (2026-11-12) | Pi (fill at run time) |
-| --- | --- | --- |
-| Host / OS | Arch Linux, 12 threads | `<pi-host>` |
-| PipeWire | 1.6.11 (compiled and linked) | `<pipewire --version>` |
-| Pulse-compatible server | 15.0.0 (on PipeWire 1.6.11) | `<pactl info>` server line |
-| Echo-cancel module | `libpipewire-module-echo-cancel.so` present, not loaded | `pactl list short modules` filtered for echo-cancel |
-| AEC library | `libspa-aec-webrtc.so` present | same |
-| Drop-in config | none applied | `~/.config/pipewire/pipewire-pulse.conf.d/50-echo-cancel.conf` |
-| Real sink | `alsa_output.pci-0000_00_1f.3.analog-stereo` | `<echo-dot-sink>` |
-| Real source | `alsa_input.usb-046d_0825_EC865510-02.mono-fallback` | `<usb-mic-source>` |
-| Virtual sink/source | `aec_music_sink` / `aec_mic_source` | same |
-| Audio socket mounts | `assistant` + `librespot`: `${XDG_RUNTIME_DIR}/pulse:/run/pulse:ro`, cookie read-only | same |
-| Container env | `PULSE_SERVER=unix:/run/pulse/native` | same |
-| Assistant image | `<GIT_SHA at deploy>` | `<GIT_SHA at deploy>` |
+**Host echo-cancel config to use when the path is fixed:** the runtime command
+in §0.4 with the real names `alsa_input.usb-Generalplus_OSM09-00.mono-fallback`
+and `bluez_output.5C_41_5A_94_78_A3.1`, `rate=48000`, default WebRTC, and no
+persistent drop-in. Keep it runtime-only until a run passes.
 
-The dev-box names are an example of the real device names, not a Pi default.
-Record the names actually in use; do not copy the dev box's ALSA names to the
-Pi.
+Both acceptance boxes on #70 stay unchecked and #70 stays open.
 
-## 8. Handoff — what a human must do
+## 7. Versions, config and mounts recorded at the run
 
-1. On the Pi, inspect the real sink/source names and confirm the echo-cancel
-   module and WebRTC AEC plugin exist.
-2. Apply the runtime module, verify both virtual nodes, then persist the drop-in
-   if the run will survive a reboot.
-3. Route `assistant` and librespot to the virtual sink/source; restart
-   `assistant`; confirm `voice: wake` logs appear.
-4. Run the AEC-off and AEC-on cells at three volumes with a human voice in the
-   room, recording counts, timestamps and exposure.
-5. Run `report`; attach the JSON summary and the host/config row to #70.
-6. Only then decide `music.max_volume` or "no cap", and check #70's acceptance
-   boxes.
+| Item | Value on 2026-11-13 |
+| --- | --- |
+| Host / OS | `raspberrypi`, Raspberry Pi 5, aarch64, kernel `6.12.115+rpt-rpi-2712` |
+| PipeWire | 1.2.7 (compiled and linked) |
+| Pulse-compatible server | PulseAudio 15.0.0 on PipeWire 1.2.7, protocol 35, `pactl` 16.1 |
+| Echo-cancel module | runtime `module-echo-cancel`, index `536870916`, unloaded after the run |
+| AEC library | `libspa-aec-webrtc.so` (default) |
+| AEC args | `rate=48000` only |
+| Drop-in config | none applied |
+| Real sink | `bluez_output.5C_41_5A_94_78_A3.1` (Echo Dot-3LG, A2DP SBC) |
+| Real source | `alsa_input.usb-Generalplus_OSM09-00.mono-fallback` |
+| Virtual sink/source | `aec_music_sink` / `aec_mic_source` |
+| Source gain | 150% during the run, restored to 100% |
+| Sink gain | 100%, unmuted, restored to the same |
+| Audio socket mounts | `assistant` + `librespot`: unchanged from the deploy |
+| Container env | `PULSE_SERVER=unix:/run/pulse/native` |
+| Assistant image | `42fb047` |
+
+The dev-box names in the original prep were examples only; the table above is
+the Pi as measured.
+
+## 8. What remains
+
+1. Fix the mic/speaker coupling: raise the Echo's physical output, move it
+   closer to the OSM09 mic, or use a cleaner/higher-gain input. The current
+   path delivers the clips at about -46 dBFS in the cleaned capture; the
+   detector needs materially more.
+2. Re-run the same three-session record-first protocol
+   (`scripts/wake_over_music_run.py record` / `detect` / `count`) with that
+   fixed path. The scripts and the manifest format are in the repository; the
+   recordings stay on the Pi.
+3. Only then decide `music.max_volume` or "no cap", check both #70 boxes and
+   consider enabling `wakeword.commands.enabled`.
+4. `volume down` still has no model; #81 stays open for it regardless of the
+   `volume up` result.
 
 This work does not unblock #72. Spotify still needs its own implementation and
-merging; this spike only prepared the measurement it depends on.
+merging; this spike only prepares the measurement it depends on.

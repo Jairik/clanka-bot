@@ -56,6 +56,14 @@ export function activityQuery({ filter, q, before }: { filter: string; q: string
   return `/api/ui/activity${search ? `?${search}` : ""}`;
 }
 
+/**
+ * Apply one live delta to a newest-first list. Deduping by request id keeps a
+ * POST response and the stream from showing the same answer twice.
+ */
+export function mergeActivity(requests: Request[], entry: Request, limit: number): Request[] {
+  return [entry, ...requests.filter((r) => r.ID !== entry.ID)].slice(0, Math.max(1, limit));
+}
+
 export type ActivityBucket = { key: string; title: string; list: Request[] };
 
 /**

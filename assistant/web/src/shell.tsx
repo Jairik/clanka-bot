@@ -1,12 +1,13 @@
 // App frame: icon rail (desktop) / bottom tabs (mobile), a search-first top bar
 // with the speaker volume, and the page area. Home (/) is the chat.
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { Button, Drawer, Popover, SearchField } from "@heroui/react";
 import {
   Activity, AlarmClock, Bell, Bot, HeartPulse, KeyRound, MessageSquare, Mic, Minus, MoreHorizontal, Music, Plus,
   Settings, Smile, StickyNote, Volume, Volume1, Volume2, VolumeX, Waves,
 } from "lucide-react";
 import { getJSON, navigate, postForm, useLocation } from "./api";
+import { useLive } from "./events";
 import type { HealthView, Session, Volume as VolumeState } from "./types";
 import { Range, cn } from "./ui";
 import { SpeakToggle } from "./speak";
@@ -47,19 +48,27 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   return <SessionCtx.Provider value={s}>{children}</SessionCtx.Provider>;
 }
 
-/** A red dot on Health when any check fails. Polled with the page's own one-minute cadence. */
+const healthIsBad = (h: HealthView) =>
+  [...(h.Services ?? []), ...(h.Modules ?? []), h.Location].some((c) => c && (c.Status === "error" || c.Status === "timed-out"));
+
+/** A red dot on Health when any check fails. The stream carries the change; polling is the fallback. */
 function useHealthAlarm() {
   const [bad, setBad] = useState(false);
+  const { live, generation, subscribe } = useLive();
+  const load = useCallback(
+    () => getJSON<HealthView>("/api/ui/health").then((h) => setBad(healthIsBad(h)), () => {}),
+    [],
+  );
   useEffect(() => {
-    const load = () =>
-      getJSON<HealthView>("/api/ui/health").then(
-        (h) => setBad([...(h.Services ?? []), ...(h.Modules ?? []), h.Location].some((c) => c && (c.Status === "error" || c.Status === "timed-out"))),
-        () => {},
-      );
     void load();
+    if (live) return;
     const id = setInterval(load, 60_000);
     return () => clearInterval(id);
-  }, []);
+  }, [load, live]);
+  useEffect(() => {
+    if (generation > 0) void load();
+  }, [generation, load]);
+  useEffect(() => subscribe("health", (data) => setBad(healthIsBad(data as HealthView))), [subscribe]);
   return bad;
 }
 
@@ -67,8 +76,11 @@ export function Shell({ children }: { children: ReactNode }) {
   const { path } = useLocation();
   const page = pageFor(path)?.id;
   const healthBad = useHealthAlarm();
+  const { live } = useLive();
   return (
-    <div className="flex h-dvh">
+    // data-live is the one observable seam for the browser smoke test: it says
+    // whether the stream is carrying updates or the polling fallback is.
+    <div className="flex h-dvh" data-live={live ? "live" : "polling"}>
       <a
         href="#main"
         className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:border focus:bg-surface focus:px-3 focus:py-2 focus:text-sm"
@@ -194,10 +206,10 @@ export function VolumeControl() {
   // the control back here: the slider is optimistic, and showing a level the
   // speaker never took is worse than showing the old one.
   const lastServer = useRef<VolumeState | null>(null);
+  const { live, generation, subscribe } = useLive();
 
-  useEffect(() => {
-    if (!wired) return;
-    const load = () =>
+  const load = useCallback(
+    () =>
       getJSON<VolumeState>("/api/ui/volume").then(
         (v) => {
           lastServer.current = v;
@@ -206,12 +218,32 @@ export function VolumeControl() {
           setError(v.Error || "");
         },
         () => {},
-      );
+      ),
+    [],
+  );
+  useEffect(() => {
+    if (!wired) return;
     void load();
-    // Voice commands change the volume too; keep the bar honest.
+    // Voice commands change the volume too; while the stream is open it
+    // carries that change, so the bar does not poll.
+    if (live) return;
     const id = setInterval(() => document.visibilityState === "visible" && load(), 15_000);
     return () => clearInterval(id);
-  }, [wired]);
+  }, [wired, live, load]);
+  // A reconnect reloads the level, so a missed delta cannot leave a stale bar.
+  useEffect(() => {
+    if (wired && generation > 0) void load();
+  }, [wired, generation, load]);
+  useEffect(() => {
+    if (!wired) return;
+    return subscribe("volume", (data) => {
+      const v = data as VolumeState;
+      lastServer.current = v;
+      setState(v);
+      if (!dragging.current) setLevel(v.Percent);
+      setError(v.Error || "");
+    });
+  }, [wired, subscribe]);
 
   if (!wired) return null;
 

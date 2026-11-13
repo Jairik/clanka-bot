@@ -1,6 +1,7 @@
 // The Activity filter and hour-bucket rules, without a DOM.
 import { describe, expect, it } from "vitest";
-import { activityQuery, asFilter, bucketActivity, filterActivity, isProblem, isTypedSource } from "../activity";
+import { activityQuery, asFilter, bucketActivity, filterActivity, isProblem, isTypedSource, mergeActivity } from "../activity";
+import { liveBackoff } from "../events";
 import { req } from "./harness";
 
 const voice = req({ ID: "v", Source: "voice" });
@@ -90,5 +91,23 @@ describe("activity history query", () => {
 
   it("falls back to All for an unknown filter", () => {
     expect(activityQuery({ filter: "nonsense", q: "x" })).toBe("/api/ui/activity?q=x");
+  });
+});
+
+describe("live activity deltas", () => {
+  it("prepends an event once and keeps the page bounded", () => {
+    const a = req({ ID: "a" });
+    const b = req({ ID: "b" });
+    const next = mergeActivity([a, b], req({ ID: "c" }), 2);
+    expect(next.map((r) => r.ID)).toEqual(["c", "a"]);
+    // A delta for a request the POST already inserted must not duplicate it.
+    const three = mergeActivity([a, b], req({ ID: "c" }), 3);
+    expect(mergeActivity(three, req({ ID: "c" }), 3).map((r) => r.ID)).toEqual(["c", "a", "b"]);
+  });
+});
+
+describe("live reconnect backoff", () => {
+  it("doubles from one second and stops at thirty", () => {
+    expect([0, 1, 2, 3, 4, 5, 6].map(liveBackoff)).toEqual([1000, 2000, 4000, 8000, 16000, 30000, 30000]);
   });
 });

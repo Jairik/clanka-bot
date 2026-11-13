@@ -108,6 +108,15 @@ summary and deletes rows past the age and row limits. The ring stays the fast
 first page; the history is the source of truth for anything older.
 _Avoid_: Request log archive, transcript database, telemetry
 
+**Live stream**:
+The one read-only Server-Sent Events connection the Dashboard opens for the
+whole app. It carries deltas only — a completed request, the speaker state, a
+changed alert list and a changed health report — behind the same identity and
+Host checks as every other route. The client pauses its polling while it is
+open, reconnects with backoff, and reloads the current view on every open so a
+missed event is not lost.
+_Avoid_: WebSocket, push channel, event bus
+
 **Name matcher**:
 The one lookup that resolves a spoken library name — a sound, a voice or a Spotify playlist — first by exact or normalised spelling and then by embedding similarity above a threshold. It returns one name or no match, never a forced guess.
 _Avoid_: Fuzzy search, autocomplete

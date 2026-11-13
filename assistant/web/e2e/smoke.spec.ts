@@ -19,6 +19,16 @@ const ROUTES = [
   "/settings",
 ];
 
+/**
+ * The Dashboard holds one live SSE connection open, so the page never reaches
+ * Playwright's "network idle". Load plus a short settle replaces it; the
+ * route/response collectors in watch() still fail the test on a bad request.
+ */
+async function settle(page: Page) {
+  await page.waitForLoadState("load");
+  await page.waitForTimeout(500);
+}
+
 /** Records everything that would make a page broken for the user. */
 function watch(page: Page) {
   const problems: string[] = [];
@@ -39,7 +49,7 @@ test.describe("routes", () => {
       const problems = watch(page);
       await page.goto(route);
       await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
-      await page.waitForLoadState("networkidle");
+      await settle(page);
       expect(problems).toEqual([]);
     });
   }
@@ -52,6 +62,21 @@ test("the collector catches a broken page", async ({ page }) => {
   await page.route("**/api/ui/health*", (r) => r.abort());
   await page.goto("/health");
   await expect.poll(() => problems.length).toBeGreaterThan(0);
+});
+
+test("a request from outside the page arrives over the live stream", async ({ page, request }) => {
+  // The conversation view renders the store; the overview does not.
+  await page.goto("/?view=chat");
+  await expect(page.locator("[data-live]")).toHaveAttribute("data-live", "live");
+  const question = `streamed ${Date.now()}`;
+  // The POST is a separate client: only the stream can put it in this page's
+  // chat. The 4 s polling fallback would be too late for this deadline.
+  const res = await request.post("/activity/ask", {
+    form: { text: question },
+    headers: { Accept: "application/json", "Sec-Fetch-Site": "same-origin" },
+  });
+  expect(res.ok()).toBeTruthy();
+  await expect(page.getByText(`You said: ${question}`)).toBeVisible({ timeout: 3000 });
 });
 
 test("the chat answers a typed request", async ({ page }, testInfo) => {
@@ -182,7 +207,7 @@ test.describe("accessibility", () => {
         test.skip(isMobile, "the desktop project scans both themes");
         await page.emulateMedia({ colorScheme: theme });
         await page.goto(route);
-        await page.waitForLoadState("networkidle");
+        await settle(page);
         const results = await new AxeBuilder({ page }).analyze();
         expect(results.violations).toEqual([]);
       });
@@ -192,6 +217,9 @@ test.describe("accessibility", () => {
   test("the skip link reaches the main content", async ({ page, isMobile }) => {
     test.skip(isMobile, "the desktop rail has the skip link");
     await page.goto("/");
+    // Wait for the shell to mount so the first Tab reaches the skip link
+    // rather than the not-yet-hydrated body.
+    await expect(page.locator("[data-live]")).toBeVisible();
     await page.keyboard.press("Tab");
     const focused = page.locator(":focus");
     await expect(focused).toHaveText("Skip to content");

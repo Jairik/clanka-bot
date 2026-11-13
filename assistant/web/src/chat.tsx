@@ -5,7 +5,8 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { Button, Tooltip } from "@heroui/react";
 import { ArrowUp, AudioLines, Bot, ChevronDown, Keyboard, Lock, Mic, MonitorSmartphone, RotateCcw, Square, X } from "lucide-react";
 import { getJSON, postForm } from "./api";
-import { isTypedSource } from "./activity";
+import { isTypedSource, mergeActivity } from "./activity";
+import { useLive } from "./events";
 import { MIC_MAX_SECONDS, micSupported } from "./mic";
 import { useRecorder } from "./recorder";
 import { useSession } from "./shell";
@@ -53,6 +54,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [view, setView] = useState<ActivityView | null>(null);
   const [pending, setPending] = useState<PendingAsk[]>([]);
   const [loadError, setLoadError] = useState("");
+  const { live, generation, subscribe } = useLive();
 
   const load = useCallback(async () => {
     try {
@@ -64,6 +66,9 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   }, []);
   useEffect(() => {
     void load();
+    // Four seconds is the fallback only: while the stream is open a completed
+    // request arrives as one delta.
+    if (live) return;
     const id = setInterval(() => document.visibilityState === "visible" && load(), POLL_MS);
     const onVis = () => document.visibilityState === "visible" && load();
     document.addEventListener("visibilitychange", onVis);
@@ -71,7 +76,24 @@ export function ChatProvider({ children }: { children: ReactNode }) {
       clearInterval(id);
       document.removeEventListener("visibilitychange", onVis);
     };
-  }, [load]);
+  }, [load, live]);
+
+  // Every open (including a reconnect) resyncs the view, so a delta missed
+  // while the stream was down is not lost.
+  useEffect(() => {
+    if (generation > 0) void load();
+  }, [generation, load]);
+
+  // A completed request is appended without waiting for a poll.
+  useEffect(
+    () =>
+      subscribe("activity", (data) =>
+        setView((v) =>
+          v ? { ...v, Requests: mergeActivity(v.Requests ?? [], data as Request, v.DisplayLimit || 50) } : v,
+        ),
+      ),
+    [subscribe],
+  );
 
   const settle = (id: string, res: { ok: boolean; view: ActivityView | null; text: string; status: number }) => {
     if (res.view) setView(res.view);

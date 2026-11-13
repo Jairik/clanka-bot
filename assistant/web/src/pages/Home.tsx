@@ -1,9 +1,10 @@
 // Home: an overview of summary cards over the prompt panel. Sending anything
 // flips to the conversation; the History button flips back.
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Button, ToggleButton, ToggleButtonGroup } from "@heroui/react";
 import { AlarmClock, CloudSun, Gauge, HeartPulse, History, KeyRound, Music, ScrollText, Timer, Volume2, Zap } from "lucide-react";
 import { getJSON, navigate, useQueryParam } from "../api";
+import { useLive, type LiveName } from "../events";
 import { Composer, Exchange, PendingExchange, fmtMS, isFailed, isTyped, parseMS, totalMS, useChat } from "../chat";
 import { useSession } from "../shell";
 import type { AlertsView, HealthView, SecretsView, SpotifyView } from "../types";
@@ -146,14 +147,24 @@ function Card({
   );
 }
 
-function usePolled<T>(path: string, every = 60_000) {
+function usePolled<T>(path: string, every = 60_000, name?: LiveName) {
   const [v, setV] = useState<T | null>(null);
+  const { live, generation, subscribe } = useLive();
+  const load = useCallback(() => getJSON<T>(path).then(setV, () => {}), [path]);
   useEffect(() => {
-    const load = () => getJSON<T>(path).then(setV, () => {});
     void load();
+    // Health and Alerts change over the stream; the rest keep their poll.
+    if (live && name) return;
     const id = setInterval(() => document.visibilityState === "visible" && load(), every);
     return () => clearInterval(id);
-  }, [path, every]);
+  }, [every, live, name, load]);
+  useEffect(() => {
+    if (generation > 0) void load();
+  }, [generation, load]);
+  useEffect(() => {
+    if (!name) return;
+    return subscribe(name, (data) => setV(data as T));
+  }, [name, subscribe]);
   return v;
 }
 
@@ -166,8 +177,8 @@ const median = (xs: number[]) => {
 
 function Overview() {
   const { requests } = useChat();
-  const health = usePolled<HealthView>("/api/ui/health");
-  const alerts = usePolled<AlertsView>("/api/ui/alerts", 30_000);
+  const health = usePolled<HealthView>("/api/ui/health", 60_000, "health");
+  const alerts = usePolled<AlertsView>("/api/ui/alerts", 30_000, "alerts");
   const spotify = usePolled<SpotifyView>("/api/ui/spotify");
   const secrets = usePolled<SecretsView>("/api/ui/secrets");
 

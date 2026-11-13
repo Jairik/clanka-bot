@@ -145,6 +145,11 @@ export const parseMS = (s: string) => {
 export const fmtMS = (ms: number) => (ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`);
 export const totalMS = (r: Request) => (r.Stages ?? []).reduce((n, s) => n + parseMS(s.MS), 0);
 
+/** Best-effort phone haptic; a browser without it is simply silent. */
+const vibrate = (ms: number) => {
+  if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") navigator.vibrate(ms);
+};
+
 export const isFailed = (r: Request) => r.Outcome === "failed";
 export const outcomeTone = (o: string): Tone => (o === "failed" ? "bad" : o === "cancelled" ? "warn" : "neutral");
 export const isTyped = isTypedSource;
@@ -350,6 +355,50 @@ export function Composer({ placeholder = "Ask clanka…", onSent, toolbar, class
   const { phase, elapsed, levels, error: micError, start, stop, cancel } = useRecorder({ onSend: sendAudio, onSent });
   const canMic = session.Mic && micSupported();
   const recording = phase === "recording";
+  // A touch or pen holds to talk; a mouse keeps click-to-start/stop. The game
+  // controller-style press is what a phone expects, and the pointer type says
+  // which device it is better than the viewport does.
+  const heldPress = useRef(false);
+
+  const beginHold = (e: React.PointerEvent) => {
+    if (e.pointerType === "mouse") {
+      heldPress.current = false;
+      return;
+    }
+    heldPress.current = true;
+    vibrate(10);
+    start();
+    const release = () => {
+      cleanup();
+      stop();
+      vibrate(10);
+    };
+    const abandon = () => {
+      cleanup();
+      cancel();
+    };
+    const cleanup = () => {
+      window.removeEventListener("pointerup", release);
+      window.removeEventListener("pointercancel", abandon);
+    };
+    // The mic button is replaced by the recording panel, so the release has to
+    // be watched on the window or a held press would never stop.
+    window.addEventListener("pointerup", release, { once: true });
+    window.addEventListener("pointercancel", abandon, { once: true });
+  };
+  const micPress = () => {
+    // The press that ends a hold must not start a second recording.
+    if (heldPress.current) {
+      heldPress.current = false;
+      return;
+    }
+    start();
+  };
+  const micNote = !session.Mic
+    ? "Speech recognition is not configured."
+    : !micSupported()
+      ? "The microphone needs HTTPS (open the dashboard through tailscale serve)."
+      : "";
 
   const submit = () => {
     const t = text.trim();
@@ -368,12 +417,17 @@ export function Composer({ placeholder = "Ask clanka…", onSent, toolbar, class
       isIconOnly
       variant="ghost"
       size="sm"
-      onPress={start}
+      onPress={micPress}
       isDisabled={!canMic || phase === "starting"}
       aria-label={canMic ? "Talk" : session.Mic ? "The microphone needs HTTPS" : "Speech recognition is not configured"}
     >
       <AudioLines className="size-4" />
     </Button>
+  );
+  const micControl = (
+    <span className="contents" onPointerDownCapture={beginHold}>
+      {micButton}
+    </span>
   );
 
   return (
@@ -426,14 +480,20 @@ export function Composer({ placeholder = "Ask clanka…", onSent, toolbar, class
           <div className="flex items-center gap-1 px-2 pt-1 pb-2">
             <div className="flex min-w-0 flex-1 items-center gap-0.5 text-muted">
               {toolbar}
+              {phase === "starting" && (
+                <span role="status" className="truncate pl-1 text-xs text-muted">
+                  Starting the microphone…
+                </span>
+              )}
               {micError && <span className="truncate pl-1 text-xs text-danger">{micError}</span>}
+              {!micError && micNote && <span className="truncate pl-1 text-xs text-muted">{micNote}</span>}
             </div>
             {canMic ? (
-              micButton
+              micControl
             ) : (
               <Tooltip delay={0}>
                 <Tooltip.Trigger>
-                  <span tabIndex={0}>{micButton}</span>
+                  <span tabIndex={0}>{micControl}</span>
                 </Tooltip.Trigger>
                 <Tooltip.Content>{session.Mic ? "The microphone needs HTTPS (open the dashboard through tailscale serve)." : "Speech recognition is not configured."}</Tooltip.Content>
               </Tooltip>

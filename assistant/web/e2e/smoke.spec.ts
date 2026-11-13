@@ -89,6 +89,25 @@ test("the app and its script arrive precompressed", async ({ page, request }) =>
   expect(brBytes).toBeLessThan(plainBytes / 2);
 });
 
+test("a touch hold records and sends", async ({ page, isMobile, context }) => {
+  test.skip(!isMobile, "touch gesture only");
+  await page.goto("/");
+  const talk = page.getByRole("button", { name: "Talk" });
+  const box = await talk.boundingBox();
+  if (!box) throw new Error("the mic button has no box");
+
+  // A real touch hold: start, wait past the 250 ms minimum, release.
+  const cdp = await context.newCDPSession(page);
+  const point = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [point] });
+  await expect(page.getByRole("button", { name: "Cancel recording" })).toBeVisible();
+  await page.waitForTimeout(400);
+  await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+
+  // The stub keeps one activity ring, so earlier mic tests share the transcript.
+  await expect(page.getByText("You said: hello from the browser").last()).toBeVisible();
+});
+
 test("a refused volume write shows the server's text", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Mute speaker" }).click();

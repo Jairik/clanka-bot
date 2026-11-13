@@ -23,6 +23,9 @@ export type Recorder = {
 const idleLevels = () => Array(28).fill(0.06) as number[];
 const LEVEL_MS = 50;
 
+/** The server's wording for a tap that never became an utterance. */
+export const TOO_SHORT_ERROR = "That recording was too short. Hold the mic and speak.";
+
 export function useRecorder({
   onSend,
   onSent,
@@ -39,9 +42,16 @@ export function useRecorder({
   const [error, setError] = useState("");
   const recording = useRef<Recording | null>(null);
   const starting = useRef(false);
+  // A release can arrive while the browser's permission prompt is still open;
+  // remember what it wanted and settle as soon as the capture exists.
+  const requested = useRef<"stop" | "cancel" | null>(null);
 
   const finish = useCallback(
     async (submit: boolean) => {
+      if (starting.current) {
+        requested.current = submit ? "stop" : "cancel";
+        return;
+      }
       const r = recording.current;
       recording.current = null;
       setPhase("idle");
@@ -63,12 +73,23 @@ export function useRecorder({
     void (async () => {
       try {
         let last = 0;
-        recording.current = await startRecording((rms) => {
+        const capture = await startRecording((rms) => {
           const t = performance.now();
           if (t - last < LEVEL_MS) return;
           last = t;
           setLevels((l) => [...l.slice(1), Math.max(0.06, Math.min(1, rms * 6))]);
         });
+        // A press that ended before the capture existed never became audio.
+        if (requested.current) {
+          const intent = requested.current;
+          requested.current = null;
+          capture.cancel();
+          setPhase("idle");
+          setLevels(idleLevels());
+          if (intent === "stop") setError(TOO_SHORT_ERROR);
+          return;
+        }
+        recording.current = capture;
         setStartedAt(Date.now());
         setNowMs(Date.now());
         setPhase("recording");

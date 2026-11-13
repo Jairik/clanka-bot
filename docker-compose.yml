@@ -58,10 +58,16 @@ services:
       # ADR-0003: the one SQLite database lives on the assistant-data volume.
       ASSISTANT_DATA_DIR: "/app/data"
       ASSISTANT_PULSE_SINK: ${ASSISTANT_PULSE_SINK:-}
-      # Voice input: one named Pulse source and the two Wyoming services.
+      # Voice input: one named Pulse source and the two Wyoming services. The
+      # model list is the explicit allowlist; every detection outside it is
+      # ignored, so a typo cannot wake the Assistant with another model.
       ASSISTANT_PULSE_SOURCE: ${ASSISTANT_PULSE_SOURCE:-}
       ASSISTANT_WAKEWORD_ADDR: "wakeword:10400"
-      ASSISTANT_WAKEWORD_MODEL: ${WAKEWORD_MODEL:-clanker}
+      ASSISTANT_WAKEWORD_MODELS: ${WAKEWORD_MODELS:-${WAKEWORD_MODEL:-clanker}}
+      # The default for every model, and the per-model overrides the Assistant
+      # sends with each detect stream (clanker:0.6,okay_nabu:0.5).
+      ASSISTANT_WAKEWORD_THRESHOLD: ${WAKEWORD_THRESHOLD:-0.5}
+      ASSISTANT_WAKEWORD_THRESHOLDS: ${WAKEWORD_THRESHOLDS:-}
       ASSISTANT_STT_ADDR: "stt:10300"
       ASSISTANT_STT_MODEL: ${STT_MODEL:-small-streaming}
       ASSISTANT_STT_LANGUAGE: ${STT_LANGUAGE:-en}
@@ -137,10 +143,15 @@ services:
     restart: unless-stopped
     # The image bakes the locally trained "clanker" detector and serves it from
     # /usr/src/custom_models next to the upstream built-ins (okay_nabu,
-    # hey_jarvis, ...), so WAKEWORD_MODEL can name either. The name must match
-    # the assistant's wakeword.model; an unknown name silently falls back to
-    # okay_nabu in the service. Models load on the first Detect, so startup does
-    # not pay for one nobody asks for.
+    # hey_jarvis, ...), so WAKEWORD_MODELS can name either. The name must match
+    # the assistant's wakeword.models; a name the service does not know is
+    # skipped and the Assistant's allowlist then refuses any detection it did
+    # not request. Models load on the first Detect, so startup does not pay for
+    # one nobody asks for.
+    #
+    # --threshold is the fallback for clients that do not send the per-model
+    # map; the Assistant sends a threshold for every model it requests, so
+    # WAKEWORD_THRESHOLD/WAKEWORD_THRESHOLDS in .env are the real knobs.
     command: ["--custom-model-dir", "/usr/src/custom_models", "--threshold", "${WAKEWORD_THRESHOLD:-0.5}"]
     expose:
       - "10400"

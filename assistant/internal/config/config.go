@@ -71,15 +71,8 @@ type Config struct {
 		Channels int    `yaml:"channels"`
 		FrameMS  int    `yaml:"frame_ms"`
 	} `yaml:"capture"`
-	Wakeword struct {
-		Addr    string   `yaml:"addr"` // empty disables voice input
-		Model   string   `yaml:"model"`
-		Timeout Duration `yaml:"timeout"`
-		Chime   struct {
-			Enabled bool `yaml:"enabled"`
-		} `yaml:"chime"`
-	} `yaml:"wakeword"`
-	STT struct {
+	Wakeword Wakeword `yaml:"wakeword"`
+	STT      struct {
 		Addr     string   `yaml:"addr"`
 		Model    string   `yaml:"model"` // small-streaming or tiny-streaming
 		Language string   `yaml:"language"`
@@ -235,6 +228,80 @@ func (c Config) VoiceDir() string {
 	return filepath.Join(c.Data.Dir, dir)
 }
 
+// DefaultWakeThreshold is openWakeWord's own detection threshold. A config
+// that omits wakeword.threshold keeps the deployed behaviour.
+const DefaultWakeThreshold = 0.5
+
+// Wakeword is the wake word service config and its model allowlist. The
+// Assistant requests only these models, so a model that is not listed cannot
+// wake it. Every detection then carries the model name into the turn, which
+// #81's non-wake command models will use.
+type Wakeword struct {
+	Addr string `yaml:"addr"` // empty disables voice input
+	// Model is the legacy single-model form. WakeModels prefers Models, so an
+	// existing config.yaml or WAKEWORD_MODEL deployment keeps working.
+	Model string `yaml:"model"`
+	// Models is the ordered allowlist of detectors to listen for.
+	Models []string `yaml:"models"`
+	// Threshold is the default detection probability for every model without
+	// an entry in Thresholds. The service applies it per model.
+	Threshold float64 `yaml:"threshold"`
+	// Thresholds overrides Threshold by model name. Each name must be in the
+	// allowlist: a threshold for a model nobody listens for is a typo, not a
+	// setting.
+	Thresholds map[string]float64 `yaml:"thresholds"`
+	Timeout    Duration           `yaml:"timeout"`
+	Chime      struct {
+		Enabled bool `yaml:"enabled"`
+	} `yaml:"chime"`
+}
+
+// WakeModels is the resolved allowlist: Models when set, otherwise the legacy
+// single Model. Names are trimmed, deduplicated and kept in configured order.
+func (w Wakeword) WakeModels() []string {
+	source := w.Models
+	if len(source) == 0 && strings.TrimSpace(w.Model) != "" {
+		source = []string{w.Model}
+	}
+	models := make([]string, 0, len(source))
+	seen := make(map[string]bool, len(source))
+	for _, name := range source {
+		name = strings.TrimSpace(name)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		models = append(models, name)
+	}
+	return models
+}
+
+// ThresholdFor is the effective detection threshold for one model.
+func (w Wakeword) ThresholdFor(name string) float64 {
+	if threshold, ok := w.Thresholds[name]; ok {
+		return threshold
+	}
+	if w.Threshold > 0 {
+		return w.Threshold
+	}
+	return DefaultWakeThreshold
+}
+
+// ModelThresholds is the complete map sent with every detect stream. It has
+// one entry per requested model, so no model can fall back, by accident, to
+// another model's threshold.
+func (w Wakeword) ModelThresholds() map[string]float64 {
+	models := w.WakeModels()
+	if len(models) == 0 {
+		return nil
+	}
+	thresholds := make(map[string]float64, len(models))
+	for _, name := range models {
+		thresholds[name] = w.ThresholdFor(name)
+	}
+	return thresholds
+}
+
 // Sounds names the sound assigned to each fixed Cue role. Duration caps are
 // checked when the value is assigned, never by trimming the file.
 type Sounds struct {
@@ -301,6 +368,7 @@ func Default() Config {
 	cfg.Capture.Channels = 1
 	cfg.Capture.FrameMS = 32
 	cfg.Wakeword.Model = "clanker"
+	cfg.Wakeword.Threshold = DefaultWakeThreshold
 	cfg.Wakeword.Timeout = Duration(10 * time.Second)
 	cfg.Wakeword.Chime.Enabled = true
 	cfg.STT.Model = "small-streaming"
@@ -463,8 +531,29 @@ func applyEnv(cfg *Config) error {
 	if v := os.Getenv("ASSISTANT_WAKEWORD_ADDR"); v != "" {
 		cfg.Wakeword.Addr = v
 	}
+	if v := os.Getenv("ASSISTANT_WAKEWORD_MODELS"); v != "" {
+		cfg.Wakeword.Models = splitList(v)
+		cfg.Wakeword.Model = ""
+	}
+	// The old single-model variable still wins, so a deployment that sets only
+	// WAKEWORD_MODEL behaves exactly as before.
 	if v := os.Getenv("ASSISTANT_WAKEWORD_MODEL"); v != "" {
 		cfg.Wakeword.Model = v
+		cfg.Wakeword.Models = nil
+	}
+	if v := os.Getenv("ASSISTANT_WAKEWORD_THRESHOLD"); v != "" {
+		threshold, err := strconv.ParseFloat(v, 64)
+		if err != nil {
+			return fmt.Errorf("config: ASSISTANT_WAKEWORD_THRESHOLD=%q: %w", v, err)
+		}
+		cfg.Wakeword.Threshold = threshold
+	}
+	if v := os.Getenv("ASSISTANT_WAKEWORD_THRESHOLDS"); v != "" {
+		thresholds, err := parseWakeThresholds(v)
+		if err != nil {
+			return fmt.Errorf("config: ASSISTANT_WAKEWORD_THRESHOLDS=%q: %w", v, err)
+		}
+		cfg.Wakeword.Thresholds = thresholds
 	}
 	if v := os.Getenv("ASSISTANT_STT_ADDR"); v != "" {
 		cfg.STT.Addr = v
@@ -677,6 +766,9 @@ func (c Config) validateVoice() error {
 	if !c.VoiceEnabled() {
 		return nil
 	}
+	if err := c.validateWakeword(); err != nil {
+		return err
+	}
 	if c.STT.Addr == "" {
 		return fmt.Errorf("config: stt.addr is required when wakeword.addr is set")
 	}
@@ -708,6 +800,69 @@ func (c Config) validateVoice() error {
 		return fmt.Errorf("config: stt.endpoint.max_utterance must be at least the silence window")
 	}
 	return nil
+}
+
+// validateWakeword holds the allowlist and thresholds to the contract the
+// detect stream relies on: at least one model, and a threshold only for a
+// listed model. A silent typo in either would otherwise wake the wrong model
+// or leave a model at the wrong threshold.
+func (c Config) validateWakeword() error {
+	models := c.Wakeword.WakeModels()
+	if len(models) == 0 {
+		return fmt.Errorf("config: wakeword.models must name at least one model when wakeword.addr is set")
+	}
+	for _, name := range models {
+		if strings.ContainsAny(name, " \t") {
+			return fmt.Errorf("config: wakeword model %q must not contain whitespace", name)
+		}
+	}
+	if c.Wakeword.Threshold <= 0 || c.Wakeword.Threshold > 1 {
+		return fmt.Errorf("config: wakeword.threshold must be in (0, 1], got %v", c.Wakeword.Threshold)
+	}
+	listed := make(map[string]bool, len(models))
+	for _, name := range models {
+		listed[name] = true
+	}
+	for name, threshold := range c.Wakeword.Thresholds {
+		if !listed[name] {
+			return fmt.Errorf("config: wakeword.thresholds.%q names a model that is not in wakeword.models", name)
+		}
+		if threshold <= 0 || threshold > 1 {
+			return fmt.Errorf("config: wakeword.thresholds.%q must be in (0, 1], got %v", name, threshold)
+		}
+	}
+	return nil
+}
+
+// parseWakeThresholds reads the deployment form name:value,name:value. It is
+// strict on purpose: a malformed entry is a startup error, not a model that
+// silently uses the wrong threshold.
+func parseWakeThresholds(value string) (map[string]float64, error) {
+	thresholds := make(map[string]float64)
+	for _, entry := range strings.Split(value, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		name, raw, ok := strings.Cut(entry, ":")
+		name = strings.TrimSpace(name)
+		raw = strings.TrimSpace(raw)
+		if !ok || name == "" || raw == "" {
+			return nil, fmt.Errorf("want name:value entries, got %q", entry)
+		}
+		if _, exists := thresholds[name]; exists {
+			return nil, fmt.Errorf("duplicate threshold for %q", name)
+		}
+		threshold, err := strconv.ParseFloat(raw, 64)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", name, err)
+		}
+		thresholds[name] = threshold
+	}
+	if len(thresholds) == 0 {
+		return nil, fmt.Errorf("no name:value entries")
+	}
+	return thresholds, nil
 }
 
 // ActiveProvider returns the one provider entry the Agent path uses. There is

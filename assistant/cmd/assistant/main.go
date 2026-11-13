@@ -871,6 +871,7 @@ func run() error {
 			Logger:        logger,
 			HealthTimeout: cfg.Dashboard.HealthTimeout.Duration(),
 			Services:      dashboard.ComposeServiceChecks(cfg),
+			Wakeword:      dashboard.WakewordFromConfig(cfg),
 			Modules:       toolSet,
 			Location:      locSvc,
 			Status:        systemStatus,
@@ -987,10 +988,9 @@ func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingD
 	}
 	wireFormat := wyoming.Format{Rate: captureFormat.Rate, Width: captureFormat.Width, Channels: captureFormat.Channels}
 
-	var names []string
-	if cfg.Wakeword.Model != "" {
-		names = []string{cfg.Wakeword.Model}
-	}
+	// The explicit allowlist is both what the service is asked to detect and
+	// what the loop accepts, so an unlisted model never starts a turn.
+	names := cfg.Wakeword.WakeModels()
 	wakeClient := wyoming.NewClient(cfg.Wakeword.Addr, wyoming.WithTimeout(cfg.Wakeword.Timeout.Duration()))
 	sttClient := wyoming.NewClient(cfg.STT.Addr, wyoming.WithTimeout(cfg.STT.Timeout.Duration()))
 
@@ -1008,18 +1008,23 @@ func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingD
 	logger.Info("voice input enabled",
 		"pulse_source", cfg.Capture.Source,
 		"wakeword_addr", cfg.Wakeword.Addr,
-		"wakeword_model", cfg.Wakeword.Model,
+		"wakeword_models", names,
+		"wakeword_thresholds", cfg.Wakeword.ModelThresholds(),
 		"stt_addr", cfg.STT.Addr,
 		"stt_model", cfg.STT.Model,
 		"endpoint_silence", cfg.STT.Endpoint.Silence.Duration().String(),
 	)
 
+	// WakeCommands is empty until #81 registers its trained command models; a
+	// configured command name would be added to the detect allowlist above and
+	// handled here without opening STT.
 	deps := voice.Deps{
 		Source:    audio.NewPulseSource(cfg.Capture.Binary, cfg.Capture.Source, captureFormat),
-		Wake:      voice.NewWyomingWake(wakeClient, names, wireFormat),
+		Wake:      voice.NewWyomingWake(wakeClient, names, wireFormat, cfg.Wakeword.ModelThresholds()),
 		STT:       voice.NewWyomingSTT(sttClient, wyoming.TranscribeOptions{Name: cfg.STT.Model, Language: cfg.STT.Language}, wireFormat),
 		Player:    audio.NewPCMPlayer(sink),
 		Responder: voice.NewPipelineResponder(session, tool.DevicePi),
+		WakeWords: names,
 		Dropper:   pending,
 		WakeCue:   wakeCue,
 		Observer:  observer,

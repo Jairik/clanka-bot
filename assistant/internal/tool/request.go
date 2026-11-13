@@ -24,11 +24,16 @@ const (
 	DeviceSatellite Device = "satellite"
 )
 
-// Request identifies a Tool call for logging and privacy decisions.
+// Request is per-turn metadata carried on ctx: the request identity for
+// logging and privacy decisions, and the wake model that started the turn. It
+// is not model-visible text; Tools read what they need from it.
 type Request struct {
 	ID     string
 	Path   Path
 	Device Device
+	// WakeWord names the wake model that started this turn. Empty for typed
+	// requests. Later work (#81) uses it to act on which word fired.
+	WakeWord string
 }
 
 type requestKey struct{}

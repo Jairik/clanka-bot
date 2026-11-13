@@ -225,7 +225,11 @@ re-synthesizes the cached Agent Filler). Connection-level settings (`http.addr`,
 `dashboard.addr`, `tts.addr`, `wakeword.addr`, `stt.addr`, `embed.url`,
 `capture.source`, `playback.sink`) are marked `restart_required`: the override
 is stored, but only the next process start reads it, and the page says so. See
-the README for the curl examples.
+the README for the curl examples. The Settings page's **Wake word** section is
+read-only: the allowlist and per-model thresholds are connection settings
+(`WAKEWORD_MODELS`, `WAKEWORD_THRESHOLD`, `WAKEWORD_THRESHOLDS`), so change
+`.env` and restart; the Health page's Wake word rows show what the service
+advertises.
 
 The **Activity** page at `/activity` lists recent requests from a bounded
 in-memory ring fed by the same completion that writes the structured `request`

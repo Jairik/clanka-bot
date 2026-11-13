@@ -18,8 +18,11 @@ type healthView struct {
 	CheckedAt     string
 	HealthTimeout string
 	Services      []checkView
-	Location      checkView
-	Modules       []checkView
+	// Wakeword has one row per configured model and is probed from the same
+	// config the voice loop uses.
+	Wakeword []checkView
+	Location checkView
+	Modules  []checkView
 	// Spotify keeps Connect pairing and Web API auth separate; they are
 	// different grants and one can be healthy while the other is not.
 	Spotify []checkView
@@ -42,6 +45,7 @@ func (h *Handler) health(ctx context.Context) healthView {
 		CheckedAt:     report.CheckedAt.Format("2006-01-02 15:04:05 UTC"),
 		HealthTimeout: report.Timeout.String(),
 		Services:      checkViews(report.Services),
+		Wakeword:      h.wakewordChecks(ctx),
 		Location:      checkViewOf(report.Location),
 		Modules:       checkViews(report.Modules),
 		Spotify:       h.spotifyChecks(),

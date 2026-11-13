@@ -207,6 +207,39 @@ func TestDescribeReadsTtsInfo(t *testing.T) {
 	}
 }
 
+func TestDescribeReadsWakeInfo(t *testing.T) {
+	addr := fakeServer(t, func(conn net.Conn) {
+		readWireEvent(t, bufio.NewReader(conn)) // describe
+		writeWireEvent(t, conn, "info", map[string]any{
+			"wake": []map[string]any{{
+				"name":        "openwakeword",
+				"description": "An open-source audio wake word detector",
+				"installed":   true,
+				"version":     "2.1.0",
+				"models": []map[string]any{
+					{"name": "clanker", "phrase": "Clanker", "installed": true},
+					{"name": "okay_nabu", "phrase": "Okay Nabu", "installed": true},
+				},
+			}},
+		})
+	})
+
+	client := wyoming.NewClient(addr)
+	ctx, cancel := contextWithTimeout(t)
+	defer cancel()
+
+	info, err := client.Describe(ctx)
+	if err != nil {
+		t.Fatalf("Describe: %v", err)
+	}
+	if len(info.Wake) != 1 || len(info.Wake[0].Models) != 2 {
+		t.Fatalf("wake info = %+v, want one program with two models", info.Wake)
+	}
+	if got := info.Wake[0].Models[0].Name; got != "clanker" {
+		t.Errorf("first model = %q, want clanker", got)
+	}
+}
+
 func TestOpenStreamSendsTextChunksAndReadsSegments(t *testing.T) {
 	addr := fakeServer(t, func(conn net.Conn) {
 		r := bufio.NewReader(conn)

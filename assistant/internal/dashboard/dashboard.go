@@ -108,6 +108,10 @@ type Options struct {
 	// Volume is the Pi speaker's level and mute for the top bar. The control
 	// is hidden when it is nil.
 	Volume VolumeControl
+	// Wakeword is the configured wake-word allowlist and effective per-model
+	// thresholds. Settings shows it read-only and Health checks it against the
+	// service's advertised models. Zero means voice input is off.
+	Wakeword WakewordInfo
 	// Hosts is the explicit public Host allowlist: the tailnet name
 	// `tailscale serve` exposes, exactly as it appears in the URL. Loopback
 	// names are always accepted for the documented local smoke test. An empty
@@ -150,6 +154,9 @@ type Handler struct {
 	typed          TypedResponder
 	transcriber    Transcriber
 	volume         VolumeControl
+	// wakeword is the configured allowlist and thresholds shown on Settings
+	// and probed on Health.
+	wakeword WakewordInfo
 	// askLock serialises every typed request with a one-slot semaphore. The
 	// voice loop is already single-turn; this gives the Dashboard the same
 	// one-request-at-a-time behaviour and one pending Confirmation at a time.
@@ -231,6 +238,7 @@ func New(opts Options) (*Handler, error) {
 		typed:          opts.Typed,
 		transcriber:    opts.Transcriber,
 		volume:         opts.Volume,
+		wakeword:       opts.Wakeword,
 		askLock:        make(chan struct{}, 1),
 		micLock:        make(chan struct{}, 1),
 		hosts:          hosts,

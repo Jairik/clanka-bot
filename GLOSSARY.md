@@ -70,6 +70,14 @@ _Avoid_: Task, run, session
 Interrupting the Assistant mid-reply by saying the wake word, which abandons the current reply and starts a new request.
 _Avoid_: Interrupt, cut-off
 
+**Wake model**:
+One openWakeWord detector the Assistant listens for by name, such as `clanker` or `okay_nabu`. The configured list is an allowlist: a model that is not listed never starts a turn. Each model has its own detection threshold.
+_Avoid_: Hotword, keyword, phrase model
+
+**Command model**:
+A wake model whose detections are handled without speech-to-text, such as "volume up". It never starts a turn or opens STT.
+_Avoid_: Shortcut word, action word
+
 **Response latency**:
 The time from the user's last spoken sound to the first sound of the Assistant's actual reply. Chimes and fillers played while waiting don't count as the reply.
 _Avoid_: Lag, delay, turnaround

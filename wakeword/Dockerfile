@@ -16,5 +16,13 @@ RUN ls /usr/src/.venv/lib/python3.11/site-packages/pyopen_wakeword/models/*.tfli
 # code so editing the health check does not rebuild it.
 COPY models/clanker.tflite /usr/src/custom_models/clanker.tflite
 
+# Per-model thresholds. The upstream handler applies one global --threshold to
+# every model; the Assistant sends a threshold map with each detect request so
+# clanker, okay_nabu and #81's command models can use different values. The
+# patcher asserts every anchor, so a bumped base image fails the build instead
+# of silently losing the feature.
+COPY patch_per_model_thresholds.py /usr/src/patch_per_model_thresholds.py
+RUN /usr/src/.venv/bin/python3 /usr/src/patch_per_model_thresholds.py
+
 # Uses the interpreter in the upstream venv, which already has wyoming installed.
 COPY healthcheck.py /usr/src/healthcheck.py

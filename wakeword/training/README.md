@@ -160,18 +160,23 @@ separately from the synthetic ones.
 
 ## Threshold and model choice
 
-`WAKEWORD_THRESHOLD` (default 0.5) is the knob. Lower catches more takes and
+`WAKEWORD_THRESHOLD` (default 0.5) is the default threshold; `WAKEWORD_THRESHOLDS`
+sets it per model (`clanker:0.6,okay_nabu:0.5`). Lower catches more takes and
 more false wakes; raise it if the assistant wakes on the TV or on "clank". The
 evaluation sweeps 0.3 to 0.7; pick from the table rather than guessing.
 
-`WAKEWORD_MODEL` names the detector the assistant asks for. `clanker` is the
-default here because it clears the bar that matters for a synthetic-only model:
+`WAKEWORD_MODELS` is the comma-separated list of detectors the assistant asks
+for; the older `WAKEWORD_MODEL` still names one. `clanker` is the default here
+because it clears the bar that matters for a synthetic-only model:
 96.7% recall on a voice it never heard, no wake on ordinary speech, and 0.3
 false wakes per hour of background audio. `okay_nabu`, `hey_jarvis`,
 `hey_mycroft`, `hey_rhasspy` and `alexa` are still served from the upstream
-image and can be selected by name, so switching back is one variable. An unknown
-name silently falls back to `okay_nabu` inside the service, so keep
-`WAKEWORD_MODEL` and the assistant's `wakeword.model` in step.
+image and can be selected by name, so switching back is one variable. The
+detect request carries an explicit allowlist and a threshold map: a model that
+is not listed is never loaded for that stream, and a detection from any other
+name is ignored by the assistant. Two models work in one service and share the
+feature extractor, but their false wakes add up; keep the default to the one
+trained word unless the second is earning its keep.
 
 ## Not verified here
 

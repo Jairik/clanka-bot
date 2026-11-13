@@ -233,11 +233,24 @@ wakeword:
   # Wyoming openWakeWord service. An empty address disables voice input and
   # leaves the typed debug entry working.
   addr: "wakeword:10400"
-  # openWakeWord model name. "clanker" is the detector trained for this house
-  # and baked into the wakeword image; okay_nabu, hey_jarvis and hey_rhasspy
-  # still ship upstream. An unknown name falls back to okay_nabu in the service.
-  # Empty accepts any model the service has loaded.
-  model: "clanker"
+  # The explicit allowlist of detectors to listen for. "clanker" is the
+  # detector trained for this house and baked into the wakeword image;
+  # okay_nabu, hey_jarvis and hey_rhasspy also ship upstream. A detection from
+  # a model that is not listed is ignored, so a typo cannot wake the Assistant
+  # with a different model.
+  #
+  # The old single `model:` key is still read when `models:` is empty, and the
+  # deployment WAKEWORD_MODELS overrides both. Extra models add false wakes;
+  # the default stays the one trained word.
+  models: ["clanker"]
+  # Default detection probability for every model without an entry in
+  # thresholds. Higher is stricter.
+  threshold: 0.5
+  # Per-model overrides. A name here must also be in models; the Assistant
+  # sends the complete map with every detect stream and the service applies it
+  # per model. WAKEWORD_THRESHOLDS (clanker:0.6,okay_nabu:0.5) overrides this
+  # map at deployment.
+  thresholds: {}
   timeout: 10s
   chime:
     # Master switch for the wake Cue. The sound itself is sounds.wake (default:

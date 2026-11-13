@@ -38,6 +38,9 @@ type settingsView struct {
 	Quiet       []settingView
 	Live        []settingView
 	Restart     []settingView
+	// Wakeword is read-only: the allowlist and thresholds are connection
+	// settings read once at startup.
+	Wakeword wakewordSettingsView
 }
 
 // settingsToolView is one Tool row: the effective state plus only the
@@ -293,7 +296,7 @@ func flashMessage(flash string) string {
 // buildSettingsView resolves every Tool, the known wording groups and every
 // remaining setting from one service snapshot.
 func (h *Handler) buildSettingsView(flash, errorText string, edit *editState) settingsView {
-	view := settingsView{Owner: h.owner, Page: "settings", Flash: flash, Error: errorText}
+	view := settingsView{Owner: h.owner, Page: "settings", Flash: flash, Error: errorText, Wakeword: h.wakewordSettings()}
 	if h.settings == nil {
 		return view
 	}

@@ -98,7 +98,8 @@ Status: **grilled, ready for `/to-tickets`** (2026-11-11). Built from [map-2-bri
 - Outward writes: `hermes.delegate` is `act` for read-only or research jobs. A job that writes outside the Pi needs a `confirm` at delegation, and its summary names the writes. Even then Hermes can only push branches and open **draft** PRs and issues with a scoped PAT. Nothing merges, deploys or posts publicly without the user.
 
 ### Dashboard
-- Served by `assistant` on its own listener bound to localhost, exposed only through `tailscale serve`. A React app built into the assistant image replaced the original server-rendered Go templates + htmx (#83). A future phone Satellite app is separate and shares the API.
+- Served by `assistant` on its own listener bound to localhost, exposed only through `tailscale serve`. A React app built into the assistant image replaced the original server-rendered Go templates + htmx (#83).
+- **The Dashboard is the phone Satellite.** It installs from the same origin as a PWA and shares its settings, Activity, chat and browser push-to-talk; there is no second app (ADR [0006](../adr/0006-dashboard-is-the-phone-satellite.md), owner decision on #95).
 - Auth: Tailscale identity only. A Tailscale ACL limits the port to the owner, and `assistant` checks the identity headers. No app password; secrets and uploads get the same access as everything else.
 
 ## Open (for ticketing, not decisions)

@@ -89,6 +89,36 @@ test("the app and its script arrive precompressed", async ({ page, request }) =>
   expect(brBytes).toBeLessThan(plainBytes / 2);
 });
 
+test("installs: manifest, worker and an offline shell", async ({ page, context }) => {
+  await page.goto("/");
+
+  const manifest = await page.evaluate(async () => {
+    const href = document.querySelector('link[rel="manifest"]')?.getAttribute("href") ?? "";
+    const res = await fetch(href);
+    return {
+      status: res.status,
+      type: res.headers.get("content-type") ?? "",
+      body: (await res.json()) as { display?: string; icons?: unknown[] },
+    };
+  });
+  expect(manifest.status).toBe(200);
+  expect(manifest.type).toContain("application/manifest+json");
+  expect(manifest.body.display).toBe("standalone");
+  expect(manifest.body.icons?.length).toBeGreaterThan(1);
+
+  // One reload lets the worker take control of the page it precached.
+  await page.waitForFunction(async () => (await navigator.serviceWorker.getRegistrations()).length > 0);
+  await page.evaluate(() => navigator.serviceWorker.ready);
+  await page.reload();
+  await page.waitForFunction(() => !!navigator.serviceWorker.controller);
+
+  // The Pi is unreachable: the installed app opens and says so.
+  await context.setOffline(true);
+  await page.reload();
+  await expect(page.getByText(/Could not reach the assistant/)).toBeVisible();
+  await context.setOffline(false);
+});
+
 test("a refused volume write shows the server's text", async ({ page }) => {
   await page.goto("/");
   await page.getByRole("button", { name: "Mute speaker" }).click();

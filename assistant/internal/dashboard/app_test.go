@@ -199,3 +199,38 @@ func formActions(v any) []string {
 	}
 	return actions
 }
+
+// TestAppServesTheInstallableShell covers the PWA files the browser asks for
+// outside the page: a manifest with its own type, a revalidated worker, the
+// offline page and the icons.
+func TestAppServesTheInstallableShell(t *testing.T) {
+	handler := newHandler(t, dashboard.Options{})
+	cases := []struct {
+		path, contentType, cache string
+	}{
+		{"/manifest.webmanifest", "application/manifest+json", ""},
+		{"/sw.js", "javascript", "no-cache"},
+		{"/offline.html", "text/html", ""},
+		{"/icons/icon-192.png", "image/png", ""},
+	}
+	for _, c := range cases {
+		rec := serve(handler, request(http.MethodGet, c.path, owner))
+		if rec.Code != http.StatusOK {
+			t.Errorf("%s = %d, want 200", c.path, rec.Code)
+			continue
+		}
+		if got := rec.Header().Get("Content-Type"); !strings.Contains(got, c.contentType) {
+			t.Errorf("%s Content-Type = %q, want %q", c.path, got, c.contentType)
+		}
+		if c.cache != "" {
+			if got := rec.Header().Get("Cache-Control"); got != c.cache {
+				t.Errorf("%s Cache-Control = %q, want %q", c.path, got, c.cache)
+			}
+		}
+	}
+	// The shell files sit behind the same identity check as every page.
+	req := request(http.MethodGet, "/sw.js", "")
+	if rec := serve(handler, req); rec.Code == http.StatusOK {
+		t.Error("the service worker was served without an identity")
+	}
+}

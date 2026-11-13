@@ -71,8 +71,12 @@ const uiIndex = "<!doctype html><title>fixture</title><script type=\"module\" sr
 
 func uiFixture() fstest.MapFS {
 	return fstest.MapFS{
-		"index.html":    {Data: []byte(uiIndex)},
-		"assets/app.js": {Data: []byte("console.log('fixture')")},
+		"index.html":           {Data: []byte(uiIndex)},
+		"assets/app.js":        {Data: []byte("console.log('fixture')")},
+		"sw.js":                {Data: []byte("self.addEventListener('install', () => {})")},
+		"manifest.webmanifest": {Data: []byte(`{"name":"clanka"}`)},
+		"offline.html":         {Data: []byte("<!doctype html><title>offline</title>")},
+		"icons/icon-192.png":   {Data: []byte{0x89, 0x50, 0x4e, 0x47}},
 	}
 }
 

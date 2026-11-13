@@ -45,11 +45,12 @@ export function LiveProvider({ children }: { children: ReactNode }) {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let attempt = 0;
     let stopped = false;
+    let openedAt = 0;
 
     const connect = () => {
       source = new EventSource("/api/ui/events");
       source.onopen = () => {
-        attempt = 0;
+        openedAt = Date.now();
         setLive(true);
         // Every open is a resync: the stream carries deltas only, so a view
         // that changed while the stream was down has to be reloaded.
@@ -59,6 +60,11 @@ export function LiveProvider({ children }: { children: ReactNode }) {
         setLive(false);
         source?.close();
         source = null;
+        // Reset the backoff only after a connection that actually stayed up: an
+        // endpoint that accepts and immediately drops must keep doubling, or
+        // every tab reconnects once a second and resyncs every consumer.
+        if (openedAt && Date.now() - openedAt > 10_000) attempt = 0;
+        openedAt = 0;
         if (stopped) return;
         timer = setTimeout(connect, liveBackoff(attempt));
         attempt += 1;

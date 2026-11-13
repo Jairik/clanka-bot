@@ -63,11 +63,11 @@ func (h *Handler) app(w http.ResponseWriter, r *http.Request) {
 // isAssetPath reports a build file rather than a page route: everything Vite
 // emits under assets/ plus the few root files copied from web/public.
 func isAssetPath(name string) bool {
-	if strings.HasPrefix(name, "assets/") {
+	if strings.HasPrefix(name, "assets/") || strings.HasPrefix(name, "icons/") {
 		return true
 	}
 	switch name {
-	case "theme.js", "favicon.svg":
+	case "theme.js", "favicon.svg", "manifest.webmanifest", "offline.html", "sw.js":
 		return true
 	}
 	return false
@@ -98,10 +98,19 @@ func (h *Handler) appFile(w http.ResponseWriter, r *http.Request, name string) {
 		http.NotFound(w, r)
 		return
 	}
-	if strings.HasPrefix(name, "assets/") {
+	switch {
+	case strings.HasPrefix(name, "assets/"):
 		// Vite content-hashes these names, so a cached copy can never be
 		// stale. private: they are still identity-gated.
 		w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	case name == "sw.js":
+		// A service worker must be revalidated or a new build never arrives.
+		w.Header().Set("Cache-Control", "no-cache")
+	}
+	// Go's mime table does not know the manifest extension; without this the
+	// file would be sniffed and Chrome would reject it.
+	if path.Ext(name) == ".webmanifest" {
+		w.Header().Set("Content-Type", "application/manifest+json")
 	}
 	if coding != "" {
 		// The sibling has no useful extension: ServeContent is given the

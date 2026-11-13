@@ -2,8 +2,9 @@ import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { brotliCompressSync, constants, gzipSync } from "node:zlib";
-import { readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { extname, join } from "node:path";
+import { createHash } from "node:crypto";
+import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { extname, join, relative } from "node:path";
 
 // The build is embedded in the Go binary (internal/dashboard/ui/dist), so the
 // Pi serves it with no CDN and no internet access.
@@ -48,8 +49,46 @@ function precompress(): Plugin {
   };
 }
 
+// The service worker precaches the shell; its file list and version come from
+// the finished bundle, so a new build replaces the old cache.
+function serviceWorker(): Plugin {
+  let outDir = "";
+  return {
+    name: "clanka-service-worker",
+    apply: "build",
+    configResolved(config) {
+      outDir = config.build.outDir;
+    },
+    closeBundle() {
+      const files: string[] = [];
+      const walk = (dir: string) => {
+        for (const entry of readdirSync(dir, { withFileTypes: true })) {
+          const file = join(dir, entry.name);
+          if (entry.isDirectory()) {
+            walk(file);
+            continue;
+          }
+          // The SW itself and its compressed siblings are not part of the shell.
+          if (entry.name === "sw.js" || /\.(gz|br)$/.test(entry.name)) continue;
+          files.push("/" + relative(outDir, file).replaceAll("\\", "/"));
+        }
+      };
+      walk(outDir);
+      files.sort();
+
+      const version = createHash("sha256")
+        .update(files.map((f) => f + ":" + statSync(join(outDir, f.slice(1))).size).join("|"))
+        .digest("hex")
+        .slice(0, 12);
+      const template = readFileSync("src/sw-template.js", "utf8");
+      const sw = template.replace("__VERSION__", version).replace("__PRECACHE__", JSON.stringify(files, null, 2));
+      writeFileSync(join(outDir, "sw.js"), sw);
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [react(), tailwindcss(), precompress()],
+  plugins: [react(), tailwindcss(), precompress(), serviceWorker()],
   build: {
     outDir: "../internal/dashboard/ui/dist",
     emptyOutDir: true,

@@ -180,7 +180,7 @@ func TestDocumentIsGzipped(t *testing.T) {
 	if string(body) != uiIndex {
 		t.Error("the gzipped document does not decode to index.html")
 	}
-	if csp := resp.Header.Get("Content-Security-Policy"); !strings.Contains(csp, "form-action 'self' https://accounts.spotify.com") {
+	if csp := resp.Header.Get("Content-Security-Policy"); !strings.Contains(csp, "form-action 'self'") || strings.Contains(csp, "accounts.spotify.com") {
 		t.Errorf("the document lost its CSP: %q", csp)
 	}
 	if resp.ContentLength != -1 {

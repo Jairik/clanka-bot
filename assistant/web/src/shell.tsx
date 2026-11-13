@@ -9,6 +9,7 @@ import {
 import { getJSON, navigate, postForm, useLocation } from "./api";
 import type { HealthView, Session, Volume as VolumeState } from "./types";
 import { Range, cn } from "./ui";
+import { SpeakToggle } from "./speak";
 import { snapVolume, VOL_STEP } from "./volume";
 
 export type PageId = "home" | "activity" | "alerts" | "notes" | "health" | "sounds" | "voices" | "personas" | "voice-samples" | "spotify" | "secrets" | "settings";
@@ -31,7 +32,7 @@ export const pageFor = (path: string) => PAGES.find((p) => p.path === path.repla
 
 // ---------- session (who, and which optional services are wired) ----------
 
-const SessionCtx = createContext<Session>({ Owner: "", Typed: false, Mic: false, Volume: false, Activity: false });
+const SessionCtx = createContext<Session>({ Owner: "", Typed: false, Mic: false, Volume: false, Activity: false, CanSpeak: false, Speak: false });
 export const useSession = () => useContext(SessionCtx);
 
 export function SessionProvider({ children }: { children: ReactNode }) {
@@ -118,6 +119,7 @@ export function Shell({ children }: { children: ReactNode }) {
               </SearchField.Group>
             </SearchField>
           </form>
+          <SpeakToggle />
           <VolumeControl />
         </header>
         <main className="min-h-0 flex-1">{children}</main>

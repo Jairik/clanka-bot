@@ -13,6 +13,7 @@ import { SpotifyPage } from "./pages/Spotify";
 import { VoiceSamplesPage } from "./pages/VoiceSamples";
 import { VoicesPage } from "./pages/Voices";
 import { SessionProvider, Shell, pageFor, type PageId } from "./shell";
+import { SpeakProvider } from "./speak";
 
 const VIEWS: Record<PageId, () => React.JSX.Element> = {
   home: Home,
@@ -35,12 +36,15 @@ export function App() {
   const View = page ? VIEWS[page.id] : NotFound;
   return (
     <SessionProvider>
-      {/* The chat store lives above the router so a pending request survives page changes. */}
-      <ChatProvider>
-        <Shell>
-          <View key={page?.id} />
-        </Shell>
-      </ChatProvider>
+      {/* The speak opt-in lives with the session: one value for the toggle and the composer. */}
+      <SpeakProvider>
+        {/* The chat store lives above the router so a pending request survives page changes. */}
+        <ChatProvider>
+          <Shell>
+            <View key={page?.id} />
+          </Shell>
+        </ChatProvider>
+      </SpeakProvider>
     </SessionProvider>
   );
 }

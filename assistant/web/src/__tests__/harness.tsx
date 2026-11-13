@@ -2,6 +2,7 @@
 import type { ReactNode } from "react";
 import { ChatProvider } from "../chat";
 import { SessionProvider } from "../shell";
+import { SpeakProvider } from "../speak";
 import type { ActivityView, Request, Session } from "../types";
 
 export const session = (over: Partial<Session> = {}): Session => ({
@@ -10,6 +11,8 @@ export const session = (over: Partial<Session> = {}): Session => ({
   Mic: true,
   Volume: true,
   Activity: true,
+  CanSpeak: true,
+  Speak: false,
   ...over,
 });
 
@@ -81,7 +84,9 @@ export { json };
 export function Providers({ children }: { children: ReactNode }) {
   return (
     <SessionProvider>
-      <ChatProvider>{children}</ChatProvider>
+      <SpeakProvider>
+        <ChatProvider>{children}</ChatProvider>
+      </SpeakProvider>
     </SessionProvider>
   );
 }

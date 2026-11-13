@@ -50,7 +50,7 @@ web-image: ## Ship a UI-only change: rebuild dashboard-web, no Go rebuild or ass
 web-dev: ## Dashboard dev server; proxies to a local assistant (see assistant/web/README.md).
 	cd assistant/web && pnpm install && pnpm dev
 
-test: ## Run the assistant, deployment, wakeword-CLI and mic-check test suites.
+test: ## Run the assistant, deployment, auto-deploy, wakeword-CLI and mic-check suites.
 	cd assistant && go test ./...
 	bash scripts/tests/deploy_test.sh
 	bash scripts/tests/deploy_watch_test.sh

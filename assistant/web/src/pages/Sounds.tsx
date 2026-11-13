@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@heroui/react";
-import { Play, Speaker, Upload } from "lucide-react";
+import { Play, Speaker } from "lucide-react";
 import { usePageData } from "../api";
 import { ResetButton, SelectField, SettingRow, useActions } from "../forms";
 import { PageFrame } from "../shell";
 import type { SoundsView } from "../types";
+import { UploadRow } from "../upload";
 import { Badge, Empty, Lede, Notice, Section, SourceBadge } from "../ui";
 
 export function SoundsPage() {
@@ -64,7 +65,13 @@ export function SoundsPage() {
             ) : (
               <Empty>No sounds are indexed yet.</Empty>
             )}
-            <UploadRow maxUpload={data.MaxUpload} pending={actions.pending === "/sounds/upload"} onUpload={(f) => actions.run("/sounds/upload", f)} />
+            <UploadRow
+              action="/sounds/upload"
+              maxUpload={data.MaxUpload}
+              accept=".wav,.mp3,audio/wav,audio/mpeg"
+              label="Upload a WAV or MP3"
+              onView={(v) => set(v as SoundsView)}
+            />
           </Section>
 
           <Section title="Cue roles" summary={`${data.Roles?.length ?? 0} roles`} flush>
@@ -122,42 +129,5 @@ export function SoundsPage() {
         </div>
       )}
     </PageFrame>
-  );
-}
-
-/** File picker + upload. `accept` mirrors what the server decodes. */
-export function UploadRow({
-  maxUpload, pending, onUpload, accept = ".wav,.mp3,audio/wav,audio/mpeg", label = "Upload a WAV or MP3", extra,
-}: {
-  maxUpload: string;
-  pending: boolean;
-  onUpload: (f: FormData) => Promise<boolean>;
-  accept?: string;
-  label?: string;
-  extra?: (fd: FormData) => void;
-}) {
-  const input = useRef<HTMLInputElement>(null);
-  return (
-    <div className="flex flex-wrap items-center gap-3 border-t px-3.5 py-3">
-      <input
-        ref={input}
-        type="file"
-        accept={accept}
-        className="hidden"
-        onChange={async (e) => {
-          const file = e.target.files?.[0];
-          if (!file) return;
-          const fd = new FormData();
-          fd.set("file", file);
-          extra?.(fd);
-          await onUpload(fd);
-          e.target.value = "";
-        }}
-      />
-      <Button size="sm" variant="secondary" isPending={pending} onPress={() => input.current?.click()}>
-        <Upload className="size-3.5" /> {label}
-      </Button>
-      <span className="text-[11px] text-subtle">Up to {maxUpload}.</span>
-    </div>
   );
 }

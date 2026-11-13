@@ -4,46 +4,20 @@ import { useMemo } from "react";
 import { SearchField, ToggleButton, ToggleButtonGroup } from "@heroui/react";
 import { ChevronDown, Info, X } from "lucide-react";
 import { useQueryParam } from "../api";
-import { OutcomeBadge, RequestDetail, fmtClock, isFailed, isTyped, sourceIcon, useChat } from "../chat";
+import { asFilter, bucketActivity, filterActivity, FILTERS, FILTER_LABEL } from "../activity";
+import { OutcomeBadge, RequestDetail, fmtClock, isFailed, sourceIcon, useChat } from "../chat";
 import { PageFrame } from "../shell";
 import type { Request } from "../types";
 import { Badge, Empty, Fold, Notice, Section, cn, foldOpen } from "../ui";
-
-const FILTERS = ["all", "voice", "typed", "problems"] as const;
-type Filter = (typeof FILTERS)[number];
-const FILTER_LABEL: Record<Filter, string> = { all: "All", voice: "Voice", typed: "Typed", problems: "Problems" };
-const isProblem = (r: Request) => isFailed(r) || r.Outcome === "cancelled" || !!r.Error;
 
 export function ActivityPage() {
   const { view, requests, loadError } = useChat();
   const [q, setQ] = useQueryParam("q");
   const [f, setF] = useQueryParam("filter", "all");
-  const filter = (FILTERS as readonly string[]).includes(f) ? (f as Filter) : "all";
+  const filter = asFilter(f);
 
-  const buckets = useMemo(() => {
-    const needle = q.trim().toLowerCase();
-    const list = [...requests]
-      .reverse()
-      .filter((r) =>
-        filter === "voice" ? !isTyped(r.Source) : filter === "typed" ? isTyped(r.Source) : filter === "problems" ? isProblem(r) : true,
-      )
-      .filter((r) => !needle || `${r.Transcript} ${r.Reply} ${r.Tool} ${r.PathLabel} ${r.Error}`.toLowerCase().includes(needle));
-    const m = new Map<string, { title: string; list: Request[] }>();
-    const today = new Date().toDateString();
-    for (const r of list) {
-      const d = new Date(r.TimeISO);
-      // The key carries the day as well as the hour: the ring can span more
-      // than a week, and "Mon 2 PM" from two different weeks would otherwise
-      // land in one bucket with a duplicate React key.
-      const key = `${d.toDateString()}|${d.getHours()}`;
-      const hour = d.toLocaleString([], { weekday: "short", hour: "numeric" });
-      const title = d.toDateString() === today ? hour : `${hour} · ${d.toLocaleDateString([], { month: "short", day: "numeric" })}`;
-      const entry = m.get(key) ?? { title, list: [] };
-      entry.list.push(r);
-      m.set(key, entry);
-    }
-    return [...m.entries()];
-  }, [requests, filter, q]);
+  // Newest first, then filtered, then grouped by hour.
+  const buckets = useMemo(() => bucketActivity(filterActivity([...requests].reverse(), filter, q)), [requests, filter, q]);
 
   return (
     <PageFrame id="activity">
@@ -75,7 +49,7 @@ export function ActivityPage() {
       </div>
 
       <div className="space-y-3">
-        {buckets.map(([key, { title, list: rs }], i) => {
+        {buckets.map(({ key, title, list: rs }, i) => {
           const bad = rs.filter(isFailed).length;
           return (
             <Section

@@ -39,6 +39,12 @@ Each tick, in order:
 decides *when*, never *how*, so a manual `make deploy`, a rollback and a timer
 tick produce the same result.
 
+The checkout must stay on `main`. The watcher compares `HEAD` with
+`origin/main`, but `deploy.sh` pulls the branch that is checked out, so a Pi
+left on a feature branch would compare against `main` and then pull something
+else. After a rollback, `deploy.sh` checks the old commit out detached and the
+next plain deploy returns to the tracked branch; leave it on `main` afterwards.
+
 ## Install on the Pi
 
 Over Tailscale SSH, in the checkout the stack already runs from:

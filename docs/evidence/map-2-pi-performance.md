@@ -10,4 +10,4 @@ Smaller-model weights downloaded using installed pinned config, tested in separa
 
 Logs on desktop: /tmp/clanka-pi-tts-benchmark.log, /tmp/clanka-pi-tts-small-benchmark.log, /tmp/clanka-pi-tts-18m-sustained.log. Upstream model source: https://github.com/kyutai-labs/pocket-tts .
 
-Deployment candidate: Pi-only TTS_LANGUAGE=english_18m_2026-10 and TTS_THREADS=1. Owner confirms the smaller model sample is clear and acceptable. Compose exposes TTS_THREADS through OMP_NUM_THREADS; default 4 preserves prior CPU behavior elsewhere. Language changes are baked by existing TTS build args. Live rollout and correct wake-to-time reply remain pending.
+Deployment candidate: Pi-only TTS_LANGUAGE=english_18m_2026-10 and TTS_THREADS=1. Owner confirms the smaller model sample is clear and acceptable. Compose exposes TTS_THREADS through OMP_NUM_THREADS; default 4 matches the measured original Pi setting; other hosts were not benchmarked. Language changes are baked by existing TTS build args. Live rollout and correct wake-to-time reply remain pending.

@@ -190,7 +190,7 @@ services:
       TTS_HOST: "0.0.0.0"
       TTS_PORT: "10200"
       TTS_ADDR: "tcp://127.0.0.1:10200"
-      # Pi benchmarks favor one thread; preserve the existing default elsewhere.
+      # Pi benchmarks favor one thread; four matches its measured original default.
       OMP_NUM_THREADS: ${TTS_THREADS:-4}
       TTS_LANGUAGE: ${TTS_LANGUAGE:-english}
       TTS_VOICES: ${TTS_VOICES:-${TTS_VOICE:-alba}}

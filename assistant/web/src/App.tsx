@@ -1,39 +1,50 @@
+import { lazy, Suspense, useEffect } from "react";
 import { useLocation } from "./api";
 import { ChatProvider } from "./chat";
-import { ActivityPage } from "./pages/Activity";
-import { AlertsPage } from "./pages/Alerts";
-import { HealthPage } from "./pages/Health";
 import { Home } from "./pages/Home";
-import { NotesPage } from "./pages/Notes";
-import { PersonasPage } from "./pages/Personas";
-import { SecretsPage } from "./pages/Secrets";
-import { SettingsPage } from "./pages/Settings";
-import { SoundsPage } from "./pages/Sounds";
-import { SpotifyPage } from "./pages/Spotify";
-import { VoiceSamplesPage } from "./pages/VoiceSamples";
-import { VoicesPage } from "./pages/Voices";
+import { pageLoaders, prefetchAll, type LazyPageId } from "./routes";
 import { SessionProvider, Shell, pageFor, type PageId } from "./shell";
 import { SpeakProvider } from "./speak";
 
-const VIEWS: Record<PageId, () => React.JSX.Element> = {
+const lazyPage = <K extends LazyPageId>(id: K, name: string) =>
+  lazy(async () => {
+    const mod = (await pageLoaders[id]()) as Record<string, React.ComponentType>;
+    return { default: mod[name] };
+  });
+
+// Each page is its own chunk; the shell (session, chat store, top bar, fonts)
+// stays in the entry, and Home is eager because it is the landing route.
+const VIEWS: Record<PageId, React.ComponentType> = {
   home: Home,
-  activity: ActivityPage,
-  alerts: AlertsPage,
-  notes: NotesPage,
-  health: HealthPage,
-  sounds: SoundsPage,
-  voices: VoicesPage,
-  personas: PersonasPage,
-  "voice-samples": VoiceSamplesPage,
-  spotify: SpotifyPage,
-  secrets: SecretsPage,
-  settings: SettingsPage,
+  activity: lazyPage("activity", "ActivityPage"),
+  alerts: lazyPage("alerts", "AlertsPage"),
+  notes: lazyPage("notes", "NotesPage"),
+  health: lazyPage("health", "HealthPage"),
+  sounds: lazyPage("sounds", "SoundsPage"),
+  voices: lazyPage("voices", "VoicesPage"),
+  personas: lazyPage("personas", "PersonasPage"),
+  "voice-samples": lazyPage("voice-samples", "VoiceSamplesPage"),
+  spotify: lazyPage("spotify", "SpotifyPage"),
+  secrets: lazyPage("secrets", "SecretsPage"),
+  settings: lazyPage("settings", "SettingsPage"),
 };
 
 export function App() {
   const { path } = useLocation();
   const page = pageFor(path);
   const View = page ? VIEWS[page.id] : NotFound;
+
+  // Warm the rest of the routes once the landing page is interactive.
+  useEffect(() => {
+    const run = () => prefetchAll();
+    if (typeof requestIdleCallback === "function") {
+      const id = requestIdleCallback(run, { timeout: 4000 });
+      return () => cancelIdleCallback(id);
+    }
+    const id = setTimeout(run, 1500);
+    return () => clearTimeout(id);
+  }, []);
+
   return (
     <SessionProvider>
       {/* The speak opt-in lives with the session: one value for the toggle and the composer. */}
@@ -41,7 +52,9 @@ export function App() {
         {/* The chat store lives above the router so a pending request survives page changes. */}
         <ChatProvider>
           <Shell>
-            <View key={page?.id} />
+            <Suspense fallback={<div className="p-8 text-sm text-muted">Loading…</div>}>
+              <View key={page?.id} />
+            </Suspense>
           </Shell>
         </ChatProvider>
       </SpeakProvider>

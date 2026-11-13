@@ -87,8 +87,44 @@ function serviceWorker(): Plugin {
   };
 }
 
+// The initial load is the entry chunk plus the modulepreload imports Vite
+// writes into index.html (the shell, Home and the shared chat/UI code). Route
+// chunks load on demand, so this fails the build when the shell itself grows
+// past the agreed limit instead of making every phone pay for it.
+const INITIAL_JS_BUDGET = 600 * 1024;
+
+function initialBudget(limit: number): Plugin {
+  let outDir = "";
+  return {
+    name: "clanka-initial-budget",
+    apply: "build",
+    configResolved(config) {
+      outDir = config.build.outDir;
+    },
+    closeBundle() {
+      const html = readFileSync(join(outDir, "index.html"), "utf8");
+      const initial = new Set<string>();
+      for (const match of html.matchAll(/(?:src|href)="(\/assets\/[^"]+\.js)"/g)) initial.add(match[1].slice(1));
+      const size = (file: string) => statSync(join(outDir, file)).size;
+      const bytes = [...initial].reduce((sum, file) => sum + size(file), 0);
+
+      const all = readdirSync(join(outDir, "assets")).filter((f) => f.endsWith(".js"));
+      const routes = all
+        .map((f) => `assets/${f}`)
+        .filter((f) => !initial.has(f))
+        .map((f) => `  ${f}: ${(size(f) / 1024).toFixed(0)} kB`);
+
+      console.log(`\nInitial JavaScript: ${(bytes / 1024).toFixed(0)} kB (budget ${(limit / 1024).toFixed(0)} kB)`);
+      console.log(`Lazy route chunks:\n${routes.join("\n")}`);
+      if (bytes > limit) {
+        throw new Error(`Initial JavaScript is ${(bytes / 1024).toFixed(0)} kB, over the ${(limit / 1024).toFixed(0)} kB budget.`);
+      }
+    },
+  };
+}
+
 export default defineConfig({
-  plugins: [react(), tailwindcss(), precompress(), serviceWorker()],
+  plugins: [react(), tailwindcss(), initialBudget(INITIAL_JS_BUDGET), precompress(), serviceWorker()],
   build: {
     outDir: "../internal/dashboard/ui/dist",
     emptyOutDir: true,

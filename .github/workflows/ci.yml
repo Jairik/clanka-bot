@@ -35,6 +35,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
+        with:
+          # The action reads the packageManager field from this file. It
+          # resolves the path from the repository root, not from the step's
+          # working-directory, so it has to name the app's own package.json.
+          package_json_file: assistant/web/package.json
       - uses: actions/setup-node@v4
         with:
           node-version: 22

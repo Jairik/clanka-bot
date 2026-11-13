@@ -16,6 +16,8 @@ export type Recording = {
 };
 
 export type CaptureOptions = {
+  /** Optional local cue after device setup and before capturing samples. */
+  beforeCapture?: () => Promise<void>;
   /** Max captured seconds; defaults to MIC_MAX_SECONDS. */
   maxSeconds?: number;
   /**
@@ -33,6 +35,7 @@ export async function startRecording(onLevel: (rms: number) => void, options: Ca
   const ctx = new AudioContext();
   try {
     await ctx.audioWorklet.addModule(workletUrl);
+    await options.beforeCapture?.();
   } catch (e) {
     stream.getTracks().forEach((t) => t.stop());
     void ctx.close();

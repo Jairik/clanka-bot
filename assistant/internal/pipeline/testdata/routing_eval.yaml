@@ -928,7 +928,6 @@ positives:
     - play me some Coldplay
     - continue playing music
   spotify.pause:
-    - pause
     - pause playback
     - pause the music
     - pause spotify
@@ -1586,11 +1585,19 @@ focus:
     handled_by: ""
   - utterance: pause
     holders: [reply, music]
-    intent: pause
+    intent: next
     handled_by: music
   - utterance: pause
     holders: []
-    intent: pause
+    intent: next
+    handled_by: ""
+  - utterance: skip
+    holders: [music]
+    intent: next
+    handled_by: music
+  - utterance: skip
+    holders: []
+    intent: next
     handled_by: ""
   - utterance: resume
     holders: [music]

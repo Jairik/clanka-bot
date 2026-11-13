@@ -2,10 +2,10 @@ import { Button } from "@heroui/react";
 import { RefreshCw } from "lucide-react";
 import { usePageData } from "../api";
 import { PageFrame } from "../shell";
-import type { Check, StatusState } from "../types";
+import type { Check } from "../types";
 import { Dot, Empty, Notice, Section, cn, type Tone } from "../ui";
 
-const TONE: Record<StatusState, Tone> = { ok: "ok", error: "bad", "timed-out": "bad", "not-configured": "neutral", "no-check": "neutral" };
+const TONE: Record<string, Tone> = { ok: "ok", error: "bad", "timed-out": "bad", "not-configured": "neutral", "no-check": "neutral" };
 const failing = (c: Check) => TONE[c.Status] === "bad";
 
 export function HealthPage() {

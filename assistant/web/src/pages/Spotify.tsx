@@ -5,10 +5,10 @@ import { useEffect } from "react";
 import { Button } from "@heroui/react";
 import { navigate, useLocation, usePageData } from "../api";
 import { PageFrame } from "../shell";
-import type { Pill } from "../types";
 import { Dot, Empty, Lede, Meta, Notice, Section, SourceBadge, type Tone } from "../ui";
 
-const TONE: Record<Pill, Tone> = { ok: "ok", error: "bad", "not-configured": "neutral" };
+// A pill is a plain string on the wire; anything but ok/error is neutral.
+const tone = (pill: string): Tone => (pill === "ok" ? "ok" : pill === "error" ? "bad" : "neutral");
 
 function PostButton({ action, children, variant = "secondary" }: { action: string; children: string; variant?: "primary" | "secondary" | "danger-soft" }) {
   return (
@@ -36,11 +36,11 @@ export function SpotifyPage() {
       <Notice error={error || data?.Error} flash={data?.Flash} />
       {p && w && (
         <div className="space-y-2.5">
-          <Section title="Spotify Connect" summary={p.Label} tone={TONE[p.Pill]} defaultOpen flush>
+          <Section title="Spotify Connect" summary={p.Label} tone={tone(p.Pill)} defaultOpen flush>
             <div className="space-y-3 px-3.5 py-3">
               <div className="flex items-start gap-2.5">
                 <span className="mt-1.5">
-                  <Dot tone={TONE[p.Pill]} />
+                  <Dot tone={tone(p.Pill)} />
                 </span>
                 <p className="text-sm">{p.Detail}</p>
               </div>
@@ -61,12 +61,12 @@ export function SpotifyPage() {
             </div>
           </Section>
 
-          <Section title="Web API" summary={w.Label} tone={TONE[w.Pill]} defaultOpen flush>
+          <Section title="Web API" summary={w.Label} tone={tone(w.Pill)} defaultOpen flush>
             <Lede>Authorization Code with PKCE. The refresh token is the only Spotify credential stored; access tokens stay in memory.</Lede>
             <div className="space-y-3 px-3.5 py-3">
               <div className="flex items-start gap-2.5">
                 <span className="mt-1.5">
-                  <Dot tone={TONE[w.Pill]} />
+                  <Dot tone={tone(w.Pill)} />
                 </span>
                 <p className="text-sm">{w.Detail}</p>
               </div>

@@ -237,8 +237,10 @@ album, playlist or "my liked songs"), `spotify.pause`, `spotify.next`,
 (the one named by `spotify.device_name` / `SPOTIFY_DEVICE_NAME`, `Clanka` by
 default) through the Web API client above; a phone or desktop elsewhere on the
 account is never controlled. Starting music claims Focus at the lowest
-(`music`) priority, so "pause", "resume", "next" and "stop" reach it as shared
-Focus intents when no Ring or reply holds a higher priority. Paused music keeps
+(`music`) priority, so "skip", "pause", "next", "resume" and "stop" reach it
+as shared Focus intents when no Ring or reply holds a higher priority. "skip"
+and "pause" both use the next intent, so they advance the track; "next" does
+the same. Paused music keeps
 that claim so a bare "resume" still works; "stop" or a missing device releases
 it. Playing, pausing and volume need Spotify Premium and a paired device.
 

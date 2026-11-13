@@ -384,7 +384,7 @@ live checks.
 **#72 boxes:**
 
 - "play Radiohead" starts playback on the Pi
-- "pause", "resume" and "next" act on music when it holds Focus, and on a Ring or reply first when they do
+- "skip", "pause" and "next" advance the track when music holds Focus; "resume" resumes it; "stop" hits a Ring or reply first when one is active
 - Music ducks during replies, Rings and after the wake word, and restores after
 - "what's playing" works
 - `music.max_volume` is enforced
@@ -398,14 +398,14 @@ playing on the Pi. Focus order is ringing alert, then reply, then music
 
 1. Say "play Radiohead". Music must start on the Pi.
 2. Say "what's playing". The answer must name the current track.
-3. Say "pause", then "resume", then "next" while music holds Focus. Each must act on the music.
-4. Start a reply or a Ring while music plays, then say "pause". The Ring or reply
-   must take the command first. Music must not pause.
+3. Say "skip", then "pause", then "next" while music holds Focus. Each must advance the track.
+4. Start a reply or a Ring while music plays, then say "stop". The Ring or reply
+   must take the command first. Music must keep playing.
 5. Ducking: during a reply, a Ring, and right after the wake word, music volume
    must drop, then return to its previous level when the turn ends. Listen and
    note the level. Ducking runs only when the Spotify Web API app is
    configured (`spotify.client_id` and redirect URI).
-   Stream-restore check: after a reply, say "pause", then "resume". Music must
+   Stream-restore check: after a reply, say "pause the music", then "resume". Music must
    come back at full level, not the ducked level. Pulse's `module-stream-restore`
    can remember a stream's last volume for Soloist, so also run
    `pactl list sink-inputs` while music plays and confirm the `spotify` input

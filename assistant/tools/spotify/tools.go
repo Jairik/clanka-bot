@@ -101,7 +101,7 @@ func NewPlay(svc *Service) tool.Tool[PlayIn, PlayOut] {
 				}
 				return PlayOut{}, toolError(err)
 			}
-			// Music now holds Focus, so "pause" and "next" reach it.
+			// Music now holds Focus, so "skip", "pause" and "next" reach it.
 			svc.takeFocus()
 			return PlayOut(played), nil
 		},

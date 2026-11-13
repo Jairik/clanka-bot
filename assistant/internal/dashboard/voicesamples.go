@@ -23,7 +23,8 @@ type voiceSamplesView struct {
 	Flash string
 	Error string
 
-	HasStore bool
+	HasStore             bool
+	PiRecordingAvailable bool
 	// RecordingAvailable is false only when the deployment did not wire the
 	// store; the page then explains the missing piece instead of a dead button.
 	RecordingAvailable bool
@@ -276,7 +277,8 @@ func (h *Handler) buildVoiceSamplesView(slug, flash, errorText string) voiceSamp
 	}
 	view := voiceSamplesView{
 		Owner: h.owner, Page: "voice-samples", Flash: flash, Error: errorText,
-		MinTakes: wakesample.MinTakes, MaxTakes: maxTakes,
+		PiRecordingAvailable: h.sampleRecorder != nil,
+		MinTakes:             wakesample.MinTakes, MaxTakes: maxTakes,
 		MaxSeconds: fmt.Sprintf("%.0f s", wakesample.MaxTakeSeconds),
 		MaxBytes:   fmt.Sprintf("%d KB", wakesample.MaxTakeBytes/1024),
 		Prompts:    wakesample.Prompts,

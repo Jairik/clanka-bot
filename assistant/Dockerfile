@@ -24,13 +24,16 @@ FROM alpine:3.22
 # pacat from pulseaudio-utils streams raw PCM to the configured Pulse sink.
 RUN apk add --no-cache ca-certificates tzdata pulseaudio-utils && adduser -D -u 10001 assistant
 COPY --from=build /out/assistant /usr/local/bin/assistant
-COPY config.yaml /app/config.yaml
+# The runtime user must read config even when the host checkout uses umask 077.
+COPY --chmod=0644 config.yaml /app/config.yaml
 # The named data, voices and wake-sample volumes are seeded from these
 # directories. Compose runs the container as the host UID for the Pulse socket,
 # so all three must be writable by it; the SQLite file is created 0600 by the
 # process and takes are 0600.
-RUN mkdir -p /app/data/voices /app/data/wake-samples && chmod 0777 /app/data /app/data/voices /app/data/wake-samples
+RUN chmod 0755 /app && mkdir -p /app/data/voices /app/data/wake-samples && chmod 0777 /app/data /app/data/voices /app/data/wake-samples
 WORKDIR /app
 USER assistant
+# Catch unreadable config or a non-traversable parent before publishing an image.
+RUN test -x /app && test -r /app/config.yaml
 EXPOSE 8080 8081 8082
 ENTRYPOINT ["/usr/local/bin/assistant"]

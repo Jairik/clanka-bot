@@ -62,13 +62,10 @@ export function ActivityPage() {
   // Newest first, filtered once more so a stub that ignores the query still
   // behaves like the old in-memory page.
   const list = filterActivity([...base, ...olderList], filter, q);
-  const next = active
-    ? older?.key === key
-      ? older.next
-      : feed?.key === key
-        ? feed.next
-        : ""
-    : (view?.Next ?? "");
+  // The plain page also pages through `older`: the first cursor comes from the
+  // live view, and every loaded page advances it. Reading only view.Next here
+  // refetched page 2 on every click.
+  const next = older?.key === key ? older.next : server && feed?.key === key ? feed.next : server ? "" : (view?.Next ?? "");
   const buckets = useMemo(() => bucketActivity(list), [list]);
 
   const loadOlder = async () => {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -106,18 +107,35 @@ func (p *fakeProbe) Forget(_ context.Context, path string) error {
 	return nil
 }
 
-func TestInspectStateAcceptsRealExportShapeWithAndWithoutPads(t *testing.T) {
-	for _, withPads := range []bool{false, true} {
-		path := filepath.Join(t.TempDir(), "voice.safetensors")
-		if err := voicelibtest.WriteValid(path, 127, withPads); err != nil {
-			t.Fatalf("write state: %v", err)
-		}
-		info, err := voicelib.InspectState(path)
-		if err != nil {
-			t.Fatalf("InspectState(withPads=%v): %v", withPads, err)
-		}
-		if info.Layers != 6 || info.ContextLen != 127 || info.Tensors != 18 && info.Tensors != 12 {
-			t.Fatalf("InspectState = %+v", info)
+func TestInspectStateAcceptsRealExportShapes(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		layers int
+		heads  int
+	}{
+		{"100M", 6, 16},
+		{"18M", 8, 8},
+		{"7M", 8, 8},
+		{"2M", 8, 3},
+	} {
+		for _, withPads := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/pads=%v", tc.name, withPads), func(t *testing.T) {
+				path := filepath.Join(t.TempDir(), "voice.safetensors")
+				if err := voicelibtest.WriteValidLayout(path, 127, tc.layers, tc.heads, withPads); err != nil {
+					t.Fatalf("write state: %v", err)
+				}
+				info, err := voicelib.InspectState(path)
+				if err != nil {
+					t.Fatalf("InspectState: %v", err)
+				}
+				wantTensors := tc.layers * 2
+				if withPads {
+					wantTensors = tc.layers * 3
+				}
+				if info.Layers != tc.layers || info.ContextLen != 127 || info.Tensors != wantTensors {
+					t.Fatalf("InspectState = %+v, want layers=%d context=127 tensors=%d", info, tc.layers, wantTensors)
+				}
+			})
 		}
 	}
 }
@@ -125,14 +143,14 @@ func TestInspectStateAcceptsRealExportShapeWithAndWithoutPads(t *testing.T) {
 func TestInspectStateAcceptsThePinnedRealExportWhenProvided(t *testing.T) {
 	path := strings.TrimSpace(os.Getenv("VOICE_STATE_TEST_FILE"))
 	if path == "" {
-		t.Skip("set VOICE_STATE_TEST_FILE to a real Pocket TTS exported .safetensors to check the pinned shape")
+		t.Skip("set VOICE_STATE_TEST_FILE to a real Pocket TTS exported .safetensors to check its shape")
 	}
 	info, err := voicelib.InspectState(path)
 	if err != nil {
 		t.Fatalf("InspectState(%s): %v", path, err)
 	}
-	if info.Layers != 6 {
-		t.Fatalf("layers = %d, want 6", info.Layers)
+	if info.Layers < 1 || info.ContextLen < 1 || info.Tensors != info.Layers*2 && info.Tensors != info.Layers*3 {
+		t.Fatalf("InspectState = %+v, want a real export", info)
 	}
 }
 
@@ -201,6 +219,17 @@ func TestInspectStateRejectsUnsupportedAndMalformedFiles(t *testing.T) {
 		}
 		if _, err := voicelib.InspectState(path); err == nil {
 			t.Fatal("InspectState accepted N > 400")
+		}
+	})
+
+	t.Run("inconsistent head count", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "heads.safetensors")
+		if err := voicelibtest.WriteValidLayout(path, 2, 8, 8, true); err != nil {
+			t.Fatal(err)
+		}
+		rewriteTensor(t, path, "transformer.layers.0.self_attn/cache", "F32", []int64{2, 1, 2, 3, 64}, 0)
+		if _, err := voicelib.InspectState(path); err == nil {
+			t.Fatal("InspectState accepted inconsistent head counts")
 		}
 	})
 

@@ -9,6 +9,7 @@ import { getJSON, navigate, useLocation } from "../api";
 import { useActions } from "../forms";
 import { micSupported, startRecording, type Recording } from "../mic";
 import { PageFrame } from "../shell";
+import { SampleBatch } from "./SampleBatch";
 import { trainingClip } from "../wake-sample";
 import type { VoiceSampleBundle, VoiceSampleTake, VoiceSamplesView } from "../types";
 import { Badge, Empty, Lede, Notice, Section } from "../ui";
@@ -34,6 +35,9 @@ export function VoiceSamplesPage() {
   const [loadError, setLoadError] = useState("");
   const actions = useActions<VoiceSamplesView>(setData);
   const [kind, setKind] = useState<Kind>("positive");
+ const [batchBusy, setBatchBusy] = useState(false);
+ const [batchDirty, setBatchDirty] = useState(false);
+ const [singleBusy, setSingleBusy] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -59,17 +63,17 @@ export function VoiceSamplesPage() {
       )}
       {data?.HasStore && (
         <div className="space-y-2.5">
-          <PhrasePicker data={data} onSelect={(slug) => navigate(`/voice-samples?phrase=${encodeURIComponent(slug)}`)} />
+          {!batchBusy && !batchDirty && !singleBusy && <PhrasePicker data={data} onSelect={(slug) => navigate(`/voice-samples?phrase=${encodeURIComponent(slug)}`)} />}
           <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-            <Tabs selectedKey={kind} onSelectionChange={(key) => setKind(String(key) as Kind)} className="w-auto">
+            <Tabs selectedKey={kind} onSelectionChange={(key) => { if (!batchBusy && !batchDirty && !singleBusy) setKind(String(key) as Kind); }} className="w-auto">
               <Tabs.ListContainer>
                 <Tabs.List aria-label="Take kind" className="border">
-                  <Tabs.Tab id="positive" className="px-4">
+                  <Tabs.Tab isDisabled={batchBusy || batchDirty || singleBusy} id="positive" className="px-4">
                     Positives
                     <Badge className="ml-1.5">{data.PositiveCount}</Badge>
                     <Tabs.Indicator />
                   </Tabs.Tab>
-                  <Tabs.Tab id="negative" className="px-4">
+                  <Tabs.Tab isDisabled={batchBusy || batchDirty || singleBusy} id="negative" className="px-4">
                     Negatives
                     <Badge className="ml-1.5">{data.NegativeCount}</Badge>
                     <Tabs.Indicator />
@@ -82,13 +86,15 @@ export function VoiceSamplesPage() {
               {kind === "positive" && ` · at least ${data.MinTakes} to submit`}
             </span>
           </div>
-          <Recorder
+          {!singleBusy && <SampleBatch key={`batch-${data.Slug}-${kind}`} data={data} kind={kind} onSaved={load} onBusy={setBatchBusy} onDirty={setBatchDirty} />}
+          {!batchBusy && !batchDirty && <Recorder
             key={`${data.Slug}-${kind}`}
             kind={kind}
+            onBusy={setSingleBusy}
             data={data}
             onRun={actions.run}
             pending={actions.pending}
-          />
+          />}
           {kind === "positive" ? (
             <TakeList
               title="Positive takes"
@@ -194,7 +200,9 @@ function Recorder({
   data,
   onRun,
   pending,
+  onBusy,
 }: {
+  onBusy: (busy: boolean) => void;
   kind: Kind;
   data: VoiceSamplesView;
   onRun: ReturnType<typeof useActions<VoiceSamplesView>>["run"];
@@ -212,6 +220,8 @@ function Recorder({
   const draftURL = useRef("");
   const audio = useRef<HTMLAudioElement | null>(null);
   const mounted = useRef(true);
+
+  useEffect(() => { onBusy(!!rec || starting || converting); }, [rec, starting, converting, onBusy]);
 
   const upload = kind === "positive" ? data.UploadPositive : data.UploadNegative;
   const prompt = kind === "positive" ? data.NextPrompt : data.NextNegativePrompt;

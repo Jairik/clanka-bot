@@ -299,21 +299,23 @@ func (h *History) Prune(ctx context.Context) (PruneResult, error) {
 	}
 
 	fullCutoff := now.Add(-h.fullWindow).UnixMilli()
+	// Tool, path and call names stay on the trimmed row, so the read keeps them
+	// for the search column below.
 	rows, err := h.db.QueryContext(ctx, `
-		SELECT id, transcript, reply, error, calls
+		SELECT id, transcript, reply, error, tool, path, calls
 		FROM activity WHERE summary = 0 AND at < ? ORDER BY at ASC LIMIT ?`,
 		fullCutoff, pruneBatch)
 	if err != nil {
 		return result, fmt.Errorf("activity history: trim read: %w", err)
 	}
 	type trimmable struct {
-		id                                int64
-		transcript, reply, failure, calls string
+		id                                            int64
+		transcript, reply, failure, tool, path, calls string
 	}
 	var batch []trimmable
 	for rows.Next() {
 		var row trimmable
-		if err := rows.Scan(&row.id, &row.transcript, &row.reply, &row.failure, &row.calls); err != nil {
+		if err := rows.Scan(&row.id, &row.transcript, &row.reply, &row.failure, &row.tool, &row.path, &row.calls); err != nil {
 			rows.Close()
 			return result, fmt.Errorf("activity history: trim scan: %w", err)
 		}
@@ -335,9 +337,10 @@ func (h *History) Prune(ctx context.Context) (PruneResult, error) {
 			reply := truncate(row.reply, summaryRunes)
 			failure := truncate(row.failure, summaryRunes)
 			calls := summarizeCalls(row.calls)
-			// The stored haystack follows the stored text, so a search cannot
-			// return a word the trimmed row no longer shows.
-			entry := Entry{Transcript: transcript, Reply: reply, Error: failure}
+			// The stored haystack follows what the trimmed row still shows: the
+			// short text plus the Tool, path and call names it keeps.
+			entry := Entry{Transcript: transcript, Reply: reply, Error: failure, Tool: row.tool, Path: row.path}
+			_ = json.Unmarshal([]byte(calls), &entry.Calls)
 			if _, err := tx.ExecContext(ctx, `
 				UPDATE activity SET transcript = ?, reply = ?, error = ?, calls = ?,
 					search = ?, summary = 1 WHERE id = ?`,
@@ -405,10 +408,16 @@ func searchText(e Entry) string {
 	return truncate(collapseSpace(text), searchRunes)
 }
 
-// normalizeQuery trims and lowercases one client query, capped so a pasted
-// document cannot become an unbounded pattern.
+// normalizeQuery trims, lowercases and collapses one client query, capped so a
+// pasted document cannot become an unbounded pattern. It collapses whitespace
+// for the same reason the haystack does, and cuts without an ellipsis because
+// the cap is a rune boundary, not a display.
 func normalizeQuery(text string) string {
-	return truncate(strings.ToLower(strings.TrimSpace(text)), maxQueryRunes)
+	needle := collapseSpace(strings.ToLower(strings.TrimSpace(text)))
+	if runes := []rune(needle); len(runes) > maxQueryRunes {
+		needle = string(runes[:maxQueryRunes])
+	}
+	return needle
 }
 
 // collapseSpace folds runs of whitespace so a multi-word query matches across

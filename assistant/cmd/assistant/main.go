@@ -844,6 +844,7 @@ func run() error {
 	// voiceDone closes when the voice loop returns, so shutdown can wait for
 	// its deferred music restore. Nil when the voice loop is off.
 	var voiceDone chan struct{}
+	var sampleRecorder dashboard.SampleRecorder
 	if cfg.VoiceEnabled() {
 		// Read the wake role per detection so a Dashboard write applies live.
 		// wakeword.chime.enabled stays the master switch it was before #55.
@@ -900,6 +901,9 @@ func run() error {
 		loop, err := newVoiceLoop(cfg, session, p, sink, announcements, wakeCue, activityStore.Observe, musicDucker, wakeCommands, logger)
 		if err != nil {
 			return err
+		}
+		if cfg.Capture.Rate == 16000 && cfg.Capture.Width == 2 && cfg.Capture.Channels == 1 {
+			sampleRecorder = loop
 		}
 		voiceDone = make(chan struct{})
 		go func() {
@@ -985,7 +989,8 @@ func run() error {
 			// The wake-phrase recorder stores takes on its own volume and
 			// exports bundles to the host-visible bind mount. It is a file
 			// store only: no audio leaves the box without an explicit copy.
-			VoiceSamples: wakesampleSvc,
+			VoiceSamples:   wakesampleSvc,
+			SampleRecorder: sampleRecorder,
 			// One module list reaches the Timer, Alarm and Reminder managers
 			// for the Scheduled alerts page; no second registry is created.
 			ToolModules: toolSet,

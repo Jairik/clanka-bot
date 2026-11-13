@@ -67,7 +67,8 @@ function percentile(values: ArrayLike<number>, percent: number): number {
   return sorted[Math.floor((percent / 100) * (sorted.length - 1))];
 }
 
-function encodeWAV(samples: Int16Array): ArrayBuffer {
+// Encode canonical PCM16 WAV for training or full-capture replay.
+export function encodeWAV(samples: Int16Array): ArrayBuffer {
   const buffer = new ArrayBuffer(44 + samples.length * 2);
   const view = new DataView(buffer);
   const text = (offset: number, value: string) => {

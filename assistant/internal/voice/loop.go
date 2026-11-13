@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -154,7 +155,12 @@ type Loop struct {
 	cfg  Config
 	deps Deps
 
-	frames chan micFrame
+	frames         chan micFrame
+	sampleMu       sync.Mutex
+	sampling       bool
+	sampleFrames   chan []byte
+	sampleOverflow bool
+	inTurn         bool
 }
 
 // New validates the config and returns a loop.
@@ -223,7 +229,18 @@ func (l *Loop) listen(ctx context.Context) error {
 			pending = name
 			haveTurn = true
 		}
+		l.sampleMu.Lock()
+		if l.sampling {
+			l.sampleMu.Unlock()
+			haveTurn = false
+			continue
+		}
+		l.inTurn = true
+		l.sampleMu.Unlock()
 		bargeIn, name, err := l.session(ctx, pending)
+		l.sampleMu.Lock()
+		l.inTurn = false
+		l.sampleMu.Unlock()
 		if err != nil {
 			return err
 		}
@@ -258,6 +275,12 @@ func (l *Loop) waitForWake(ctx context.Context) (string, bool, error) {
 		}
 		if !fired {
 			return "", false, nil
+		}
+		l.sampleMu.Lock()
+		sampling := l.sampling
+		l.sampleMu.Unlock()
+		if sampling {
+			continue
 		}
 		if l.dispatchCommand(ctx, name) {
 			continue
@@ -579,6 +602,19 @@ func (l *Loop) captureOnce(ctx context.Context, frames chan<- micFrame) error {
 			}
 			return fmt.Errorf("voice: capture: %w", err)
 		}
+		// A sample tap receives real PCM; the normal voice path receives silence.
+		l.sampleMu.Lock()
+		if l.sampling {
+			if l.sampleFrames != nil {
+				select {
+				case l.sampleFrames <- append([]byte(nil), pcm...):
+				default:
+					l.sampleOverflow = true
+				}
+			}
+			clear(pcm)
+		}
+		l.sampleMu.Unlock()
 		select {
 		case frames <- micFrame{pcm: pcm, at: time.Now()}:
 			pcm = make([]byte, l.cfg.FrameBytes)

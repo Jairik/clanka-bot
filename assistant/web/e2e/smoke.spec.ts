@@ -106,6 +106,7 @@ test("a touch hold records and sends", async ({ page, isMobile, context }) => {
 
   // The stub keeps one activity ring, so earlier mic tests share the transcript.
   await expect(page.getByText("You said: hello from the browser").last()).toBeVisible();
+});
 
 test("installs: manifest, worker and an offline shell", async ({ page, context }) => {
   await page.goto("/");

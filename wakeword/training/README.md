@@ -53,6 +53,9 @@ keep the whole clip and you will hear it on playback.
 Run `scripts/record-wakeword-pi.sh` in an interactive Pi terminal to collect
 25 positive takes and 15 negatives with three seconds per take. It uses the
 default Pulse microphone and the same play/keep/redo controls as `record.py`.
+From the desktop, launch it with
+`ssh -t rbpi@pi 'cd ~/clanka-bot && scripts/record-wakeword-pi.sh'`;
+capture still happens on the Pi.
 Arguments are forwarded, so `--positive`, `--negative`, `--device` and `--work`
 can override these defaults. Recordings stay outside Git in the existing work
 directory. Temporarily stop the assistant before recording to prevent spoken

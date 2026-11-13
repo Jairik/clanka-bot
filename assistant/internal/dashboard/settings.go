@@ -347,7 +347,8 @@ func (h *Handler) buildSettingsView(flash, errorText string, edit *editState) se
 	}
 
 	for _, value := range values {
-		if seen[value.Key] || isToolPolicyKey(value.Key) {
+		// The equalizer section owns these atomic profiles.
+		if seen[value.Key] || isToolPolicyKey(value.Key) || strings.HasPrefix(value.Key, "audio.equalizer") {
 			continue
 		}
 		setting := newSettingView(value, edit)

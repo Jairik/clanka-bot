@@ -267,3 +267,9 @@ _Avoid_: Spotify login, API key, client secret
 **Soloist**:
 The Spotify Connect receiver: Spotify's official proprietary binary, run by the `soloist` container. It advertises a device over mDNS on the host network, plays into the Assistant's Pulse sink ([ADR-0004](docs/adr/0004-spotify-plays-through-the-pi.md)), and expires periodically; the operator refreshes it with `make soloist-update`.
 _Avoid_: Spotify player, Spotify daemon, librespot
+
+**Equalizer**:
+The single ten-band output filter shared by music, speech and Cues. It precedes
+the echo-cancel sink so the reference includes the chosen tuning. Its active
+preset and saved Custom gains are durable Dashboard settings.
+_Avoid_: Per-stream profile, speaker effect

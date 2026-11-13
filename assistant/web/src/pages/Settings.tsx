@@ -1,3 +1,5 @@
+// Settings shares the global equalizer with every Pi audio client.
+import { Equalizer } from "./Equalizer";
 import { Lock } from "lucide-react";
 import { usePageData } from "../api";
 import { ResetButton, SelectField, SettingRow, Toggle, useActions } from "../forms";
@@ -28,6 +30,7 @@ export function SettingsPage() {
       )}
       {data?.HasSettings && (
         <div className="space-y-2.5">
+          <Equalizer />
           <Section title="Tools" summary={`${(data.Tools ?? []).filter((t) => t.Enabled).length}/${data.Tools?.length ?? 0} enabled`} defaultOpen flush>
             <Lede>
               Enable or disable a Tool, or tighten its Permission. A Permission can only move towards Confirm; Local-only is declared in code. Changes apply on the

@@ -171,6 +171,9 @@ type Handler struct {
 	// wakeword is the configured allowlist and thresholds shown on Settings
 	// and probed on Health.
 	wakeword WakewordInfo
+	// live fans out the SSE stream: activity deltas plus sampled volume, alert
+	// and health changes.
+	live *liveHub
 	// askLock serialises every typed request with a one-slot semaphore. The
 	// voice loop is already single-turn; this gives the Dashboard the same
 	// one-request-at-a-time behaviour and one pending Confirmation at a time.
@@ -263,6 +266,12 @@ func New(opts Options) (*Handler, error) {
 		ui:             ui,
 		mux:            http.NewServeMux(),
 	}
+	// The SSE hub is created before any route can be served; an Activity
+	// observer pushes each completed request as one delta.
+	h.live = newLiveHub(h)
+	if h.activity != nil {
+		h.activity.Subscribe(h.liveActivity)
+	}
 	if opts.API != nil {
 		// The API handler has no auth of its own; identity is enforced by
 		// ServeHTTP and SameOrigin guards its mutating methods.
@@ -275,6 +284,9 @@ func New(opts Options) (*Handler, error) {
 	h.Handle("GET /api/ui/session", h.sessionInfo)
 	h.Handle("GET /api/ui/health", h.healthPage)
 	h.Handle("GET /api/ui/activity", h.activityPage)
+	// One read-only live stream for the whole app. Every write still uses its
+	// own Mutating route; this only carries deltas.
+	h.Handle("GET /api/ui/events", h.events)
 	h.Handle("GET /api/ui/settings", h.settingsPage)
 	h.Handle("GET /api/ui/secrets", h.secretsPage)
 	h.Handle("GET /api/ui/sounds", h.soundsPage)
@@ -418,9 +430,9 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	stripTailscaleHeaders(r.Header)
 	ctx := context.WithValue(r.Context(), loginKey{}, login)
 	// One central gzip for the document and the JSON views. A HEAD, a Range
-	// request and a precompressed asset (which sets Content-Encoding itself)
-	// pass through untouched.
-	if r.Method != http.MethodHead && r.Header.Get("Range") == "" && acceptsEncoding(r.Header.Get("Accept-Encoding"), "gzip") {
+	// request, a precompressed asset (which sets Content-Encoding itself) and
+	// the SSE stream (which must flush per frame) pass through untouched.
+	if r.Method != http.MethodHead && r.Header.Get("Range") == "" && r.URL.Path != "/api/ui/events" && acceptsEncoding(r.Header.Get("Accept-Encoding"), "gzip") {
 		cw := &compressWriter{ResponseWriter: w}
 		defer func() { _ = cw.Close() }()
 		h.mux.ServeHTTP(cw, r.WithContext(ctx))

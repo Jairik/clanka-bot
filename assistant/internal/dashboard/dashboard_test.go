@@ -166,7 +166,7 @@ func TestNewDashboardRequiresAnOwner(t *testing.T) {
 
 func TestDashboardRejectsRequestsWithoutTheTailscaleLogin(t *testing.T) {
 	handler := newHandler(t, dashboard.Options{})
-	for _, path := range []string{"/", "/activity", "/health", "/alerts", "/notes", "/settings", "/secrets", "/sounds", "/sounds/audio/chime", "/voices", "/voices/audio/alba", "/personas", "/spotify", "/voice-samples", "/assets/app.js", "/api/ui/session", "/api/ui/health", "/api/ui/activity", "/api/ui/settings", "/api/ui/secrets", "/api/ui/sounds", "/api/ui/voices", "/api/ui/personas", "/api/ui/alerts", "/api/ui/notes", "/api/ui/spotify", "/api/ui/voice-samples", "/api/ui/volume"} {
+	for _, path := range []string{"/", "/activity", "/health", "/alerts", "/notes", "/settings", "/secrets", "/sounds", "/sounds/audio/chime", "/voices", "/voices/audio/alba", "/personas", "/spotify", "/voice-samples", "/assets/app.js", "/api/ui/session", "/api/ui/health", "/api/ui/activity", "/api/ui/events", "/api/ui/settings", "/api/ui/secrets", "/api/ui/sounds", "/api/ui/voices", "/api/ui/personas", "/api/ui/alerts", "/api/ui/notes", "/api/ui/spotify", "/api/ui/voice-samples", "/api/ui/volume"} {
 		t.Run(path, func(t *testing.T) {
 			rec := serve(handler, request(http.MethodGet, path, ""))
 			if rec.Code != http.StatusForbidden {

@@ -91,11 +91,36 @@ type Entry struct {
 // Store is the bounded recent-request ring. It is safe for concurrent use by
 // the voice, debug and Dashboard paths.
 type Store struct {
-	mu      sync.Mutex
-	limit   int
-	entries []Entry
-	now     func() time.Time
-	history *History
+	mu        sync.Mutex
+	limit     int
+	entries   []Entry
+	now       func() time.Time
+	history   *History
+	observers map[uint64]func(Entry)
+	nextSub   uint64
+}
+
+// Subscribe registers a listener for each new ring entry; the returned
+// function removes it. The Dashboard's live stream is the one subscriber, so a
+// completed request can be pushed without polling. A slow listener cannot
+// block Observe: the caller must not hold a lock in the callback.
+func (s *Store) Subscribe(listener func(Entry)) (cancel func()) {
+	if s == nil || listener == nil {
+		return func() {}
+	}
+	s.mu.Lock()
+	if s.observers == nil {
+		s.observers = make(map[uint64]func(Entry))
+	}
+	s.nextSub++
+	id := s.nextSub
+	s.observers[id] = listener
+	s.mu.Unlock()
+	return func() {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		delete(s.observers, id)
+	}
 }
 
 // New builds a bounded store. A zero or negative limit uses DefaultLimit.
@@ -171,8 +196,16 @@ func (s *Store) Observe(completed latency.Completed) {
 		// Copy into a fresh slice so the discarded entries can be reclaimed.
 		s.entries = append([]Entry(nil), s.entries[len(s.entries)-s.limit:]...)
 	}
+	observers := make([]func(Entry), 0, len(s.observers))
+	for _, observer := range s.observers {
+		observers = append(observers, observer)
+	}
 	s.mu.Unlock()
 
+	// Notify outside the lock, so a stream can never block the voice path.
+	for _, observer := range observers {
+		observer(entry)
+	}
 	// The durable write happens outside the ring lock: a slow disk must never
 	// make a reader wait, and Add itself reports and swallows its error so the
 	// completed request is unaffected.

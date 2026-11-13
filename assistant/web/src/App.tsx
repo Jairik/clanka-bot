@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect } from "react";
 import { useLocation } from "./api";
 import { ChatProvider } from "./chat";
+import { LiveProvider } from "./events";
 import { Home } from "./pages/Home";
 import { pageLoaders, prefetchAll, type LazyPageId } from "./routes";
 import { SessionProvider, Shell, pageFor, type PageId } from "./shell";
@@ -49,6 +50,8 @@ export function App() {
     <SessionProvider>
       {/* The speak opt-in lives with the session: one value for the toggle and the composer. */}
       <SpeakProvider>
+        {/* One live stream for every page; it pauses the polling fallbacks. */}
+        <LiveProvider>
         {/* The chat store lives above the router so a pending request survives page changes. */}
         <ChatProvider>
           <Shell>
@@ -57,6 +60,7 @@ export function App() {
             </Suspense>
           </Shell>
         </ChatProvider>
+        </LiveProvider>
       </SpeakProvider>
     </SessionProvider>
   );

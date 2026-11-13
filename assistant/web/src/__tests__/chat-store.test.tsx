@@ -1,9 +1,9 @@
 // The chat store's pending list, including two sends in the same millisecond.
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import { ChatProvider, useChat } from "../chat";
-import { emptyActivity, json, stubFetch } from "./harness";
+import { emptyActivity, json, req, stubFetch } from "./harness";
 
 function Probe() {
   const { pending, send } = useChat();
@@ -15,6 +15,39 @@ function Probe() {
     </div>
   );
 }
+
+function Requests() {
+  const { requests } = useChat();
+  return <ul>{requests.map((r) => <li key={r.ID}>{r.Transcript}</li>)}</ul>;
+}
+
+describe("ChatProvider polling fallback", () => {
+  it("refreshes on the four-second poll when no live stream is available", async () => {
+    let calls = 0;
+    stubFetch({
+      "/api/ui/activity": () => {
+        calls += 1;
+        return json(emptyActivity(calls > 1 ? [req({ ID: "late", Transcript: "late request" })] : []));
+      },
+    });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      render(
+        <ChatProvider>
+          <Requests />
+        </ChatProvider>,
+      );
+      await act(() => vi.advanceTimersByTimeAsync(50));
+      expect(screen.queryByText("late request")).toBeNull();
+      // jsdom has no EventSource, which is exactly the fallback path.
+      await act(() => vi.advanceTimersByTimeAsync(4_100));
+      expect(screen.getByText("late request")).toBeTruthy();
+      expect(calls).toBeGreaterThan(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
 
 describe("ChatProvider pending requests", () => {
   it("keeps two sends in the same millisecond as separate entries", async () => {

@@ -17,7 +17,7 @@
   --surface-secondary: oklch(0.975 0 0);
   --surface-tertiary: oklch(0.955 0 0);
   --overlay: oklch(1 0 0);
-  --muted: oklch(0.62 0 0); /* #878787 */
+  --muted: oklch(0.5 0 0); /* #6b6b6b: muted text still meets 4.5:1 on white */
   --default: oklch(0.955 0 0);
   --default-foreground: var(--foreground);
   --accent: oklch(0.18 0 0);
@@ -34,7 +34,7 @@
   --success: oklch(0.6 0.13 155);
   --warning: oklch(0.72 0.15 70);
   --danger: oklch(0.6 0.2 25);
-  --subtle: oklch(0.45 0 0);
+  --subtle: oklch(0.42 0 0);
 }
 
 [data-theme="dark"] {
@@ -46,7 +46,7 @@
   --surface-tertiary: oklch(0.22 0 0);
   --overlay: oklch(0.19 0 0);
   --overlay-foreground: var(--foreground);
-  --muted: oklch(0.62 0 0); /* #878787 */
+  --muted: oklch(0.66 0 0); /* #999999: 6.3:1 on the dark surface */
   --default: oklch(0.235 0 0); /* #1d1d1d */
   --default-foreground: var(--foreground);
   --accent: oklch(0.985 0 0);
@@ -63,7 +63,7 @@
   --success: oklch(0.72 0.14 155);
   --warning: oklch(0.8 0.14 75);
   --danger: oklch(0.66 0.19 25);
-  --subtle: oklch(0.47 0 0); /* #606060: footers, "See …" links */
+  --subtle: oklch(0.6 0 0); /* 4.9:1 on the dark surface */
 }
 
 @theme inline {
@@ -101,3 +101,21 @@ body {
 .pt-safe { padding-top: env(safe-area-inset-top); }
 .no-scrollbar { scrollbar-width: none; }
 .no-scrollbar::-webkit-scrollbar { display: none; }
+
+/* A visible ring on every keyboard-focused control, including plain links. */
+:where(a, button, input, textarea, select, [tabindex]):focus-visible {
+  outline: 2px solid var(--foreground);
+  outline-offset: 2px;
+}
+
+/* The recording pulse and the thinking dots are decoration; the state is also
+   text, so honouring this loses no information. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

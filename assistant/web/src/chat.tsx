@@ -331,7 +331,7 @@ export function PendingExchange({ p }: { p: PendingAsk }) {
             </div>
           </div>
         ) : (
-          <div className="flex gap-1 py-2.5" aria-label="Thinking">
+          <div className="flex gap-1 py-2.5" role="status" aria-label="Thinking">
             {[0, 1, 2].map((i) => (
               <span key={i} className="size-1.5 animate-bounce rounded-full bg-muted" style={{ animationDelay: `${i * 120}ms` }} />
             ))}
@@ -434,7 +434,10 @@ export function Composer({ placeholder = "Ask clanka…", onSent, toolbar, class
   return (
     <div className={cn("border bg-surface-secondary", className)}>
       {recording ? (
-        <div className="flex min-h-[6.25rem] items-center gap-2 px-2">
+        <div className="flex min-h-[6.25rem] items-center gap-2 px-2" role="group" aria-label="Recording">
+        <span role="status" className="sr-only">
+          Recording started. Release or press stop to send.
+        </span>
           <Button isIconOnly variant="ghost" onPress={cancel} aria-label="Cancel recording">
             <X className="size-5" />
           </Button>
@@ -448,7 +451,7 @@ export function Composer({ placeholder = "Ask clanka…", onSent, toolbar, class
               <span key={i} className="w-1 flex-1 rounded-full bg-foreground/70 transition-[height] duration-75" style={{ height: `${l * 100}%` }} />
             ))}
           </div>
-          <span className="w-12 text-right font-mono text-xs tabular-nums text-muted">
+          <span className="w-12 text-right font-mono text-xs tabular-nums text-muted" role="timer" aria-label={`Recording ${elapsed} of ${MIC_MAX_SECONDS} seconds`}>
             {elapsed}s / {MIC_MAX_SECONDS}s
           </span>
           <Button isIconOnly variant="danger" onPress={stop} aria-label="Stop and send">

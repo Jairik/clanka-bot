@@ -54,7 +54,9 @@ describe("Composer", () => {
 
     expect(startRecording).toHaveBeenCalledOnce();
     expect(await screen.findByRole("button", { name: "Cancel recording" })).toBeTruthy();
-    expect(screen.getByText("0s / 30s")).toBeTruthy();
+    const timer = screen.getByRole("timer");
+    expect(timer.textContent).toContain("0s / 30s");
+    expect(timer.getAttribute("aria-label")).toContain("Recording 0 of 30 seconds");
 
     await user.click(screen.getByRole("button", { name: "Stop and send" }));
     expect(rec.stop).toHaveBeenCalledOnce();

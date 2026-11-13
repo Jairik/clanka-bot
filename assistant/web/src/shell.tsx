@@ -1,7 +1,7 @@
 // App frame: icon rail (desktop) / bottom tabs (mobile), a search-first top bar
 // with the speaker volume, and the page area. Home (/) is the chat.
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
-import { Button, Drawer, Popover, SearchField, Tooltip } from "@heroui/react";
+import { Button, Drawer, Popover, SearchField } from "@heroui/react";
 import {
   Activity, AlarmClock, Bell, Bot, HeartPulse, KeyRound, MessageSquare, Mic, Minus, MoreHorizontal, Music, Plus,
   Settings, Smile, StickyNote, Volume, Volume1, Volume2, VolumeX, Waves,
@@ -68,32 +68,35 @@ export function Shell({ children }: { children: ReactNode }) {
   const healthBad = useHealthAlarm();
   return (
     <div className="flex h-dvh">
+      <a
+        href="#main"
+        className="sr-only focus:not-sr-only focus:absolute focus:top-2 focus:left-2 focus:z-50 focus:border focus:bg-surface focus:px-3 focus:py-2 focus:text-sm"
+      >
+        Skip to content
+      </a>
       <aside className="hidden w-[70px] shrink-0 flex-col border-r md:flex">
         <a href="/" onClick={link("/")} className="flex h-[70px] shrink-0 items-center justify-center border-b" aria-label="Home">
           <Bot className="size-6" strokeWidth={1.5} />
         </a>
         <nav className="flex flex-1 flex-col items-center gap-1 overflow-y-auto py-4" aria-label="Pages">
           {PAGES.map(({ id, path: to, title, icon: I }) => (
-            <Tooltip key={id} delay={0} closeDelay={0}>
-              <Tooltip.Trigger>
-                <a
-                  href={to}
-                  onClick={link(to)}
-                  aria-label={title}
-                  aria-current={page === id ? "page" : undefined}
-                  className={cn(
-                    "relative flex size-10 items-center justify-center border border-transparent",
-                    page === id ? "border-border bg-surface-secondary text-foreground" : "text-muted hover:text-foreground",
-                  )}
-                >
-                  <I className="size-[18px]" strokeWidth={1.5} />
-                  {id === "health" && healthBad && <span className="absolute top-2 right-2 size-1.5 rounded-full bg-danger" />}
-                </a>
-              </Tooltip.Trigger>
-              <Tooltip.Content placement="right" offset={10}>
-                {title}
-              </Tooltip.Content>
-            </Tooltip>
+            // A plain link with a title: wrapping it in Tooltip.Trigger put a
+            // button role around a link, which is invalid nesting.
+            <a
+              key={id}
+              href={to}
+              onClick={link(to)}
+              aria-label={title}
+              aria-current={page === id ? "page" : undefined}
+              title={title}
+              className={cn(
+                "relative flex size-10 items-center justify-center border border-transparent",
+                page === id ? "border-border bg-surface-secondary text-foreground" : "text-muted hover:text-foreground",
+              )}
+            >
+              <I className="size-[18px]" strokeWidth={1.5} />
+              {id === "health" && healthBad && <span className="absolute top-2 right-2 size-1.5 rounded-full bg-danger" />}
+            </a>
           ))}
         </nav>
         <Owner />
@@ -122,7 +125,9 @@ export function Shell({ children }: { children: ReactNode }) {
           <SpeakToggle />
           <VolumeControl />
         </header>
-        <main className="min-h-0 flex-1">{children}</main>
+        <main id="main" tabIndex={-1} className="min-h-0 flex-1 outline-none">
+          {children}
+        </main>
         <BottomTabs page={page} healthBad={healthBad} />
       </div>
     </div>

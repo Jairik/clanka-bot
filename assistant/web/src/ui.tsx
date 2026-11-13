@@ -47,7 +47,7 @@ export function Section({
 }) {
   return (
     <Disclosure defaultExpanded={defaultOpen} className={cn("group/sec rounded-xl border bg-surface", className)}>
-      <Disclosure.Heading>
+      <Disclosure.Heading level={2}>
         <Disclosure.Trigger className="flex min-h-12 w-full items-center gap-2.5 rounded-xl px-3.5 py-2.5 text-left hover:bg-surface-secondary">
           <ChevronRight className="size-4 shrink-0 text-muted transition-transform group-data-[expanded=true]/sec:rotate-90" />
           {tone && <Dot tone={tone} />}

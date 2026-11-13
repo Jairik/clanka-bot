@@ -454,25 +454,33 @@ func allowGet(w http.ResponseWriter, r *http.Request) bool {
 	return false
 }
 
-// contentSecurityPolicy is the Dashboard policy with the given form-action
-// sources. JSON and assets use 'self'; the app document also allows Spotify's
-// accounts origin (see app).
-func contentSecurityPolicy(formAction string) string {
-	return "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action " + formAction
+// contentSecurityPolicy is the Dashboard policy with the given form-action and
+// style-src sources. JSON and assets use 'self' for both; the app document adds
+// Spotify's accounts origin and the one hashed stylesheet below.
+func contentSecurityPolicy(formAction, styleSrc string) string {
+	return "default-src 'self'; script-src 'self'; style-src " + styleSrc + "; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action " + formAction
 }
+
+// reactAriaStyleHash is the exact stylesheet React Aria injects at runtime
+// (its pressable touch-action rule). It cannot be a static file, so the
+// document allows that one sheet by hash instead of 'unsafe-inline'. The
+// browser smoke test fails when a dependency upgrade changes the bytes; the
+// new hash is the one the browser reports.
+const reactAriaStyleHash = "'sha256-38RhXrc7EdReTKsOm23ZPOCUgniTUUcjky8QOOrQx6o='"
 
 // appSecurityPolicy is the one document policy. The app is a single document
 // for every page, so media-src is document-wide rather than page-scoped; it
 // adds only blob: for a just-recorded take and 'self' for a kept one.
 func appSecurityPolicy() string {
-	return contentSecurityPolicy("'self' "+spotifyAccountsOrigin) + "; media-src 'self' blob:"
+	return contentSecurityPolicy("'self' "+spotifyAccountsOrigin, "'self' "+reactAriaStyleHash) + "; media-src 'self' blob:"
 }
 
 func setSecurityHeaders(w http.ResponseWriter) {
-	// The built app has no inline script or style, so it needs no unsafe CSP
-	// exceptions. Nothing is cached because every page is identity-scoped.
+	// The built app has no inline script, and its only runtime-injected style
+	// is React Aria's hashed sheet, so no 'unsafe-inline' exception is needed.
+	// Nothing is cached because every page is identity-scoped.
 	w.Header().Set("Cache-Control", "no-store")
-	w.Header().Set("Content-Security-Policy", contentSecurityPolicy("'self'"))
+	w.Header().Set("Content-Security-Policy", contentSecurityPolicy("'self'", "'self'"))
 	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("X-Frame-Options", "DENY")

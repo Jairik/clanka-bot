@@ -69,6 +69,35 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm test
 
+  web-smoke:
+    # A browser drives the production bundle through the Go handler, so a route
+    # that stops loading, a console error or a dead API fails the PR.
+    name: Dashboard browser smoke
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: assistant/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: assistant/web/package.json
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: assistant/web/pnpm-lock.yaml
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: assistant/go.mod
+          cache-dependency-path: assistant/go.sum
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm exec playwright install --with-deps chromium
+      # The build lands in the Go embed directory, so the stub serves exactly
+      # the bundle the image would.
+      - run: pnpm build
+      - run: pnpm test:smoke
+
   tts-test:
     name: TTS Python tests
     runs-on: ubuntu-latest

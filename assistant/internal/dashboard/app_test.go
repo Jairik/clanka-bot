@@ -27,6 +27,14 @@ func TestAppServesIndexForTheRootAndEveryClientRoute(t *testing.T) {
 			if !strings.Contains(csp, "form-action 'self' https://accounts.spotify.com") {
 				t.Errorf("document CSP = %q, want form-action to allow Spotify accounts", csp)
 			}
+			// React Aria injects one stylesheet at runtime; it is allowed by
+			// hash, never by 'unsafe-inline'.
+			if !strings.Contains(csp, "style-src 'self' 'sha256-") {
+				t.Errorf("document CSP = %q, want the React Aria stylesheet hash", csp)
+			}
+			if strings.Contains(csp, "unsafe-inline") {
+				t.Errorf("document CSP = %q, want no unsafe-inline", csp)
+			}
 			if !strings.Contains(csp, "frame-ancestors 'none'") || !strings.Contains(csp, "script-src 'self';") {
 				t.Errorf("document CSP lost the base policy: %q", csp)
 			}

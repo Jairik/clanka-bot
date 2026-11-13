@@ -1,10 +1,11 @@
 # Deploying the stack
 
-The same Compose stack runs on the dev box and on the Pi. There is no registry,
-CI or auto-deploy: the Pi tracks `main` and builds its own arm64 images when you
-SSH in and run `scripts/deploy.sh` (decided in
-[#13](https://github.com/Jairik/clanka-bot/issues/13)). This ticket does not run
-anything on the Pi; the checklist below is for when it moves there.
+The same Compose stack runs on the dev box and on the Pi. There is no registry:
+the Pi tracks `main` and builds its own arm64 images (decided in
+[#13](https://github.com/Jairik/clanka-bot/issues/13)). You can deploy by
+running `scripts/deploy.sh` over SSH, or let the Pi do it when `main` moves and
+CI is green — see [auto-deploy.md](auto-deploy.md) for the timer, its CI gate
+and how to pause it. The checklist below is for provisioning a fresh host.
 
 ## Everyday commands
 
@@ -16,6 +17,7 @@ make check       # check compose/Dockerfile deployment conventions
 make deploy      # the Pi path: pull, build, start, wait for health
 make rollback SHA=<commit>
 make build-arm64 # optional QEMU arm64 build of every image (not for latency)
+sudo bash scripts/install-deploy-watch.sh  # opt in to the auto-deploy timer (auto-deploy.md)
 ```
 
 `make deploy` and `scripts/deploy.sh` are the same path.

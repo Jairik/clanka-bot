@@ -4,7 +4,7 @@ SHELL := /bin/bash
 GIT_SHA ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
 export GIT_SHA
 
-.PHONY: web web-dev web-image build up down logs deploy rollback build-arm64 test tts-test check routing-eval latency-report new-tool wakeword-test soloist soloist-update
+.PHONY: web web-dev web-image build up down logs deploy rollback build-arm64 test tts-test check routing-eval latency-report new-tool wakeword-test soloist soloist-update deploy-watch-install
 
 build: ## Build every service image for this host.
 	docker compose build
@@ -26,6 +26,9 @@ deploy: ## Pull, build, start and wait for health (see docs/deploy.md).
 rollback: ## Reuse an earlier commit's images: make rollback SHA=<commit>
 	@test -n "$(SHA)" || { echo "usage: make rollback SHA=<commit>" >&2; exit 2; }
 	bash scripts/deploy.sh "$(SHA)"
+
+deploy-watch-install: ## Install the Pi timer that deploys main when it moves (sudo).
+	bash scripts/install-deploy-watch.sh
 
 soloist: ## Install the official Soloist receiver binary and private dirs.
 	bash scripts/soloist-setup.sh
@@ -50,6 +53,7 @@ web-dev: ## Dashboard dev server; proxies to a local assistant (see assistant/we
 test: ## Run the assistant, deployment, wakeword-CLI and mic-check test suites.
 	cd assistant && go test ./...
 	bash scripts/tests/deploy_test.sh
+	bash scripts/tests/deploy_watch_test.sh
 	bash scripts/tests/check_compose_test.sh
 	python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
 	python3 -m unittest discover -s wakeword/tests -p 'test_*.py' -v

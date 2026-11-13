@@ -13,6 +13,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/tools/calc"
 	"github.com/Jairik/clanka-bot/assistant/tools/clock"
 	"github.com/Jairik/clanka-bot/assistant/tools/github"
+	"github.com/Jairik/clanka-bot/assistant/tools/lights"
 	"github.com/Jairik/clanka-bot/assistant/tools/list"
 	"github.com/Jairik/clanka-bot/assistant/tools/note"
 	"github.com/Jairik/clanka-bot/assistant/tools/notify"
@@ -58,6 +59,7 @@ func NewSet() *Set {
 		spotifytools.NewModule(),
 		note.NewModule(),
 		list.NewModule(),
+		lights.NewModule(),
 	}}
 }
 

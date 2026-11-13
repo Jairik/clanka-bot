@@ -331,6 +331,9 @@ func New(opts Options) (*Handler, error) {
 	h.Mutating("POST /activity/ask", h.activityAsk)
 	h.Mutating("POST /api/ui/ask/audio", h.activityAskAudio)
 	// The top bar's speaker volume and mute.
+	// BLE routes share existing identity and same-origin mutation checks.
+	h.Handle("GET /api/ui/lights", h.lightsAPI)
+	h.Mutating("POST /api/ui/lights", h.lightsAPI)
 	h.Handle("GET /api/ui/volume", h.volumeGet)
 	h.Mutating("POST /api/ui/volume", h.volumeSet)
 	// The Sounds page owns uploads, role assignment, Ring settings and the two

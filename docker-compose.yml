@@ -130,6 +130,8 @@ services:
       GITHUB_NOTIFICATIONS_TOKEN: ${GITHUB_NOTIFICATIONS_TOKEN:-}
       TZ: ${TZ:-UTC}
     volumes:
+      # BLE uses the host BlueZ daemon; do not run a second bluetoothd.
+      - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket
       # The one SQLite database (ADR-0003). Only assistant mounts this volume;
       # restarting or rebuilding a service keeps it.
       - assistant-data:/app/data

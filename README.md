@@ -144,10 +144,15 @@ the Pi, and an empty list refuses every write. `pr_list` accepts an optional
 repository filter and checks it against the same allowlist. Calls use the
 documented `X-GitHub-Api-Version: 2026-03-10` header, one keep-alive HTTP
 client, bounded response bodies, at most two pages of ten items, and a short
-spoken result. A missing token appears in the module health check and the
-Secrets page; the token, issue title/body, pull-request titles and notification
-titles never enter a log line. GitHub text is labelled to the model as
-untrusted facts.
+spoken result. One call is bounded end to end by `tools.github.timeout`
+(4 s including a cold DNS lookup and the TLS handshake), so a slow Tailscale
+MagicDNS lookup is not cut off mid-connect. A failed call logs its HTTP status
+and a bounded failure kind (`dns`, `connect`, `tls`, `http`, `rate-limit`,
+`config`), never a status of 0 for a response GitHub actually sent; it also
+never logs the token, issue title/body, pull-request titles or notification
+titles. A refused issue write names the permission the fine-grained token
+needs (`Issues: write`). A missing token appears in the module health check and
+the Secrets page. GitHub text is labelled to the model as untrusted facts.
 
 ### Spotify
 

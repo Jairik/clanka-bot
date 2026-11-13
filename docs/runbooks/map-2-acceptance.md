@@ -178,7 +178,9 @@ step that sends a Notification during Quiet hours, or any missing Notification.
 **Prerequisites:**
 
 - A fine-grained PAT for `GITHUB_TOKEN`, limited to the repos you want the
-  assistant to use. Its issue write scope is needed for the issue test.
+  assistant to use. Its **Issues: Read and write** permission is needed for the
+  issue test; without it the Tool says so by name and logs `status=403
+  kind=http`, and no issue can be created.
 - A classic PAT with the `notifications` scope only, for `GITHUB_NOTIFICATIONS_TOKEN`.
   This token is optional. Without it, the notifications Tool says so.
 - The two-token contract is in `assistant/tools/github/github.go`; the owner

@@ -3,11 +3,13 @@ package github
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -1246,4 +1248,182 @@ func TestNotificationsTokenHealthIsSeparate(t *testing.T) {
 			t.Fatalf("health made a %s request; it must stay read-only", req.Method)
 		}
 	}
+}
+
+// delayedListener hides a completed TCP connect from the server for a while,
+// so the client's TLS handshake has to wait. The kernel completes the connect
+// immediately; the server simply does not answer.
+type delayedListener struct {
+	net.Listener
+	delay time.Duration
+	once  sync.Once
+}
+
+func (l *delayedListener) Accept() (net.Conn, error) {
+	l.once.Do(func() { time.Sleep(l.delay) })
+	return l.Listener.Accept()
+}
+
+// TestIssueCreateToleratesASlowServePhase is the #68 regression. A cold DNS
+// lookup through Tailscale MagicDNS measured just over 2 s. The HTTP helper
+// hardcoded a 2 s dial budget (which includes DNS resolution, and the same
+// limit bounded the TLS handshake), so the call was cut off at exactly 2 s and
+// the Tool reported a transport failure right after the Confirmation. The
+// connect phases must live inside the configured request timeout instead.
+//
+// This drives the real client through a fake GitHub server whose listener
+// accepts 2.5 s late: the old 2 s phase budget fails the handshake, and the
+// configured 4 s timeout succeeds.
+func TestIssueCreateToleratesASlowServePhase(t *testing.T) {
+	var mu sync.Mutex
+	posts := 0
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		posts++
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		fmt.Fprint(w, `{"number":68,"title":"Slow serve","html_url":"https://github.com/acme/widgets/issues/68"}`)
+	}))
+	server.Listener = &delayedListener{Listener: server.Listener, delay: 2500 * time.Millisecond}
+	server.StartTLS()
+	t.Cleanup(server.Close)
+
+	module := testConfig(t, map[string]any{"base_url": server.URL, "timeout": "4s"})
+	reg, _ := registerModule(t, module, fixedSecret("token"))
+	transport, ok := module.client.http.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport = %T", module.client.http.Transport)
+	}
+	// httptest's certificate is self-signed. Test-only: the production client
+	// never skips verification.
+	transport.TLSClientConfig = &tls.Config{InsecureSkipVerify: true}
+
+	armIssue(t, reg, `{"title":"Slow serve"}`)
+	started := time.Now()
+	_, _, err := reg.ExecutePending(context.Background())
+	if err != nil {
+		t.Fatalf("create after a slow handshake = %v, want success", err)
+	}
+	if elapsed := time.Since(started); elapsed < 2500*time.Millisecond {
+		t.Fatalf("elapsed = %s, want the server to have stalled", elapsed)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if posts != 1 {
+		t.Fatalf("POST count = %d, want exactly 1", posts)
+	}
+}
+
+// TestMappedFailuresLogTheirRealStatus keeps the local diagnosis honest: a
+// definitive HTTP status must survive the mapping to a spoken sentinel. Every
+// one of these used to log status=0, exactly like a transport failure (#68).
+func TestMappedFailuresLogTheirRealStatus(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		header map[string]string
+		want   string
+	}{
+		{"unauthorized", http.StatusUnauthorized, nil, "rejected the token"},
+		{"forbidden", http.StatusForbidden, nil, "Issues: write"},
+		{"not found", http.StatusNotFound, nil, "couldn't find"},
+		{"rate limited", http.StatusForbidden, map[string]string{"X-RateLimit-Remaining": "0"}, "rate limit"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &fakeGitHub{handler: func(w http.ResponseWriter, _ *http.Request, _ []byte) {
+				for key, value := range tt.header {
+					w.Header().Set(key, value)
+				}
+				http.Error(w, "refused", tt.status)
+			}}
+			server := fake.start(t)
+			reg, logs := registerModule(t, testConfig(t, map[string]any{"base_url": server.URL}), fixedSecret("token"))
+			armIssue(t, reg, `{"title":"Will fail"}`)
+			if _, _, err := reg.ExecutePending(context.Background()); err == nil {
+				t.Fatal("create succeeded")
+			} else if got := tool.FailureMessage(err); !strings.Contains(got, tt.want) {
+				t.Fatalf("failure = %q, want %q", got, tt.want)
+			}
+			if got := fake.count(http.MethodPost, "/repos/acme/widgets/issues"); got != 1 {
+				t.Fatalf("POST count = %d, want exactly 1", got)
+			}
+			want := fmt.Sprintf("status=%d", tt.status)
+			if !strings.Contains(logs.String(), want) || strings.Contains(logs.String(), "status=0") {
+				t.Fatalf("log = %q, want %s and never status=0", logs.String(), want)
+			}
+			if !strings.Contains(logs.String(), "kind=http") {
+				t.Fatalf("log = %q, want kind=http", logs.String())
+			}
+		})
+	}
+}
+
+// TestCreateFailureDistinguishesNotSentFromUnknown covers the two honest
+// halves of a failed write: a connect-phase failure was definitely not
+// delivered, while a failure after the request reached the server stays
+// ambiguous. Neither case retries.
+func TestCreateFailureDistinguishesNotSentFromUnknown(t *testing.T) {
+	t.Run("not sent", func(t *testing.T) {
+		fake := &fakeGitHub{handler: nil}
+		server := fake.start(t)
+		module := testConfig(t, map[string]any{"base_url": server.URL})
+		reg, logs := registerModule(t, module, fixedSecret("token"))
+		transport, ok := module.client.http.Transport.(*http.Transport)
+		if !ok {
+			t.Fatalf("transport = %T", module.client.http.Transport)
+		}
+		transport.DialContext = func(context.Context, string, string) (net.Conn, error) {
+			return nil, &net.OpError{Op: "dial", Net: "tcp",
+				Err: &net.DNSError{Err: "no such host", Name: "api.github.test", IsNotFound: true}}
+		}
+		armIssue(t, reg, `{"title":"Never sent"}`)
+		_, _, err := reg.ExecutePending(context.Background())
+		if err == nil {
+			t.Fatal("create succeeded")
+		}
+		if got := tool.FailureMessage(err); !strings.Contains(got, "wasn't sent") {
+			t.Fatalf("failure = %q, want the not-sent line", got)
+		}
+		if got := fake.count(http.MethodPost, "/repos/acme/widgets/issues"); got != 0 {
+			t.Fatalf("POST count = %d, want 0", got)
+		}
+		if !strings.Contains(logs.String(), "status=0") || !strings.Contains(logs.String(), "kind=dns") {
+			t.Fatalf("log = %q, want status=0 kind=dns", logs.String())
+		}
+	})
+
+	t.Run("unknown outcome", func(t *testing.T) {
+		fake := &fakeGitHub{handler: func(w http.ResponseWriter, _ *http.Request, _ []byte) {
+			hijacker, ok := w.(http.Hijacker)
+			if !ok {
+				t.Errorf("fake GitHub cannot hijack")
+				return
+			}
+			conn, _, err := hijacker.Hijack()
+			if err != nil {
+				t.Errorf("hijack: %v", err)
+				return
+			}
+			// The POST was delivered; the connection dies before any response.
+			_ = conn.Close()
+		}}
+		server := fake.start(t)
+		reg, logs := registerModule(t, testConfig(t, map[string]any{"base_url": server.URL}), fixedSecret("token"))
+		armIssue(t, reg, `{"title":"Unknown"}`)
+		_, _, err := reg.ExecutePending(context.Background())
+		if err == nil {
+			t.Fatal("create succeeded")
+		}
+		if got := tool.FailureMessage(err); !strings.Contains(got, "didn't retry") {
+			t.Fatalf("failure = %q, want the ambiguous no-retry line", got)
+		}
+		if got := fake.count(http.MethodPost, "/repos/acme/widgets/issues"); got != 1 {
+			t.Fatalf("POST count = %d, want exactly 1", got)
+		}
+		if !strings.Contains(logs.String(), "status=0") || !strings.Contains(logs.String(), "kind=other") {
+			t.Fatalf("log = %q, want status=0 kind=other", logs.String())
+		}
+	})
 }

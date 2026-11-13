@@ -3,10 +3,12 @@ package github
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -96,6 +98,92 @@ func (e *transportError) Error() string {
 }
 func (e *transportError) Unwrap() error { return e.Err }
 
+// statusError keeps the definitive HTTP status attached to one of the safe
+// provider-contract sentinels. The sentinel still drives errors.Is and the
+// spoken reply; the status exists only for the local log line. Without it a
+// 401/403/404/429 was indistinguishable from a transport failure, because
+// mapping the response to a sentinel discarded the *apiError (issue #68).
+type statusError struct {
+	sentinel error
+	Status   int
+}
+
+func (e *statusError) Error() string { return e.sentinel.Error() }
+func (e *statusError) Unwrap() error { return e.sentinel }
+
+// mapped pairs one safe sentinel with the status that produced it.
+func mapped(sentinel error, status int) error {
+	return &statusError{sentinel: sentinel, Status: status}
+}
+
+// requestNotSent reports whether the round trip failed before any part of the
+// request could be delivered: DNS resolution, the TCP connect, or certificate
+// verification. The POST definitely did not reach GitHub in that case, so the
+// Tool can say "not sent" instead of leaving the outcome unknown. Every other
+// failure stays ambiguous on purpose; a connection can fail after the request
+// bytes left the Pi.
+func requestNotSent(err error) bool {
+	var dns *net.DNSError
+	if errors.As(err, &dns) {
+		return true
+	}
+	var op *net.OpError
+	if errors.As(err, &op) && op.Op == "dial" {
+		return true
+	}
+	var certificate *tls.CertificateVerificationError
+	if errors.As(err, &certificate) {
+		return true
+	}
+	return false
+}
+
+// failureKind names the transport phase or response class for one local log
+// line. It carries no address, token or body: only a stable word, so a
+// status=0 line can be diagnosed without reproducing the failure.
+func failureKind(err error) string {
+	var withStatus *statusError
+	if errors.As(err, &withStatus) {
+		return "http"
+	}
+	var apiErr *apiError
+	if errors.As(err, &apiErr) {
+		return "http"
+	}
+	switch {
+	case errors.Is(err, errMissingToken), errors.Is(err, errMissingNotificationsToken):
+		return "config"
+	case errors.Is(err, errTokenRejected):
+		return "auth"
+	case errors.Is(err, errRateLimited):
+		return "rate-limit"
+	}
+	var dns *net.DNSError
+	if errors.As(err, &dns) {
+		return "dns"
+	}
+	var certificate *tls.CertificateVerificationError
+	if errors.As(err, &certificate) {
+		return "tls"
+	}
+	var op *net.OpError
+	if errors.As(err, &op) {
+		switch op.Op {
+		case "dial":
+			return "connect"
+		case "remote error":
+			return "tls"
+		}
+	}
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, context.Canceled):
+		return "cancelled"
+	}
+	return "other"
+}
+
 // credential is one secret resolver plus the error returned when it is unset.
 // Each request names the credential it uses; there is no fallback between them.
 type credential struct {
@@ -116,7 +204,17 @@ type client struct {
 
 // newClient builds the module's one GitHub client.
 func newClient(baseURL string, timeout time.Duration, token, classic func() (string, bool)) *client {
-	httpClient := httpclient.New(httpclient.Options{Timeout: timeout})
+	// The configured request timeout is the one honest bound for the call. The
+	// connect phases must not be shorter than it: a cold DNS lookup through
+	// Tailscale MagicDNS measured just over 2 s, and the HTTP helper's 2 s dial
+	// budget (which includes DNS resolution) cut it off at exactly 2 s. That
+	// surfaced as a transport failure ~2 s after the Confirmation, with the
+	// ambiguous "couldn't confirm" reply and no issue created (issue #68).
+	httpClient := httpclient.New(httpclient.Options{
+		Timeout:             timeout,
+		DialTimeout:         timeout,
+		TLSHandshakeTimeout: timeout,
+	})
 	// These endpoints never need a redirect, and not following one keeps the bearer token on the configured origin.
 	httpClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &client{
@@ -374,11 +472,11 @@ func authError(err error) error {
 	if errors.As(err, &apiErr) {
 		switch {
 		case apiErr.RateLimited:
-			return errRateLimited
+			return mapped(errRateLimited, apiErr.Status)
 		case apiErr.Status == http.StatusUnauthorized:
-			return errTokenRejected
+			return mapped(errTokenRejected, apiErr.Status)
 		case apiErr.Status == http.StatusForbidden:
-			return errForbidden
+			return mapped(errForbidden, apiErr.Status)
 		}
 	}
 	return err
@@ -392,13 +490,13 @@ func createError(err error) error {
 	if errors.As(err, &apiErr) {
 		switch {
 		case apiErr.RateLimited:
-			return errRateLimited
+			return mapped(errRateLimited, apiErr.Status)
 		case apiErr.Status == http.StatusUnauthorized:
-			return errTokenRejected
+			return mapped(errTokenRejected, apiErr.Status)
 		case apiErr.Status == http.StatusForbidden:
-			return errForbidden
+			return mapped(errForbidden, apiErr.Status)
 		case apiErr.Status == http.StatusNotFound:
-			return errNotFound
+			return mapped(errNotFound, apiErr.Status)
 		}
 	}
 	return err
@@ -411,15 +509,15 @@ func searchError(err error) error {
 	if errors.As(err, &apiErr) {
 		switch {
 		case apiErr.RateLimited:
-			return errRateLimited
+			return mapped(errRateLimited, apiErr.Status)
 		case apiErr.Status == http.StatusUnauthorized:
-			return errTokenRejected
+			return mapped(errTokenRejected, apiErr.Status)
 		case apiErr.Status == http.StatusForbidden:
-			return errForbidden
+			return mapped(errForbidden, apiErr.Status)
 		case apiErr.Status == http.StatusNotFound:
-			return errNotFound
+			return mapped(errNotFound, apiErr.Status)
 		case apiErr.Status == http.StatusUnprocessableEntity:
-			return errForbidden
+			return mapped(errForbidden, apiErr.Status)
 		}
 	}
 	return err
@@ -433,15 +531,15 @@ func notificationsError(err error) error {
 	if errors.As(err, &apiErr) {
 		switch {
 		case apiErr.RateLimited:
-			return errRateLimited
+			return mapped(errRateLimited, apiErr.Status)
 		case apiErr.Status == http.StatusUnauthorized:
-			return errTokenRejected
+			return mapped(errTokenRejected, apiErr.Status)
 		case apiErr.Status == http.StatusForbidden,
 			apiErr.Status == http.StatusNotFound,
 			apiErr.Status == http.StatusGone:
 			// GitHub documents this API as classic-token only. A fine-grained
 			// token (or no access) lands here, so state the contract plainly.
-			return errNotificationsClassicOnly
+			return mapped(errNotificationsClassicOnly, apiErr.Status)
 		}
 	}
 	return err

@@ -218,7 +218,8 @@ test.describe("accessibility", () => {
     test.skip(isMobile, "the desktop rail has the skip link");
     await page.goto("/");
     // Wait for the shell to mount so the first Tab reaches the skip link
-    // rather than the not-yet-hydrated body.
+    // rather than the not-yet-hydrated body. [data-live] is the one seam both
+    // the live stream and this test observe.
     await expect(page.locator("[data-live]")).toBeVisible();
     await page.keyboard.press("Tab");
     const focused = page.locator(":focus");

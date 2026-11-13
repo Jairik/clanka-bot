@@ -162,6 +162,8 @@ func TestHistorySearchCoversTheFieldsThePageShows(t *testing.T) {
 		want   []string
 	}{
 		{"transcript", "all", "blue folder", []string{"transcript"}},
+		{"collapsed whitespace", "all", "blue   folder", []string{"transcript"}},
+		{"collapsed tab", "all", "blue\tfolder", []string{"transcript"}},
 		{"reply", "all", "kettle", []string{"reply"}},
 		{"tool name", "all", "notes.search", []string{"tool"}},
 		{"humanized path", "all", "agent path", []string{"path"}},
@@ -241,7 +243,9 @@ func TestPruneTrimsOldTextAndDeletesExpiredRows(t *testing.T) {
 		MaxRows:    100,
 		Now:        func() time.Time { return now },
 	})
-	long := strings.Repeat("a long sentence ", 40)
+	// tail-marker lives past the trimming point, so a search for it proves the
+	// dropped text is gone while the kept fields are still findable.
+	long := strings.Repeat("a long sentence ", 40) + "tail-marker"
 	entries := []activity.Entry{
 		entry("expired", now.Add(-8*24*time.Hour), func(e *activity.Entry) { e.Transcript = long }),
 		entry("trimmed", now.Add(-2*24*time.Hour), func(e *activity.Entry) {
@@ -304,11 +308,17 @@ func TestPruneTrimsOldTextAndDeletesExpiredRows(t *testing.T) {
 	if again.Trimmed != 0 || again.Deleted != 0 {
 		t.Fatalf("second prune = %+v, want no changes", again)
 	}
-	// The trimmed text is still searchable, the dropped text is not.
+	// The kept text and fields are still searchable, the dropped text is not,
+	// and an over-cap query matches what its first maxQueryRunes describe.
 	for _, tc := range []struct {
 		text string
 		want int
-	}{{"a long sentence", 2}, {strings.Repeat("a long sentence ", 30), 0}} {
+	}{
+		{"a long sentence", 2},
+		{"notes.add", 1},
+		{"tail-marker", 1},
+		{strings.Repeat("a long sentence ", 30), 2},
+	} {
 		got, err := history.QueryPage(ctx, activity.Query{Text: tc.text, Limit: 10})
 		if err != nil {
 			t.Fatalf("QueryPage: %v", err)

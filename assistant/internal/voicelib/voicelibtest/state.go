@@ -1,6 +1,7 @@
 // Package voicelibtest builds synthetic safetensors voice states for tests.
-// The real pinned export has six FlowLM attention layers; these fixtures keep
-// the same header shape with a tiny context so tests stay fast.
+// The real exports have one attention cache and one offset per FlowLM layer,
+// with a layer/head count that depends on the model; these fixtures keep the
+// same header shape with a tiny context so tests stay fast.
 package voicelibtest
 
 import (
@@ -65,16 +66,30 @@ func Write(path string, tensors map[string]Tensor) error {
 	return nil
 }
 
-// WriteValid builds a structurally valid Pocket TTS state. contextLen controls
-// the cache shape [2,1,N,16,64]; withPads selects the 18-tensor real export
-// layout instead of the 12-tensor cache+offset form.
+// WriteValid builds a structurally valid state for the 100M model: six FlowLM
+// layers x 16 heads. contextLen controls the cache shape [2,1,N,16,64];
+// withPads selects the 18-tensor export layout instead of the 12-tensor
+// cache+offset form.
 func WriteValid(path string, contextLen int, withPads bool) error {
+	return WriteValidLayout(path, contextLen, 6, 16, withPads)
+}
+
+// WriteValidLayout builds a structurally valid state for any model layout.
+// Pocket TTS exports one cache and one offset per FlowLM layer, plus an
+// optional pad per layer, so the file has layers*2 or layers*3 tensors.
+func WriteValidLayout(path string, contextLen, layers, heads int, withPads bool) error {
 	if contextLen <= 0 {
 		return fmt.Errorf("contextLen must be positive")
 	}
-	tensors := make(map[string]Tensor, 18)
-	cacheBytes := 2 * 1 * contextLen * 16 * 64 * 4
-	for layer := 0; layer < 6; layer++ {
+	if layers <= 0 {
+		return fmt.Errorf("layers must be positive")
+	}
+	if heads <= 0 {
+		return fmt.Errorf("heads must be positive")
+	}
+	tensors := make(map[string]Tensor, layers*3)
+	cacheBytes := 2 * 1 * contextLen * heads * 64 * 4
+	for layer := 0; layer < layers; layer++ {
 		prefix := fmt.Sprintf("transformer.layers.%d.self_attn", layer)
 		tensors[prefix+"/offset"] = Tensor{Dtype: "I64", Shape: []int64{1}, Data: make([]byte, 8)}
 		if withPads {
@@ -82,7 +97,7 @@ func WriteValid(path string, contextLen int, withPads bool) error {
 		}
 		tensors[prefix+"/cache"] = Tensor{
 			Dtype: "F32",
-			Shape: []int64{2, 1, int64(contextLen), 16, 64},
+			Shape: []int64{2, 1, int64(contextLen), int64(heads), 64},
 			Data:  make([]byte, cacheBytes),
 		}
 	}

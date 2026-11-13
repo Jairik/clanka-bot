@@ -504,6 +504,7 @@ export type VoiceSamplesView = {
   Flash: string;
   Error: string;
   HasStore: boolean;
+  PiRecordingAvailable: boolean;
   // RecordingAvailable is false only when the deployment did not wire the
   // store; the page then explains the missing piece instead of a dead button.
   RecordingAvailable: boolean;

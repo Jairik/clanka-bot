@@ -77,6 +77,8 @@ type Options struct {
 	// submitted bundles in the host-visible export directory. The page is
 	// explanatory when it is nil.
 	VoiceSamples *wakesample.Service
+	// SampleRecorder taps the configured Pi microphone without starting an assistant turn.
+	SampleRecorder SampleRecorder
 	// Voices, VoiceProbe and VoicePreview back the Voice page. The library is
 	// the same service the voice Tools and startup rescan use; the probe is
 	// required for an upload's header check and smoke test; the preview
@@ -162,6 +164,7 @@ type Handler struct {
 	voiceProbe     voicelib.Probe
 	voicePreview   VoicePreview
 	voiceSamples   *wakesample.Service
+	sampleRecorder SampleRecorder
 	toolModules    ModuleProvider
 	zone           *tz.Service
 	now            func() time.Time
@@ -256,6 +259,7 @@ func New(opts Options) (*Handler, error) {
 		voiceProbe:     opts.VoiceProbe,
 		voicePreview:   opts.VoicePreview,
 		voiceSamples:   opts.VoiceSamples,
+		sampleRecorder: opts.SampleRecorder,
 		toolModules:    opts.ToolModules,
 		zone:           opts.Zone,
 		now:            now,
@@ -309,6 +313,7 @@ func New(opts Options) (*Handler, error) {
 	// raw WAV body, deletes one or all, and submits the set as a bundle. Every
 	// write goes through Mutating for identity and same-origin.
 	h.Handle("GET /api/ui/voice-samples", h.voiceSamplesPage)
+	h.Mutating("POST /voice-samples/capture", h.voiceSamplesCapture)
 	h.Mutating("POST /voice-samples/takes/{slug}/{kind}", h.voiceSamplesUpload)
 	h.Mutating("POST /voice-samples/takes/{slug}/{kind}/{id}/delete", h.voiceSamplesDelete)
 	h.Mutating("POST /voice-samples/clear/{slug}/{kind}", h.voiceSamplesClear)

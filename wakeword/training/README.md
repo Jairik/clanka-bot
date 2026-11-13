@@ -146,6 +146,31 @@ the model on the desktop and deploy normally. Either way, set
 **status** lists every `~/.cache/clanka/wakeword-*` work directory with its
 real and synthetic counts, whether its model exists, and the last eval summary.
 
+The Dashboard's batch recorder defaults to the Pi's configured microphone
+(the same USB source as the voice loop), with a **This device** browser-mic
+option. Start the positive and negative batches separately; defaults are ten
+and five new takes. Each take has a quiet cue followed by three seconds of
+capture, with a short reading gap between takes. Pi capture uses the existing
+voice-loop stream, excludes sample frames from normal wake/STT processing,
+and refuses to interrupt an active voice turn. Start is an explicit user
+action; it plays a quiet cue on the Pi speaker for Pi capture.
+
+Pause cancels the current take without losing completed takes. Continue fills
+unfinished slots; Redo replaces a selected unsaved take. Replay uses the full
+capture, while Save batch stores the trimmed canonical training WAVs. Save
+before changing phrase/kind or leaving the page; unsaved audio exists only in
+browser memory. Saving can be retried without resending takes already saved
+in this page. Submit still creates the bundle separately and never trains.
+
+Local acoustic checks flag silence, quiet audio, possible clipping, speech at
+capture boundaries and speech that the 1.9-second training cap would truncate.
+Missing or potentially incomplete speech must be redone before batch saving;
+other warnings recommend replay/redo. These checks are independent of the wake
+model and do not establish that the right words were spoken or every syllable
+is present. No transcription or external service is used for quality checks.
+For new phrases the batch uses ordinary-speech negatives; collect curated
+phrase-specific near misses with the single-take recorder as well.
+
 The Dashboard's `/voice-samples` page writes the same layout: keeps go straight
 to `real/positive` and `real/negative`, and Submit writes
 `<slug>-<date>-<time>.tar.gz` with a `manifest.json` next to `real/`. Playback

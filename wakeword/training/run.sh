@@ -1,20 +1,41 @@
 #!/usr/bin/env bash
-# Reproduce wakeword/models/clanker.tflite from pinned public assets, Pocket TTS
-# clips and (once recorded) the owner's own takes.
+# Reproduce a wakeword/models/<phrase>.tflite detector from pinned public
+# assets, Pocket TTS clips and (once recorded) the owner's own takes.
 #
 # Usage: wakeword/training/run.sh [setup|assets|clips|acceptance|real|train|convert|evaluate|fixtures|all]
-# Everything lands in $WORK (default ~/.cache/clanka/wakeword-clanker); nothing is uploaded.
+#        PHRASE=volume_up wakeword/training/run.sh all
+# PHRASE defaults to clanker. Everything lands in $WORK (default
+# ~/.cache/clanka/wakeword-clanker); nothing is uploaded.
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/../.." && pwd)
 TRAIN="$REPO/wakeword/training"
 WORK=${WORK:-$HOME/.cache/clanka/wakeword-clanker}
+PHRASE=${PHRASE:-clanker}
+# Smaller starter models can override the synthetic clip counts.
+N_TRAIN=${N_TRAIN:-10000}
+N_TEST=${N_TEST:-2000}
 OWW_REV=368c03716d1e92591906a84949bc477f3a834455
 VOICES=alba,anna,azelma,bill_boerst,charles,cosette,daan,eponine,estelle,eve,fantine,george,giovanni,jane,javert,jean,juergen,lola,marius,mary,michael,paul,peter_yearsley,rafael,vera
 HELD_OUT=caro_davy,stuart_bell
 
 mkdir -p "$WORK"/{data,clips,background,logs}
 cd "$WORK"
+
+# phrase_file resolves a clip-list name for PHRASE. A phrase-specific list lives
+# under training/phrases/<phrase>/; clanker keeps the original top-level files.
+phrase_file() {
+  local kind=$1
+  local specific="$TRAIN/phrases/$PHRASE/$kind.txt"
+  if [ -f "$specific" ]; then
+    printf '%s\n' "$specific"
+  else
+    printf '%s\n' "$TRAIN/$kind.txt"
+  fi
+}
+
+MODEL_DIR="clips/$PHRASE"
+ACCEPT_DIR="$MODEL_DIR/acceptance"
 
 setup() {
   uv venv --python 3.11 venv
@@ -46,62 +67,66 @@ gen() {
 }
 
 clips() {
-  mkdir -p clips/clanker
-  gen --out-dir clips/clanker/positive_train --phrases "$TRAIN/positives.txt" --voices "$VOICES" --count 10000 --workers 4 --speed-probability 0.25 --seed 1
-  gen --out-dir clips/clanker/positive_test --phrases "$TRAIN/positives.txt" --voices "$VOICES" --count 2000 --workers 4 --speed-probability 0.25 --seed 2
-  gen --out-dir clips/clanker/negative_train --phrases "$TRAIN/negative_phrases.txt" --voices "$VOICES" --count 10000 --workers 4 --speed-probability 0.15 --seed 3
-  gen --out-dir clips/clanker/negative_test --phrases "$TRAIN/negative_phrases.txt" --voices "$VOICES" --count 2000 --workers 4 --speed-probability 0.15 --seed 4
+  mkdir -p "$MODEL_DIR"
+  gen --out-dir "$MODEL_DIR/positive_train" --phrases "$(phrase_file positives)" --voices "$VOICES" --count "$N_TRAIN" --workers 4 --speed-probability 0.25 --seed 1
+  gen --out-dir "$MODEL_DIR/positive_test" --phrases "$(phrase_file positives)" --voices "$VOICES" --count "$N_TEST" --workers 4 --speed-probability 0.25 --seed 2
+  gen --out-dir "$MODEL_DIR/negative_train" --phrases "$(phrase_file negative_phrases)" --voices "$VOICES" --count "$N_TRAIN" --workers 4 --speed-probability 0.15 --seed 3
+  gen --out-dir "$MODEL_DIR/negative_test" --phrases "$(phrase_file negative_phrases)" --voices "$VOICES" --count "$N_TEST" --workers 4 --speed-probability 0.15 --seed 4
 }
 
 acceptance() {
-  mkdir -p clips/acceptance
-  gen --out-dir clips/acceptance/positive --phrases "$TRAIN/positives.txt" --voices "$HELD_OUT" --count 60 --workers 2 --speed-probability 0.5 --seed 7
-  gen --out-dir clips/acceptance/negative --phrases "$TRAIN/near_misses.txt" --voices "$HELD_OUT" --count 80 --workers 2 --speed-probability 0.5 --seed 11
-  gen --out-dir clips/acceptance/speech --phrases "$TRAIN/ordinary_phrases.txt" --voices "$HELD_OUT" --count 40 --workers 2 --speed-probability 0.3 --seed 13
+  mkdir -p "$ACCEPT_DIR"
+  gen --out-dir "$ACCEPT_DIR/positive" --phrases "$(phrase_file positives)" --voices "$HELD_OUT" --count 60 --workers 2 --speed-probability 0.5 --seed 7
+  gen --out-dir "$ACCEPT_DIR/negative" --phrases "$(phrase_file near_misses)" --voices "$HELD_OUT" --count 80 --workers 2 --speed-probability 0.5 --seed 11
+  gen --out-dir "$ACCEPT_DIR/speech" --phrases "$(phrase_file ordinary_phrases)" --voices "$HELD_OUT" --count 40 --workers 2 --speed-probability 0.3 --seed 13
 }
 
 real() {
-  venv/bin/python "$TRAIN/prep_real.py" --work "$WORK"
+  venv/bin/python "$TRAIN/prep_real.py" --work "$WORK" --model "$PHRASE"
 }
 
 train() {
-  cp "$TRAIN/clanker.yml" clanker.yml
-  venv/bin/python openWakeWord/openwakeword/train.py --training_config clanker.yml --augment_clips
+  cp "$TRAIN/$PHRASE.yml" "$PHRASE.yml"
+  venv/bin/python openWakeWord/openwakeword/train.py --training_config "$PHRASE.yml" --augment_clips
   # openWakeWord then always attempts its own onnx -> tflite conversion (its
   # --convert_to_tflite default is the non-empty string "False"), which needs
   # onnx-tf. The ONNX is written before that, and convert does the conversion,
   # so a non-zero exit is expected once the ONNX exists.
-  # output_dir is ./clips, so export_model writes clips/clanker.onnx next to
-  # the clips/clanker/ directory rather than inside it.
-  rm -f clips/clanker.onnx
-  venv/bin/python openWakeWord/openwakeword/train.py --training_config clanker.yml --train_model || true
-  [ -s clips/clanker.onnx ] || { echo "training did not write clips/clanker.onnx" >&2; exit 1; }
+  # output_dir is ./clips, so export_model writes clips/<phrase>.onnx next to
+  # the clips/<phrase>/ directory rather than inside it.
+  rm -f "clips/$PHRASE.onnx"
+  venv/bin/python openWakeWord/openwakeword/train.py --training_config "$PHRASE.yml" --train_model || true
+  [ -s "clips/$PHRASE.onnx" ] || { echo "training did not write clips/$PHRASE.onnx" >&2; exit 1; }
 }
 
 convert() {
-  venv-convert/bin/python "$TRAIN/convert_model.py" --onnx clips/clanker.onnx --out "$REPO/wakeword/models/clanker.tflite"
+  venv-convert/bin/python "$TRAIN/convert_model.py" --onnx "clips/$PHRASE.onnx" --out "$REPO/wakeword/models/$PHRASE.tflite"
 }
 
 evaluate() {
   local real_positive=() real_negative=()
-  if [ -d clips/real_holdout/positive ] && [ -n "$(ls -A clips/real_holdout/positive)" ]; then
-    real_positive=(--real-positive clips/real_holdout/positive)
+  if [ -d "$MODEL_DIR/real_holdout/positive" ] && [ -n "$(ls -A "$MODEL_DIR/real_holdout/positive")" ]; then
+    real_positive=(--real-positive "$MODEL_DIR/real_holdout/positive")
   fi
-  if [ -d clips/real_holdout/negative ] && [ -n "$(ls -A clips/real_holdout/negative)" ]; then
-    real_negative=(--real-negative clips/real_holdout/negative)
+  if [ -d "$MODEL_DIR/real_holdout/negative" ] && [ -n "$(ls -A "$MODEL_DIR/real_holdout/negative")" ]; then
+    real_negative=(--real-negative "$MODEL_DIR/real_holdout/negative")
   fi
-  venv/bin/python "$TRAIN/evaluate.py" --model "$REPO/wakeword/models/clanker.tflite" \
-    --positives clips/clanker/positive_test \
-    --negatives clips/clanker/negative_test \
-    --voices clips/acceptance/positive \
-    --near-misses clips/acceptance/negative \
-    --speech clips/acceptance/speech \
+  venv/bin/python "$TRAIN/evaluate.py" --model "$REPO/wakeword/models/$PHRASE.tflite" \
+    --positives "$MODEL_DIR/positive_test" \
+    --negatives "$MODEL_DIR/negative_test" \
+    --voices "$ACCEPT_DIR/positive" \
+    --near-misses "$ACCEPT_DIR/negative" \
+    --speech "$ACCEPT_DIR/speech" \
     --background "$WORK/background" \
     "${real_positive[@]}" "${real_negative[@]}" \
-    --json-out "$WORK/logs/eval.json"
+    --json-out "$WORK/logs/eval-$PHRASE.json"
 }
 
 fixtures() {
+  if [ "$PHRASE" != clanker ]; then
+    echo "fixtures are the clanker detection-test set; there is no fixture set for $PHRASE" >&2
+    exit 2
+  fi
   local pos="$REPO/wakeword/tests/fixtures/positive" neg="$REPO/wakeword/tests/fixtures/negative"
   mkdir -p "$pos" "$neg"
   rm -f "$pos"/*.wav "$neg"/*.wav
@@ -127,6 +152,6 @@ fixtures() {
 
 case "${1:-all}" in
   setup|assets|clips|acceptance|real|train|convert|evaluate|fixtures) "$1" ;;
-  all) setup; assets; clips; acceptance; real; train; convert; evaluate; fixtures ;;
-  *) echo "usage: $0 [setup|assets|clips|acceptance|real|train|convert|evaluate|fixtures|all]" >&2; exit 2 ;;
+  all) setup; assets; clips; acceptance; real; train; convert; evaluate; if [ "$PHRASE" = clanker ]; then fixtures; fi ;;
+  *) echo "usage: $0 [setup|assets|clips|acceptance|real|train|convert|evaluate|fixtures|all] (PHRASE=<name>)" >&2; exit 2 ;;
 esac

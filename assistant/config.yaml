@@ -246,11 +246,28 @@ wakeword:
   # Default detection probability for every model without an entry in
   # thresholds. Higher is stricter.
   threshold: 0.5
-  # Per-model overrides. A name here must also be in models; the Assistant
-  # sends the complete map with every detect stream and the service applies it
-  # per model. WAKEWORD_THRESHOLDS (clanker:0.6,okay_nabu:0.5) overrides this
-  # map at deployment.
+  # Per-model overrides. A name here must also be in models (or the command
+  # list below); the Assistant sends the complete map with every detect stream
+  # and the service applies it per model. WAKEWORD_THRESHOLDS
+  # (clanker:0.6,okay_nabu:0.5) overrides this map at deployment.
   thresholds: {}
+  # Wake-free command models (#81): the service reports volume_up /
+  # volume_down without the wake word and the Assistant runs one volume step
+  # with no STT. Off until models trained on this house's samples exist and the
+  # false-trigger measurement in docs/spikes/wake-over-music.md is done.
+  commands:
+    enabled: false
+    models: ["volume_up", "volume_down"]
+    # Volume change per detection, percent (1..50), on the same Pulse sink
+    # audio.volume_set uses.
+    step: 10
+    # Minimum time between accepted detections, so one misheard word cannot
+    # walk the volume to zero.
+    cooldown: 1.5s
+    # Detection probability for a command model without an entry in thresholds
+    # above. A command acts with no confirmation, so it ships stricter than the
+    # wake word.
+    threshold: 0.7
   timeout: 10s
   chime:
     # Master switch for the wake Cue. The sound itself is sounds.wake (default:

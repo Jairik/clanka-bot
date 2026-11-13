@@ -68,6 +68,14 @@ services:
       # sends with each detect stream (clanker:0.6,okay_nabu:0.5).
       ASSISTANT_WAKEWORD_THRESHOLD: ${WAKEWORD_THRESHOLD:-0.5}
       ASSISTANT_WAKEWORD_THRESHOLDS: ${WAKEWORD_THRESHOLDS:-}
+      # Wake-free commands (#81): off by default. When enabled, the Assistant
+      # requests these models and handles a detection without STT; the image
+      # bakes every wakeword/models/*.tflite it ships. A command model still
+      # needs its threshold in WAKEWORD_THRESHOLDS (default 0.7).
+      ASSISTANT_WAKEWORD_COMMANDS_ENABLED: ${WAKEWORD_COMMANDS_ENABLED:-false}
+      ASSISTANT_WAKEWORD_COMMANDS: ${WAKEWORD_COMMANDS:-volume_up,volume_down}
+      ASSISTANT_WAKEWORD_COMMAND_STEP: ${WAKEWORD_COMMAND_STEP:-10}
+      ASSISTANT_WAKEWORD_COMMAND_COOLDOWN: ${WAKEWORD_COMMAND_COOLDOWN:-1.5s}
       ASSISTANT_STT_ADDR: "stt:10300"
       ASSISTANT_STT_MODEL: ${STT_MODEL:-small-streaming}
       ASSISTANT_STT_LANGUAGE: ${STT_LANGUAGE:-en}

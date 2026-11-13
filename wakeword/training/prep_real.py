@@ -58,8 +58,8 @@ def main():
     neg_train, neg_holdout = split(negatives)
     copy_all(pos_train, model_dir / "positive_train", "realp_")
     copy_all(neg_train, model_dir / "negative_train", "realn_")
-    copy_all(pos_holdout, work / "clips" / "real_holdout" / "positive", "")
-    copy_all(neg_holdout, work / "clips" / "real_holdout" / "negative", "")
+    copy_all(pos_holdout, model_dir / "real_holdout" / "positive", "")
+    copy_all(neg_holdout, model_dir / "real_holdout" / "negative", "")
 
     print(f"real positives: {len(pos_train)} for training, {len(pos_holdout)} held out")
     print(f"real negatives: {len(neg_train)} for training, {len(neg_holdout)} held out")

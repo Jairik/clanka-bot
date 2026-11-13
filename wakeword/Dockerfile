@@ -10,11 +10,13 @@ FROM rhasspy/wyoming-openwakeword:latest@sha256:52cb1168731a1849fc28cf339c935fde
 # models; nothing is fetched here, the weights are already in the base layer.
 RUN ls /usr/src/.venv/lib/python3.11/site-packages/pyopen_wakeword/models/*.tflite >/dev/null
 
-# The locally trained "clanker" detector, produced by training/run.sh and
-# tracked in git (it is a 100 KB-class file). Compose passes
+# The locally trained detectors under models/, including "clanker" and, when
+# they exist, the wake-free volume_up/volume_down models (#81). The glob keeps
+# the build valid while a command model is absent: Compose passes the directory,
+# and a name that is not present is simply never detected. Compose passes
 # --custom-model-dir /usr/src/custom_models. This layer comes before the app
 # code so editing the health check does not rebuild it.
-COPY models/clanker.tflite /usr/src/custom_models/clanker.tflite
+COPY models/*.tflite /usr/src/custom_models/
 
 # Per-model thresholds. The upstream handler applies one global --threshold to
 # every model; the Assistant sends a threshold map with each detect request so

@@ -16,6 +16,12 @@ import (
 type WakewordModel struct {
 	Name      string
 	Threshold float64
+	// Command marks a wake-free command model. It acts without starting a
+	// turn, so the two kinds are shown separately.
+	Command bool
+	// Enabled is always true for a wake word. A command model can be
+	// configured but switched off, in which case it is never requested.
+	Enabled bool
 }
 
 // WakewordInfo is the configured wake-word allowlist. The Settings page
@@ -28,13 +34,23 @@ type WakewordInfo struct {
 
 // WakewordFromConfig resolves the allowlist and thresholds main gives the voice
 // loop, so the pages cannot show a different list from the one the Assistant
-// listens for.
+// listens for. Command models are included even while disabled, so the page
+// shows the switch rather than hiding the feature.
 func WakewordFromConfig(cfg config.Config) WakewordInfo {
 	info := WakewordInfo{Addr: strings.TrimSpace(cfg.Wakeword.Addr)}
 	for _, name := range cfg.Wakeword.WakeModels() {
 		info.Models = append(info.Models, WakewordModel{
 			Name:      name,
 			Threshold: cfg.Wakeword.ThresholdFor(name),
+			Enabled:   true,
+		})
+	}
+	for _, name := range cfg.Wakeword.Commands.ModelNames() {
+		info.Models = append(info.Models, WakewordModel{
+			Name:      name,
+			Threshold: cfg.Wakeword.ThresholdFor(name),
+			Command:   true,
+			Enabled:   cfg.Wakeword.Commands.Enabled,
 		})
 	}
 	return info
@@ -54,6 +70,8 @@ type wakewordSettingsView struct {
 type wakewordModelView struct {
 	Name      string
 	Threshold string
+	Command   bool
+	Enabled   bool
 }
 
 func (h *Handler) wakewordSettings() wakewordSettingsView {
@@ -65,13 +83,15 @@ func (h *Handler) wakewordSettings() wakewordSettingsView {
 		view.Models = append(view.Models, wakewordModelView{
 			Name:      model.Name,
 			Threshold: strconv.FormatFloat(model.Threshold, 'f', 2, 64),
+			Command:   model.Command,
+			Enabled:   model.Enabled,
 		})
 	}
 	if !view.Enabled {
 		view.Note = "Voice input is off: wakeword.addr is empty. Set the wakeword address and at least one model to enable it."
 		return view
 	}
-	view.Note = "Use WAKEWORD_MODELS for the comma-separated list and WAKEWORD_THRESHOLDS (for example clanker:0.6,okay_nabu:0.5) for per-model overrides. These are connection settings: change them in .env or config.yaml and restart the assistant."
+	view.Note = "Use WAKEWORD_MODELS for the comma-separated list and WAKEWORD_THRESHOLDS (for example clanker:0.6,okay_nabu:0.5) for per-model overrides. Wake-free commands are controlled by WAKEWORD_COMMANDS_ENABLED and are off by default. These are connection settings: change them in .env or config.yaml and restart the assistant."
 	return view
 }
 
@@ -117,6 +137,16 @@ func (h *Handler) wakewordChecks(ctx context.Context) []checkView {
 		view := checkView{
 			Name:   model.Name,
 			Detail: fmt.Sprintf("Threshold %.2f", model.Threshold),
+		}
+		if model.Command {
+			view.Detail = "Wake-free command · " + view.Detail
+			if !model.Enabled {
+				view.Status = string(tool.StatusNotConfigured)
+				view.StatusLabel = "off"
+				view.Detail += " · commands are disabled"
+				views = append(views, view)
+				continue
+			}
 		}
 		switch {
 		case probeErr != nil:

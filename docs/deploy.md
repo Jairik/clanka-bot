@@ -229,7 +229,8 @@ the README for the curl examples. The Settings page's **Wake word** section is
 read-only: the allowlist and per-model thresholds are connection settings
 (`WAKEWORD_MODELS`, `WAKEWORD_THRESHOLD`, `WAKEWORD_THRESHOLDS`), so change
 `.env` and restart; the Health page's Wake word rows show what the service
-advertises.
+advertises. The wake-free command models (#81) are shown there too, with `off`
+when `WAKEWORD_COMMANDS_ENABLED` is false.
 
 The **Activity** page at `/activity` lists recent requests from a bounded
 in-memory ring fed by the same completion that writes the structured `request`

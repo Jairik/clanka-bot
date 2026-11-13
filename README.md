@@ -342,6 +342,22 @@ the complete per-model map on every detect stream, and the wrapper image patches
 the pinned upstream handler to apply it per model. The old single-value
 `WAKEWORD_MODEL` (and `wakeword.model`) is still accepted.
 
+**Wake-free volume commands (#81)** are off by default. With
+`WAKEWORD_COMMANDS_ENABLED=true`, the Assistant also asks `wakeword` for the
+`volume_up` and `volume_down` models (baked from `wakeword/models/*.tflite`)
+and handles a detection directly: one volume step (`WAKEWORD_COMMAND_STEP`,
+default 10%) on the same Pulse sink as `audio.volume_set`, then a short Cue, with
+no STT and no routing. They act only while music or the current reply holds
+Focus, at a stricter per-model threshold (default 0.7, overridable through
+`WAKEWORD_THRESHOLDS=volume_up:0.75,volume_down:0.75`), and with a cooldown
+(`WAKEWORD_COMMAND_COOLDOWN`, default 1.5 s). The target is the shared Pulse
+sink that `audio.volume_set` and the Dashboard slider drive, so it carries
+replies and Cues as well as music; Quiet hours and Ring volumes stay software
+gains and are not rewritten. While music holds Focus, an up step stops at
+`music.max_volume`; a down step is never blocked. The feature stays off
+until models trained on this house's samples exist and the false-trigger
+measurement in `docs/spikes/wake-over-music.md` meets its target.
+
 `wakeword` and `stt` do computation only and never mount Pulse (ADR-0001).
 Their Compose health checks are Wyoming `describe` calls, so startup waits for
 the service, not for a model: openWakeWord loads a detector on the first

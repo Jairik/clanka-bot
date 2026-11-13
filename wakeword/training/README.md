@@ -80,7 +80,9 @@ wakeword/training/run.sh fixtures    # refresh the synthesized WAVs in wakeword/
 ```
 
 `run.sh all` does everything in that order. Training works with no recordings:
-`real` prints a note and the pipeline stays synthetic-only.
+`real` prints a note and the pipeline stays synthetic-only. Acceptance clips
+and the real-take holdout now live under `$WORK/clips/<phrase>/`, so an older
+work directory needs one `acceptance` run before `evaluate`.
 
 `train` ends with an error from openWakeWord's own `onnx -> tflite` step, which
 needs `onnx-tf`; the ONNX is written before that and `convert` does the
@@ -188,3 +190,66 @@ trained word unless the second is earning its keep.
 - CPU cost on the Pi: the TFLite detector is the same shape as the upstream
   ones (16x96 input, two 32-unit layers), so the per-frame cost should match,
   but nothing has measured it on the Pi 5.
+
+## Wake-free command models (#81)
+
+`volume_up` and `volume_down` are the same kind of detector as `clanker`, but a
+detection does not start a turn. It runs one bounded volume step and a short Cue
+with no STT and no routing, and it only acts while music or a reply holds Focus.
+The feature ships **off** (`WAKEWORD_COMMANDS_ENABLED=false`) until models
+trained with the owner's takes and the measurement below exist.
+
+The pipeline is phrase-parameterized. `PHRASE=volume_up` selects
+`volume_up.yml` and the lists under `phrases/volume_up/`; `clanker` keeps the
+original top-level files:
+
+```bash
+# Assets and the TTS venv are shared with the clanker work directory.
+wakeword/training/run.sh setup
+wakeword/training/run.sh assets
+
+# A smaller starter set is enough for a two-word phrase.
+PHRASE=volume_up N_TRAIN=6000 N_TEST=1200 wakeword/training/run.sh clips
+PHRASE=volume_up wakeword/training/run.sh acceptance
+PHRASE=volume_up wakeword/training/run.sh real       # only if takes exist
+PHRASE=volume_up wakeword/training/run.sh train
+PHRASE=volume_up wakeword/training/run.sh convert
+PHRASE=volume_up wakeword/training/run.sh evaluate
+```
+
+Repeat with `PHRASE=volume_down`. Clips land in `$WORK/clips/<phrase>/`, the
+ONNX in `$WORK/clips/<phrase>.onnx`, the detector in
+`wakeword/models/<phrase>.tflite`, and the evaluation JSON in
+`$WORK/logs/eval-<phrase>.json`. The `real` stage reads `$WORK/real/`, so give
+each phrase its own work directory (`WORK=~/.cache/clanka/wakeword-volume_up`)
+once real takes are involved, or import that phrase's takes before running it.
+
+The phrase configs are deliberately strict:
+
+- **Only the bare phrase is positive** (`phrases/<phrase>/positives.txt`).
+  "turn the volume up" and "pump up the volume" are negatives; they are common
+  in lyrics and must not change the volume by themselves.
+- **The other command is a hard negative** (`volume_down` in the `volume_up`
+  set and vice versa), so one cannot masquerade as the other.
+- **Near misses** (`near_misses.txt`) are the held-out false-accept set:
+  "volume", "value up", "volume off", "column up", "volunteer", …
+- **Negative phrases** (`negative_phrases.txt`) combine the near misses, their
+  variants, ordinary requests and lyric-like lines. They become the 10k-class
+  hard negatives in training.
+- **Music background**: openWakeWord mixes every WAV under `$WORK/background`
+  into augmented clips; AudioSet already contains music. For a music-heavy
+  run, drop a few 16 kHz mono WAVs of representative songs with vocals into
+  `$WORK/background` before `train`. Do not commit them.
+
+`volume_up.yml` / `volume_down.yml` use 6k positive training clips, 30k steps
+and a `target_false_positives_per_hour` of 0.1. `evaluate.py` reports recall on
+held-out voices, near-miss false accepts and false accepts per hour of
+background. A synthetic-only model can be committed only if that number is
+sane; otherwise keep the configs and record the missing measurement.
+
+The deployed threshold is 0.7 by default (`wakeword.commands.threshold`),
+overridable per model through `WAKEWORD_THRESHOLDS=volume_up:0.75,...`. The
+wakeword image copies every `wakeword/models/*.tflite`, so adding a committed
+model needs a rebuild, not a Dockerfile change. The false-trigger protocol for
+the command models is §5.2 of
+[`docs/spikes/wake-over-music.md`](../../docs/spikes/wake-over-music.md).

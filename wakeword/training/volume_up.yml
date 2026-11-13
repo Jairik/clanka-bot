@@ -1,0 +1,63 @@
+# Training data for the wake-free "volume up" command model (#81).
+# Run with: PHRASE=volume_up wakeword/training/run.sh all
+# Paths are relative to the work directory run.sh creates.
+#
+# The negative set is deliberately broad: the bare word "volume", the other
+# command, ordinary requests and lyric-like lines where the phrase appears in
+# a longer sentence ("turn the volume up"). Only the bare phrase is trained as
+# a positive; a longer sentence must not change the volume by itself.
+#
+# Music background: every WAV under ./background is mixed into training clips
+# by openWakeWord's augmentation. AudioSet already includes music and speech;
+# to weight this run toward music with vocals, drop a few 16 kHz mono WAVs of
+# representative songs into $WORK/background before `train` (keep them out of
+# git). The lyric-like phrases above are the repeatable, TTS-only part.
+
+model_name: "volume_up"
+
+target_phrase:
+  - "volume up"
+
+custom_negative_phrases: []
+
+n_samples: 6000
+n_samples_val: 1200
+tts_batch_size: 1
+augmentation_batch_size: 16
+
+piper_sample_generator_path: "./stub_piper"
+
+output_dir: "./clips"
+
+rir_paths:
+  - "./data/mit_rirs/16khz"
+
+background_paths:
+  - "./background"
+
+background_paths_duplication_rate:
+  - 1
+
+false_positive_validation_data_path: "./data/validation_set_features.npy"
+
+augmentation_rounds: 1
+
+feature_data_files:
+  "ACAV100M_sample": "./data/acav_subset.npy"
+
+batch_n_per_class:
+  "ACAV100M_sample": 1024
+  "adversarial_negative": 50
+  "positive": 50
+
+model_type: "dnn"
+layer_size: 32
+
+# A two-word command needs fewer rows than the wake word, and the deployed
+# threshold is stricter (0.7 by default). 30k steps is a starter model; raise
+# it if the held-out recall is short.
+steps: 30000
+max_negative_weight: 1500
+# Commands act with no confirmation, so ask for fewer false triggers per hour
+# than the wake word's 0.2 target.
+target_false_positives_per_hour: 0.1

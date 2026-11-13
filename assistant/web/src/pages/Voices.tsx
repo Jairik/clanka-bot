@@ -6,7 +6,7 @@ import { Field, ResetButton, TextField, useActions, type Actions } from "../form
 import { PageFrame } from "../shell";
 import type { VoiceRow, VoicesView } from "../types";
 import { Badge, Empty, Fold, Lede, Meta, Notice, Section, SourceBadge, cn, foldOpen, type Tone } from "../ui";
-import { UploadRow } from "./Sounds";
+import { UploadRow } from "../upload";
 
 const statusTone = (v: VoiceRow): Tone => (v.Stale ? "warn" : v.Unvalidated ? "bad" : "neutral");
 
@@ -87,12 +87,12 @@ export function VoicesPage() {
             )}
             {data.CanUpload ? (
               <UploadRow
+                action="/voices/upload"
                 maxUpload={data.MaxUpload}
                 accept=".safetensors"
                 label="Upload a .safetensors voice"
-                pending={actions.pending === "/voices/upload"}
                 extra={(fd) => replace && fd.set("replace", "yes")}
-                onUpload={(fd) => actions.run("/voices/upload", fd)}
+                onView={(v) => set(v as VoicesView)}
               />
             ) : (
               <p className="border-t px-3.5 py-3 text-xs text-muted">Uploads are disabled because the speech service is not configured, so the model smoke test cannot run.</p>

@@ -8,7 +8,13 @@ import { emptyActivity, json, Providers, req, session, stubFetch } from "./harne
 const view = (requests = [
   req({ ID: "v", Source: "voice", SourceLabel: "Voice", Transcript: "spoken at the pi" }),
   req({ ID: "t", Source: "dashboard", SourceLabel: "Dashboard typed", Transcript: "typed on the page" }),
-  req({ ID: "m", Source: "dashboard_mic", SourceLabel: "Dashboard mic", Transcript: "spoken at the browser" }),
+  req({
+    ID: "m",
+    Source: "dashboard_mic",
+    SourceLabel: "Dashboard mic",
+    Transcript: "spoken at the browser",
+    Stages: [{ Name: "stt_finalize", Label: "STT finalize", MS: "820 ms" }],
+  }),
   req({ ID: "f", Source: "voice", SourceLabel: "Voice", Transcript: "this one broke", Outcome: "failed", OutcomeText: "Failed", Error: "boom" }),
 ]) =>
   emptyActivity(requests);
@@ -64,6 +70,23 @@ describe("ActivityPage filters", () => {
 
     await user.click(await chip("Voice"));
     expect(await screen.findByText("spoken at the pi")).toBeTruthy();
+    expect(screen.queryByText("typed on the page")).toBeNull();
+  });
+
+  it("filters to browser-mic requests and shows their STT time", async () => {
+    stubFetch(routes());
+    const user = userEvent.setup();
+    render(
+      <Providers>
+        <ActivityPage />
+      </Providers>,
+    );
+    await screen.findByText("spoken at the pi");
+    await user.click(await chip("Mic"));
+
+    expect(await screen.findByText("spoken at the browser")).toBeTruthy();
+    expect(screen.getByText("STT 820 ms")).toBeTruthy();
+    expect(screen.queryByText("spoken at the pi")).toBeNull();
     expect(screen.queryByText("typed on the page")).toBeNull();
   });
 

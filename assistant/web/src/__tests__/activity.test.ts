@@ -18,8 +18,9 @@ describe("activity filters", () => {
     expect(filterActivity([voice, typed, mic], "typed", "").map((r) => r.ID)).toEqual(["t"]);
   });
 
-  it("puts the two spoken paths under Voice until a mic filter exists", () => {
-    expect(filterActivity([voice, typed, mic], "voice", "").map((r) => r.ID)).toEqual(["v", "m"]);
+  it("keeps Voice for the Pi and Mic for the browser", () => {
+    expect(filterActivity([voice, typed, mic], "voice", "").map((r) => r.ID)).toEqual(["v"]);
+    expect(filterActivity([voice, typed, mic], "mic", "").map((r) => r.ID)).toEqual(["m"]);
   });
 
   it("counts a failure, a cancel and an error as problems", () => {

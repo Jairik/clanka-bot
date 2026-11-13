@@ -2,9 +2,15 @@
 // Kept out of the page component so the list rules can be tested without a DOM.
 import type { Request } from "./types";
 
-export const FILTERS = ["all", "voice", "typed", "problems"] as const;
+export const FILTERS = ["all", "voice", "typed", "mic", "problems"] as const;
 export type ActivityFilter = (typeof FILTERS)[number];
-export const FILTER_LABEL: Record<ActivityFilter, string> = { all: "All", voice: "Voice", typed: "Typed", problems: "Problems" };
+export const FILTER_LABEL: Record<ActivityFilter, string> = {
+  all: "All",
+  voice: "Voice",
+  typed: "Typed",
+  mic: "Mic",
+  problems: "Problems",
+};
 
 /** Typed on a keyboard: the Dashboard box or a debug request. */
 export const isTypedSource = (s: string) => s === "dashboard" || s === "debug";
@@ -12,14 +18,17 @@ export const isProblem = (r: Request) => r.Outcome === "failed" || r.Outcome ===
 
 export const asFilter = (f: string): ActivityFilter => ((FILTERS as readonly string[]).includes(f) ? (f as ActivityFilter) : "all");
 
+/** The three input paths: voice at the Pi, typed on the page, mic in the browser. */
 const matches = (r: Request, filter: ActivityFilter) =>
   filter === "voice"
-    ? !isTypedSource(r.Source)
+    ? r.Source === "voice"
     : filter === "typed"
       ? isTypedSource(r.Source)
-      : filter === "problems"
-        ? isProblem(r)
-        : true;
+      : filter === "mic"
+        ? r.Source === "dashboard_mic"
+        : filter === "problems"
+          ? isProblem(r)
+          : true;
 
 /** Case-insensitive match over everything the row shows. */
 const haystack = (r: Request) => `${r.Transcript} ${r.Reply} ${r.Tool} ${r.PathLabel} ${r.Error}`.toLowerCase();

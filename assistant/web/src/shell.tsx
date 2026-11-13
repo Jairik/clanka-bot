@@ -7,6 +7,7 @@ import {
   Settings, Smile, StickyNote, Volume, Volume1, Volume2, VolumeX, Waves,
 } from "lucide-react";
 import { getJSON, navigate, postForm, useLocation } from "./api";
+import { API_VERSION } from "./api-version";
 import { useLive } from "./events";
 import type { HealthView, Session, Volume as VolumeState } from "./types";
 import { Range, cn } from "./ui";
@@ -34,7 +35,16 @@ export const pageFor = (path: string) => PAGES.find((p) => p.path === path.repla
 
 // ---------- session (who, and which optional services are wired) ----------
 
-const SessionCtx = createContext<Session>({ Owner: "", Typed: false, Mic: false, Volume: false, Activity: false, CanSpeak: false, Speak: false });
+const SessionCtx = createContext<Session>({
+  Owner: "",
+  Typed: false,
+  Mic: false,
+  Volume: false,
+  Activity: false,
+  CanSpeak: false,
+  Speak: false,
+  APIVersion: API_VERSION,
+});
 export const useSession = () => useContext(SessionCtx);
 
 export function SessionProvider({ children }: { children: ReactNode }) {
@@ -45,6 +55,23 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   }, []);
   if (err) return <div className="p-8 text-sm text-danger">Could not reach the assistant: {err}</div>;
   if (!s) return null;
+  // The UI and the assistant ship as separate artifacts, so a page can be
+  // older or newer than the server it reaches. Rendering anyway would show
+  // missing or renamed fields; fail loudly and say which versions met.
+  if (s.APIVersion !== API_VERSION) {
+    return (
+      <div role="alert" className="mx-auto max-w-xl space-y-3 p-8">
+        <h1 className="font-serif text-2xl">Dashboard and assistant versions do not match</h1>
+        <p className="text-sm">
+          This Dashboard build expects API v{API_VERSION}; the assistant at this address serves API v{s.APIVersion}.
+        </p>
+        <p className="text-sm text-muted">
+          Deploy the <code className="font-mono">dashboard-web</code> and <code className="font-mono">assistant</code> images from the
+          same commit, or roll one back to the version the other expects.
+        </p>
+      </div>
+    );
+  }
   return <SessionCtx.Provider value={s}>{children}</SessionCtx.Provider>;
 }
 

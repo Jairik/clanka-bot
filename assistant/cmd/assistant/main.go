@@ -1006,6 +1006,10 @@ func run() error {
 			Transcriber: dashboardTranscriber(cfg),
 			Volume:      sink,
 			API:         apiHandler,
+			// The standalone dashboard-web artifact; the embedded bundle stays
+			// the fallback, so a stopped service still serves the Dashboard.
+			UIURL:     cfg.Dashboard.UIURL,
+			UIVersion: cfg.Dashboard.UIVersion,
 		})
 		if err != nil {
 			return err
@@ -1023,10 +1027,16 @@ func run() error {
 				"detail", "only loopback Host headers are accepted; set ASSISTANT_DASHBOARD_HOSTS to the exact tailscale serve name (for example pi.example.ts.net) or requests through the proxy will be refused",
 			)
 		}
+		uiSource := "embedded"
+		if cfg.Dashboard.UIURL != "" {
+			uiSource = cfg.Dashboard.UIURL
+		}
 		logger.Info("dashboard enabled",
 			"addr", cfg.Dashboard.Addr,
 			"owner", cfg.Dashboard.Owner,
 			"hosts", cfg.Dashboard.Hosts,
+			"ui", uiSource,
+			"ui_version", cfg.Dashboard.UIVersion,
 		)
 	} else {
 		logger.Info("dashboard disabled", "reason", "dashboard.owner is empty")

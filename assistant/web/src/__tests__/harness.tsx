@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import { ChatProvider } from "../chat";
 import { SessionProvider } from "../shell";
 import { SpeakProvider } from "../speak";
+import { API_VERSION } from "../api-version";
 import type { ActivityView, Request, Session } from "../types";
 
 export const session = (over: Partial<Session> = {}): Session => ({
@@ -13,6 +14,7 @@ export const session = (over: Partial<Session> = {}): Session => ({
   Activity: true,
   CanSpeak: true,
   Speak: false,
+  APIVersion: API_VERSION,
   ...over,
 });
 

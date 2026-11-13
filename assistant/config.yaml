@@ -32,6 +32,14 @@ dashboard:
   # One Health page refresh, covering every service and module check. Checks
   # that overrun are shown as timed out; no request waits longer than this.
   health_timeout: 3s
+  # Internal base URL of the standalone Dashboard web artifact (the
+  # dashboard-web service). Compose sets ASSISTANT_DASHBOARD_UI_URL. Empty
+  # serves the bundle embedded in the binary, which is also the fallback when
+  # this service is stopped. The browser talks only to the assistant, so the
+  # identity and same-origin checks stay on one origin.
+  ui_url: ""
+  # Artifact pin reported in X-Dashboard-UI-Version. Compose sets it to GIT_SHA.
+  ui_version: ""
 
 data:
   # The one SQLite database (ADR-0003): settings overrides, write-only secrets

@@ -138,6 +138,15 @@ type Dashboard struct {
 	Hosts []string `yaml:"hosts"`
 	// HealthTimeout bounds one Health page refresh, including network checks.
 	HealthTimeout Duration `yaml:"health_timeout"`
+	// UIURL is the internal base URL of the standalone Dashboard web artifact
+	// (the dashboard-web Compose service). Empty means the embedded bundle is
+	// the only copy. The assistant proxies through this URL so the browser
+	// still sees one origin, and falls back to the embedded bundle when the
+	// artifact is stopped.
+	UIURL string `yaml:"ui_url"`
+	// UIVersion is the artifact pin (the deploy SHA), reported in a response
+	// header so an operator can see which UI a page came from.
+	UIVersion string `yaml:"ui_version"`
 }
 
 // Enabled reports whether an owner is configured.
@@ -602,6 +611,12 @@ func applyEnv(cfg *Config) error {
 	}
 	if v := os.Getenv("ASSISTANT_DASHBOARD_HOSTS"); v != "" {
 		cfg.Dashboard.Hosts = splitList(v)
+	}
+	if v := os.Getenv("ASSISTANT_DASHBOARD_UI_URL"); v != "" {
+		cfg.Dashboard.UIURL = v
+	}
+	if v := os.Getenv("ASSISTANT_DASHBOARD_UI_VERSION"); v != "" {
+		cfg.Dashboard.UIVersion = v
 	}
 	if v := os.Getenv("ASSISTANT_DATA_DIR"); v != "" {
 		cfg.Data.Dir = v

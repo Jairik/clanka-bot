@@ -108,6 +108,14 @@ summary and deletes rows past the age and row limits. The ring stays the fast
 first page; the history is the source of truth for anything older.
 _Avoid_: Request log archive, transcript database, telemetry
 
+**UI artifact**:
+The Dashboard's React build shipped as its own SHA-tagged Compose service, which
+the assistant proxies on the Dashboard origin. The embedded copy in the binary
+is the fallback, so a UI-only change restarts one container and a stopped
+artifact still serves a working Dashboard. The API view version is the contract
+between the two.
+_Avoid_: Frontend app, static site, CDN bundle
+
 **Live stream**:
 The one read-only Server-Sent Events connection the Dashboard opens for the
 whole app. It carries deltas only — a completed request, the speaker state, a

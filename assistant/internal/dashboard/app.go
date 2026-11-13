@@ -3,6 +3,7 @@ package dashboard
 import (
 	"errors"
 	"io/fs"
+	"mime"
 	"net/http"
 	"path"
 	"strconv"
@@ -26,6 +27,30 @@ func (h *Handler) app(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	// A standalone artifact (the dashboard-web service) is tried first, so a
+	// page fix ships without rebuilding this binary. A stopped or failing
+	// service falls through to the embedded document below.
+	if h.uiArtifact != nil {
+		accept := r.Header.Get("Accept-Encoding")
+		if r.Header.Get("Range") != "" {
+			accept = ""
+		}
+		if data, coding, ok := h.uiArtifact.fetch(r.Context(), "index.html", accept); ok {
+			w.Header().Set("Content-Security-Policy", appSecurityPolicy())
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Header().Set("X-Dashboard-UI", "artifact")
+			if h.uiArtifact.version != "" {
+				w.Header().Set("X-Dashboard-UI-Version", h.uiArtifact.version)
+			}
+			if coding != "" {
+				w.Header().Set("Content-Encoding", coding)
+			}
+			w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+			_, _ = w.Write(data)
+			return
+		}
+	}
+
 	// The document is static too: serve its build-time sibling when one was
 	// emitted, and let the central gzip handle it otherwise.
 	serveName, coding := "index.html", ""
@@ -53,6 +78,7 @@ func (h *Handler) app(w http.ResponseWriter, r *http.Request) {
 	// narrowed to one route without making the recorder a separate document.
 	w.Header().Set("Content-Security-Policy", appSecurityPolicy())
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set("X-Dashboard-UI", "embedded")
 	if coding != "" {
 		w.Header().Set("Content-Encoding", coding)
 		w.Header().Set("Content-Length", strconv.Itoa(len(index)))
@@ -74,6 +100,14 @@ func isAssetPath(name string) bool {
 }
 
 func (h *Handler) appFile(w http.ResponseWriter, r *http.Request, name string) {
+	// A standalone artifact serves the asset when it has it. A Range request
+	// keeps the embedded ServeContent path, which already answers ranges.
+	if h.uiArtifact != nil && r.Header.Get("Range") == "" {
+		if data, coding, ok := h.uiArtifact.fetch(r.Context(), name, r.Header.Get("Accept-Encoding")); ok {
+			h.serveArtifactAsset(w, name, data, coding)
+			return
+		}
+	}
 	// The build emits .gz/.br siblings for text assets; serve one when the
 	// client accepts it rather than compressing the same bytes on every hit.
 	served, coding := "", ""
@@ -131,6 +165,33 @@ func (h *Handler) appFile(w http.ResponseWriter, r *http.Request, name string) {
 		return
 	}
 	http.ServeContent(w, r, name, info.ModTime(), seeker)
+}
+
+// serveArtifactAsset writes one file fetched from the standalone UI service
+// with the same cache and type rules as the embedded copy.
+func (h *Handler) serveArtifactAsset(w http.ResponseWriter, name string, data []byte, coding string) {
+	switch {
+	case strings.HasPrefix(name, "assets/"):
+		w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	case name == "sw.js":
+		w.Header().Set("Cache-Control", "no-cache")
+	}
+	if contentType := mime.TypeByExtension(path.Ext(name)); contentType != "" {
+		w.Header().Set("Content-Type", contentType)
+	}
+	if path.Ext(name) == ".webmanifest" {
+		w.Header().Set("Content-Type", "application/manifest+json")
+	}
+	w.Header().Set("X-Dashboard-UI", "artifact")
+	if h.uiArtifact.version != "" {
+		w.Header().Set("X-Dashboard-UI-Version", h.uiArtifact.version)
+	}
+	if coding != "" {
+		w.Header().Set("Content-Encoding", coding)
+		w.Header().Set("Accept-Ranges", "none")
+	}
+	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+	_, _ = w.Write(data)
 }
 
 // precompressed chooses the best build-time encoding the client accepts. Only

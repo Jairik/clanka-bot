@@ -36,7 +36,7 @@ make build-arm64 # optional QEMU arm64 build of every image (not for latency)
    in `docker-compose.yml` to be healthy. On failure it exits non-zero, prints
    `docker compose ps` and the logs of the failing service(s).
 6. Because the service list comes from Compose, the script keeps working as the
-   stack grows from `assistant` alone to all seven services.
+   stack grows from `assistant` alone to all eight services.
 
 **With a commit — rollback without rebuilding**
 
@@ -114,11 +114,13 @@ ML services never touch audio devices.
 
 ### Dashboard over Tailscale
 
-The Dashboard is a separate listener served by `assistant`: a React app
-embedded in the binary (built by the image's `web` stage), so it needs no
-internet at runtime. It is **off** until a Tailscale owner is
-configured, and it is meant to be reached only through `tailscale serve`, never
-published to the LAN or the internet.
+The Dashboard is a separate listener served by `assistant`. Its React app ships
+as its own SHA-tagged artifact (`dashboard-web`, below) that the assistant
+proxies on the same origin; the same build is also embedded in the binary, so a
+stopped artifact still serves a working page and nothing needs the internet at
+runtime. It is **off** until a Tailscale owner is configured, and it is meant to
+be reached only through `tailscale serve`, never published to the LAN or the
+internet.
 
 1. **Set the owner.** Put the exact login from `tailscale status --json` (or the
    admin console) in `.env`, and keep the loopback port unless it clashes:
@@ -210,6 +212,36 @@ curl -s -H 'Tailscale-User-Login: you@example.com' http://127.0.0.1:8082/health 
 The second command is only a local smoke test; from another device use the
 HTTPS `*.ts.net` URL, which carries the real identity.
 
+### Shipping a Dashboard UI-only change
+
+The UI and the API ship separately (ADR
+[0007](adr/0007-the-ui-is-a-versioned-artifact.md)). A page fix does not need a
+Go rebuild or an assistant restart:
+
+```sh
+git pull --ff-only
+make web-image      # build clanka/dashboard-web:<sha>, restart only that service
+docker compose ps dashboard-web
+```
+
+The assistant reaches the artifact over the internal Compose network and keeps
+serving the document and assets on the Dashboard origin, so identity, Host and
+CSP checks stay where they are. `X-Dashboard-UI: artifact` and
+`X-Dashboard-UI-Version: <sha>` on the response say which copy a page came from.
+To go back to the copy embedded in the running assistant:
+
+```sh
+docker compose stop dashboard-web
+```
+
+`make deploy` still builds both images from the same commit. The UI embeds the
+API view version it was built against, and the assistant reports its own in
+every view and in `X-Dashboard-API-Version`. If the two differ, the Dashboard
+shows a version-mismatch page instead of rendering undefined fields; deploy both
+from the same commit, or roll back the artifact with
+`GIT_SHA=<old-sha> docker compose up -d --no-deps dashboard-web` after building
+that commit's image.
+
 The Dashboard also mounts the settings/Tool-override API under `/api/`
 (`/api/settings`, `/api/tools`, `/api/secrets`) behind the same identity check.
 Mutating API requests must be same-origin; the debug listener keeps its own
@@ -233,8 +265,9 @@ advertises. The wake-free command models (#81) are shown there too, with `off`
 when `WAKEWORD_COMMANDS_ENABLED` is false.
 
 The **Activity** page at `/activity` lists recent requests from a bounded
-in-memory ring fed by the same completion that writes the structured `request`
-log line. It shows the chosen route, measured stage timings, Tool calls and
+in-memory ring plus the durable SQLite history fed by the same completion that
+writes the structured `request` log line; older pages and searches read the
+database, and retention trims old rows to a summary. It shows the chosen route, measured stage timings, Tool calls and
 outcome; Response latency appears only when reply audio actually started. Its
 typed box runs the normal pipeline text-only (no Pi speech), including a pending
 Confirmation answered with `yes`/`no`, and shows the reply in the page. Local-only
@@ -517,11 +550,13 @@ recognises `snapshot_download`, `hf_hub_download`, `from_pretrained`,
 download CLIs.
 
 The six-service stack remains as verified in #66. `make check` now reports OK
-for seven services. The seventh is the Soloist runtime image: it builds locally
+for eight services. The seventh is the Soloist runtime image: it builds locally
 for this host and carries only shared libraries, because the proprietary binary
 is downloaded by `scripts/soloist-setup.sh` and mounted read-only at deploy
 time. It needs host networking and the host Pulse socket, so it is not run
-under `--network none`.
+under `--network none`. The eighth is `dashboard-web`, the static Dashboard
+artifact: it serves files only and the assistant embeds the same build, so it
+runs healthy with `--network none`.
 The ML images still start healthy with `--network none`. A
 code-only `stt` rebuild logs `RUN python prefetch.py` as **CACHED** and rebuilds
 only the app-code `COPY`; the same holds for `tts` (prefetch layer cached) and

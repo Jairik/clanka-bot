@@ -53,6 +53,11 @@ services:
       # example pi.example.ts.net). Empty fails closed: only a loopback Host is
       # accepted, so the Dashboard is reachable by curl but not through serve.
       ASSISTANT_DASHBOARD_HOSTS: ${ASSISTANT_DASHBOARD_HOSTS:-}
+      # The Dashboard UI ships as its own SHA-tagged artifact (dashboard-web).
+      # The assistant proxies to it on the same origin; when it is stopped the
+      # embedded copy in the binary serves instead. Empty disables the artifact.
+      ASSISTANT_DASHBOARD_UI_URL: ${ASSISTANT_DASHBOARD_UI_URL:-http://dashboard-web:8080}
+      ASSISTANT_DASHBOARD_UI_VERSION: ${GIT_SHA:-dev}
       ASSISTANT_EMBED_URL: "http://embed:8085"
       ASSISTANT_TTS_ADDR: "tts:10200"
       # ADR-0003: the one SQLite database lives on the assistant-data volume.
@@ -155,6 +160,30 @@ services:
         condition: service_healthy
       web-search:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  # The Dashboard UI as its own versioned artifact (#105). The assistant is the
+  # only client and proxies on the same origin, so identity, Host and CSP stay
+  # on the server that owns them. A page-only change rebuilds and restarts this
+  # service: `make web-image`. The assistant embeds the same build as the
+  # offline fallback, so stopping this service does not break the Dashboard.
+  # No depends_on: the assistant must start and serve the embedded copy even
+  # when this artifact is absent.
+  dashboard-web:
+    build:
+      context: ./assistant
+      dockerfile: web/Dockerfile.web
+      args:
+        WEB_VERSION: ${GIT_SHA:-dev}
+    image: clanka/dashboard-web:${GIT_SHA:-dev}
+    restart: unless-stopped
+    expose:
+      - "8080"
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
       interval: 10s

@@ -1,2 +1,6 @@
 node_modules/
 *.tsbuildinfo
+
+# Browser smoke test output.
+test-results/
+playwright-report/

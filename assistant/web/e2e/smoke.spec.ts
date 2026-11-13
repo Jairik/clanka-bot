@@ -110,19 +110,19 @@ test("a touch hold records and sends", async ({ page, isMobile, context }) => {
   await expect(page.getByText("You said: hello from the browser").last()).toBeVisible();
 });
 
-test("page chunks are not part of the initial load", async ({ page, isMobile }) => {
+test("page chunks are not part of the initial load", async ({ page, isMobile, request }) => {
   test.skip(isMobile, "the rail navigation is desktop-only");
+  // The document the server sends is the initial load: it may name the entry
+  // and the shell, never a route chunk.
+  const html = await (await request.get("/")).text();
+  expect(html).toMatch(/assets\/index-[^"]+\.js/);
+  expect(html).not.toMatch(/Settings-|VoiceSamples-/);
+
   const chunks: string[] = [];
   page.on("response", (r) => {
     if (r.url().includes("/assets/") && r.url().endsWith(".js")) chunks.push(r.url());
   });
   await page.goto("/");
-
-  // Vite's modulepreloads are the initial set; a route chunk must not be one.
-  const preloads = await page.evaluate(() => [...document.querySelectorAll('link[rel="modulepreload"]')].map((l) => l.getAttribute("href") ?? ""));
-  expect(preloads.length).toBeGreaterThan(0);
-  expect(preloads.some((href) => /Settings|VoiceSamples/.test(href))).toBe(false);
-
   await page.getByRole("link", { name: "Settings" }).click();
   await expect(page.getByRole("heading", { level: 1 })).toHaveText("Settings");
   expect(chunks.some((url) => /Settings-[^/]+\.js$/.test(url))).toBe(true);

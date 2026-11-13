@@ -55,3 +55,19 @@ func TestLightsAPI(t *testing.T) {
 		t.Fatal("settings did not persist")
 	}
 }
+
+// TestLightsAPIWithoutModule pins that an unwired lights module reads as
+// disabled (200) so polling pages stay clean, while actions still fail loudly.
+func TestLightsAPIWithoutModule(t *testing.T) {
+	h := &Handler{}
+	w := httptest.NewRecorder()
+	h.lightsAPI(w, httptest.NewRequest("GET", "/api/ui/lights", nil))
+	if w.Code != 200 || !strings.Contains(w.Body.String(), `"enabled":false`) {
+		t.Fatalf("GET: %d %s", w.Code, w.Body.String())
+	}
+	w = httptest.NewRecorder()
+	h.lightsAPI(w, httptest.NewRequest("POST", "/api/ui/lights", strings.NewReader(`{"action":"scan"}`)))
+	if w.Code != 503 {
+		t.Fatalf("POST: %d %s", w.Code, w.Body.String())
+	}
+}

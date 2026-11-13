@@ -9,12 +9,17 @@ import (
 
 // lightsAPI uses the registered module so Tools, Health and Dashboard share one service.
 func (h *Handler) lightsAPI(w http.ResponseWriter, r *http.Request) {
-	if h.toolModules == nil {
-		http.Error(w, "Lights unavailable", 503)
-		return
+	var m *lights.Module
+	if h.toolModules != nil {
+		m, _ = h.toolModules.Module("lights").(*lights.Module)
 	}
-	m, ok := h.toolModules.Module("lights").(*lights.Module)
-	if !ok || m.Service == nil {
+	if m == nil || m.Service == nil {
+		// No lights module is a normal state (feature never wired), not a server
+		// fault: reads report it as disabled so pages that poll stay clean.
+		if r.Method == "GET" {
+			h.writeJSON(w, 200, map[string]any{"enabled": false, "devices": []core.Device{}, "status": "unavailable"})
+			return
+		}
 		http.Error(w, "Lights unavailable", 503)
 		return
 	}

@@ -274,6 +274,8 @@ export type Session = {
   Mic: boolean;
   Volume: boolean;
   Activity: boolean;
+  CanSpeak: boolean;
+  Speak: boolean;
 };
 
 export type Setting = {

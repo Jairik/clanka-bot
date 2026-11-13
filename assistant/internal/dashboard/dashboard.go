@@ -107,6 +107,10 @@ type Options struct {
 	// without speaking: main passes a reply.Session created with no speaker.
 	// When nil the Activity page still lists requests but hides the box.
 	Typed TypedResponder
+	// Spoken answers a Dashboard request with Pi audio through the same reply
+	// Session the voice loop uses. It is selected only while
+	// dashboard.speak_replies is on; nil hides the top-bar toggle.
+	Spoken TypedResponder
 	// Transcriber turns a browser mic recording into text for Typed. The mic
 	// button is hidden when it (or Typed) is nil.
 	Transcriber Transcriber
@@ -158,6 +162,7 @@ type Handler struct {
 	spotifyPairing *spotify.PairingReader
 	activity       *activity.Store
 	typed          TypedResponder
+	spoken         TypedResponder
 	transcriber    Transcriber
 	volume         VolumeControl
 	// wakeword is the configured allowlist and thresholds shown on Settings
@@ -243,6 +248,7 @@ func New(opts Options) (*Handler, error) {
 		spotifyPairing: opts.SpotifyPairing,
 		activity:       opts.Activity,
 		typed:          opts.Typed,
+		spoken:         opts.Spoken,
 		transcriber:    opts.Transcriber,
 		volume:         opts.Volume,
 		wakeword:       opts.Wakeword,
@@ -336,6 +342,8 @@ func New(opts Options) (*Handler, error) {
 	h.Mutating("POST /notes/lists/{list}/items/{id}/remove", h.listItemRemove)
 	h.Mutating("POST /secrets/{name}", h.secretsSet)
 	h.Mutating("POST /secrets/{name}/clear", h.secretsClear)
+	// The top-bar opt-in is a same-origin write like every other setting.
+	h.Mutating("POST /api/ui/speak", h.speakToggle)
 	// Spotify Connect pairing and Web API auth are separate surfaces. The
 	// callback is a cross-site top-level GET from accounts.spotify.com, so it
 	// uses its own state/owner/cookie validation rather than Mutating. Connect
@@ -431,6 +439,8 @@ type sessionView struct {
 	Mic      bool
 	Volume   bool
 	Activity bool
+	CanSpeak bool
+	Speak    bool
 }
 
 func (h *Handler) sessionInfo(w http.ResponseWriter, r *http.Request) {
@@ -443,6 +453,8 @@ func (h *Handler) sessionInfo(w http.ResponseWriter, r *http.Request) {
 		Mic:      h.typed != nil && h.transcriber != nil,
 		Volume:   h.volume != nil,
 		Activity: h.activity != nil,
+		CanSpeak: h.spoken != nil && h.settings != nil,
+		Speak:    h.speaking(),
 	})
 }
 

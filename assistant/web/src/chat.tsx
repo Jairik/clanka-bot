@@ -9,6 +9,7 @@ import { isTypedSource } from "./activity";
 import { MIC_MAX_SECONDS, micSupported } from "./mic";
 import { useRecorder } from "./recorder";
 import { useSession } from "./shell";
+import { SpeakHint } from "./speak";
 import type { ActivityView, Request } from "./types";
 import { Badge, Fold, cn, foldOpen, type Tone } from "./ui";
 
@@ -424,7 +425,8 @@ export function Composer({ placeholder = "Ask clanka…", onSent, toolbar, class
             className="field-sizing-content max-h-40 min-h-12 w-full flex-1 resize-none bg-transparent px-4 pt-3.5 text-sm outline-none placeholder:text-muted"
           />
           <div className="flex items-center gap-1 px-2 pt-1 pb-2">
-            <div className="flex min-w-0 flex-1 items-center gap-0.5 text-muted">
+            <div className="flex min-w-0 flex-1 items-center gap-1.5 text-muted">
+              <SpeakHint />
               {toolbar}
               {micError && <span className="truncate pl-1 text-xs text-danger">{micError}</span>}
             </div>

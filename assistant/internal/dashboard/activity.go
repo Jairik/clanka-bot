@@ -155,7 +155,12 @@ func (h *Handler) runAsk(w http.ResponseWriter, r *http.Request, text string, so
 		timeline.Set(stage, d)
 	}
 	requestCtx := latency.WithContext(r.Context(), timeline)
-	_, err := h.typed.Ask(requestCtx, tool.Request{
+	responder := h.typed
+	if h.speaking() {
+		// The spoken Session completes the same timeline; only the audio differs.
+		responder = h.spoken
+	}
+	_, err := responder.Ask(requestCtx, tool.Request{
 		ID:     requestID,
 		Path:   tool.PathFallthrough,
 		Device: tool.DeviceSatellite,

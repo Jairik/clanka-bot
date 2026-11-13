@@ -517,6 +517,9 @@ func run() error {
 	// it together with voice.name, agent.filler and agent.unavailable_message
 	// in one transaction through this same service.
 	defs = append(defs, personaSvc.Definitions()...)
+	// The Dashboard's opt-in to speak its chat replies on the Pi. Live, so the
+	// top-bar toggle applies to the next request without a restart.
+	defs = append(defs, dashboard.SpeakRepliesDefinition())
 	settingsSvc, err = settings.New(ctx, st, defs...)
 	if err != nil {
 		return fmt.Errorf("settings: %w", err)
@@ -795,6 +798,16 @@ func run() error {
 		typedOpts = append(typedOpts, reply.WithAnnouncements(announcements))
 	}
 	typedSession := reply.New(p, nil, nil, nil, typedOpts...)
+	// The opt-in path reuses the voice Session's speaker, Focus, announcement
+	// queue and Quiet hours gain, so a Dashboard answer queues like a reply and
+	// never talks over one. Only wired when TTS is configured.
+	// A typed nil must not become a non-nil interface: the Dashboard hides the
+	// toggle when this is nil.
+	var spokenSession dashboard.TypedResponder
+	if speechSpeaker != nil {
+		spokenOpts := append([]reply.Option{reply.WithLogger(logger)}, sessionOpts...)
+		spokenSession = reply.New(p, speaker, playSink, filler, spokenOpts...)
+	}
 
 	// The debug entry is only spoken when a TTS service is configured.
 	var responder api.Responder
@@ -961,6 +974,7 @@ func run() error {
 			// the pipeline, registry and settings of the voice path.
 			Activity: activityStore,
 			Typed:    typedSession,
+			Spoken:   spokenSession,
 			// The mic button reuses the voice loop's STT service; the top bar
 			// volume drives the same Pulse sink as replies and audio.volume_set.
 			Transcriber: dashboardTranscriber(cfg),

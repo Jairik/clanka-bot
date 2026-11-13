@@ -316,9 +316,8 @@ services:
       # Loopback-only control socket. The heartbeat asks this daemon for login
       # and active-device state; playback control stays on the Web API.
       SOLOIST_WS_ADDR: ${SPOTIFY_WS_ADDR:-127.0.0.1:24880}
-      # Optional native PipeWire node. Empty uses the Pulse default sink,
-      # which is the same sink the Assistant speaks into.
-      SOLOIST_PIPEWIRE_DEVICE: ${SPOTIFY_PIPEWIRE_DEVICE:-}
+      # Share the exact configured speech sink; empty uses the Pulse default.
+      PULSE_SINK: ${ASSISTANT_PULSE_SINK:-}
       SOLOIST_API_KEY_FILE: /run/secrets/soloist
       SOLOIST_DATA_DIR: /data
       SOLOIST_CACHE_DIR: /cache

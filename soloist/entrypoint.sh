@@ -52,12 +52,6 @@ fi
 set -- -n "$name" -k "$key" -D "$data_dir" -C "$cache_dir" \
     -z "$cache_mb" -i "$initial" -w "$ws_addr"
 
-# Optional native PipeWire routing. Empty keeps Soloist on the Pulse default
-# sink, which is the same sink the Assistant speaks into.
-if [ -n "${SOLOIST_PIPEWIRE_DEVICE:-}" ]; then
-    set -- "$@" -d "$SOLOIST_PIPEWIRE_DEVICE"
-fi
-
 # Metadata-only heartbeat, separate from the credentials in data_dir.
 SOLOIST_DATA_DIR="$data_dir" \
     SOLOIST_STATUS_DIR="$status_dir" \

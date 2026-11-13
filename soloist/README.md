@@ -53,8 +53,8 @@ script with `SOLOIST_UPDATE=1` to refresh it.
   bridge hides that multicast. Soloist advertises the configured
   `SPOTIFY_DEVICE_NAME` itself; no Avahi or D-Bus service is needed.
 - **Pulse by default.** `PULSE_SERVER` and the host cookie point at the same
-  server as the Assistant. Without `-d`, Soloist uses the Pulse default sink;
-  `SPOTIFY_PIPEWIRE_DEVICE` sets a native PipeWire node instead.
+  server as the Assistant. `PULSE_SINK` inherits `ASSISTANT_PULSE_SINK`, so
+  custom speech outputs also receive music; empty uses the Pulse default.
 - **Private state.** The container runs as `ASSISTANT_UID`/`ASSISTANT_GID`
   and mounts only its own `data/`, `cache/`, key file and status directory.
 - **Control socket.** A loopback-only WebSocket (`SPOTIFY_WS_ADDR`, default

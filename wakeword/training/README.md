@@ -234,8 +234,8 @@ The phrase configs are deliberately strict:
 - **Near misses** (`near_misses.txt`) are the held-out false-accept set:
   "volume", "value up", "volume off", "column up", "volunteer", …
 - **Negative phrases** (`negative_phrases.txt`) combine the near misses, their
-  variants, ordinary requests and lyric-like lines. They become the 10k-class
-  hard negatives in training.
+  variants, ordinary requests and lyric-like lines. They become the
+  hard-negative set in training.
 - **Music background**: openWakeWord mixes every WAV under `$WORK/background`
   into augmented clips; AudioSet already contains music. For a music-heavy
   run, drop a few 16 kHz mono WAVs of representative songs with vocals into
@@ -247,9 +247,51 @@ held-out voices, near-miss false accepts and false accepts per hour of
 background. A synthetic-only model can be committed only if that number is
 sane; otherwise keep the configs and record the missing measurement.
 
-The deployed threshold is 0.7 by default (`wakeword.commands.threshold`),
-overridable per model through `WAKEWORD_THRESHOLDS=volume_up:0.75,...`. The
-wakeword image copies every `wakeword/models/*.tflite`, so adding a committed
-model needs a rebuild, not a Dockerfile change. The false-trigger protocol for
-the command models is §5.2 of
+The command default threshold is 0.7 (`wakeword.commands.threshold`) for a
+model without an override. The shipped synthetic `volume_up` starter is an
+exception: it needs **0.98** to meet the false-trigger budget, set per model in
+`assistant/config.yaml` (`wakeword.thresholds.volume_up`). Override any model
+with `WAKEWORD_THRESHOLDS=...`. The wakeword image copies every
+`wakeword/models/*.tflite`, so adding a committed model needs a rebuild, not a
+Dockerfile change. The false-trigger protocol for the command models is §5.2 of
 [`docs/spikes/wake-over-music.md`](../../docs/spikes/wake-over-music.md).
+
+### `volume_up` starter: provenance and numbers (2026-11-13)
+
+| | |
+| --- | --- |
+| File | `wakeword/models/volume_up.tflite` |
+| SHA256 | `f701c5316b6e4dbab8fac1e665d40a977a1c181b5fc2cc31d63f3fb000f910d3` |
+| Trained | 2026-11-13 on the desktop RTX 2070, nice 10 |
+| openWakeWord | `368c03716d1e92591906a84949bc477f3a834455` (pinned in `run.sh`) |
+| Positives | 6,000 train + 1,200 test clips, 25 Pocket TTS voices, "volume up" only |
+| Negatives | 6,000 train + 1,200 test clips from `phrases/volume_up/negative_phrases.txt` |
+| Training | 30,000 steps plus openWakeWord's refinement passes, dnn layer 32, target 0.1 FA/h |
+| Reproduce | `PHRASE=volume_up N_TRAIN=6000 N_TEST=1200 GEN_WORKERS=2 wakeword/training/run.sh ...` (`clips`, `acceptance`, `train`, `convert`) |
+
+Evaluation on 2026-11-13 (`evaluate.py --threshold 0.98 --background-max 2500`;
+2,500 AudioSet files = 413 min; held-out TTS voices):
+
+| Set | Result at 0.98 |
+| --- | ---: |
+| positives, training voices (1,200 clips) | 96.92% recall |
+| positives, held-out voices (60 clips) | 95.00% recall |
+| training negatives (1,200 clips) | 1.50% false accept |
+| held-out near misses (80 clips) | 5.00% false accept |
+| ordinary speech (40 clips) | 0.00% |
+| background audio (413 min) | 0.29 false accepts/hour (2 events) |
+
+The operating point is tight: at 0.97 the background rate is 2.47/h; only 0.98
+meets the ≤1/h budget with ≥80% held-out recall. The four held-out near-miss
+false accepts are "volume off" variants; "volume off" is the known confusion.
+The `.tflite` is synthetic-only: the owner's real takes and #70's music
+measurement are still required before enabling the feature.
+
+`volume_down` was trained with the same 6k/30k recipe and **not committed**: at
+0.98 it held 100% held-out recall but fired on 16.25% of held-out near misses
+and 5.52 background events/hour; 0.995 still gave 2.72/h, while 0.996 dropped
+held-out recall to 48.3%. No threshold met both ≥80% recall and ≤1/h, so the
+model and its SHA256 (`4c999d2caf19659aa556f0261bea2358d58a26d47b0880ec6bf56c2201993bed`)
+are recorded here only. A 50k-step hard-negative retrain of `volume_up` was
+also rejected: at 0.7 it produced 94 background events/hour. Retraining both
+with the owner's samples (#80/#77) is the next step.

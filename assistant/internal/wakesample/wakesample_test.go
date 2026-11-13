@@ -189,7 +189,15 @@ func TestSlugForAndValidSlugRejectPathShapes(t *testing.T) {
 
 func TestAddStoresCanonicalTakesAndRefusesDuplicates(t *testing.T) {
 	service := newStore(t, Options{})
-	first := keep(t, service, "volume-up", Positive, 1.4)
+	// A repeated tap re-uploads the same bytes, so that is what the guard must
+	// refuse. Re-adding the stored file instead looks identical only while the
+	// silence trim is idempotent, and it is not: trim re-frames the clip, so a
+	// one-frame boundary shift on a different length makes the digests differ.
+	input := toneWAV(1.4, true)
+	first, err := service.Add("volume-up", Positive, input)
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
 	if first.ID != "real_p_00001" {
 		t.Fatalf("first id = %q", first.ID)
 	}
@@ -201,7 +209,7 @@ func TestAddStoresCanonicalTakesAndRefusesDuplicates(t *testing.T) {
 	if _, err := ParseWAV(data); err != nil {
 		t.Fatalf("stored take is not canonical: %v", err)
 	}
-	if _, err := service.Add("volume-up", Positive, data); err == nil {
+	if _, err := service.Add("volume-up", Positive, input); err == nil {
 		t.Fatal("accepted an identical take")
 	}
 	second := keep(t, service, "volume-up", Positive, 1.2)

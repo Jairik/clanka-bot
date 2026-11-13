@@ -3,13 +3,14 @@
 // made at the Pi appear here too, so the chat is the whole recent history.
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Button, Tooltip } from "@heroui/react";
-import { ArrowUp, AudioLines, Bot, ChevronDown, Keyboard, Lock, Mic, MonitorSmartphone, RotateCcw, Square, X } from "lucide-react";
+import { ArrowUp, AudioLines, ChevronDown, Keyboard, Lock, Mic, MonitorSmartphone, RotateCcw, Square, X } from "lucide-react";
 import { getJSON, postForm } from "./api";
 import { isTypedSource } from "./activity";
 import { MIC_MAX_SECONDS, micSupported } from "./mic";
 import { useRecorder } from "./recorder";
 import { useSession } from "./shell";
 import { SpeakHint } from "./speak";
+import { Logo } from "./logo";
 import type { ActivityView, Request } from "./types";
 import { Badge, Fold, cn, foldOpen, type Tone } from "./ui";
 
@@ -271,7 +272,7 @@ function BotRow({ children }: { children: ReactNode }) {
   return (
     <div className="flex gap-3">
       <span className="mt-0.5 flex size-7 shrink-0 items-center justify-center border">
-        <Bot className="size-4" strokeWidth={1.5} />
+        <Logo className="size-4" />
       </span>
       <div className="min-w-0 max-w-[85%] flex-1 space-y-1">{children}</div>
     </div>

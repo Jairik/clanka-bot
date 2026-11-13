@@ -3,8 +3,8 @@
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { Button, Drawer, Popover, SearchField } from "@heroui/react";
 import {
-  Activity, AlarmClock, Bell, Bot, HeartPulse, KeyRound, MessageSquare, Mic, Minus, MoreHorizontal, Music, Plus,
-  Settings, Smile, StickyNote, Volume, Volume1, Volume2, VolumeX, Waves,
+  Activity, AlarmClock, Bell, HeartPulse, KeyRound, MessageSquare, Mic, Minus, MoreHorizontal, Music, Plus,
+  Settings, Smile, StickyNote, Volume, Volume1, Volume2, VolumeX, Waves, type LucideIcon,
 } from "lucide-react";
 import { getJSON, navigate, postForm, useLocation } from "./api";
 import type { HealthView, Session, Volume as VolumeState } from "./types";
@@ -12,10 +12,11 @@ import { Range, cn } from "./ui";
 import { SpeakToggle } from "./speak";
 import { prefetch } from "./routes";
 import { snapVolume, VOL_STEP } from "./volume";
+import { Logo } from "./logo";
 
 export type PageId = "home" | "activity" | "alerts" | "notes" | "health" | "sounds" | "voices" | "personas" | "voice-samples" | "spotify" | "secrets" | "settings";
 
-export const PAGES: { id: PageId; path: string; title: string; blurb: string; icon: typeof Bot }[] = [
+export const PAGES: { id: PageId; path: string; title: string; blurb: string; icon: LucideIcon }[] = [
   { id: "home", path: "/", title: "Chat", blurb: "", icon: MessageSquare },
   { id: "activity", path: "/activity", title: "Activity", blurb: "Every request that reached the assistant, newest first.", icon: Activity },
   { id: "alerts", path: "/alerts", title: "Alerts", blurb: "Timers, Alarms and Reminders, plus the Rings nobody answered.", icon: AlarmClock },
@@ -77,7 +78,7 @@ export function Shell({ children }: { children: ReactNode }) {
       </a>
       <aside className="hidden w-[70px] shrink-0 flex-col border-r md:flex">
         <a href="/" onClick={link("/")} className="flex h-[70px] shrink-0 items-center justify-center border-b" aria-label="Home">
-          <Bot className="size-6" strokeWidth={1.5} />
+          <Logo className="size-6" />
         </a>
         <nav className="flex flex-1 flex-col items-center gap-1 overflow-y-auto py-4" aria-label="Pages">
           {PAGES.map(({ id, path: to, title, icon: I }) => (
@@ -109,7 +110,7 @@ export function Shell({ children }: { children: ReactNode }) {
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="pt-safe flex h-14 shrink-0 items-center gap-2 border-b px-3 md:h-[70px] md:px-6">
           <a href="/" onClick={link("/")} className="flex size-9 items-center justify-center md:hidden" aria-label="Home">
-            <Bot className="size-5" strokeWidth={1.5} />
+            <Logo className="size-5" />
           </a>
           <form
             className="min-w-0 flex-1"
@@ -316,7 +317,7 @@ function BottomTabs({ page, healthBad }: { page?: PageId; healthBad: boolean }) 
   const [more, setMore] = useState(false);
   const inMore = !!page && !TABS.includes(page);
   const current = PAGES.find((p) => p.id === page);
-  const tab = (key: string, Icon: typeof Bot, label: string, active: boolean, onClick: () => void, dot?: boolean) => (
+  const tab = (key: string, Icon: LucideIcon, label: string, active: boolean, onClick: () => void, dot?: boolean) => (
     <button
       key={key}
       onClick={onClick}

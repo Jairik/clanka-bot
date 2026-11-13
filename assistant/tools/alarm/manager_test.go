@@ -190,6 +190,24 @@ func countAlarmRows(t *testing.T, st *store.Store) int {
 	return count
 }
 
+// waitAlarmRows waits for the persisted Alarm count. A finished one-off keeps
+// its row until the Ring recorded its terminal history event and afterFire
+// deleted it, so asserting the count the instant the history row appears races
+// that delete on a loaded machine.
+func waitAlarmRows(t *testing.T, st *store.Store, want int) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if countAlarmRows(t, st) == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("alarm rows = %d, want %d", countAlarmRows(t, st), want)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
 // TestOneOffFiresAndIsRemoved covers the simplest durable path: a one-off
 // Alarm Rings once through the fallback line and its row is gone afterwards.
 func TestOneOffFiresAndIsRemoved(t *testing.T) {
@@ -221,6 +239,7 @@ func TestOneOffFiresAndIsRemoved(t *testing.T) {
 	if events[0].State != alertstore.StateStopped || events[0].EndedBy != "spoken" {
 		t.Fatalf("event = %+v, want stopped/spoken", events[0])
 	}
+	waitAlarmRows(t, st, 0)
 	if rows := countAlarmRows(t, st); rows != 0 {
 		t.Fatalf("alarm rows = %d after a one-off fire, want 0", rows)
 	}

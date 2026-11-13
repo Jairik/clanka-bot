@@ -899,6 +899,10 @@ func TestHealthChecksTheTokenWithoutLeakingIt(t *testing.T) {
 	server := fake.start(t)
 	logs := &logBuffer{}
 	module := testConfig(t, map[string]any{"base_url": server.URL})
+	// The health answer is memoised, so the clock decides when the next live
+	// check runs.
+	now := time.Date(2026, 11, 13, 9, 0, 0, 0, time.UTC)
+	module.now = func() time.Time { return now }
 	reg := tool.NewRegistry(5 * time.Second)
 	if err := module.Register(reg, tool.Deps{
 		Secrets: fixedSecret("ghp_health_token"),
@@ -916,6 +920,7 @@ func TestHealthChecksTheTokenWithoutLeakingIt(t *testing.T) {
 	fake.handler = func(w http.ResponseWriter, _ *http.Request, _ []byte) {
 		http.Error(w, "bad credentials", http.StatusUnauthorized)
 	}
+	now = now.Add(healthOKTTL + time.Second)
 	if err := module.Health(context.Background()); err == nil ||
 		!strings.Contains(err.Error(), "rejected") {
 		t.Fatalf("Health after 401 = %v", err)

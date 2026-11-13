@@ -108,6 +108,10 @@ export function ActivityPage() {
 function ActivityRow({ r }: { r: Request }) {
   const I = sourceIcon(r.Source);
   const bad = isFailed(r);
+  // A browser-mic request is the only one with an STT measurement on the row;
+  // that number is why the Mic filter exists.
+  const mic = r.Source === "dashboard_mic";
+  const stt = mic ? (r.Stages ?? []).find((s) => s.Name === "stt_finalize") : undefined;
   return (
     <Fold
       triggerClassName="flex min-h-14 items-center gap-3 px-3.5 py-2 hover:bg-surface-secondary"
@@ -118,6 +122,12 @@ function ActivityRow({ r }: { r: Request }) {
           <div className="min-w-0 flex-1">
             <div className={cn("truncate text-sm", bad && "text-danger")}>{r.Transcript || <span className="text-muted">(no transcript)</span>}</div>
             <div className="truncate text-xs text-muted">{r.Reply || r.Error}</div>
+            {mic && (
+              <div className="mt-1 flex flex-wrap items-center gap-1.5 text-xs text-muted">
+                <Badge>{r.SourceLabel}</Badge>
+                {stt && <span>STT {stt.MS}</span>}
+              </div>
+            )}
           </div>
           <div className="hidden shrink-0 items-center gap-1 sm:flex">
             {r.Tool && <Badge className="font-mono">{r.Tool}</Badge>}

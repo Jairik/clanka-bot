@@ -49,13 +49,25 @@ curl -s -X POST localhost:8081/debug/transcript \
 
 Weather answers on the Fast path too. The assistant resolves the city from the
 Pi's public IP at startup and every 24h (only city, region and timezone are
-kept; coordinates are never stored) and asks Open-Meteo for current conditions:
+kept; coordinates are never stored) and asks the weather providers for current
+conditions:
 
 ```sh
 curl -s -X POST localhost:8081/debug/transcript \
   -H 'Content-Type: application/json' \
   -d "{\"text\":\"what's the weather like\"}"
 ```
+
+Weather uses [WeatherAPI](https://www.weatherapi.com/docs/) when
+`WEATHERAPI_API_KEY` is set in `.env` or Dashboard > Secrets, with Open-Meteo
+and [wttr.in](https://github.com/chubin/wttr.in#json-output) as independent
+fallbacks. Without a key, the two keyless providers still work. Each provider
+gets 250 ms before the next fallback also starts; the first successful answer
+wins and all share a 1 s Tool deadline to leave time for the voice reply.
+Successful answers, including fallback answers, are cached for 15 minutes and
+refreshed on the next request after expiry; failures say "Weather is
+unavailable right now." The complete voice turn still depends on STT/TTS
+latency and upstream availability.
 
 If the IP lookup fails, the last known place is used, then the optional
 `location.fallback` values in config, then no place at all.
@@ -324,9 +336,11 @@ offline. Rebuild `stt` after changing `STT_MODELS` or `STT_MODEL`. Set
 `ASSISTANT_PULSE_SOURCE` from `pactl list short sources` (the dev box uses the
 USB webcam's mono source).
 
-The mic endpoint threshold (`stt.endpoint.threshold_dbfs`, default -38) was set
-from the dev box's measured noise floor of about -45 dBFS. Lower it if the
-Assistant cuts you off, raise it if it never ends a request.
+The mic endpoint threshold (`stt.endpoint.threshold_dbfs`, default -38) depends
+on source gain. The C270 was calibrated to 32% gain on 2026-11-12: idle RMS
+-47.4 dBFS, zero sampled idle frames above threshold, and a human-spoken turn
+ended after 501 ms of silence. See [the calibration record](docs/mic-calibration-2026-11-12.md)
+and [the measurement guide](docs/mic-calibration.md) before changing it.
 
 The date, timer and audio Tools run on the Fast path too:
 

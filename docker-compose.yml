@@ -83,6 +83,8 @@ services:
       # Secrets bootstrap from .env; the write-only store in the database wins
       # when the Dashboard stores the same name. config.yaml names these vars.
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      # WeatherAPI is preferred when configured; keyless providers remain fallbacks.
+      WEATHERAPI_API_KEY: ${WEATHERAPI_API_KEY:-}
       # Optional ntfy bootstrap. The topic is generated once into the secrets
       # table when this is empty; set it before first use to connect a phone.
       # NTFY_TOKEN must be issued by the ntfy server, never generated locally.

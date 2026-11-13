@@ -4,6 +4,11 @@ The endpointer is deliberately fixed: a 500 ms silence window, a configurable
 dBFS threshold, and a 15 s utterance cap. It does **not** adapt to the room.
 That makes the threshold/gain check a human step, not product logic.
 
+The dev-box correction and human check passed on 2026-11-12: **32% source gain,
+-47.4 dBFS idle RMS, 501 ms speech endpoint**. See the
+[calibration record](mic-calibration-2026-11-12.md). Re-measure after changing the
+device, gain or room conditions.
+
 The #29 run measured the dev-box Webcam C270 Mono at 100 % source volume
 (base 32 % / -30 dB) with idle RMS **-37.9, -33.6 and -29.7 dBFS**; the 4 s
 sample had 120/125 frames above the shipped -38 dBFS threshold. A wake word on
@@ -43,9 +48,9 @@ Do not change the fixed 500 ms silence window to compensate; that is a latency
 budget decision (#12), not a noise fix. Do not commit a dev-box-only gain as a
 product default without a measured human-mic run.
 
-## Remaining human check
+## Human check after calibration
 
 This tool proves the level; it cannot prove the assistant hears a person. The
-human-spoken #29 acceptance run is still required, and this run did not perform
-it (no human was available). Record the chosen gain/threshold and the new
-measurement on #36 before the run.
+human-spoken #29 acceptance run still requires its full scenario set. The
+single wake-and-spoken-turn check for #36 is recorded above. Record the chosen
+gain/threshold and the new measurement before another run.

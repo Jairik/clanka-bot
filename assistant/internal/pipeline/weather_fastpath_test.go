@@ -38,6 +38,7 @@ func TestWeatherAnswersOnTheFastPath(t *testing.T) {
 	def := weather.New(weather.Deps{
 		GeocodingURL: geocoding,
 		ForecastURL:  forecast,
+		FallbackURL:  forecast,
 		Location: func() (location.Location, bool) {
 			return location.Location{City: "Berlin", Region: "Berlin", Timezone: "Europe/Berlin"}, true
 		},

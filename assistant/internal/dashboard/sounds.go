@@ -83,7 +83,7 @@ func (h *Handler) soundsPage(w http.ResponseWriter, r *http.Request) {
 	if !allowGet(w, r) {
 		return
 	}
-	h.render(w, "sounds_page", h.buildSoundsView(soundsFlashMessage(r.URL.Query().Get("flash")), "", nil))
+	h.writeJSON(w, http.StatusOK, h.buildSoundsView(soundsFlashMessage(r.URL.Query().Get("flash")), "", nil))
 }
 
 // soundsUpload accepts one multipart WAV or MP3. The request body and the file
@@ -341,24 +341,14 @@ func limitForm(w http.ResponseWriter, r *http.Request) error {
 // soundsSuccess answers an htmx submission with the swapped content; a plain
 // form gets the 303 redirect, so both journeys work without JavaScript.
 func (h *Handler) soundsSuccess(w http.ResponseWriter, r *http.Request, flash string) {
-	if isHTMX(r) {
-		h.render(w, "sounds_content", h.buildSoundsView(soundsFlashMessage(flash), "", nil))
-		return
-	}
-	http.Redirect(w, r, "/sounds?flash="+url.QueryEscape(flash), http.StatusSeeOther)
+	h.writeJSON(w, http.StatusOK, h.buildSoundsView(soundsFlashMessage(flash), "", nil))
 }
 
 // soundsFail re-renders the page with an error and, when supplied, the rejected
 // Ring input. htmx only swaps 2xx responses, so a fragment error stays 200.
 func (h *Handler) soundsFail(w http.ResponseWriter, r *http.Request, status int, message string, edit *editState) {
 	view := h.buildSoundsView("", message, edit)
-	if isHTMX(r) {
-		h.render(w, "sounds_content", view)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(status)
-	h.render(w, "sounds_page", view)
+	h.writeJSON(w, status, view)
 }
 
 // buildSoundsView resolves the library, every fixed role and every per-kind

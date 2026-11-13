@@ -85,12 +85,7 @@ func (h *Handler) spotifyPage(w http.ResponseWriter, r *http.Request) {
 	if !allowGet(w, r) {
 		return
 	}
-	// The Connect form POSTs to /spotify/connect, which answers 303 to
-	// Spotify's authorize page. Browsers apply form-action to the redirect
-	// target too, so 'self' alone silently blocks the sign-in. Allow exactly
-	// Spotify's accounts origin, and only on this page.
-	w.Header().Set("Content-Security-Policy", contentSecurityPolicy("'self' "+spotifyAccountsOrigin))
-	h.render(w, "spotify_page", h.buildSpotifyView(spotifyFlashMessage(r.URL.Query().Get("flash")), ""))
+	h.writeJSON(w, http.StatusOK, h.buildSpotifyView(spotifyFlashMessage(r.URL.Query().Get("flash")), ""))
 }
 
 // spotifyConnect starts the PKCE flow. It is a same-origin POST, so the

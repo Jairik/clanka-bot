@@ -2,6 +2,7 @@ package dashboard_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log/slog"
@@ -12,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/config"
@@ -63,6 +65,51 @@ func (f fakeModules) Health(ctx context.Context) []tools.Health {
 	return f.health
 }
 
+// uiFixture is the small React build every test handler serves, so the app
+// routes are deterministic without the real Vite bundle.
+const uiIndex = "<!doctype html><title>fixture</title><script type=\"module\" src=\"/assets/app.js\"></script>"
+
+func uiFixture() fstest.MapFS {
+	return fstest.MapFS{
+		"index.html":    {Data: []byte(uiIndex)},
+		"assets/app.js": {Data: []byte("console.log('fixture')")},
+	}
+}
+
+// getJSON reads one /api/ui page as the owner and decodes the JSON body into
+// v (when non-nil). It returns the recorder for status and header checks.
+func getJSON(t *testing.T, handler http.Handler, target string, v any) *httptest.ResponseRecorder {
+	t.Helper()
+	rec := serve(handler, request(http.MethodGet, target, owner))
+	decodeJSON(t, rec, v)
+	return rec
+}
+
+// decodeJSON decodes a JSON response body, failing the test when it is not
+// valid JSON.
+func decodeJSON(t *testing.T, rec *httptest.ResponseRecorder, v any) {
+	t.Helper()
+	if v == nil {
+		return
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		t.Fatalf("Content-Type = %q, status %d, body = %s", ct, rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), v); err != nil {
+		t.Fatalf("decode %q: %v", rec.Body.String(), err)
+	}
+}
+
+// noRawScript fails when a JSON body carries an unescaped script tag.
+// encoding/json escapes <, > and & as \u00XX, so a hostile value cannot
+// become markup if a client ever injects the body.
+func noRawScript(t *testing.T, body string) {
+	t.Helper()
+	if strings.Contains(body, "<script") || strings.Contains(body, "</script") {
+		t.Errorf("response body contains an unescaped script tag:\n%s", body)
+	}
+}
+
 func newHandler(t *testing.T, opts dashboard.Options) *dashboard.Handler {
 	t.Helper()
 	if opts.Owner == "" {
@@ -73,6 +120,9 @@ func newHandler(t *testing.T, opts dashboard.Options) *dashboard.Handler {
 	}
 	if opts.ProxyAllowed == nil {
 		opts.ProxyAllowed = func(ip net.IP) bool { return ip.IsLoopback() }
+	}
+	if opts.UI == nil {
+		opts.UI = uiFixture()
 	}
 	if opts.Hosts == nil {
 		// The tests' tailnet name; a loopback Host alone would not exercise the
@@ -112,7 +162,7 @@ func TestNewDashboardRequiresAnOwner(t *testing.T) {
 
 func TestDashboardRejectsRequestsWithoutTheTailscaleLogin(t *testing.T) {
 	handler := newHandler(t, dashboard.Options{})
-	for _, path := range []string{"/", "/activity", "/activity/recent", "/health", "/health/panel", "/alerts", "/settings", "/secrets", "/sounds", "/sounds/audio/chime", "/voices", "/voices/audio/alba", "/personas", "/spotify", "/static/app.css"} {
+	for _, path := range []string{"/", "/activity", "/health", "/alerts", "/settings", "/secrets", "/sounds", "/sounds/audio/chime", "/voices", "/voices/audio/alba", "/personas", "/spotify", "/assets/app.js", "/api/ui/session", "/api/ui/health", "/api/ui/activity", "/api/ui/settings", "/api/ui/secrets", "/api/ui/sounds", "/api/ui/voices", "/api/ui/personas", "/api/ui/alerts", "/api/ui/spotify", "/api/ui/volume"} {
 		t.Run(path, func(t *testing.T) {
 			rec := serve(handler, request(http.MethodGet, path, ""))
 			if rec.Code != http.StatusForbidden {
@@ -182,7 +232,7 @@ func TestDashboardPassesOnlyTheValidatedLoginToHandlers(t *testing.T) {
 	}
 }
 
-func TestDashboardServesTheHealthPageToTheOwner(t *testing.T) {
+func TestDashboardServesTheHealthJSONToTheOwner(t *testing.T) {
 	handler := newHandler(t, dashboard.Options{
 		HealthTimeout: time.Second,
 		Services: []dashboard.ServiceCheck{
@@ -202,26 +252,60 @@ func TestDashboardServesTheHealthPageToTheOwner(t *testing.T) {
 		},
 	})
 
-	rec := serve(handler, request(http.MethodGet, "/health", owner))
+	var view struct {
+		Owner    string
+		Page     string
+		Services []struct{ Name, Status, StatusLabel, Detail string }
+		Location struct{ Name, Status, StatusLabel, Detail string }
+		Modules  []struct{ Name, Status, StatusLabel, Detail string }
+		Spotify  []struct{ Name, Status, StatusLabel, Detail string }
+	}
+	rec := getJSON(t, handler, "/api/ui/health", &view)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	body := rec.Body.String()
-	for _, want := range []string{
-		"Compose services", "embed", "assistant", "wakeword", "stt", "tts",
-		"timer", "no check", "not configured", "connection refused",
-		"Bristol, England (Europe/London)", "hx-get=\"/health/panel\"",
-	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("page lacks %q", want)
+	if view.Owner != owner || view.Page != "health" {
+		t.Errorf("owner/page = %q/%q", view.Owner, view.Page)
+	}
+	services := map[string]string{}
+	for _, svc := range view.Services {
+		services[svc.Name] = svc.StatusLabel + "|" + svc.Detail
+	}
+	for name, want := range map[string]string{"embed": "", "wakeword": "connection refused", "tts": "not configured"} {
+		got, ok := services[name]
+		if !ok {
+			t.Errorf("services lack %q: %v", name, services)
+			continue
+		}
+		if !strings.Contains(got, want) {
+			t.Errorf("service %s = %q, want %q", name, got, want)
 		}
 	}
-	if strings.Contains(body, "<script>alert(1)</script>") {
-		t.Error("Tool module error was not HTML-escaped")
+	for _, name := range []string{"assistant", "stt"} {
+		if _, ok := services[name]; !ok {
+			t.Errorf("services lack %q", name)
+		}
 	}
-	if !strings.Contains(body, "&lt;script&gt;alert(1)&lt;/script&gt;") {
-		t.Error("page does not contain the escaped error text")
+	body := rec.Body.String()
+	for _, want := range []string{"timer", "no check", "Bristol, England (Europe/London)"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("health JSON lacks %q", want)
+		}
 	}
+	if len(view.Spotify) != 2 {
+		t.Errorf("Spotify checks = %d, want pairing and Web API auth", len(view.Spotify))
+	}
+	// A hostile Tool module error round-trips exactly and cannot be raw markup.
+	var weather string
+	for _, module := range view.Modules {
+		if module.Name == "weather" {
+			weather = module.Detail
+		}
+	}
+	if !strings.Contains(weather, `upstream <script>alert(1)</script> failed`) {
+		t.Errorf("weather detail = %q, want the exact error text", weather)
+	}
+	noRawScript(t, body)
 	if got := rec.Header().Get("X-Frame-Options"); got != "DENY" {
 		t.Errorf("X-Frame-Options = %q, want DENY", got)
 	}
@@ -230,21 +314,6 @@ func TestDashboardServesTheHealthPageToTheOwner(t *testing.T) {
 	}
 	if !strings.Contains(rec.Header().Get("Content-Security-Policy"), "frame-ancestors 'none'") {
 		t.Errorf("CSP = %q", rec.Header().Get("Content-Security-Policy"))
-	}
-}
-
-func TestDashboardHealthPanelIsAFragment(t *testing.T) {
-	handler := newHandler(t, dashboard.Options{})
-	rec := serve(handler, request(http.MethodGet, "/health/panel", owner))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d", rec.Code)
-	}
-	body := rec.Body.String()
-	if strings.Contains(body, "<html") {
-		t.Error("panel response contains a full page")
-	}
-	if !strings.Contains(body, `id="health-panel"`) {
-		t.Error("panel response lacks the refreshable section")
 	}
 }
 
@@ -263,34 +332,23 @@ func TestDashboardHealthIsBoundedByItsTimeout(t *testing.T) {
 	})
 
 	start := time.Now()
-	rec := serve(handler, request(http.MethodGet, "/health", owner))
+	rec := serve(handler, request(http.MethodGet, "/api/ui/health", owner))
 	elapsed := time.Since(start)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d", rec.Code)
 	}
 	if elapsed > time.Second {
-		t.Fatalf("Health page took %s, want the 25ms budget to bound it", elapsed)
+		t.Fatalf("Health read took %s, want the 25ms budget to bound it", elapsed)
 	}
 	body := rec.Body.String()
 	if strings.Count(body, "timed out") < 2 {
-		t.Errorf("page lacks timed-out service and module rows:\n%s", body)
-	}
-}
-
-func TestDashboardRootRedirectsToHealth(t *testing.T) {
-	handler := newHandler(t, dashboard.Options{})
-	rec := serve(handler, request(http.MethodGet, "/", owner))
-	if rec.Code != http.StatusFound {
-		t.Fatalf("status = %d, want 302", rec.Code)
-	}
-	if got := rec.Header().Get("Location"); got != "/health" {
-		t.Errorf("Location = %q, want /health", got)
+		t.Errorf("health JSON lacks timed-out service and module rows:\n%s", body)
 	}
 }
 
 func TestDashboardHealthRejectsOtherMethods(t *testing.T) {
 	handler := newHandler(t, dashboard.Options{})
-	rec := serve(handler, request(http.MethodPost, "/health", owner))
+	rec := serve(handler, request(http.MethodPost, "/api/ui/health", owner))
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want 405", rec.Code)
 	}
@@ -301,23 +359,9 @@ func TestDashboardHealthRejectsOtherMethods(t *testing.T) {
 
 func TestDashboardUnknownPathIsNotFound(t *testing.T) {
 	handler := newHandler(t, dashboard.Options{})
-	rec := serve(handler, request(http.MethodGet, "/nope", owner))
+	rec := serve(handler, request(http.MethodGet, "/api/ui/nope", owner))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", rec.Code)
-	}
-}
-
-func TestDashboardServesVendoredHtmx(t *testing.T) {
-	handler := newHandler(t, dashboard.Options{})
-	rec := serve(handler, request(http.MethodGet, "/static/htmx.min.js", owner))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d", rec.Code)
-	}
-	if ct := rec.Header().Get("Content-Type"); !strings.Contains(ct, "javascript") {
-		t.Errorf("Content-Type = %q", ct)
-	}
-	if !strings.HasPrefix(rec.Body.String(), "var htmx") {
-		t.Error("body does not look like the vendored htmx build")
 	}
 }
 

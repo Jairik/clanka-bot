@@ -152,7 +152,7 @@ func (h *Handler) alertsPage(w http.ResponseWriter, r *http.Request) {
 	if !allowGet(w, r) {
 		return
 	}
-	h.render(w, "alerts_page", h.buildAlertsView(alertsFlashMessage(r.URL.Query().Get("flash")), "", nil))
+	h.writeJSON(w, http.StatusOK, h.buildAlertsView(alertsFlashMessage(r.URL.Query().Get("flash")), "", nil))
 }
 
 // alertCancel cancels exactly one alert through its own manager. The id comes
@@ -366,11 +366,7 @@ func alertPhoneSafeError(err error) string {
 // alertsSuccess answers htmx with the swapped content and a plain form with a
 // 303 redirect, so both journeys mutate once through the same route.
 func (h *Handler) alertsSuccess(w http.ResponseWriter, r *http.Request, flash string) {
-	if isHTMX(r) {
-		h.render(w, "alerts_content", h.buildAlertsView(alertsFlashMessage(flash), "", nil))
-		return
-	}
-	http.Redirect(w, r, "/alerts?flash="+url.QueryEscape(flash), http.StatusSeeOther)
+	h.writeJSON(w, http.StatusOK, h.buildAlertsView(alertsFlashMessage(flash), "", nil))
 }
 
 // alertsFail re-renders the page with an error and the rejected input. htmx
@@ -378,13 +374,7 @@ func (h *Handler) alertsSuccess(w http.ResponseWriter, r *http.Request, flash st
 // plain form keeps the real 4xx status.
 func (h *Handler) alertsFail(w http.ResponseWriter, r *http.Request, status int, message string, edit *alertEditState) {
 	view := h.buildAlertsView("", message, edit)
-	if isHTMX(r) {
-		h.render(w, "alerts_content", view)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(status)
-	h.render(w, "alerts_page", view)
+	h.writeJSON(w, status, view)
 }
 
 // alertsFlashMessage maps the closed flash set to the user-visible result.

@@ -13,7 +13,7 @@ import (
 func TestDashboardRejectsAHostileHostEvenWithOwnerAndSameOrigin(t *testing.T) {
 	handler := newHandler(t, dashboard.Options{})
 
-	get := request(http.MethodGet, "/health", owner)
+	get := request(http.MethodGet, "/api/ui/health", owner)
 	get.Host = "attacker.example:8082"
 	get.Header.Set("Origin", "http://attacker.example:8082")
 	get.Header.Set("Sec-Fetch-Site", "same-origin")
@@ -36,9 +36,9 @@ func TestDashboardRejectsAHostileHostEvenWithOwnerAndSameOrigin(t *testing.T) {
 func TestDashboardRejectsAHostileHostOnEveryPage(t *testing.T) {
 	handler := newHandler(t, dashboard.Options{})
 	paths := []string{
-		"/", "/health", "/health/panel", "/activity", "/activity/recent",
+		"/", "/health", "/api/ui/health", "/activity", "/api/ui/activity",
 		"/alerts", "/settings", "/secrets", "/sounds", "/voices", "/personas",
-		"/spotify", "/static/app.css",
+		"/spotify", "/assets/app.js",
 	}
 	for _, path := range paths {
 		req := request(http.MethodGet, path, owner)
@@ -54,7 +54,7 @@ func TestDashboardRejectsAHostileHostOnEveryPage(t *testing.T) {
 func TestDashboardAcceptsTheConfiguredHostAndTheLoopbackSmoke(t *testing.T) {
 	handler := newHandler(t, dashboard.Options{})
 	for _, host := range []string{"pi.example.ts.net", "127.0.0.1:8082", "localhost:8082"} {
-		req := request(http.MethodGet, "/health", owner)
+		req := request(http.MethodGet, "/api/ui/health", owner)
 		req.Host = host
 		if rec := serve(handler, req); rec.Code != http.StatusOK {
 			t.Errorf("Host %q status = %d, want 200", host, rec.Code)

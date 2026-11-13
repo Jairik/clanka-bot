@@ -1,12 +1,13 @@
-// Package dashboard serves the Tailscale-only web UI: server-rendered Go
-// templates plus htmx, with no JavaScript build step.
+// Package dashboard serves the Tailscale-only web UI: a React app built from
+// assistant/web and embedded here, plus the JSON reads and form-encoded writes
+// it calls. Every route sits behind the same identity and same-origin checks.
 package dashboard
 
 import (
 	"context"
 	"embed"
+	"encoding/json"
 	"fmt"
-	"html/template"
 	"io/fs"
 	"log/slog"
 	"net"
@@ -101,6 +102,12 @@ type Options struct {
 	// without speaking: main passes a reply.Session created with no speaker.
 	// When nil the Activity page still lists requests but hides the box.
 	Typed TypedResponder
+	// Transcriber turns a browser mic recording into text for Typed. The mic
+	// button is hidden when it (or Typed) is nil.
+	Transcriber Transcriber
+	// Volume is the Pi speaker's level and mute for the top bar. The control
+	// is hidden when it is nil.
+	Volume VolumeControl
 	// Hosts is the explicit public Host allowlist: the tailnet name
 	// `tailscale serve` exposes, exactly as it appears in the URL. Loopback
 	// names are always accepted for the documented local smoke test. An empty
@@ -114,6 +121,9 @@ type Options struct {
 	ProxyAllowed func(net.IP) bool
 	// Now overrides the clock for deterministic page output in tests.
 	Now func() time.Time
+	// UI overrides the embedded React build (a directory holding index.html
+	// and assets/). Tests inject a small fixture; production leaves it nil.
+	UI fs.FS
 }
 
 // Handler is the authenticated Dashboard mux. Register extra pages before
@@ -138,18 +148,24 @@ type Handler struct {
 	spotifyPairing *spotify.PairingReader
 	activity       *activity.Store
 	typed          TypedResponder
+	transcriber    Transcriber
+	volume         VolumeControl
 	// askLock serialises every typed request with a one-slot semaphore. The
 	// voice loop is already single-turn; this gives the Dashboard the same
 	// one-request-at-a-time behaviour and one pending Confirmation at a time.
 	askLock      chan struct{}
 	hosts        httpguard.Hosts
 	proxyAllowed func(net.IP) bool
-	templates    *template.Template
+	ui           fs.FS
 	mux          *http.ServeMux
 }
 
-//go:embed templates/*.html static/*
-var assets embed.FS
+// uiBuild is the Vite output of assistant/web. The directory is committed with
+// only a .gitkeep; `make web` (and the Docker build) fills ui/dist before the
+// Go build, so a missing bundle shows a setup message instead of failing.
+//
+//go:embed all:ui
+var uiBuild embed.FS
 
 // New builds the Dashboard and registers its built-in routes. Every route,
 // including static files, sits behind the identity check in ServeHTTP.
@@ -166,17 +182,16 @@ func New(opts Options) (*Handler, error) {
 	if now == nil {
 		now = time.Now
 	}
-	templates, err := template.ParseFS(assets, "templates/*.html")
-	if err != nil {
-		return nil, fmt.Errorf("dashboard: parse templates: %w", err)
-	}
 	hosts, err := httpguard.NewHosts(opts.Hosts)
 	if err != nil {
 		return nil, fmt.Errorf("dashboard: %w", err)
 	}
-	staticFS, err := fs.Sub(assets, "static")
-	if err != nil {
-		return nil, fmt.Errorf("dashboard: static assets: %w", err)
+	ui := opts.UI
+	if ui == nil {
+		ui, err = fs.Sub(uiBuild, "ui/dist")
+		if err != nil {
+			return nil, fmt.Errorf("dashboard: ui assets: %w", err)
+		}
 	}
 
 	// One shared bounded snapshot feeds the Health page; main passes the same
@@ -212,37 +227,42 @@ func New(opts Options) (*Handler, error) {
 		spotifyPairing: opts.SpotifyPairing,
 		activity:       opts.Activity,
 		typed:          opts.Typed,
+		transcriber:    opts.Transcriber,
+		volume:         opts.Volume,
 		askLock:        make(chan struct{}, 1),
 		hosts:          hosts,
 		proxyAllowed:   opts.ProxyAllowed,
-		templates:      templates,
+		ui:             ui,
 		mux:            http.NewServeMux(),
 	}
-	// htmx is vendored under static/, so the UI works on a tailnet without
-	// internet access.
-	h.mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))))
 	if opts.API != nil {
 		// The API handler has no auth of its own; identity is enforced by
 		// ServeHTTP and SameOrigin guards its mutating methods.
 		h.mux.Handle("/api/", http.StripPrefix("/api", h.sameOrigin(opts.API)))
 	}
-	h.Handle("/health", h.healthPage)
-	h.Handle("/health/panel", h.healthPanel)
-	// The Activity page lists the bounded recent-request store and hosts the
-	// typed-request box. The page and its refresh are identity-gated; the one
-	// write goes through Mutating for identity and same-origin.
-	h.Handle("/activity", h.activityPage)
-	h.Handle("/activity/recent", h.activityRecent)
+	// Each page's data is one JSON read under /api/ui/: the same view model
+	// the server-rendered pages used, so labels and source rules stay in Go.
+	// Writes keep their form-encoded routes below and answer with the
+	// refreshed view (and a real status code on failure).
+	h.Handle("GET /api/ui/session", h.sessionInfo)
+	h.Handle("GET /api/ui/health", h.healthPage)
+	h.Handle("GET /api/ui/activity", h.activityPage)
+	h.Handle("GET /api/ui/settings", h.settingsPage)
+	h.Handle("GET /api/ui/secrets", h.secretsPage)
+	h.Handle("GET /api/ui/sounds", h.soundsPage)
+	h.Handle("GET /api/ui/voices", h.voicesPage)
+	h.Handle("GET /api/ui/personas", h.personasPage)
+	h.Handle("GET /api/ui/alerts", h.alertsPage)
+	h.Handle("GET /api/ui/spotify", h.spotifyPage)
+	// The typed-request box. The one write goes through Mutating for identity
+	// and same-origin.
 	h.Mutating("POST /activity/ask", h.activityAsk)
-	// Every Settings mutation goes through Mutating, so it inherits the
-	// Dashboard identity and the same-origin guard.
-	h.Handle("/settings", h.settingsPage)
-	// The Secrets page lists every declared secret and offers replace/clear.
-	// Both writes go through Mutating for identity and same-origin.
-	h.Handle("/secrets", h.secretsPage)
+	h.Mutating("POST /api/ui/ask/audio", h.activityAskAudio)
+	// The top bar's speaker volume and mute.
+	h.Handle("GET /api/ui/volume", h.volumeGet)
+	h.Mutating("POST /api/ui/volume", h.volumeSet)
 	// The Sounds page owns uploads, role assignment, Ring settings and the two
 	// previews. Every write goes through Mutating for identity and same-origin.
-	h.Handle("/sounds", h.soundsPage)
 	h.Handle("/sounds/audio/{name}", h.soundsAudio)
 	h.Mutating("POST /sounds/upload", h.soundsUpload)
 	h.Mutating("POST /sounds/roles/{role}", h.soundsRoleSave)
@@ -253,7 +273,6 @@ func New(opts Options) (*Handler, error) {
 	// The Voice page owns upload, selection, rate and the optional source note.
 	// Browser preview is an authenticated GET that synthesizes a bounded WAV
 	// and never changes the persistent active voice.
-	h.Handle("/voices", h.voicesPage)
 	h.Handle("/voices/audio/{name}", h.voicesAudio)
 	h.Mutating("POST /voices/upload", h.voicesUpload)
 	h.Mutating("POST /voices/active/{name}", h.voicesActive)
@@ -263,7 +282,6 @@ func New(opts Options) (*Handler, error) {
 	// The Persona page creates, edits and selects one bundle. Selection writes
 	// voice, Filler, Unavailable wording and the active marker in one settings
 	// transaction; every write goes through Mutating for identity and origin.
-	h.Handle("/personas", h.personasPage)
 	h.Mutating("POST /personas", h.personasCreate)
 	h.Mutating("POST /personas/{name}", h.personasUpdate)
 	h.Mutating("POST /personas/{name}/select", h.personasSelect)
@@ -275,7 +293,6 @@ func New(opts Options) (*Handler, error) {
 	// The Scheduled alerts page lists every active Timer, Alarm and Reminder,
 	// cancels one by its manager id, and edits the per-Alarm Ring overrides.
 	// Every write goes through Mutating for identity and same-origin.
-	h.Handle("/alerts", h.alertsPage)
 	h.Mutating("POST /alerts/{kind}/{id}/cancel", h.alertCancel)
 	h.Mutating("POST /alerts/alarms/{id}", h.alertAlarmUpdate)
 	h.Mutating("POST /alerts/alarms/{id}/reset", h.alertAlarmReset)
@@ -284,12 +301,13 @@ func New(opts Options) (*Handler, error) {
 	// Spotify Connect pairing and Web API auth are separate surfaces. The
 	// callback is a cross-site top-level GET from accounts.spotify.com, so it
 	// uses its own state/owner/cookie validation rather than Mutating.
-	h.Handle("/spotify", h.spotifyPage)
 	h.Handle("/spotify/callback", h.spotifyCallback)
 	h.Mutating("/spotify/connect", h.spotifyConnect)
 	h.Mutating("/spotify/verify", h.spotifyVerify)
 	h.Mutating("/spotify/disconnect", h.spotifyDisconnect)
-	h.Handle("/", h.index)
+	// Everything else is the React app: hashed assets, or index.html for any
+	// page path so a reload or a bookmarked /alerts opens the right page.
+	h.Handle("/", h.app)
 	return h, nil
 }
 
@@ -349,37 +367,43 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.mux.ServeHTTP(w, r.WithContext(ctx))
 }
 
-func (h *Handler) index(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
-		http.NotFound(w, r)
-		return
-	}
-	if !allowGet(w, r) {
-		return
-	}
-	http.Redirect(w, r, "/health", http.StatusFound)
-}
-
 func (h *Handler) healthPage(w http.ResponseWriter, r *http.Request) {
 	if !allowGet(w, r) {
 		return
 	}
-	h.render(w, "health_page", h.health(r.Context()))
+	h.writeJSON(w, http.StatusOK, h.health(r.Context()))
 }
 
-func (h *Handler) healthPanel(w http.ResponseWriter, r *http.Request) {
+// sessionView is what the app shell needs before any page loads: who is signed
+// in and which optional services are wired, so it can hide dead controls.
+type sessionView struct {
+	Owner    string
+	Typed    bool
+	Mic      bool
+	Volume   bool
+	Activity bool
+}
+
+func (h *Handler) sessionInfo(w http.ResponseWriter, r *http.Request) {
 	if !allowGet(w, r) {
 		return
 	}
-	h.render(w, "health_panel", h.health(r.Context()))
+	h.writeJSON(w, http.StatusOK, sessionView{
+		Owner:    h.owner,
+		Typed:    h.typed != nil,
+		Mic:      h.typed != nil && h.transcriber != nil,
+		Volume:   h.volume != nil,
+		Activity: h.activity != nil,
+	})
 }
 
-// render writes a parsed template. Templates are parsed at startup, so a
-// runtime error here is unexpected and only logged.
-func (h *Handler) render(w http.ResponseWriter, name string, view any) {
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := h.templates.ExecuteTemplate(w, name, view); err != nil {
-		h.logger.Error("dashboard render", "template", name, "error", err.Error())
+// writeJSON encodes one view. Views are plain data built from bounded
+// snapshots, so an encode error is unexpected and only logged.
+func (h *Handler) writeJSON(w http.ResponseWriter, status int, view any) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(view); err != nil {
+		h.logger.Error("dashboard json", "error", err.Error())
 	}
 }
 
@@ -393,13 +417,14 @@ func allowGet(w http.ResponseWriter, r *http.Request) bool {
 }
 
 // contentSecurityPolicy is the Dashboard policy with the given form-action
-// sources. Every page uses 'self' except the Spotify page (see spotifyPage).
+// sources. JSON and assets use 'self'; the app document also allows Spotify's
+// accounts origin (see app).
 func contentSecurityPolicy(formAction string) string {
 	return "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'; form-action " + formAction
 }
 
 func setSecurityHeaders(w http.ResponseWriter) {
-	// There is no inline script or style, so the page needs no unsafe CSP
+	// The built app has no inline script or style, so it needs no unsafe CSP
 	// exceptions. Nothing is cached because every page is identity-scoped.
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Security-Policy", contentSecurityPolicy("'self'"))

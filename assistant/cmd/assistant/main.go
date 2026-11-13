@@ -896,7 +896,11 @@ func run() error {
 			// the pipeline, registry and settings of the voice path.
 			Activity: activityStore,
 			Typed:    typedSession,
-			API:      apiHandler,
+			// The mic button reuses the voice loop's STT service; the top bar
+			// volume drives the same Pulse sink as replies and audio.volume_set.
+			Transcriber: dashboardTranscriber(cfg),
+			Volume:      sink,
+			API:         apiHandler,
 		})
 		if err != nil {
 			return err
@@ -1164,4 +1168,16 @@ func serve(ctx context.Context, logger *slog.Logger, servers []*http.Server) err
 		}
 	}
 	return serveErr
+}
+
+// dashboardTranscriber is nil when STT is not configured, which hides the
+// Dashboard mic button.
+func dashboardTranscriber(cfg config.Config) dashboard.Transcriber {
+	if strings.TrimSpace(cfg.STT.Addr) == "" {
+		return nil
+	}
+	return wyomingTranscriber{
+		client: wyoming.NewClient(cfg.STT.Addr, wyoming.WithTimeout(cfg.STT.Timeout.Duration())),
+		opts:   wyoming.TranscribeOptions{Name: cfg.STT.Model, Language: cfg.STT.Language},
+	}
 }

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -99,16 +98,7 @@ func (h *Handler) activityPage(w http.ResponseWriter, r *http.Request) {
 	if !allowGet(w, r) {
 		return
 	}
-	h.render(w, "activity_page", h.buildActivityView(r.URL.Query().Get("request"), "", "", ""))
-}
-
-// activityRecent is the htmx refresh fragment. It only reads the bounded
-// in-memory store, so a refresh cannot call a Tool or a model.
-func (h *Handler) activityRecent(w http.ResponseWriter, r *http.Request) {
-	if !allowGet(w, r) {
-		return
-	}
-	h.render(w, "activity_recent", h.buildActivityView("", "", "", ""))
+	h.writeJSON(w, http.StatusOK, h.buildActivityView(r.URL.Query().Get("request"), "", "", ""))
 }
 
 // activityAsk runs one typed request through the shared pipeline. Overlapping
@@ -136,7 +126,15 @@ func (h *Handler) activityAsk(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// One typed request at a time. Waiting on the request context means a
+	h.runAsk(w, r, text, latency.SourceDashboard, nil)
+}
+
+// runAsk answers one Dashboard request (typed, or transcribed from the
+// browser mic) through the shared pipeline and writes the refreshed Activity
+// view. stages are timings measured before the request reached the pipeline,
+// such as STT for a mic request.
+func (h *Handler) runAsk(w http.ResponseWriter, r *http.Request, text string, source latency.Source, stages map[latency.Stage]time.Duration) {
+	// One request at a time. Waiting on the request context means a
 	// closed tab cannot leave an unreferenced request in the queue.
 	select {
 	case h.askLock <- struct{}{}:
@@ -152,7 +150,10 @@ func (h *Handler) activityAsk(w http.ResponseWriter, r *http.Request) {
 	}
 	// A typed request has no endpointing, STT or reply audio, so its timeline
 	// can never claim Response latency. Routing and Tool stages are still real.
-	timeline := latency.New(requestID, latency.SourceDashboard, timelineOpts...)
+	timeline := latency.New(requestID, source, timelineOpts...)
+	for stage, d := range stages {
+		timeline.Set(stage, d)
+	}
 	requestCtx := latency.WithContext(r.Context(), timeline)
 	_, err := h.typed.Ask(requestCtx, tool.Request{
 		ID:     requestID,
@@ -186,25 +187,14 @@ func (h *Handler) activityAsk(w http.ResponseWriter, r *http.Request) {
 	// The pipeline always returns text, including a helpful placeholder or an
 	// Unavailable message; the view reads it straight from the Activity store.
 
-	if isHTMX(r) {
-		h.render(w, "activity_content", h.buildActivityView(requestID, "", "", ""))
-		return
-	}
-	// No-JS stays PRG: one POST, then a GET of the stable Activity page.
-	http.Redirect(w, r, "/activity?request="+url.QueryEscape(requestID), http.StatusSeeOther)
+	h.writeJSON(w, http.StatusOK, h.buildActivityView(requestID, "", "", ""))
 }
 
-// activityFail re-renders the page with an error. htmx only swaps 2xx
-// responses, so the fragment keeps 200; a plain form gets the real status.
+// activityFail answers with the Activity view, the error and the draft to
+// restore, under the real status code.
 func (h *Handler) activityFail(w http.ResponseWriter, r *http.Request, status int, message, draft string) {
 	view := h.buildActivityView("", message, "", draft)
-	if isHTMX(r) {
-		h.render(w, "activity_content", view)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(status)
-	h.render(w, "activity_page", view)
+	h.writeJSON(w, status, view)
 }
 
 // buildActivityView reads one bounded snapshot. justID highlights the reply
@@ -294,6 +284,8 @@ func activitySourceLabel(source string) string {
 		return "Debug typed"
 	case "dashboard":
 		return "Dashboard typed"
+	case "dashboard_mic":
+		return "Dashboard mic"
 	default:
 		if source == "" {
 			return "Unknown"

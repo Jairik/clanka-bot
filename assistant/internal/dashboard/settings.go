@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -116,7 +115,7 @@ func (h *Handler) settingsPage(w http.ResponseWriter, r *http.Request) {
 	if !allowGet(w, r) {
 		return
 	}
-	h.render(w, "settings_page", h.buildSettingsView(flashMessage(r.URL.Query().Get("flash")), "", nil))
+	h.writeJSON(w, http.StatusOK, h.buildSettingsView(flashMessage(r.URL.Query().Get("flash")), "", nil))
 }
 
 // settingsToolSave changes one Tool field. Both the enabled flag and the
@@ -257,11 +256,7 @@ func (h *Handler) settingsReady(w http.ResponseWriter, r *http.Request) bool {
 // settingsSuccess answers an htmx submission with just the swapped content;
 // a plain browser form gets the redirect, so both journeys work without JS.
 func (h *Handler) settingsSuccess(w http.ResponseWriter, r *http.Request, flash string) {
-	if isHTMX(r) {
-		h.render(w, "settings_content", h.buildSettingsView(flashMessage(flash), "", nil))
-		return
-	}
-	http.Redirect(w, r, "/settings?flash="+url.QueryEscape(flash), http.StatusSeeOther)
+	h.writeJSON(w, http.StatusOK, h.buildSettingsView(flashMessage(flash), "", nil))
 }
 
 // settingsFail re-renders the page with an error and, when supplied, the
@@ -269,17 +264,7 @@ func (h *Handler) settingsSuccess(w http.ResponseWriter, r *http.Request, flash 
 // error stays 200; a plain form gets the real 4xx status.
 func (h *Handler) settingsFail(w http.ResponseWriter, r *http.Request, status int, message string, edit *editState) {
 	view := h.buildSettingsView("", message, edit)
-	if isHTMX(r) {
-		h.render(w, "settings_content", view)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(status)
-	h.render(w, "settings_page", view)
-}
-
-func isHTMX(r *http.Request) bool {
-	return strings.EqualFold(r.Header.Get("HX-Request"), "true")
+	h.writeJSON(w, status, view)
 }
 
 func flashMessage(flash string) string {

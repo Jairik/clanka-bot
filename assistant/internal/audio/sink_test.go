@@ -215,3 +215,40 @@ func TestPulseSinkAdjustVolumeUsesRelativePercent(t *testing.T) {
 		}
 	}
 }
+
+func TestPulseSinkVolumeReadsLevelAndMute(t *testing.T) {
+	dir := t.TempDir()
+	pactl := filepath.Join(dir, "pactl")
+	script := `#!/bin/sh
+case "$1" in
+get-sink-volume) echo "Volume: front-left: 42598 /  65% / -11.23 dB,   front-right: 42598 /  65% / -11.23 dB" ;;
+get-sink-mute) echo "Mute: yes" ;;
+esac
+`
+	if err := os.WriteFile(pactl, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake pactl: %v", err)
+	}
+	sink := audio.NewPulseSink(filepath.Join(dir, "pacat"), "")
+	state, err := sink.Volume(context.Background())
+	if err != nil {
+		t.Fatalf("Volume: %v", err)
+	}
+	if state.Percent != 65 || !state.Muted {
+		t.Fatalf("state = %+v, want 65%% muted", state)
+	}
+}
+
+func TestPulseSinkSetMuteKeepsTheLevel(t *testing.T) {
+	pactl, argsPath := fakePactl(t)
+	sink := audio.NewPulseSink(filepath.Join(filepath.Dir(pactl), "pacat"), "echo_dot")
+	if err := sink.SetMute(context.Background(), true); err != nil {
+		t.Fatalf("SetMute: %v", err)
+	}
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatalf("read args: %v", err)
+	}
+	if got := strings.Fields(string(args)); strings.Join(got, " ") != "set-sink-mute echo_dot 1" {
+		t.Fatalf("pactl args = %q", got)
+	}
+}

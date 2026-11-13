@@ -360,27 +360,94 @@ func (f *activityFixture) ask(text string) *httptest.ResponseRecorder {
 	return serve(f.handler, f.form(text))
 }
 
-func (f *activityFixture) page(target string) string {
-	f.t.Helper()
-	rec := serve(f.handler, request(http.MethodGet, target, owner))
-	if rec.Code != http.StatusOK {
-		f.t.Fatalf("GET %s = %d, want 200", target, rec.Code)
+// activityRow and activityResp decode the parts of the Activity view the
+// tests assert on. Field names are the Go view struct's (encoding/json default).
+type activityRow struct {
+	ID          string
+	Source      string
+	SourceLabel string
+	Path        string
+	PathLabel   string
+	Tool        string
+	Outcome     string
+	OutcomeText string
+	Response    string
+	Measured    bool
+	Transcript  string
+	Reply       string
+	LocalOnly   bool
+	Pending     bool
+	Stages      []struct{ Name, Label, MS string }
+	Calls       []struct {
+		Name      string
+		LocalOnly bool
+		Result    string
 	}
-	return rec.Body.String()
 }
 
-func requestIDFrom(t *testing.T, rec *httptest.ResponseRecorder) string {
+type activityResp struct {
+	Error         string
+	Notice        string
+	Draft         string
+	HasActivity   bool
+	HasTyped      bool
+	DisplayLimit  int
+	Just          *activityRow
+	Requests      []activityRow
+	JustRequestID string
+}
+
+// view reads the Activity JSON, failing unless it is a 200.
+func (f *activityFixture) view(target string) (activityResp, string) {
+	f.t.Helper()
+	var v activityResp
+	rec := getJSON(f.t, f.handler, target, &v)
+	if rec.Code != http.StatusOK {
+		f.t.Fatalf("GET %s = %d, want 200: %s", target, rec.Code, rec.Body.String())
+	}
+	return v, rec.Body.String()
+}
+
+// mustAsk submits a typed request that must succeed (200) and returns the
+// refreshed view, whose Just row is the request just answered.
+func (f *activityFixture) mustAsk(text string) (activityResp, string) {
+	f.t.Helper()
+	rec := f.ask(text)
+	if rec.Code != http.StatusOK {
+		f.t.Fatalf("POST %q = %d, body = %s", text, rec.Code, rec.Body.String())
+	}
+	var v activityResp
+	decodeJSON(f.t, rec, &v)
+	if v.Error != "" {
+		f.t.Fatalf("POST %q answered 200 with error %q", text, v.Error)
+	}
+	if v.Just == nil || v.Just.ID == "" || v.Just.ID != v.JustRequestID {
+		f.t.Fatalf("POST %q Just = %+v, JustRequestID = %q", text, v.Just, v.JustRequestID)
+	}
+	return v, rec.Body.String()
+}
+
+// requireRow fails unless the row's encoded fields contain every want.
+func requireRow(t *testing.T, row *activityRow, wants ...string) {
 	t.Helper()
-	location := rec.Header().Get("Location")
-	parsed, err := url.Parse(location)
-	if err != nil {
-		t.Fatalf("Location %q: %v", location, err)
+	if row == nil {
+		t.Fatal("no request row")
 	}
-	id := parsed.Query().Get("request")
-	if id == "" {
-		t.Fatalf("Location %q has no request id", location)
+	raw, _ := json.Marshal(row)
+	text := string(raw)
+	for _, want := range wants {
+		if !strings.Contains(text, want) {
+			t.Errorf("row lacks %q: %s", want, text)
+		}
 	}
-	return id
+}
+
+func stageLabels(row *activityRow) []string {
+	var labels []string
+	for _, stage := range row.Stages {
+		labels = append(labels, stage.Label)
+	}
+	return labels
 }
 
 // TestActivityTypedFastPathShowsRouteToolLatencyAndReply is the core HTTP
@@ -389,24 +456,33 @@ func requestIDFrom(t *testing.T, rec *httptest.ResponseRecorder) string {
 // invented Response latency for a text-only request.
 func TestActivityTypedFastPathShowsRouteToolLatencyAndReply(t *testing.T) {
 	f := newActivityFixture(t)
-	rec := f.ask("what time is it")
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("POST = %d, body = %s", rec.Code, rec.Body.String())
+	posted, _ := f.mustAsk("what time is it")
+	id := posted.Just.ID
+	// The same request is reachable by id on a plain read, as the page does
+	// after a reload.
+	v, _ := f.view("/api/ui/activity?request=" + url.QueryEscape(id))
+	if v.Just == nil || v.Just.ID != id {
+		t.Fatalf("?request=%s Just = %+v", id, v.Just)
 	}
-	id := requestIDFrom(t, rec)
-	body := f.page("/activity?request=" + url.QueryEscape(id))
+	row := v.Just
 
-	for _, want := range []string{
-		"Reply", "It&#39;s 3:04 PM.", "Fast path", "time.now",
-		"Dashboard typed", "No audio", "Routing", "Tool execute",
-		"Response latency: Not measured", "Activity",
-	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("page lacks %q", want)
-		}
+	if row.Reply != "It's 3:04 PM." || row.Transcript != "what time is it" {
+		t.Errorf("transcript/reply = %q / %q", row.Transcript, row.Reply)
 	}
-	if strings.Contains(body, "Response latency: 0 ms") {
-		t.Error("a typed request invented a zero Response latency")
+	if row.Path != "control_phrase" || !strings.Contains(row.PathLabel, "Fast path") {
+		t.Errorf("path = %q (%q)", row.Path, row.PathLabel)
+	}
+	if row.Tool != "time.now" || row.SourceLabel != "Dashboard typed" || row.OutcomeText != "No audio" {
+		t.Errorf("tool/source/outcome = %q / %q / %q", row.Tool, row.SourceLabel, row.OutcomeText)
+	}
+	if row.Measured || row.Response != "Not measured" {
+		t.Errorf("a typed request invented a Response latency: measured=%v response=%q", row.Measured, row.Response)
+	}
+	labels := strings.Join(stageLabels(row), ",")
+	for _, want := range []string{"Routing", "Tool execute"} {
+		if !strings.Contains(labels, want) {
+			t.Errorf("stages %q lack %q", labels, want)
+		}
 	}
 	if calls := f.sink.openCount(); calls != 0 {
 		t.Fatalf("typed request opened the audio sink %d times, want 0", calls)
@@ -422,38 +498,29 @@ func TestActivityTypedFastPathShowsRouteToolLatencyAndReply(t *testing.T) {
 // and absent from the model's Tool list.
 func TestActivityTypedLocalOnlyResultStaysOnTheDashboard(t *testing.T) {
 	f := newActivityFixture(t)
-	rec := f.ask("read my secret")
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("POST = %d, body = %s", rec.Code, rec.Body.String())
+	posted, _ := f.mustAsk("read my secret")
+	id := posted.Just.ID
+	row := posted.Just
+	if row.Reply != "The launch code is 1234." || !row.LocalOnly {
+		t.Errorf("row = %+v, want the visible Local-only reply", row)
 	}
-	id := requestIDFrom(t, rec)
-	page := f.page("/activity?request=" + url.QueryEscape(id))
-	for _, want := range []string{
-		"The launch code is 1234.",
-		"Local-only Tool",
-		"Local only",
-	} {
-		if !strings.Contains(page, want) {
-			t.Errorf("authenticated page lacks %q", want)
-		}
+	if len(row.Calls) != 1 || !row.Calls[0].LocalOnly || !strings.Contains(row.Calls[0].Result, "1234") {
+		t.Errorf("calls = %+v, want one Local-only call with its result", row.Calls)
 	}
 
 	health := serve(f.api, request(http.MethodGet, "/healthz", ""))
 	if strings.Contains(health.Body.String(), "launch code") {
 		t.Fatal("public health response leaked the Local-only result")
 	}
-	healthPage := f.page("/health")
-	if strings.Contains(healthPage, "launch code") {
-		t.Fatal("Dashboard health page leaked the Local-only result")
+	healthRec := serve(f.handler, request(http.MethodGet, "/api/ui/health", owner))
+	if strings.Contains(healthRec.Body.String(), "launch code") {
+		t.Fatal("Dashboard health JSON leaked the Local-only result")
 	}
 
 	// A later Agent request keeps the Local-only turn in history but must drop
 	// it from the one prompt builder, and the Tool itself is never offered.
 	f.model.add(activityText("I don't have that."))
-	rec = f.ask("ask the agent what did I just read")
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("agent POST = %d", rec.Code)
-	}
+	f.mustAsk("ask the agent what did I just read")
 	requests := f.model.requests()
 	if len(requests) != 1 {
 		t.Fatalf("model requests = %d, want 1", len(requests))
@@ -475,18 +542,8 @@ func TestActivityTypedLocalOnlyResultStaysOnTheDashboard(t *testing.T) {
 // disable reached through a normal Control phrase.
 func TestActivityTypedDisabledToolShowsHelpfulOutcome(t *testing.T) {
 	f := newActivityFixture(t)
-	rec := f.ask("what's the weather")
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("POST = %d, body = %s", rec.Code, rec.Body.String())
-	}
-	body := f.page("/activity?request=" + url.QueryEscape(requestIDFrom(t, rec)))
-	for _, want := range []string{
-		"weather.current", "That tool is turned off.", "Failed", "Fast path",
-	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("page lacks %q", want)
-		}
-	}
+	posted, _ := f.mustAsk("what's the weather")
+	requireRow(t, posted.Just, "weather.current", "That tool is turned off.", "Failed", "Fast path")
 }
 
 // TestActivityTypedConfirmationYesAndNo drives the real Agent loop with a
@@ -500,37 +557,19 @@ func TestActivityTypedConfirmationYesAndNo(t *testing.T) {
 		activityText("Okay."),
 	)
 
-	if rec := f.ask("ask the agent send the mail"); rec.Code != http.StatusSeeOther {
-		t.Fatalf("first ask = %d", rec.Code)
-	}
-	pendingPage := f.page("/activity")
-	for _, want := range []string{"Agent path", "Confirmation pending", "Confirmation", "mail.send"} {
-		if !strings.Contains(pendingPage, want) {
-			t.Errorf("pending page lacks %q", want)
-		}
+	pending, _ := f.mustAsk("ask the agent send the mail")
+	requireRow(t, pending.Just, "Agent path", "mail.send")
+	if !pending.Just.Pending {
+		t.Errorf("first turn Pending = false, want a pending Confirmation: %+v", pending.Just)
 	}
 
-	rec := f.ask("yes")
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("yes = %d", rec.Code)
-	}
-	yesPage := f.page("/activity?request=" + url.QueryEscape(requestIDFrom(t, rec)))
-	for _, want := range []string{"Sent.", "Confirmation", "mail.send"} {
-		if !strings.Contains(yesPage, want) {
-			t.Errorf("yes page lacks %q", want)
-		}
-	}
+	yes, _ := f.mustAsk("yes")
+	requireRow(t, yes.Just, "Sent.", "Confirmation", "mail.send")
 
-	if rec := f.ask("ask the agent send the mail"); rec.Code != http.StatusSeeOther {
-		t.Fatalf("second ask = %d", rec.Code)
-	}
-	rec = f.ask("no")
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("no = %d", rec.Code)
-	}
-	noPage := f.page("/activity?request=" + url.QueryEscape(requestIDFrom(t, rec)))
-	if !strings.Contains(noPage, "Cancelled.") {
-		t.Errorf("no page lacks the cancellation lead-in: %s", noPage)
+	f.mustAsk("ask the agent send the mail")
+	no, _ := f.mustAsk("no")
+	if !strings.Contains(no.Just.Reply, "Cancelled.") {
+		t.Errorf("no reply lacks the cancellation lead-in: %+v", no.Just)
 	}
 	// Only the clear yes may have run the outward-facing handler.
 	if f.sent != 1 {
@@ -547,25 +586,16 @@ func TestActivityTypedPermissionTighteningConfirmsAndKeepsLocalOnly(t *testing.T
 	if _, err := f.policy.Set(f.ctx, "secret.read", toolpolicy.Update{Permission: &confirm}); err != nil {
 		t.Fatalf("tighten secret.read: %v", err)
 	}
-	if rec := f.ask("read my secret"); rec.Code != http.StatusSeeOther {
-		t.Fatalf("ask = %d", rec.Code)
+	pending, _ := f.mustAsk("read my secret")
+	if !pending.Just.Pending {
+		t.Fatalf("permission tightening did not leave a pending Confirmation: %+v", pending.Just)
 	}
-	pending := f.page("/activity")
-	for _, want := range []string{"Confirmation pending", "secret.read"} {
-		if !strings.Contains(pending, want) {
-			t.Fatalf("permission tightening page lacks %q:\n%s", want, pending)
-		}
-	}
+	requireRow(t, pending.Just, "secret.read")
 
-	rec := f.ask("yes")
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("yes = %d", rec.Code)
-	}
-	body := f.page("/activity?request=" + url.QueryEscape(requestIDFrom(t, rec)))
-	for _, want := range []string{"The launch code is 1234.", "Confirmation", "Local-only Tool"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("page lacks %q", want)
-		}
+	yes, _ := f.mustAsk("yes")
+	requireRow(t, yes.Just, "The launch code is 1234.", "Confirmation")
+	if !yes.Just.LocalOnly {
+		t.Errorf("confirmed result lost its Local-only flag: %+v", yes.Just)
 	}
 }
 
@@ -585,65 +615,67 @@ func TestActivityMeasuredResponseLatencyComesOnlyFromReplyAudio(t *testing.T) {
 	timeline.Complete(f.logger, latency.OutcomeOK, nil)
 
 	// And one typed turn, which has no speech start or reply audio.
-	if rec := f.ask("what time is it"); rec.Code != http.StatusSeeOther {
-		t.Fatalf("typed ask = %d", rec.Code)
+	f.mustAsk("what time is it")
+	v, _ := f.view("/api/ui/activity")
+	bySource := map[string]activityRow{}
+	for _, row := range v.Requests {
+		bySource[row.Source] = row
 	}
-	body := f.page("/activity")
-	for _, want := range []string{"Voice", "10.0 s", "Not measured", "OK"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("page lacks %q", want)
-		}
+	voice, typed := bySource["voice"], bySource["dashboard"]
+	if !voice.Measured || voice.Response != "10.0 s" || voice.OutcomeText != "OK" || voice.SourceLabel != "Voice" {
+		t.Errorf("voice row = %+v, want a measured 10.0 s Response latency", voice)
+	}
+	if typed.Measured || typed.Response != "Not measured" {
+		t.Errorf("typed row = %+v, want Not measured", typed)
 	}
 }
 
-// TestActivityTypedRequestErrorsHelpAndPreserveDraft covers the bounded form
-// and the two response modes.
+// TestActivityTypedRequestErrorsHelpAndPreserveDraft covers the bounded form:
+// a failure answers the view as JSON with the real status code, the error text
+// and the rejected draft.
 func TestActivityTypedRequestErrorsHelpAndPreserveDraft(t *testing.T) {
 	f := newActivityFixture(t)
 
-	// Plain form: 400 with the full page and the rejected text preserved.
 	rec := f.ask("   ")
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("blank POST = %d, want 400", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "Type a request first.") {
-		t.Error("blank error missing")
+	var v activityResp
+	decodeJSON(t, rec, &v)
+	if v.Error != "Type a request first." || v.Just != nil {
+		t.Errorf("blank view = error %q just %+v", v.Error, v.Just)
 	}
+
 	longText := strings.Repeat("x", 2001)
 	rec = f.ask(longText)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("long POST = %d, want 400", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "2000 characters") || !strings.Contains(rec.Body.String(), longText) {
-		t.Error("long error or preserved draft missing")
+	v = activityResp{}
+	decodeJSON(t, rec, &v)
+	if !strings.Contains(v.Error, "2000 characters") || v.Draft != longText {
+		t.Errorf("long view error = %q, draft preserved = %v", v.Error, v.Draft == longText)
 	}
+	if f.store.Len() != 0 {
+		t.Errorf("rejected requests reached the pipeline: %d entries", f.store.Len())
+	}
+}
 
-	// htmx: a 200 fragment with the same alert, never a full page.
-	req := f.form("")
-	req.Header.Set("HX-Request", "true")
-	rec = serve(f.handler, req)
+// TestActivityTypedSuccessAnswersJSONWithoutARedirect pins the write contract
+// the React app relies on: 200, the refreshed view, no redirect.
+func TestActivityTypedSuccessAnswersJSONWithoutARedirect(t *testing.T) {
+	f := newActivityFixture(t)
+	rec := f.ask("what time is it")
 	if rec.Code != http.StatusOK {
-		t.Fatalf("htmx error = %d, want 200", rec.Code)
-	}
-	if strings.Contains(rec.Body.String(), "<html") || !strings.Contains(rec.Body.String(), `id="activity-content"`) {
-		t.Error("htmx error was not a content fragment")
-	}
-	if !strings.Contains(rec.Body.String(), `role="alert"`) {
-		t.Error("htmx error lacks an alert")
-	}
-
-	// htmx success: a 200 content fragment with the reply, no redirect.
-	req = f.form("what time is it")
-	req.Header.Set("HX-Request", "true")
-	rec = serve(f.handler, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("htmx success = %d", rec.Code)
+		t.Fatalf("success = %d, want 200", rec.Code)
 	}
 	if rec.Header().Get("Location") != "" {
-		t.Error("htmx success redirected")
+		t.Error("success redirected")
 	}
-	if !strings.Contains(rec.Body.String(), "It&#39;s 3:04 PM.") || !strings.Contains(rec.Body.String(), `id="activity-content"`) {
-		t.Errorf("htmx success lacks the reply fragment: %s", rec.Body.String())
+	var v activityResp
+	decodeJSON(t, rec, &v)
+	if v.Just == nil || v.Just.Reply != "It's 3:04 PM." || len(v.Requests) != 1 || v.Draft != "" {
+		t.Errorf("view = %+v", v)
 	}
 }
 
@@ -691,8 +723,8 @@ func TestActivityTypedOverlappingRequestsSerialize(t *testing.T) {
 	}
 	wg.Wait()
 	for i, code := range codes {
-		if code != http.StatusSeeOther {
-			t.Fatalf("request %d status = %d, want 303", i, code)
+		if code != http.StatusOK {
+			t.Fatalf("request %d status = %d, want 200", i, code)
 		}
 	}
 	if got := f.riser.maxConcurrent(); got != 1 {
@@ -717,54 +749,49 @@ func TestActivityHistoryIsBoundedToTheDisplayWindow(t *testing.T) {
 		})
 	}
 	handler := newHandler(t, dashboard.Options{Activity: store})
-	rec := serve(handler, request(http.MethodGet, "/activity", owner))
+	var v activityResp
+	rec := getJSON(t, handler, "/api/ui/activity", &v)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d", rec.Code)
 	}
-	body := rec.Body.String()
-	if got := strings.Count(body, "for request req-"); got != 50 {
-		t.Fatalf("displayed requests = %d, want 50", got)
+	if len(v.Requests) != 50 || v.DisplayLimit != 50 {
+		t.Fatalf("displayed requests = %d (limit %d), want 50", len(v.Requests), v.DisplayLimit)
 	}
-	for _, want := range []string{"request req-120", "request req-071"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("page lacks %q", want)
+	ids := map[string]bool{}
+	for _, row := range v.Requests {
+		ids[row.ID] = true
+	}
+	for _, want := range []string{"req-120", "req-071"} {
+		if !ids[want] {
+			t.Errorf("view lacks %q", want)
 		}
 	}
-	for _, absent := range []string{"request req-070", "request req-001"} {
-		if strings.Contains(body, absent) {
-			t.Errorf("page includes evicted %q", absent)
+	for _, absent := range []string{"req-070", "req-001"} {
+		if ids[absent] {
+			t.Errorf("view includes evicted %q", absent)
 		}
 	}
 }
 
-// TestActivityEscapesUserAndToolText keeps both the transcript and a hostile
-// Local-only result inert in the page.
-func TestActivityEscapesUserAndToolText(t *testing.T) {
+// TestActivityHostileUserAndToolTextRoundTripsInertly keeps both the
+// transcript and a hostile Local-only result exact in the JSON and free of a
+// raw script tag, so a client that injected the body would still be inert.
+func TestActivityHostileUserAndToolTextRoundTripsInertly(t *testing.T) {
 	f := newActivityFixture(t)
-	rec := f.ask("read the hostile secret")
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("ask = %d", rec.Code)
+	posted, body := f.mustAsk("read the hostile secret")
+	const hostile = `<script>alert(1)</script> & "quoted"`
+	if posted.Just.Reply != hostile {
+		t.Errorf("hostile Tool reply = %q, want it unchanged", posted.Just.Reply)
 	}
-	body := f.page("/activity?request=" + url.QueryEscape(requestIDFrom(t, rec)))
-	if !strings.Contains(body, "&lt;script&gt;alert(1)&lt;/script&gt;") {
-		t.Error("hostile Tool result was not escaped")
-	}
-	if strings.Contains(body, "<script>alert(1)</script>") {
-		t.Error("hostile Tool result rendered as HTML")
-	}
+	noRawScript(t, body)
 
-	// The transcript is escaped the same way; the model's answer is scripted
-	// so this remains a real pipeline turn.
+	// The model's answer is scripted so this remains a real pipeline turn.
 	f.model.add(activityText("I won't run that."))
-	rec = f.ask("<b>hostile</b>")
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("ask = %d", rec.Code)
+	posted, body = f.mustAsk("<b>hostile</b>")
+	if posted.Just.Transcript != "<b>hostile</b>" {
+		t.Errorf("hostile transcript = %q, want it unchanged", posted.Just.Transcript)
 	}
-	body = f.page("/activity?request=" + url.QueryEscape(requestIDFrom(t, rec)))
-	if !strings.Contains(body, "&lt;b&gt;hostile&lt;/b&gt;") {
-		t.Error("hostile transcript was not escaped")
-	}
-	if strings.Contains(body, "<b>hostile</b>") {
-		t.Error("hostile transcript rendered as HTML")
+	if strings.Contains(body, "<b>") {
+		t.Errorf("body carries a raw tag: %s", body)
 	}
 }

@@ -72,9 +72,58 @@ func newPersonasFixture(t *testing.T) *personasFixture {
 	return &personasFixture{t: t, ctx: ctx, handler: handler, settings: svc, personas: personas}
 }
 
-func (f *personasFixture) get(target string) *httptest.ResponseRecorder {
+// personasResp decodes the Persona view the tests assert on (encoding/json
+// default field names).
+type personasResp struct {
+	Flash      string
+	Error      string
+	HasService bool
+	Active     *struct {
+		Name, Voice, EffectiveVoice string
+		Exact                       bool
+		Notes                       []string
+	}
+	New  personaForm
+	Rows []struct {
+		Name, Voice, VoiceStatus string
+		Active                   bool
+		SelectAction             string
+		Edit                     personaForm
+	}
+}
+
+type personaForm struct {
+	Action, Name, Voice, Personality, Filler, Unavailable string
+	NameLocked                                            bool
+	Voices                                                []struct {
+		Name, Label string
+		Selected    bool
+	}
+}
+
+func (f *personasFixture) get(target string) (personasResp, *httptest.ResponseRecorder) {
 	f.t.Helper()
-	return serve(f.handler, request(http.MethodGet, target, owner))
+	var v personasResp
+	rec := getJSON(f.t, f.handler, target, &v)
+	return v, rec
+}
+
+func (f *personasFixture) view() personasResp {
+	f.t.Helper()
+	v, rec := f.get("/api/ui/personas")
+	if rec.Code != http.StatusOK {
+		f.t.Fatalf("GET personas = %d: %s", rec.Code, rec.Body.String())
+	}
+	return v
+}
+
+// postView posts a form and decodes the answered view.
+func (f *personasFixture) postView(target string, values url.Values) (personasResp, *httptest.ResponseRecorder) {
+	f.t.Helper()
+	rec := f.post(target, values)
+	var v personasResp
+	decodeJSON(f.t, rec, &v)
+	return v, rec
 }
 
 func (f *personasFixture) post(target string, values url.Values) *httptest.ResponseRecorder {
@@ -101,38 +150,31 @@ func personaValues(name, voice, personality string) url.Values {
 	}
 }
 
-func TestPersonasPageRequiresIdentityAndListsTheLibrary(t *testing.T) {
+func TestPersonasReadRequiresIdentityAndListsTheLibrary(t *testing.T) {
 	f := newPersonasFixture(t)
-	if rec := serve(f.handler, request(http.MethodGet, "/personas", "")); rec.Code != http.StatusForbidden {
+	if rec := serve(f.handler, request(http.MethodGet, "/api/ui/personas", "")); rec.Code != http.StatusForbidden {
 		t.Fatalf("no identity status = %d, want 403", rec.Code)
 	}
-	rec := f.get("/personas")
+	v, rec := f.get("/api/ui/personas")
 	if rec.Code != http.StatusOK {
-		t.Fatalf("GET /personas = %d", rec.Code)
+		t.Fatalf("GET personas = %d", rec.Code)
 	}
-	body := rec.Body.String()
-	for _, want := range []string{
-		"Personas", `href="/personas" aria-current="page"`,
-		"No persona is selected", `action="/personas"`,
-		`name="personality"`, `name="voice"`, "Create persona",
-	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("page is missing %q", want)
-		}
+	if !v.HasService || v.Active != nil || len(v.Rows) != 0 {
+		t.Errorf("empty library view = %+v, want a service with no active persona", v)
 	}
-	// The nav keeps every existing page link.
-	for _, link := range []string{"/health", "/sounds", "/voices", "/secrets", "/settings"} {
-		if !strings.Contains(body, `href="`+link+`"`) {
-			t.Errorf("nav lost %s", link)
-		}
+	if v.New.Action != "/personas" || len(v.New.Voices) == 0 {
+		t.Errorf("create form = %+v, want the create action and a voice list", v.New)
+	}
+	if v.New.Voice != "alba" || v.New.Filler != wording.DefaultFiller {
+		t.Errorf("create form starts from voice %q filler %q, want the live values", v.New.Voice, v.New.Filler)
 	}
 }
 
 func TestPersonaCreateEditSelectAndResetJourney(t *testing.T) {
 	f := newPersonasFixture(t)
-	rec := f.post("/personas", personaValues("GLaDOS", "jarvis", "You are GLaDOS: dry and precise."))
-	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/personas?flash=persona-created" {
-		t.Fatalf("create = %d %q", rec.Code, rec.Header().Get("Location"))
+	created, rec := f.postView("/personas", personaValues("GLaDOS", "jarvis", "You are GLaDOS: dry and precise."))
+	if rec.Code != http.StatusOK || !strings.Contains(created.Flash, "Persona created") {
+		t.Fatalf("create = %d flash %q", rec.Code, created.Flash)
 	}
 	if _, ok := f.personas.Get("glados"); !ok {
 		t.Fatal("create did not persist GLaDOS")
@@ -142,17 +184,19 @@ func TestPersonaCreateEditSelectAndResetJourney(t *testing.T) {
 		t.Fatalf("voice after create = %q, want alba", got)
 	}
 
-	page := f.get("/personas?flash=persona-created").Body.String()
-	for _, want := range []string{"Persona created", "GLaDOS", "jarvis", "Select this persona"} {
-		if !strings.Contains(page, want) {
-			t.Errorf("page after create is missing %q", want)
-		}
+	page, _ := f.get("/api/ui/personas?flash=persona-created")
+	if !strings.Contains(page.Flash, "Persona created") {
+		t.Errorf("?flash= read lacks the notice: %q", page.Flash)
+	}
+	if len(page.Rows) != 1 || page.Rows[0].Name != "GLaDOS" || page.Rows[0].Voice != "jarvis" ||
+		page.Rows[0].SelectAction != "/personas/GLaDOS/select" || page.Rows[0].Active {
+		t.Errorf("rows after create = %+v", page.Rows)
 	}
 
 	// Edit keeps the name and replaces the prompt.
 	edited := personaValues("ignored", "alba", "You are GLaDOS, now polite.")
 	rec = f.post("/personas/GLaDOS", edited)
-	if rec.Code != http.StatusSeeOther {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("edit = %d %s", rec.Code, rec.Body.String())
 	}
 	if p, _ := f.personas.Get("GLaDOS"); p.Voice != "alba" || !strings.Contains(p.Personality, "polite") {
@@ -160,9 +204,9 @@ func TestPersonaCreateEditSelectAndResetJourney(t *testing.T) {
 	}
 
 	// Select applies the whole bundle, including the edited voice/wording.
-	rec = f.post("/personas/GLaDOS/select", nil)
-	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/personas?flash=persona-selected" {
-		t.Fatalf("select = %d %q", rec.Code, rec.Header().Get("Location"))
+	selected, rec := f.postView("/personas/GLaDOS/select", nil)
+	if rec.Code != http.StatusOK || !strings.HasPrefix(selected.Flash, "Selected.") {
+		t.Fatalf("select = %d flash %q", rec.Code, selected.Flash)
 	}
 	values := f.settings.GetMany(voicelib.KeyName, wording.FillerKey, wording.UnavailableKey, persona.ActiveKey)
 	for key, want := range map[string]string{
@@ -175,17 +219,18 @@ func TestPersonaCreateEditSelectAndResetJourney(t *testing.T) {
 			t.Errorf("%s = %v, want %q", key, got, want)
 		}
 	}
-	activePage := f.get("/personas").Body.String()
-	for _, want := range []string{"Active</span>", "Exact bundle", "Clear the active persona"} {
-		if !strings.Contains(activePage, want) {
-			t.Errorf("active page is missing %q", want)
-		}
+	active := f.view()
+	if active.Active == nil || active.Active.Name != "GLaDOS" || !active.Active.Exact || len(active.Active.Notes) != 0 {
+		t.Errorf("active summary = %+v, want the exact GLaDOS bundle", active.Active)
+	}
+	if len(active.Rows) != 1 || !active.Rows[0].Active {
+		t.Errorf("rows = %+v, want GLaDOS marked active", active.Rows)
 	}
 
 	// Clearing removes only the marker; the applied bundle stays.
-	rec = f.post("/personas/active/reset", nil)
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("reset = %d", rec.Code)
+	cleared, rec := f.postView("/personas/active/reset", nil)
+	if rec.Code != http.StatusOK || cleared.Active != nil {
+		t.Fatalf("reset = %d active %+v", rec.Code, cleared.Active)
 	}
 	if got := f.settings.String(persona.ActiveKey); got != "" {
 		t.Fatalf("persona.active = %q after reset", got)
@@ -231,13 +276,15 @@ func TestPersonaValidationRejectsSafelyAndPreservesInput(t *testing.T) {
 			if rec.Code != tc.status {
 				t.Fatalf("status = %d, want %d", rec.Code, tc.status)
 			}
-			body := rec.Body.String()
-			if !strings.Contains(body, `role="alert"`) || !strings.Contains(body, tc.want) {
-				t.Fatalf("error body is missing the alert or %q:\n%s", tc.want, body)
+			var v personasResp
+			decodeJSON(t, rec, &v)
+			if !strings.Contains(v.Error, tc.want) {
+				t.Fatalf("error %q is missing %q", v.Error, tc.want)
 			}
-			// The rejected create form keeps what the user typed.
-			if value := tc.values.Get("personality"); value != "" && !strings.Contains(body, htmlEscape(value)) {
-				t.Errorf("rejected input %q was not preserved escaped", value)
+			// The rejected create form keeps what the user typed, verbatim.
+			if v.New.Name != tc.values.Get("name") || v.New.Personality != tc.values.Get("personality") ||
+				v.New.Voice != tc.values.Get("voice") || v.New.Filler != tc.values.Get("filler") {
+				t.Errorf("rejected create form = %+v, want the submitted input", v.New)
 			}
 			if len(f.personas.List()) != 0 {
 				t.Fatal("a rejected create wrote a row")
@@ -245,61 +292,67 @@ func TestPersonaValidationRejectsSafelyAndPreservesInput(t *testing.T) {
 		})
 	}
 
-	if rec := f.post("/personas", personaValues("GLaDOS", "alba", "You are GLaDOS.")); rec.Code != http.StatusSeeOther {
+	if rec := f.post("/personas", personaValues("GLaDOS", "alba", "You are GLaDOS.")); rec.Code != http.StatusOK {
 		t.Fatalf("valid create = %d", rec.Code)
 	}
-	rec := f.post("/personas", personaValues("glados", "jarvis", "Duplicate."))
+	dup, rec := f.postView("/personas", personaValues("glados", "jarvis", "Duplicate."))
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("duplicate status = %d, want 409", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "already exists") {
-		t.Fatalf("duplicate body has no safe message:\n%s", rec.Body.String())
+	if !strings.Contains(dup.Error, "already exists") {
+		t.Fatalf("duplicate error has no safe message: %q", dup.Error)
 	}
 }
 
-func TestPersonaPageEscapesHostileValues(t *testing.T) {
+func TestPersonaHostileValuesRoundTripInertly(t *testing.T) {
 	f := newPersonasFixture(t)
 	// A slash is rejected in a name, so the hostile name uses angle brackets
 	// only; the prompt exercises the script payload.
 	hostile := `<script>alert("x")</script>`
 	values := personaValues("<b>evil", "alba", hostile)
-	if rec := f.post("/personas", values); rec.Code != http.StatusSeeOther {
+	if rec := f.post("/personas", values); rec.Code != http.StatusOK {
 		t.Fatalf("create hostile = %d %s", rec.Code, rec.Body.String())
 	}
-	body := f.get("/personas").Body.String()
-	if strings.Contains(body, "<script>alert") || strings.Contains(body, "<b>evil") {
-		t.Fatal("hostile persona content rendered unescaped")
+	rec := serve(f.handler, request(http.MethodGet, "/api/ui/personas", owner))
+	var v personasResp
+	decodeJSON(t, rec, &v)
+	if len(v.Rows) != 1 || v.Rows[0].Name != "<b>evil" || v.Rows[0].Edit.Personality != hostile {
+		t.Fatalf("hostile persona did not round-trip exactly: %+v", v.Rows)
 	}
-	for _, want := range []string{"&lt;script&gt;alert", "&lt;b&gt;evil"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("escaped content is missing %q", want)
-		}
+	body := rec.Body.String()
+	noRawScript(t, body)
+	if strings.Contains(body, "<b>") {
+		t.Error("hostile persona name is a raw tag in the body")
 	}
 }
 
 func TestPersonaDriftIsReportedAfterAManualOverride(t *testing.T) {
 	f := newPersonasFixture(t)
-	if rec := f.post("/personas", personaValues("GLaDOS", "jarvis", "You are GLaDOS.")); rec.Code != http.StatusSeeOther {
+	if rec := f.post("/personas", personaValues("GLaDOS", "jarvis", "You are GLaDOS.")); rec.Code != http.StatusOK {
 		t.Fatalf("create = %d", rec.Code)
 	}
-	if rec := f.post("/personas/GLaDOS/select", nil); rec.Code != http.StatusSeeOther {
+	if rec := f.post("/personas/GLaDOS/select", nil); rec.Code != http.StatusOK {
 		t.Fatalf("select = %d", rec.Code)
 	}
 	if _, err := f.settings.Set(f.ctx, voicelib.KeyName, "alba"); err != nil {
 		t.Fatalf("override voice: %v", err)
 	}
-	body := f.get("/personas").Body.String()
+	v := f.view()
+	if v.Active == nil || v.Active.Exact {
+		t.Fatalf("active = %+v, want a drifted (not exact) persona", v.Active)
+	}
+	notes := strings.Join(v.Active.Notes, "\n")
 	for _, want := range []string{
 		"The voice is set to alba instead of jarvis.",
 		"Select the persona again to apply its stored voice and wording.",
 	} {
-		if !strings.Contains(body, want) {
-			t.Errorf("drift page is missing %q", want)
+		if !strings.Contains(notes, want) {
+			t.Errorf("drift notes lack %q: %q", want, notes)
 		}
 	}
 }
 
-func TestPersonaFormsRequireSameOriginAndWorkAsHTMXFragments(t *testing.T) {
+func TestPersonaFormsRequireIdentityAndSameOrigin(t *testing.T) {
 	f := newPersonasFixture(t)
 	// No identity.
 	req := httptest.NewRequest(http.MethodPost, "/personas", strings.NewReader(personaValues("X", "alba", "Prompt.").Encode()))
@@ -321,43 +374,26 @@ func TestPersonaFormsRequireSameOriginAndWorkAsHTMXFragments(t *testing.T) {
 	if rec := serve(f.handler, cross); rec.Code != http.StatusForbidden {
 		t.Fatalf("cross-origin status = %d, want 403", rec.Code)
 	}
-
-	// An htmx create swaps the content fragment, not a whole document.
-	req = httptest.NewRequest(http.MethodPost, "/personas", strings.NewReader(personaValues("GLaDOS", "alba", "You are GLaDOS.").Encode()))
-	req.Host = "127.0.0.1:8082"
-	req.RemoteAddr = "127.0.0.1:12345"
-	req.Header.Set("Tailscale-User-Login", owner)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Sec-Fetch-Site", "same-origin")
-	req.Header.Set("HX-Request", "true")
-	rec := serve(f.handler, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("htmx create status = %d", rec.Code)
-	}
-	body := strings.TrimSpace(rec.Body.String())
-	if strings.Contains(body, "<html") || !strings.HasPrefix(body, `<div id="personas-content"`) {
-		t.Fatalf("htmx body is not the personas fragment:\n%.200s", body)
-	}
-
-	// An htmx validation error also returns a 200 fragment with the alert.
-	req = httptest.NewRequest(http.MethodPost, "/personas", strings.NewReader(personaValues("", "alba", "").Encode()))
-	req.Host = "127.0.0.1:8082"
-	req.RemoteAddr = "127.0.0.1:12345"
-	req.Header.Set("Tailscale-User-Login", owner)
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	req.Header.Set("Sec-Fetch-Site", "same-origin")
-	req.Header.Set("HX-Request", "true")
-	rec = serve(f.handler, req)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `role="alert"`) {
-		t.Fatalf("htmx error = %d, want a 200 alert fragment", rec.Code)
+	if len(f.personas.List()) != 0 {
+		t.Fatal("a rejected request created a persona")
 	}
 }
 
-// htmlEscape mirrors html/template's escaping for the small characters used in
-// the preserved-input assertion.
-func htmlEscape(text string) string {
-	replacer := strings.NewReplacer(
-		"&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&#34;", "'", "&#39;",
-	)
-	return replacer.Replace(text)
+// TestPersonaWritesAnswerJSONWithTheRealStatus pins the write contract the
+// React app relies on: success is 200 with the refreshed view, a validation
+// error is the view with the real 4xx status and an Error.
+func TestPersonaWritesAnswerJSONWithTheRealStatus(t *testing.T) {
+	f := newPersonasFixture(t)
+	v, rec := f.postView("/personas", personaValues("GLaDOS", "alba", "You are GLaDOS."))
+	if rec.Code != http.StatusOK || rec.Header().Get("Location") != "" {
+		t.Fatalf("create status = %d", rec.Code)
+	}
+	if len(v.Rows) != 1 || v.Rows[0].Name != "GLaDOS" || v.Error != "" {
+		t.Fatalf("create view = %+v", v)
+	}
+
+	v, rec = f.postView("/personas", personaValues("", "alba", ""))
+	if rec.Code != http.StatusBadRequest || v.Error == "" {
+		t.Fatalf("validation error = %d %q, want 400 with an error", rec.Code, v.Error)
+	}
 }

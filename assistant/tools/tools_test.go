@@ -254,7 +254,7 @@ func TestModuleConfigRejectsInvalidValues(t *testing.T) {
 	}{
 		{"audio step out of range", "tools:\n  audio:\n    step_percent: 101\n"},
 		{"empty timer alert", "tools:\n  timer:\n    alert_text: \"  \"\n"},
-		{"zero weather timeout", "tools:\n  weather:\n    timeout: 0s\n"},
+		{"zero weather fallback delay", "tools:\n  weather:\n    fallback_delay: 0s\n"},
 		{"empty weather url", "tools:\n  weather:\n    forecast_url: \"\"\n"},
 	}
 	for _, tt := range tests {
@@ -302,7 +302,8 @@ tools:
   weather:
     geocoding_url: %q
     forecast_url: %q
-`, geo.URL, forecast.URL))); err != nil {
+    fallback_url: %q
+`, geo.URL, forecast.URL, forecast.URL))); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 	results := set.Health(context.Background())
@@ -337,7 +338,8 @@ tools:
   weather:
     geocoding_url: %q
     forecast_url: %q
-`, bad.URL, bad.URL))); err != nil {
+    fallback_url: %q
+`, bad.URL, bad.URL, bad.URL))); err != nil {
 		t.Fatalf("RegisterAll: %v", err)
 	}
 	for _, result := range set.Health(context.Background()) {

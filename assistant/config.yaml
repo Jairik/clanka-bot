@@ -86,12 +86,17 @@ tools:
   # Each Tool module reads its own tools.<name> block; an omitted key or block
   # uses the code defaults shown here.
   weather:
+    # Optional primary provider. The key is WEATHERAPI_API_KEY in .env or
+    # Dashboard > Secrets; without it the two keyless providers still answer.
+    weatherapi_url: "https://api.weatherapi.com/v1/current.json"
     geocoding_url: "https://geocoding-api.open-meteo.com/v1/search"
     forecast_url: "https://api.open-meteo.com/v1/forecast"
-    # Per upstream call.
-    timeout: 1500ms
-    # Geocode plus forecast together.
-    budget: 2s
+    # Independent keyless fallback; it resolves the city itself.
+    fallback_url: "https://wttr.in"
+    # Start the next provider after this long if one is still pending.
+    fallback_delay: 250ms
+    # All providers together, leaving time for endpointing, STT and TTS.
+    budget: 1s
   audio:
     # One "louder" or "quieter" step in percent.
     step_percent: 10

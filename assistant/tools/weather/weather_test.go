@@ -13,6 +13,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/tools/weather"
+	"gopkg.in/yaml.v3"
 )
 
 func berlin() location.Location {
@@ -77,6 +78,12 @@ func execute(t *testing.T, def tool.Tool[weather.In, weather.Out], in weather.In
 		t.Fatalf("result is %T, want weather.Out", result)
 	}
 	return out
+}
+
+// fixedKey is the optional WeatherAPI key resolver the module builds in
+// production; tests pin one value.
+func fixedKey(key string) func() (string, bool) {
+	return func() (string, bool) { return key, true }
 }
 
 func TestWeatherAnswersForTheCurrentLocation(t *testing.T) {
@@ -220,10 +227,11 @@ func TestWeatherBoundsAStalledUpstreamAndSpeaksTruthfully(t *testing.T) {
 	defer forecast.Close()
 
 	def := weather.New(weather.Deps{
-		GeocodingURL: geo.URL,
-		ForecastURL:  forecast.URL,
-		Timeout:      100 * time.Millisecond,
-		Budget:       250 * time.Millisecond,
+		GeocodingURL:  geo.URL,
+		ForecastURL:   forecast.URL,
+		FallbackURL:   forecast.URL,
+		FallbackDelay: 100 * time.Millisecond,
+		Budget:        250 * time.Millisecond,
 	})
 	reg := tool.NewRegistry(time.Second)
 	if err := tool.Add(reg, def); err != nil {
@@ -253,7 +261,8 @@ func TestWeatherReportsTransient503WithoutInventingAnAnswer(t *testing.T) {
 	}))
 	defer forecast.Close()
 
-	def := weather.New(weather.Deps{GeocodingURL: geo.URL, ForecastURL: forecast.URL})
+	// Keep both failures local so the ordinary suite never contacts a live provider.
+	def := weather.New(weather.Deps{GeocodingURL: geo.URL, ForecastURL: forecast.URL, FallbackURL: forecast.URL})
 	reg := tool.NewRegistry(time.Second)
 	if err := tool.Add(reg, def); err != nil {
 		t.Fatalf("Add: %v", err)
@@ -281,7 +290,13 @@ func TestWeatherCachesGeocodeAndForecastBriefly(t *testing.T) {
 	}))
 	defer forecast.Close()
 
-	def := weather.New(weather.Deps{GeocodingURL: geo.URL, ForecastURL: forecast.URL})
+	// A healthy primary must never contact the fallback provider.
+	fallback := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		t.Error("healthy primary contacted fallback")
+		http.Error(w, "unexpected fallback", http.StatusInternalServerError)
+	}))
+	defer fallback.Close()
+	def := weather.New(weather.Deps{GeocodingURL: geo.URL, ForecastURL: forecast.URL, FallbackURL: fallback.URL})
 	first := execute(t, def, weather.In{City: "Berlin"})
 	second := execute(t, def, weather.In{City: "Berlin"})
 	if first != second {
@@ -296,13 +311,78 @@ func TestWeatherCachesGeocodeAndForecastBriefly(t *testing.T) {
 // tools.weather section falls back to.
 func TestModuleDefaultsMatchTheShippedBounds(t *testing.T) {
 	cfg := weather.DefaultConfig()
-	if cfg.GeocodingURL != weather.DefaultGeocodingURL || cfg.ForecastURL != weather.DefaultForecastURL {
-		t.Fatalf("default upstreams = %q / %q", cfg.GeocodingURL, cfg.ForecastURL)
+	if cfg.WeatherAPIURL != weather.DefaultWeatherAPIURL || cfg.GeocodingURL != weather.DefaultGeocodingURL ||
+		cfg.ForecastURL != weather.DefaultForecastURL || cfg.FallbackURL != weather.DefaultFallbackURL {
+		t.Fatalf("default upstreams = %q / %q / %q / %q",
+			cfg.WeatherAPIURL, cfg.GeocodingURL, cfg.ForecastURL, cfg.FallbackURL)
 	}
-	if cfg.Timeout.Duration() != 1500*time.Millisecond {
-		t.Errorf("timeout = %s, want 1.5s", cfg.Timeout.Duration())
+	if cfg.FallbackDelay.Duration() != 250*time.Millisecond {
+		t.Errorf("fallback_delay = %s, want 250ms", cfg.FallbackDelay.Duration())
 	}
-	if cfg.Budget.Duration() != 2*time.Second {
-		t.Errorf("budget = %s, want 2s", cfg.Budget.Duration())
+	if cfg.Budget.Duration() != time.Second {
+		t.Errorf("budget = %s, want 1s", cfg.Budget.Duration())
 	}
+}
+
+// TestModuleDeclaresTheOptionalWeatherAPIKey pins the secret the write-only
+// store may hold and the Dashboard Secrets page lists.
+func TestModuleDeclaresTheOptionalWeatherAPIKey(t *testing.T) {
+	if weather.SecretName != "WEATHERAPI_API_KEY" {
+		t.Fatalf("SecretName = %q", weather.SecretName)
+	}
+	names := weather.NewModule().RequiredSecrets()
+	if len(names) != 1 || names[0] != weather.SecretName {
+		t.Fatalf("RequiredSecrets = %v, want [%s]", names, weather.SecretName)
+	}
+}
+
+// TestModuleSendsTheResolvedSecret proves the module passes the declared secret
+// from the shared resolver to the WeatherAPI provider, not a config value.
+func TestModuleSendsTheResolvedSecret(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.URL.Query().Get("key"); got != "resolved-secret" {
+			t.Errorf("WeatherAPI key = %q, want the resolved secret", got)
+		}
+		fmt.Fprint(w, weatherAPIJSON)
+	}))
+	defer api.Close()
+	failed := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "unavailable", http.StatusServiceUnavailable)
+	}))
+	defer failed.Close()
+
+	module := weather.NewModule()
+	var node yaml.Node
+	if err := node.Encode(map[string]any{
+		"weatherapi_url": api.URL,
+		"geocoding_url":  failed.URL,
+		"forecast_url":   failed.URL,
+		"fallback_url":   failed.URL,
+	}); err != nil {
+		t.Fatalf("encode tools.weather: %v", err)
+	}
+	if err := module.Configure(&node); err != nil {
+		t.Fatalf("configure tools.weather: %v", err)
+	}
+	reg := tool.NewRegistry(time.Second)
+	if err := module.Register(reg, tool.Deps{Secrets: fakeSecrets{key: "resolved-secret"}}); err != nil {
+		t.Fatalf("register weather: %v", err)
+	}
+	result, err := reg.Execute(context.Background(), weather.Name, json.RawMessage(`{"city":"Berlin"}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if out, ok := result.(weather.Out); !ok || out.City != "Berlin" || out.Condition != "partly cloudy" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+// fakeSecrets is the shared resolver the module receives in production.
+type fakeSecrets struct{ key string }
+
+func (f fakeSecrets) Get(name string) (string, bool) {
+	if name != weather.SecretName {
+		return "", false
+	}
+	return f.key, true
 }

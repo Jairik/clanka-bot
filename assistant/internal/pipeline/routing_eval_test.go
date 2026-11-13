@@ -374,9 +374,12 @@ func evalRegistry(t *testing.T) (*tool.Registry, *timer.Manager, *alarm.Manager,
 	}))
 	t.Cleanup(forecast.Close)
 
+	// The fallback URL is local too, so a slow or failing stub never reaches
+	// the live wttr.in provider during the eval.
 	if err := weather.Register(reg, weather.Deps{
 		GeocodingURL: geo.URL,
 		ForecastURL:  forecast.URL,
+		FallbackURL:  forecast.URL,
 		Location: func() (location.Location, bool) {
 			return location.Location{City: "Berlin", Region: "Berlin", Timezone: "Europe/Berlin"}, true
 		},

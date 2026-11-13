@@ -758,15 +758,22 @@ the public health listener. The authenticated Dashboard (#47) mounts the
 same handler behind Tailscale identity. Settings, Tool overrides and Secrets
 share that handler; writes there also need a same-origin fetch.
 
-The Dashboard also has a server-rendered **Tools and settings** page at
+The Dashboard is a React app (`assistant/web`, HeroUI) built into the Go binary,
+so the Pi serves it with no CDN. Its home page at `/` is a chat: overview cards
+over a prompt box that takes typed requests or, over HTTPS, the browser
+microphone. The top bar has the Pi speaker's volume (click to mute, a slider in
+5% steps). Each page reads one JSON view under `/api/ui/` and writes through the
+same form routes as before. Build it with `make web`; the Docker image does this
+itself. See `assistant/web/README.md` for the dev server.
+
+The **Settings** page at
 `/settings`. Every Tool is listed with its effective and code-declared
 Permission, Local-only flag and enabled state; Permission choices are only the
 valid tightening levels. Every wording value is an ordinary text or one-entry-
 per-line form with its effective value, source layer and a Reset button.
 Settings the service exposes but this page does not know by name (for example a
 future sound setting) appear automatically, and connection settings carry a
-Restart required badge. The forms work without JavaScript and use htmx for the
-same-page fragment update when it is available.
+Restart required badge.
 
 The **Sounds** page at `/sounds` is the upload/library/role/preview surface
 described under Sound library and Cue roles below. Its Ring section renders the
@@ -783,8 +790,7 @@ or no-ramp, and Default (or the reset button) clears the field back to
 same `alarm.Manager.Update` as `alarm.update`, so voice and Dashboard cannot
 disagree. It also shows the newest missed Alerts and Timers from the shared
 local history (no pending row is required), bounded to the recent window.
-Forms work without JavaScript, use htmx for a same-page fragment, and every
-write needs the Dashboard identity plus a same-origin request.
+Every write needs the Dashboard identity plus a same-origin request.
 
 The **Secrets** page at `/secrets` lists every secret a Tool module or the
 Agent provider declares, with whether it is set, its last four characters
@@ -795,8 +801,9 @@ returned anywhere. Clearing a stored value exposes the `.env` bootstrap
 immediately and the page says which source is active. A new module declaration
 appears without a page change.
 
-The **Activity** page at `/activity` lists the recent requests and hosts a
-typed-request box. Its bounded in-memory ring is fed by the same completion that
+The **Activity** page at `/activity` lists the recent requests, grouped by hour,
+with search and Voice/Typed/Problems filters; the home chat shows the same
+history as a conversation. Its bounded in-memory ring is fed by the same completion that
 writes the one structured `request` log line: the route the pipeline chose
 (Control phrase/Fast path, Agent path, Confirmation, Focus intent or an
 unrouted fall-through), the stage timings that were actually measured, the Tool
@@ -805,10 +812,15 @@ started, so a typed request reports its routing and Tool stages without an
 invented number. Nothing is persisted, and the page reads the ring rather than
 tail-ing container logs.
 
-The typed box replaces the localhost-only debug entry for Dashboard users but
+The prompt box replaces the localhost-only debug entry for Dashboard users but
 uses the same pipeline, pending Confirmation, Permission checks, Tool policy,
 Local-only rules and shared history. It is deliberately **text-only**: the
-reply appears in the page and is not spoken on the Pi speaker. A waiting
+reply appears in the page and is not spoken on the Pi speaker. The mic button
+records in the browser, resamples to 16 kHz PCM and uploads the utterance to
+`POST /api/ui/ask/audio`, which transcribes it with the same STT service and
+then answers it like a typed request (source "Dashboard mic"); the audio is not
+stored. Browsers only allow the mic over HTTPS, which `tailscale serve`
+provides. A waiting
 Confirmation is settled by typing `yes` or `no`, and anything else cancels it
 and routes the new request normally. One typed request runs at a time so two
 turns cannot interleave. Local-only Tool results are visible on this

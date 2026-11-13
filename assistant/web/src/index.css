@@ -1,0 +1,103 @@
+@import "tailwindcss";
+@import "@heroui/styles";
+/* Self-hosted (no CDN): the Pi dashboard has no internet at runtime. */
+@import "@fontsource/hedvig-letters-serif";
+@import "@fontsource/hedvig-letters-sans";
+
+/* Monochrome theme for HeroUI: near-black / white, hairline borders, square
+   corners. Hierarchy comes from foreground vs. muted text, not weight or hue;
+   color is reserved for status (success/warning/danger) and the record dot.
+   Unlayered so it wins over HeroUI's @layer base defaults. */
+:root,
+[data-theme="light"] {
+  --radius: 0rem;
+  --background: oklch(1 0 0);
+  --foreground: oklch(0.18 0 0); /* #121212 */
+  --surface: oklch(1 0 0);
+  --surface-secondary: oklch(0.975 0 0);
+  --surface-tertiary: oklch(0.955 0 0);
+  --overlay: oklch(1 0 0);
+  --muted: oklch(0.62 0 0); /* #878787 */
+  --default: oklch(0.955 0 0);
+  --default-foreground: var(--foreground);
+  --accent: oklch(0.18 0 0);
+  --accent-foreground: oklch(1 0 0);
+  --field-background: oklch(1 0 0);
+  --field-foreground: var(--foreground);
+  --field-border: oklch(0.92 0 0);
+  --field-border-width: 1px;
+  --segment: oklch(1 0 0);
+  --segment-foreground: var(--foreground);
+  --border: oklch(0.92 0 0); /* #e6e6e6 */
+  --separator: oklch(0.92 0 0);
+  --focus: oklch(0.62 0 0);
+  --success: oklch(0.6 0.13 155);
+  --warning: oklch(0.72 0.15 70);
+  --danger: oklch(0.6 0.2 25);
+  --subtle: oklch(0.45 0 0);
+}
+
+[data-theme="dark"] {
+  --background: oklch(0.155 0 0); /* #0c0c0c */
+  --foreground: oklch(0.985 0 0); /* #fafafa */
+  --surface: oklch(0.155 0 0);
+  --surface-foreground: var(--foreground);
+  --surface-secondary: oklch(0.19 0 0); /* #131313 */
+  --surface-tertiary: oklch(0.22 0 0);
+  --overlay: oklch(0.19 0 0);
+  --overlay-foreground: var(--foreground);
+  --muted: oklch(0.62 0 0); /* #878787 */
+  --default: oklch(0.235 0 0); /* #1d1d1d */
+  --default-foreground: var(--foreground);
+  --accent: oklch(0.985 0 0);
+  --accent-foreground: oklch(0.155 0 0);
+  --field-background: oklch(0.19 0 0);
+  --field-foreground: var(--foreground);
+  --field-border: oklch(0.27 0 0);
+  --field-border-width: 1px;
+  --segment: oklch(0.27 0 0);
+  --segment-foreground: var(--foreground);
+  --border: oklch(0.265 0 0); /* #2c2c2c-ish */
+  --separator: oklch(0.235 0 0);
+  --focus: oklch(0.5 0 0);
+  --success: oklch(0.72 0.14 155);
+  --warning: oklch(0.8 0.14 75);
+  --danger: oklch(0.66 0.19 25);
+  --subtle: oklch(0.47 0 0); /* #606060: footers, "See …" links */
+}
+
+@theme inline {
+  --font-sans: "Hedvig Letters Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-serif: "Hedvig Letters Serif", ui-serif, Georgia, serif;
+  --color-subtle: var(--subtle);
+  /* Square everything except pills/dots (rounded-full). */
+  --radius-xs: 0px;
+  --radius-sm: 0px;
+  --radius-md: 0px;
+  --radius-lg: 0px;
+  --radius-xl: 0px;
+  --radius-2xl: 0px;
+  --radius-3xl: 0px;
+}
+
+html, body, #root { height: 100%; }
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+  /* The sans ships one weight; don't fake bold, let color carry emphasis. */
+  font-synthesis: none;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-font-smoothing: antialiased;
+}
+/* In a layer so utilities like border-transparent / border-danger still win. */
+@layer base { *, ::before, ::after { border-color: var(--border); } }
+/* Square UI, but sliders and switches read better as pills. */
+.slider__track, .slider__fill, .slider__thumb, .slider__thumb::after,
+.switch__control, .switch__thumb { border-radius: 9999px; }
+/* iOS zooms into inputs below 16px; keep form text at 16px on touch devices. */
+@media (pointer: coarse) { input, textarea, select { font-size: 16px !important; } }
+.pb-safe { padding-bottom: env(safe-area-inset-bottom); }
+.pt-safe { padding-top: env(safe-area-inset-top); }
+.no-scrollbar { scrollbar-width: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }

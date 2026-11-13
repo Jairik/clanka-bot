@@ -100,6 +100,14 @@ timings, the Tool calls and the outcome, built from the same completion as the
 structured request log. Local-only Tool results appear there, and nowhere else.
 _Avoid_: Request log viewer, trace, transcript history
 
+**Activity history**:
+The durable part of Activity: one SQLite row per completed request, older than
+the in-memory ring, paged newest first and searchable across the text the row
+shows. Retention keeps a recent window in full, trims older rows to a short
+summary and deletes rows past the age and row limits. The ring stays the fast
+first page; the history is the source of truth for anything older.
+_Avoid_: Request log archive, transcript database, telemetry
+
 **Name matcher**:
 The one lookup that resolves a spoken library name — a sound, a voice or a Spotify playlist — first by exact or normalised spelling and then by embedding similarity above a threshold. It returns one name or no match, never a forced guess.
 _Avoid_: Fuzzy search, autocomplete

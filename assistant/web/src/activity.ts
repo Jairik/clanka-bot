@@ -40,6 +40,22 @@ export function filterActivity(requests: Request[], filter: string, query: strin
   return requests.filter((r) => matches(r, f)).filter((r) => !needle || haystack(r).includes(needle));
 }
 
+/**
+ * The paged history read. Defaults are omitted so the plain route stays the
+ * first page and an unchanged URL is cacheable by the service worker's
+ * network-first rule.
+ */
+export function activityQuery({ filter, q, before }: { filter: string; q: string; before?: string }): string {
+  const params = new URLSearchParams();
+  const f = asFilter(filter);
+  const text = q.trim();
+  if (f !== "all") params.set("filter", f);
+  if (text) params.set("q", text);
+  if (before) params.set("before", before);
+  const search = params.toString();
+  return `/api/ui/activity${search ? `?${search}` : ""}`;
+}
+
 export type ActivityBucket = { key: string; title: string; list: Request[] };
 
 /**

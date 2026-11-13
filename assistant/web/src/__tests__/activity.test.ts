@@ -1,6 +1,6 @@
 // The Activity filter and hour-bucket rules, without a DOM.
 import { describe, expect, it } from "vitest";
-import { asFilter, bucketActivity, filterActivity, isProblem, isTypedSource } from "../activity";
+import { activityQuery, asFilter, bucketActivity, filterActivity, isProblem, isTypedSource } from "../activity";
 import { req } from "./harness";
 
 const voice = req({ ID: "v", Source: "voice" });
@@ -74,5 +74,21 @@ describe("activity buckets", () => {
     const older = bucketActivity([req({ ID: "b", TimeISO: "2026-11-01T09:00:00" })], now)[0];
     expect(today.title).not.toContain("·");
     expect(older.title).toContain("·");
+  });
+});
+
+describe("activity history query", () => {
+  it("omits defaults so the first page keeps its plain URL", () => {
+    expect(activityQuery({ filter: "all", q: "  " })).toBe("/api/ui/activity");
+  });
+
+  it("carries the filter, the trimmed search and the cursor", () => {
+    expect(activityQuery({ filter: "problems", q: " blue timer ", before: "c1" })).toBe(
+      "/api/ui/activity?filter=problems&q=blue+timer&before=c1",
+    );
+  });
+
+  it("falls back to All for an unknown filter", () => {
+    expect(activityQuery({ filter: "nonsense", q: "x" })).toBe("/api/ui/activity?q=x");
   });
 });

@@ -106,3 +106,39 @@ describe("ActivityPage filters", () => {
     expect(await screen.findByText("only typed")).toBeTruthy();
   });
 });
+
+describe("ActivityPage durable history", () => {
+  const live = req({ ID: "live", Transcript: "live at the pi", TimeISO: "2026-11-13T12:00:00" });
+  const old = req({ ID: "old", Transcript: "old blue timer", TimeISO: "2026-11-06T09:00:00" });
+  const older = req({ ID: "older", Transcript: "oldest blue note", TimeISO: "2026-11-05T09:00:00" });
+
+  const routes = () => ({
+    "/api/ui/session": () => json(session()),
+    "/api/ui/activity": () => json({ ...emptyActivity([live]), HasHistory: true, Next: "live-next" }),
+    "/api/ui/activity?q=blue": () => json({ ...emptyActivity([old]), HasHistory: true, Filter: "all", Query: "blue", Next: "c1" }),
+    "/api/ui/activity?q=blue&before=c1": () => json({ ...emptyActivity([older]), HasHistory: true, Query: "blue", Next: "" }),
+  });
+
+  it("searches the durable history and pages below the first page", async () => {
+    stubFetch(routes());
+    const user = userEvent.setup();
+    render(
+      <Providers>
+        <ActivityPage />
+      </Providers>,
+    );
+    expect(await screen.findByText("live at the pi")).toBeTruthy();
+
+    const search = screen.getByRole("searchbox", { name: "Search activity" });
+    await user.type(search, "blue");
+
+    expect(await screen.findByText("old blue timer")).toBeTruthy();
+    expect(screen.queryByText("oldest blue note")).toBeNull();
+    expect(screen.queryByText("live at the pi")).toBeNull();
+
+    // The loader asks for the next cursor and appends its page.
+    await user.click(screen.getByRole("button", { name: "Load older" }));
+    expect(await screen.findByText("oldest blue note")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Load older" })).toBeNull();
+  });
+});

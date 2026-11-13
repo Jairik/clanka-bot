@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -52,6 +53,22 @@ type activityView struct {
 	PrivacyNotice  string
 	LatencyNotice  string
 	CollectionNote string
+	// HasHistory reports that the durable store is attached, so the page can
+	// page and search beyond the ring. Next is the cursor for the following
+	// page, empty when there is nothing older.
+	HasHistory bool
+	Next       string
+	Filter     string
+	Query      string
+}
+
+// activityQuery is one bounded Activity read. Limit is fixed by the handler;
+// Before is the opaque cursor the previous page returned.
+type activityQuery struct {
+	Filter string
+	Text   string
+	Before string
+	Limit  int
 }
 
 // requestView is one recent request row. Response latency is a pointer-like
@@ -76,6 +93,8 @@ type requestView struct {
 	Reply       string
 	LocalOnly   bool
 	Pending     bool
+	// Summary marks a row retention has trimmed to its short form.
+	Summary     bool
 	Stages      []timingView
 	Checkpoints []timingView
 	Calls       []callView
@@ -93,12 +112,20 @@ type callView struct {
 	Result    string
 }
 
-// activityPage renders the typed box and the recent request list.
+// activityPage renders the typed box and the recent request list. The same
+// route is the paged history read: filter, q and before narrow it to one
+// bounded page, and the response carries the cursor for the next one.
 func (h *Handler) activityPage(w http.ResponseWriter, r *http.Request) {
 	if !allowGet(w, r) {
 		return
 	}
-	h.writeJSON(w, http.StatusOK, h.buildActivityView(r.URL.Query().Get("request"), "", "", ""))
+	params := r.URL.Query()
+	h.writeJSON(w, http.StatusOK, h.buildActivityViewFor(r.Context(), activityQuery{
+		Filter: activityFilter(params.Get("filter")),
+		Text:   params.Get("q"),
+		Before: params.Get("before"),
+		Limit:  activityDisplayLimit,
+	}, params.Get("request"), "", "", ""))
 }
 
 // activityAsk runs one typed request through the shared pipeline. Overlapping
@@ -205,6 +232,16 @@ func (h *Handler) activityFail(w http.ResponseWriter, r *http.Request, status in
 // buildActivityView reads one bounded snapshot. justID highlights the reply
 // that the POST just produced; it is only a lookup key, never user text.
 func (h *Handler) buildActivityView(justID, errorText, notice, draft string) activityView {
+	return h.buildActivityViewFor(context.Background(), activityQuery{
+		Filter: "all",
+		Limit:  activityDisplayLimit,
+	}, justID, errorText, notice, draft)
+}
+
+// buildActivityViewFor reads one page. The ring is the fast path for the newest
+// entries; the durable history answers anything the ring no longer holds, and
+// both use the same filter and search rules.
+func (h *Handler) buildActivityViewFor(ctx context.Context, q activityQuery, justID, errorText, notice, draft string) activityView {
 	view := activityView{
 		Owner:          h.owner,
 		Page:           "activity",
@@ -216,13 +253,21 @@ func (h *Handler) buildActivityView(justID, errorText, notice, draft string) act
 		JustRequestID:  justID,
 		PrivacyNotice:  "Local-only Tool results appear only on this authenticated page. They are never sent to a model, an Agent prompt, a Notification, or any other egress path.",
 		LatencyNotice:  "Response latency is shown only when the request actually produced reply audio. A typed request has no speech start or reply audio, so it shows stage timings and no invented Response latency.",
-		CollectionNote: "One in-memory ring fed by the same completion that writes the structured request log. Nothing is persisted and nothing is read back from container logs.",
+		CollectionNote: "The newest requests stay in memory for an instant first page; the rest are stored in the assistant's SQLite database. Older rows are trimmed to a short summary, and the file has a fixed age and row limit.",
 		Notice:         notice,
+		Filter:         q.Filter,
+		Query:          q.Text,
 	}
 	if h.activity == nil {
 		return view
 	}
-	for _, entry := range h.activity.Recent(activityDisplayLimit) {
+	view.HasHistory = h.activity.History() != nil
+	if q.Limit <= 0 || q.Limit > activityDisplayLimit {
+		q.Limit = activityDisplayLimit
+	}
+	entries, next := h.activityEntries(ctx, q)
+	view.Next = next
+	for _, entry := range entries {
 		request := h.requestView(entry)
 		view.Requests = append(view.Requests, request)
 		if entry.ID == justID {
@@ -231,6 +276,87 @@ func (h *Handler) buildActivityView(justID, errorText, notice, draft string) act
 		}
 	}
 	return view
+}
+
+// activityEntries returns one page newest first and the cursor below it. A
+// missing history falls back to the ring, filtered by the same rules; a
+// history read error is logged and also falls back, so the page never goes
+// blank because of the durable layer.
+func (h *Handler) activityEntries(ctx context.Context, q activityQuery) ([]activity.Entry, string) {
+	history := h.activity.History()
+	if history == nil {
+		return h.ringEntries(q), ""
+	}
+	page, err := history.QueryPage(ctx, activity.Query{
+		Filter: q.Filter,
+		Text:   q.Text,
+		Before: q.Before,
+		Limit:  q.Limit,
+	})
+	if err != nil {
+		h.logger.Warn("dashboard activity history", "error", err.Error())
+		return h.ringEntries(q), ""
+	}
+	entries := page.Entries
+	if q.Before == "" {
+		// The ring is the fast path: an entry the durable write has not reached
+		// (or a ring-only test setup) still appears at the top. Dedupe by
+		// request id so a row is never shown twice.
+		seen := make(map[string]bool, len(entries))
+		for _, e := range entries {
+			seen[e.ID] = true
+		}
+		for _, e := range h.ringEntries(q) {
+			if seen[e.ID] {
+				continue
+			}
+			entries = append(entries, e)
+			seen[e.ID] = true
+		}
+		// The ring entries were appended oldest-last from the ring's own
+		// newest-first order; re-sort so the two sources interleave truthfully.
+		sort.SliceStable(entries, func(i, j int) bool {
+			if entries[i].At.Equal(entries[j].At) {
+				return entries[i].ID > entries[j].ID
+			}
+			return entries[i].At.After(entries[j].At)
+		})
+	}
+	if len(entries) > q.Limit {
+		entries = entries[:q.Limit]
+	}
+	next := ""
+	if page.Next != "" && len(entries) > 0 {
+		// Continue below the last row actually shown, so a ring-only row at
+		// the top cannot make the next page skip a durable one.
+		next = entries[len(entries)-1].Cursor
+	}
+	return entries, next
+}
+
+// ringEntries applies the page's filter and search to the in-memory ring.
+func (h *Handler) ringEntries(q activityQuery) []activity.Entry {
+	var out []activity.Entry
+	for _, entry := range h.activity.Recent(0) {
+		if entry.Matches(q.Filter, q.Text) {
+			out = append(out, entry)
+		}
+	}
+	if q.Limit > 0 && len(out) > q.Limit {
+		out = out[:q.Limit]
+	}
+	return out
+}
+
+// activityFilter is the one filter vocabulary; an unknown value reads as All,
+// so a hand-edited URL cannot render an error page.
+func activityFilter(value string) string {
+	switch value {
+	case "voice", "typed", "mic", "problems":
+		return value
+	default:
+		return "all"
+	}
 }
 
 func (h *Handler) requestView(entry activity.Entry) requestView {
@@ -252,6 +378,7 @@ func (h *Handler) requestView(entry activity.Entry) requestView {
 		Reply:       entry.Reply,
 		LocalOnly:   entry.LocalOnly,
 		Pending:     entry.Pending,
+		Summary:     entry.Summary,
 	}
 	if entry.ResponseMS != nil {
 		view.Measured = true

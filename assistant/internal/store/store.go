@@ -57,8 +57,12 @@ type migration struct {
 // wording. The active Persona is an ordinary settings row, and selecting one
 // writes the bundle through the settings service in one transaction. Version 10
 // holds the personal Notes and the fixed shopping and to-do Lists (#32); the
-// row text is user content, so it never reaches a log. The versions stay
-// contiguous in either merge order.
+// row text is user content, so it never reaches a log. Version 11 is the
+// durable Activity history (#96): every completed request, with search text
+// maintained by the writer and indexed on at/source/outcome so paging is one
+// bounded range scan. Rows are always written with 0600 database permissions
+// and never leave this process. The versions stay contiguous in either merge
+// order.
 var migrations = []migration{
 	{
 		version: 1,
@@ -249,6 +253,45 @@ var migrations = []migration{
 				updated_at INTEGER NOT NULL
 			)`,
 			`CREATE INDEX list_items_list_key ON list_items (list_key, done, id)`,
+		},
+	},
+	{
+		version: 11,
+		name:    "activity_history",
+		statements: []string{
+			// One row per completed request. at is Unix milliseconds so paging
+			// and retention never depend on the database locale. stages,
+			// checkpoints and calls are compact JSON copies of the display
+			// fields; search is the lowercased haystack the dashboard queries,
+			// maintained by the writer so a read never builds it. summary is 1
+			// once retention has trimmed the long text. request_id is the
+			// pipeline id, not unique: a replayed id keeps both rows.
+			`CREATE TABLE activity (
+				id          INTEGER PRIMARY KEY AUTOINCREMENT,
+				request_id  TEXT NOT NULL DEFAULT '',
+				at          INTEGER NOT NULL,
+				source      TEXT NOT NULL DEFAULT '',
+				path        TEXT NOT NULL DEFAULT '',
+				tool        TEXT NOT NULL DEFAULT '',
+				outcome     TEXT NOT NULL DEFAULT '',
+				error       TEXT NOT NULL DEFAULT '',
+				transcript  TEXT NOT NULL DEFAULT '',
+				reply       TEXT NOT NULL DEFAULT '',
+				local_only  INTEGER NOT NULL DEFAULT 0,
+				response_ms INTEGER,
+				stages      TEXT NOT NULL DEFAULT '[]',
+				checkpoints TEXT NOT NULL DEFAULT '[]',
+				calls       TEXT NOT NULL DEFAULT '[]',
+				search      TEXT NOT NULL DEFAULT '',
+				summary     INTEGER NOT NULL DEFAULT 0
+			)`,
+			// Newest-first paging, the source and problems filters, and the
+			// age cutoff are each a bounded index range. There is no index on
+			// search: a full-text prefix index would be written on every
+			// request, and the query is bounded by the at range instead.
+			`CREATE INDEX activity_at ON activity (at DESC, id DESC)`,
+			`CREATE INDEX activity_source_at ON activity (source, at DESC)`,
+			`CREATE INDEX activity_outcome_at ON activity (outcome, at DESC)`,
 		},
 	},
 }

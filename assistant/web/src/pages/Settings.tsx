@@ -44,6 +44,26 @@ export function SettingsPage() {
             )}
           </Section>
 
+          <Section
+            title="Wake word"
+            summary={data.Wakeword.Enabled ? `${data.Wakeword.Models?.length ?? 0} models` : "off"}
+            flush
+          >
+            <Lede>{data.Wakeword.Note}</Lede>
+            {data.Wakeword.Models?.length ? (
+              <ul className="divide-y divide-separator">
+                {data.Wakeword.Models.map((model) => (
+                  <li key={model.Name} className="flex items-center justify-between gap-3 px-3.5 py-3">
+                    <span className="font-mono text-sm">{model.Name}</span>
+                    <span className="text-xs text-muted">threshold {model.Threshold}</span>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <Empty>No wake model is configured.</Empty>
+            )}
+          </Section>
+
           <Section title="Agent wording" summary={`${data.Agent?.length ?? 0} settings`} flush>
             <Lede>Editable as ordinary text. A blank line in a list is ignored; an empty list is valid where the setting allows it.</Lede>
             {data.Agent?.length ? list(data.Agent) : <Empty>No Agent wording settings are defined.</Empty>}

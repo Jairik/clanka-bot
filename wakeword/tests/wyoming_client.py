@@ -58,13 +58,32 @@ def streamable(audio, seconds=2.5):
     return lead + audio + b"\x00\x00" * ((want - len(lead) - len(audio)) // 2)
 
 
-async def detected(addr, model, path):
+def parse_thresholds(raw):
+    """Read name=value,name=value (or name:value) into a dict."""
+    thresholds = {}
+    for entry in (raw or "").split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        name, sep, value = entry.replace(":", "=", 1).partition("=")
+        if not sep or not name.strip() or not value.strip():
+            raise SystemExit(f"--thresholds: want name=value, got {entry!r}")
+        thresholds[name.strip()] = float(value)
+    return thresholds
+
+
+async def detected(addr, models, path, thresholds):
     with wave.open(str(path)) as w:
         if w.getframerate() != RATE or w.getnchannels() != 1 or w.getsampwidth() != 2:
             raise SystemExit(f"{path}: want 16 kHz mono PCM16")
         audio = streamable(w.readframes(w.getnframes()))
     async with AsyncTcpClient.from_uri(addr) as client:
-        await client.write_event(Detect(names=[model]).event())
+        detect = Detect(names=models).event()
+        if thresholds:
+            # The patched service reads this optional map. Stock Wyoming
+            # clients never send it and keep the global --threshold.
+            detect.data["thresholds"] = thresholds
+        await client.write_event(detect)
         await client.write_event(AudioStart(rate=RATE, width=2, channels=1).event())
         for i in range(0, len(audio), CHUNK):
             await client.write_event(AudioChunk(rate=RATE, width=2, channels=1, audio=audio[i:i + CHUNK]).event())
@@ -79,12 +98,13 @@ async def detected(addr, model, path):
                 return False
 
 
-async def run(addr, model, expect, paths):
+async def run(addr, models, expect, paths, thresholds, expect_override):
     failures = []
     for path in paths:
-        hit = await asyncio.wait_for(detected(addr, model, path), timeout=30)
+        hit = await asyncio.wait_for(detected(addr, models, path, thresholds), timeout=30)
+        expected = expect if expect_override is None else expect_override
         print(f"{'HIT ' if hit else 'MISS'} {path.name}", flush=True)
-        if hit != expect:
+        if hit != expected:
             failures.append(path.name)
     return failures
 
@@ -92,7 +112,9 @@ async def run(addr, model, expect, paths):
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--addr", default="tcp://127.0.0.1:10400")
-    p.add_argument("--model", default="clanker")
+    p.add_argument("--model", default="clanker", help="comma-separated names to request")
+    p.add_argument("--thresholds", default="", help="per-model overrides: name=value,...")
+    p.add_argument("--expect", choices=["hit", "miss"], help="override the fixture's expectation")
     p.add_argument("--positive", default="")
     p.add_argument("--negative", default="")
     p.add_argument("--expect-models", default="", help="comma-separated names describe must advertise")
@@ -103,6 +125,10 @@ def main():
         if not asyncio.run(describe(args.addr, expect)):
             return 1
 
+    models = [name.strip() for name in args.model.split(",") if name.strip()]
+    thresholds = parse_thresholds(args.thresholds)
+    expect_override = None if not args.expect else args.expect == "hit"
+
     failures = []
     for directory, expected in ((args.positive, True), (args.negative, False)):
         if not directory:
@@ -110,7 +136,7 @@ def main():
         paths = sorted(Path(directory).glob("*.wav"))
         if not paths:
             raise SystemExit(f"{directory}: no wav fixtures")
-        failures += asyncio.run(run(args.addr, args.model, expected, paths))
+        failures += asyncio.run(run(args.addr, models, expected, paths, thresholds, expect_override))
     if failures:
         print("FAIL", failures)
         return 1

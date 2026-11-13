@@ -55,9 +55,19 @@ export type HealthView = {
   CheckedAt: string;
   HealthTimeout: string;
   Services: Check[] | null;
+  Wakeword: Check[] | null;
   Location: Check;
   Modules: Check[] | null;
   Spotify: Check[] | null;
+};
+
+// ---------- wake word ----------
+export type WakewordModel = { Name: string; Threshold: string };
+export type WakewordSettings = {
+  Enabled: boolean;
+  Addr: string;
+  Models: WakewordModel[] | null;
+  Note: string;
 };
 
 // ---------- settings ----------
@@ -108,6 +118,7 @@ export type SettingsView = Flashable & {
   Quiet: Setting[] | null;
   Live: Setting[] | null;
   Restart: Setting[] | null;
+  Wakeword: WakewordSettings;
 };
 
 // ---------- secrets ----------

@@ -14,6 +14,7 @@ export function HealthPage() {
   const groups: [string, Check[], string?][] = data
     ? [
         ["Compose services", data.Services ?? []],
+        ["Wake word", data.Wakeword ?? [], "The models the Assistant listens for, with the detection threshold it applies to each one."],
         ["Location", data.Location ? [data.Location] : []],
         ["Tool modules", data.Modules ?? []],
         ["Spotify", data.Spotify ?? [], "Connect pairing and Web API auth are separate grants. One can be healthy while the other is not."],

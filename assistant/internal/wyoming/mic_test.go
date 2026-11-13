@@ -98,6 +98,59 @@ func TestDetectSendsAudioAndReportsDetection(t *testing.T) {
 	}
 }
 
+func TestDetectSendsPerModelThresholds(t *testing.T) {
+	addr := fakeServer(t, func(conn net.Conn) {
+		r := bufio.NewReader(conn)
+		detect := readWireEvent(t, r)
+		data := dataMap(t, detect)
+		thresholds, _ := data["thresholds"].(map[string]any)
+		if thresholds["clanker"] != 0.6 || thresholds["okay_nabu"] != 0.5 {
+			t.Errorf("thresholds = %v, want clanker 0.6 and okay_nabu 0.5", thresholds)
+		}
+		readWireEvent(t, r) // audio-start
+		writeWireEvent(t, conn, "not-detected", nil)
+	})
+
+	client := wyoming.NewClient(addr)
+	ctx, cancel := contextWithTimeout(t)
+	defer cancel()
+
+	stream, err := client.Detect(ctx, []string{"clanker", "okay_nabu"}, wyoming.Format{Rate: 16000, Width: 2, Channels: 1},
+		wyoming.WithDetectThresholds(map[string]float64{"clanker": 0.6, "okay_nabu": 0.5}))
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+	defer stream.Close()
+	if _, detected, err := stream.Next(); err != nil || detected {
+		t.Fatalf("Next = detected=%v err=%v", detected, err)
+	}
+}
+
+func TestDetectOmitsThresholdsByDefault(t *testing.T) {
+	addr := fakeServer(t, func(conn net.Conn) {
+		r := bufio.NewReader(conn)
+		detect := readWireEvent(t, r)
+		if _, present := dataMap(t, detect)["thresholds"]; present {
+			t.Error("detect carried thresholds without the option")
+		}
+		readWireEvent(t, r) // audio-start
+		writeWireEvent(t, conn, "not-detected", nil)
+	})
+
+	client := wyoming.NewClient(addr)
+	ctx, cancel := contextWithTimeout(t)
+	defer cancel()
+
+	stream, err := client.Detect(ctx, nil, wyoming.Format{Rate: 16000, Width: 2, Channels: 1})
+	if err != nil {
+		t.Fatalf("Detect: %v", err)
+	}
+	defer stream.Close()
+	if _, _, err := stream.Next(); err != nil {
+		t.Fatalf("Next: %v", err)
+	}
+}
+
 func TestDetectReportsNoDetection(t *testing.T) {
 	addr := fakeServer(t, func(conn net.Conn) {
 		r := bufio.NewReader(conn)

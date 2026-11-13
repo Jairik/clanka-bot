@@ -324,13 +324,33 @@ principle hear itself. The dev-box run, with its own reply looped back at full
 level, produced no false barge-in; if that changes in a louder room,
 `WAKEWORD_THRESHOLD` is the knob.
 
+`WAKEWORD_MODELS` is an explicit, comma-separated wake-word allowlist; every
+model in it is requested from `wakeword`, and a detection from any other name is
+ignored before it can start a turn. The default is the one trained word, because
+each extra model adds its own false wakes. To listen for two, set:
+
+```sh
+WAKEWORD_MODELS=clanker,okay_nabu
+WAKEWORD_THRESHOLDS=clanker:0.6,okay_nabu:0.5
+```
+
+`WAKEWORD_THRESHOLD` is the default probability for every model without an
+entry in `WAKEWORD_THRESHOLDS` (or `wakeword.thresholds` in
+`assistant/config.yaml`). Higher is stricter. `wakeword`'s own `--threshold` is
+only a fallback for clients that do not send thresholds: the Assistant sends
+the complete per-model map on every detect stream, and the wrapper image patches
+the pinned upstream handler to apply it per model. The old single-value
+`WAKEWORD_MODEL` (and `wakeword.model`) is still accepted.
+
 `wakeword` and `stt` do computation only and never mount Pulse (ADR-0001).
 Their Compose health checks are Wyoming `describe` calls, so startup waits for
 the service, not for a model: openWakeWord loads a detector on the first
 `Detect` for it. `wakeword` bakes the locally trained `clanker` detector next to
-the upstream built-ins, so set `WAKEWORD_MODEL` to `okay_nabu` (or another
-upstream name) to use one of those instead; see `wakeword/training/README.md`
-for how it is trained and how to add the owner's own voice. Moonshine weights are downloaded anonymously from
+the upstream built-ins, so `WAKEWORD_MODELS` can name `okay_nabu` (or another
+upstream name) too; see `wakeword/training/README.md`
+for how it is trained and how to add the owner's own voice. The Dashboard's
+Settings page lists the configured models and thresholds, and its Health page
+checks that the service advertises each one. Moonshine weights are downloaded anonymously from
 `download.moonshine.ai` at build time and baked in; the container starts
 offline. Rebuild `stt` after changing `STT_MODELS` or `STT_MODEL`. Set
 `ASSISTANT_PULSE_SOURCE` from `pactl list short sources` (the dev box uses the

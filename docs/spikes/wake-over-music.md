@@ -188,8 +188,10 @@ one produced the level.
 
 ### 3.1 Preconditions
 
-- Wake word is the configured `okay_nabu` (openWakeWord). Do not change it for
-  the run.
+- Wake word is the configured single model (`WAKEWORD_MODELS` with one entry;
+  the current default is `clanker`, while the original baseline was
+  `okay_nabu`). Do not change it for the run. The two-model follow-up in §5.1
+  is a separate measurement.
 - The real mic and speaker are in their normal positions. Note the speaker's
   distance/orientation if it differs between cells; keep it fixed across the
   six cells.
@@ -338,6 +340,26 @@ by hand.
 |  | on |  |  |  |  |  |
 |  | off |  |  |  |  |  |
 |  | on |  |  |  |  |  |
+
+### 5.1 Two models loaded (follow-up, #79)
+
+The six cells stay on the default single model so they remain comparable with
+the baseline. #79 makes the wake list a setting (`WAKEWORD_MODELS`) with
+per-model thresholds; every extra model adds its own false wakes, so the
+combined rate has to be measured, not inferred. This row is outside the
+recorder's six-cell matrix: use the same positive-trial and music-only exposure
+method (§3.4–3.5), count one false wake per `voice: wake` line, and attach the
+result to #70. The log line's `model` field says which detector fired.
+
+| Configuration | Models | Hits/trials | False wakes | Exposure (min) | False wakes/h |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Two models loaded | `clanker` + `okay_nabu` |  |  |  |  |
+
+Run the combined row with `okay_nabu` at the documented default (`0.5`) and
+`clanker` at its configured per-model threshold, so the row differs from a
+single-model run only by the second detector being active. If the six-cell run
+used `okay_nabu` at another threshold, keep that value and record it. A cell
+with zero exposure minutes is invalid here too.
 
 ## 6. Decision — pending
 

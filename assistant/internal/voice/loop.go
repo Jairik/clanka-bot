@@ -23,6 +23,11 @@ type Detection struct {
 	Name string
 }
 
+// WakeCommand handles one non-wake detection, such as #81's volume_up or
+// volume_down. It runs on the loop goroutine, so it must be quick; it never
+// opens STT and never starts a turn.
+type WakeCommand func(ctx context.Context, name string)
+
 // Source opens a continuous PCM stream from the microphone.
 type Source interface {
 	Open(ctx context.Context) (io.ReadCloser, error)
@@ -99,11 +104,23 @@ type Config struct {
 // Deps are the loop's collaborators, separated from Config so tests can fake
 // the services without touching the mic.
 type Deps struct {
-	Source    Source
-	Wake      WakeService
-	STT       STTService
-	Player    Player
+	Source Source
+	Wake   WakeService
+	STT    STTService
+	Player Player
+	// Responder answers one utterance that followed a wake word.
 	Responder Responder
+	// WakeWords is the allowlist of detection names that may start a turn.
+	// Production always sets it from wakeword.models. Empty accepts any name,
+	// which keeps a minimal test setup (or a service-only deployment) working;
+	// it is never the configured path. A name that also has a WakeCommands
+	// entry is dispatched as a command, not a wake word.
+	WakeWords []string
+	// WakeCommands handles non-wake detections such as #81's volume_up. A name
+	// in this map is dispatched and the loop keeps listening; it never starts
+	// an STT turn. A command model must also be requested from the service, so
+	// main adds these names to the detect allowlist.
+	WakeCommands map[string]WakeCommand
 	// Dropper is optional: when set, a Barge-in also drops a waiting
 	// Confirmation so a stale yes cannot run later.
 	Dropper PendingDropper
@@ -192,61 +209,124 @@ func (l *Loop) Run(ctx context.Context) error {
 // wake word starts the next one immediately: the wake word that barges in is
 // also the request that follows.
 func (l *Loop) listen(ctx context.Context) error {
-	bargeIn := false
+	pending := ""
+	haveTurn := false
 	for {
-		if !bargeIn {
-			detected, err := l.waitForWake(ctx)
+		if !haveTurn {
+			name, detected, err := l.waitForWake(ctx)
 			if err != nil {
 				return err
 			}
 			if !detected {
 				return nil // the stream ended without firing; reopen it
 			}
+			pending = name
+			haveTurn = true
 		}
-		var err error
-		bargeIn, err = l.session(ctx)
+		bargeIn, name, err := l.session(ctx, pending)
 		if err != nil {
 			return err
 		}
+		if bargeIn {
+			// The wake word that interrupted the reply is the next request.
+			pending = name
+			haveTurn = true
+			continue
+		}
+		pending = ""
+		haveTurn = false
 	}
 }
 
-// waitForWake feeds mic frames to the wake word service until it fires. The
-// stream is closed on return: the session opens its own stream for playback, so
-// a detection from the question itself cannot interrupt the reply.
-func (l *Loop) waitForWake(ctx context.Context) (bool, error) {
-	wake, err := l.deps.Wake.Open(ctx)
-	if err != nil {
-		return false, err
+// waitForWake feeds mic frames to the wake word service until a wake word
+// fires. Command detections are dispatched and the stream is reopened; an
+// unlisted name is logged and ignored. The stream is closed on return: the
+// session opens its own stream for playback, so a detection from the question
+// itself cannot interrupt the reply.
+func (l *Loop) waitForWake(ctx context.Context) (string, bool, error) {
+	for {
+		name, fired, err := func() (string, bool, error) {
+			wake, err := l.deps.Wake.Open(ctx)
+			if err != nil {
+				return "", false, err
+			}
+			defer wake.Close()
+			return l.readWake(ctx, wake)
+		}()
+		if err != nil {
+			return "", false, err
+		}
+		if !fired {
+			return "", false, nil
+		}
+		if l.dispatchCommand(ctx, name) {
+			continue
+		}
+		if !l.isWakeWord(name) {
+			l.deps.Logger.Warn("voice: wake ignored", "model", name)
+			continue
+		}
+		l.deps.Logger.Info("voice: wake", "model", name)
+		return name, true, nil
 	}
-	defer wake.Close()
+}
 
+// readWake feeds one open detect stream until it fires or ends.
+func (l *Loop) readWake(ctx context.Context, wake WakeStream) (string, bool, error) {
 	detections := wake.Detections()
 	for {
 		select {
 		case <-ctx.Done():
-			return false, ctx.Err()
+			return "", false, ctx.Err()
 		case fr := <-l.frames:
 			if err := wake.Write(fr.pcm); err != nil {
-				return false, err
+				return "", false, err
 			}
 		case detection, ok := <-detections:
 			if !ok {
 				if err := wake.Err(); err != nil {
-					return false, err
+					return "", false, err
 				}
-				return false, nil
+				return "", false, nil
 			}
-			l.deps.Logger.Info("voice: wake", "model", detection.Name)
-			return true, nil
+			return detection.Name, true, nil
 		}
 	}
 }
 
+// dispatchCommand runs a non-wake handler and reports whether it owned the
+// detection. The loop keeps listening either way; #81's handler owns the
+// volume step, cue and cooldown.
+func (l *Loop) dispatchCommand(ctx context.Context, name string) bool {
+	command, ok := l.deps.WakeCommands[name]
+	if !ok {
+		return false
+	}
+	l.deps.Logger.Info("voice: command", "model", name)
+	command(ctx, name)
+	return true
+}
+
+// isWakeWord applies the explicit allowlist. Empty accepts any name; the
+// configured path always has at least one model (config validation refuses an
+// empty list while voice input is enabled).
+func (l *Loop) isWakeWord(name string) bool {
+	if len(l.deps.WakeWords) == 0 {
+		return true
+	}
+	for _, word := range l.deps.WakeWords {
+		if word == name {
+			return true
+		}
+	}
+	return false
+}
+
 // session records one request: chime, listen with endpointing, transcribe, then
-// speak. It reports whether the wake word interrupted the reply (Barge-in) so
+// speak. wakeWord is the model that started the turn. It reports whether a wake
+// word interrupted the reply (Barge-in) and, when it did, that model's name so
 // the caller starts a fresh turn without waiting for another wake word.
-func (l *Loop) session(ctx context.Context) (bool, error) {
+func (l *Loop) session(ctx context.Context, wakeWord string) (bool, string, error) {
 	// A wake word starts a turn: stop unprompted speech before capture, so its
 	// audio is not recorded as part of the question.
 	if l.deps.Announcer != nil {
@@ -294,13 +374,13 @@ func (l *Loop) session(ctx context.Context) (bool, error) {
 
 	stt, err := l.deps.STT.Open(sessCtx)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	defer stt.Close()
 
 	endpointer, err := NewEndpointer(l.cfg.Endpoint)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 
 	// Frames captured while the chime played are the chime echoing through the
@@ -312,7 +392,7 @@ func (l *Loop) session(ctx context.Context) (bool, error) {
 	for ended := false; !ended; {
 		select {
 		case <-ctx.Done():
-			return false, ctx.Err()
+			return false, "", ctx.Err()
 		case fr := <-l.frames:
 			if !chimeOver {
 				select {
@@ -327,7 +407,7 @@ func (l *Loop) session(ctx context.Context) (bool, error) {
 				continue // captured during the chime, delivered after it
 			}
 			if err := stt.Write(fr.pcm); err != nil {
-				return false, err
+				return false, "", err
 			}
 			ended = endpointer.Add(fr.pcm)
 		}
@@ -357,17 +437,21 @@ func (l *Loop) session(ctx context.Context) (bool, error) {
 	transcript, err := stt.Finish()
 	if err != nil {
 		timeline.Complete(l.deps.Logger, latency.OutcomeFailed, err)
-		return false, err
+		return false, "", err
 	}
 	timeline.Set(latency.StageSTTFinalize, time.Since(started))
 	transcript = strings.TrimSpace(transcript)
 	if transcript == "" {
-		l.deps.Logger.Info("voice: no speech", "request_id", timeline.ID())
+		l.deps.Logger.Info("voice: no speech", "request_id", timeline.ID(), "wake_word", wakeWord)
 		timeline.Complete(l.deps.Logger, latency.OutcomeNoAudio, nil)
-		return false, nil
+		return false, "", nil
+	}
+	if wakeWord != "" {
+		timeline.SetAttr("wake_word", wakeWord)
 	}
 	l.deps.Logger.Info("voice: transcript",
 		"request_id", timeline.ID(),
+		"wake_word", wakeWord,
 		"text", transcript,
 		"stt_ms", time.Since(started).Milliseconds(),
 	)
@@ -376,37 +460,53 @@ func (l *Loop) session(ctx context.Context) (bool, error) {
 	// The stream starts here rather than at the wake word, so the question that
 	// just ended cannot fire it.
 	watch, detections := l.watch(ctx)
-	if watch != nil {
-		defer watch.Close()
-	}
+	defer func() {
+		if watch != nil {
+			_ = watch.Close()
+		}
+	}()
 
 	done := make(chan error, 1)
 	go func() {
-		done <- l.deps.Responder.Respond(requestCtx, Request{Transcript: transcript, Ended: ended})
+		done <- l.deps.Responder.Respond(requestCtx, Request{Transcript: transcript, Ended: ended, WakeWord: wakeWord})
 	}()
 	for {
 		select {
 		case <-ctx.Done():
 			cancel()
 			<-done
-			return false, ctx.Err()
+			return false, "", ctx.Err()
 		case err := <-done:
 			if err != nil && sessCtx.Err() == nil {
-				return false, err
+				return false, "", err
 			}
-			return false, nil
+			return false, "", nil
 		case fr := <-l.frames:
 			if watch == nil {
 				continue // no way to interrupt; drain the capture
 			}
 			if err := watch.Write(fr.pcm); err != nil {
 				l.deps.Logger.Warn("voice: barge-in watch", "error", err.Error())
+				_ = watch.Close()
 				watch, detections = nil, nil
 			}
 		case detection, ok := <-detections:
 			if !ok {
 				// The watch stream ended without firing; keep the reply going.
 				watch, detections = nil, nil
+				continue
+			}
+			// A command model (#81) acts without interrupting the reply. The
+			// stream is single-shot, so reopen it to keep watching.
+			if l.dispatchCommand(ctx, detection.Name) {
+				_ = watch.Close()
+				watch, detections = l.watch(ctx)
+				continue
+			}
+			if !l.isWakeWord(detection.Name) {
+				l.deps.Logger.Warn("voice: detection ignored", "model", detection.Name)
+				_ = watch.Close()
+				watch, detections = l.watch(ctx)
 				continue
 			}
 			detected := time.Now()
@@ -417,7 +517,7 @@ func (l *Loop) session(ctx context.Context) (bool, error) {
 			}
 			l.deps.Logger.Info("voice: barge-in stopped", "stop_ms", time.Since(detected).Milliseconds())
 			l.dropPending()
-			return true, nil
+			return true, detection.Name, nil
 		}
 	}
 }

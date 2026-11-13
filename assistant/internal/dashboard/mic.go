@@ -47,6 +47,14 @@ func (h *Handler) activityAskAudio(w http.ResponseWriter, r *http.Request) {
 		h.activityFail(w, r, http.StatusUnsupportedMediaType, "The recording must be 16 kHz mono 16-bit PCM.", "")
 		return
 	}
+	// One recording at a time, held through transcription and the answer, so
+	// concurrent uploads cannot each hold a body and an STT call.
+	select {
+	case h.micLock <- struct{}{}:
+		defer func() { <-h.micLock }()
+	case <-r.Context().Done():
+		return
+	}
 	pcm, err := io.ReadAll(http.MaxBytesReader(w, r.Body, micMaxBytes))
 	if err != nil {
 		var tooBig *http.MaxBytesError

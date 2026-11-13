@@ -153,7 +153,9 @@ type Handler struct {
 	// askLock serialises every typed request with a one-slot semaphore. The
 	// voice loop is already single-turn; this gives the Dashboard the same
 	// one-request-at-a-time behaviour and one pending Confirmation at a time.
-	askLock      chan struct{}
+	askLock chan struct{}
+	// micLock admits one Dashboard mic upload at a time (see mic.go).
+	micLock      chan struct{}
 	hosts        httpguard.Hosts
 	proxyAllowed func(net.IP) bool
 	ui           fs.FS
@@ -230,6 +232,7 @@ func New(opts Options) (*Handler, error) {
 		transcriber:    opts.Transcriber,
 		volume:         opts.Volume,
 		askLock:        make(chan struct{}, 1),
+		micLock:        make(chan struct{}, 1),
 		hosts:          hosts,
 		proxyAllowed:   opts.ProxyAllowed,
 		ui:             ui,

@@ -431,6 +431,9 @@ func run() error {
 		Cues:          cues,
 		Ring:          ringEngine,
 		Names:         names,
+		// The local MiniLM client ranks note text by meaning; it is the same
+		// service the semantic router and the name matcher use.
+		Embed: embedClient,
 		// The live settings service is created below; a module reads it per
 		// action through this late-bound closure and never snapshots it.
 		Settings:  func() *settings.Service { return settingsSvc },

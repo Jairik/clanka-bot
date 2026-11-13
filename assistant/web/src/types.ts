@@ -282,6 +282,36 @@ export type AlertsView = Flashable & {
   MissedLimit: number;
 };
 
+// ---------- notes ----------
+export type NoteItem = {
+  ID: string;
+  Text: string;
+  Done: boolean;
+  ToggleAction: string;
+  EditAction: string;
+  RemoveAction: string;
+};
+export type NotesList = {
+  Key: string;
+  Title: string;
+  Open: number;
+  Items: NoteItem[] | null;
+  AddAction: string;
+};
+export type NoteRow = {
+  ID: string;
+  Text: string;
+  Updated: string;
+  UpdatedISO: string;
+  EditAction: string;
+  DeleteAction: string;
+};
+export type NotesView = Flashable & {
+  HasStore: boolean;
+  Lists: NotesList[] | null;
+  Notes: NoteRow[] | null;
+};
+
 // ---------- spotify ----------
 export type Pill = "ok" | "error" | "not-configured";
 export type SpotifyView = Flashable & {
@@ -329,6 +359,7 @@ export type PageViews = {
   voices: VoicesView;
   personas: PersonasView;
   alerts: AlertsView;
+  notes: NotesView;
   spotify: SpotifyView;
 };
 export type DataPage = keyof PageViews;

@@ -38,6 +38,7 @@ func (m *Module) Register(r *tool.Registry, deps tool.Deps) error {
 		Queue:   deps.Announcements,
 		Cues:    deps.Cues,
 		Quiet:   deps.Quiet,
+		Notify:  deps.Notify,
 	})
 	m.deps = deps
 	m.manager = manager

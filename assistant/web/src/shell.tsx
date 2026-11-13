@@ -4,18 +4,19 @@ import { createContext, useContext, useEffect, useRef, useState, type ReactNode 
 import { Button, Drawer, Popover, SearchField, Tooltip } from "@heroui/react";
 import {
   Activity, AlarmClock, Bell, Bot, HeartPulse, KeyRound, MessageSquare, Minus, MoreHorizontal, Music, Plus,
-  Settings, Smile, Volume, Volume1, Volume2, VolumeX, Waves,
+  Settings, Smile, StickyNote, Volume, Volume1, Volume2, VolumeX, Waves,
 } from "lucide-react";
 import { getJSON, navigate, postForm, useLocation } from "./api";
 import type { HealthView, Session, Volume as VolumeState } from "./types";
 import { Range, cn } from "./ui";
 
-export type PageId = "home" | "activity" | "alerts" | "health" | "sounds" | "voices" | "personas" | "spotify" | "secrets" | "settings";
+export type PageId = "home" | "activity" | "alerts" | "notes" | "health" | "sounds" | "voices" | "personas" | "spotify" | "secrets" | "settings";
 
 export const PAGES: { id: PageId; path: string; title: string; blurb: string; icon: typeof Bot }[] = [
   { id: "home", path: "/", title: "Chat", blurb: "", icon: MessageSquare },
   { id: "activity", path: "/activity", title: "Activity", blurb: "Every request that reached the assistant, newest first.", icon: Activity },
   { id: "alerts", path: "/alerts", title: "Alerts", blurb: "Timers, Alarms and Reminders, plus the Rings nobody answered.", icon: AlarmClock },
+  { id: "notes", path: "/notes", title: "Notes", blurb: "The shopping and to-do lists, and the facts you asked clanka to remember.", icon: StickyNote },
   { id: "health", path: "/health", title: "Health", blurb: "Each Compose service, the location, and every Tool module check.", icon: HeartPulse },
   { id: "sounds", path: "/sounds", title: "Sounds", blurb: "The sound library, Cue roles and Ring behaviour.", icon: Bell },
   { id: "voices", path: "/voices", title: "Voices", blurb: "The speaking voice, its rate, and the voice library.", icon: Waves },

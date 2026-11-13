@@ -601,6 +601,7 @@ design; its result is only "Sent to your phone."
 | --- | --- | --- |
 | `notify.url` | `https://ntfy.sh` | ntfy server base URL, live overridable |
 | `notify.missed_alerts` | `true` | Push a Notification for a missed Timer or Alarm |
+| `notify.reminders` | `true` | Push a Notification when a Reminder is due |
 
 The **topic is generated once** on first use and kept in the write-only
 secrets table as `NTFY_TOPIC`; it never appears in `config.yaml`, the settings
@@ -648,10 +649,12 @@ tokens via `ntfy token add` / `auth-tokens`).
 
 A missed Timer or Alarm sends one high-priority Notification with its label and
 reason (`max_ring`, `restart` or `downtime`). Quiet hours suppress it before any
-network request and do not schedule a retry. `notify.phone` answers
-"Notifications are muted during quiet hours." instead. Requests are bounded by
-a 10 s HTTP timeout, redirects are refused so the bearer token stays on the
-configured host, and response bodies are never logged.
+network request and do not schedule a retry. A due Reminder also sends one
+high-priority Notification with the message, alongside the spoken reminder;
+`notify.reminders` turns that off, and Quiet hours mute it the same way.
+`notify.phone` answers "Notifications are muted during quiet hours." instead.
+Requests are bounded by a 10 s HTTP timeout, redirects are refused so the bearer
+token stays on the configured host, and response bodies are never logged.
 
 #### Voice library and rate
 
@@ -830,6 +833,24 @@ same `alarm.Manager.Update` as `alarm.update`, so voice and Dashboard cannot
 disagree. It also shows the newest missed Alerts and Timers from the shared
 local history (no pending row is required), bounded to the recent window.
 Every write needs the Dashboard identity plus a same-origin request.
+
+The **Notes** page at `/notes` owns the two fixed Lists (`shopping` and
+`to-do`) and the personal Notes. Add, edit, tick and remove list items; add,
+edit and delete notes. The rows come from the same managers the voice Tools use,
+so the Dashboard and a request cannot disagree. The page needs the Dashboard
+identity and a same-origin POST for every write.
+
+`list.add`, `list.read` and `list.remove` are the voice surface; `list.remove`
+resolves a spoken item through the shared Name matcher and refuses an ambiguous
+match rather than removing the wrong row. `note.remember` and `note.recall`
+keep and find short facts; recall ranks every note by meaning with the local
+MiniLM service, or says truthfully that there is no note. `note.forget` is
+`confirm` and Agent-only, so deletion needs a spoken yes. A note's vector is
+captured when it is written or edited, so a recall embeds only the query.
+Unlike most personal data, Notes and Lists are deliberately **not Local-only**:
+the owner wants the Agent path and later Hermes to read and edit them, and their
+text leaves the Pi only through the one prompt builder
+([ADR-0005](docs/adr/0005-notes-and-lists-are-agent-visible.md)).
 
 The **Secrets** page at `/secrets` lists every secret a Tool module or the
 Agent provider declares, with whether it is set, its last four characters

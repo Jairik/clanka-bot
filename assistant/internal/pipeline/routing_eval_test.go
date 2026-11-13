@@ -38,6 +38,8 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/tools/calc"
 	"github.com/Jairik/clanka-bot/assistant/tools/clock"
 	"github.com/Jairik/clanka-bot/assistant/tools/github"
+	listtools "github.com/Jairik/clanka-bot/assistant/tools/list"
+	notetools "github.com/Jairik/clanka-bot/assistant/tools/note"
 	notifytools "github.com/Jairik/clanka-bot/assistant/tools/notify"
 	personatools "github.com/Jairik/clanka-bot/assistant/tools/persona"
 	quiettools "github.com/Jairik/clanka-bot/assistant/tools/quiet"
@@ -104,6 +106,11 @@ var routingEvalTools = []string{
 	spotifytools.PreviousName,
 	spotifytools.QueueAddName,
 	spotifytools.LikeName,
+	notetools.RememberName,
+	notetools.RecallName,
+	listtools.AddName,
+	listtools.ReadName,
+	listtools.RemoveName,
 }
 
 const (
@@ -417,6 +424,14 @@ func evalRegistry(t *testing.T) (*tool.Registry, *timer.Manager, *alarm.Manager,
 	quietService.BindWriter(quietSettings)
 	if err := quiettools.NewModule().Register(reg, tool.Deps{Quiet: quietService, Clock: func() time.Time { return fixed }}); err != nil {
 		t.Fatalf("register quiet: %v", err)
+	}
+	// Notes and Lists execute their real handlers against the eval store. The
+	// embedding seam stays nil: recall with no exact match is a truthful
+	// no-match, so the corpus never needs the model to answer a note question.
+	for _, module := range []tool.Module{notetools.NewModule(), listtools.NewModule()} {
+		if err := module.Register(reg, tool.Deps{Store: st, Clock: func() time.Time { return fixed }}); err != nil {
+			t.Fatalf("register %s: %v", module.Name(), err)
+		}
 	}
 	alarmManager := alarm.NewManager(alarm.Options{
 		Now:    func() time.Time { return fixed },

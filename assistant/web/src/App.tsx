@@ -4,6 +4,7 @@ import { ActivityPage } from "./pages/Activity";
 import { AlertsPage } from "./pages/Alerts";
 import { HealthPage } from "./pages/Health";
 import { Home } from "./pages/Home";
+import { NotesPage } from "./pages/Notes";
 import { PersonasPage } from "./pages/Personas";
 import { SecretsPage } from "./pages/Secrets";
 import { SettingsPage } from "./pages/Settings";
@@ -16,6 +17,7 @@ const VIEWS: Record<PageId, () => React.JSX.Element> = {
   home: Home,
   activity: ActivityPage,
   alerts: AlertsPage,
+  notes: NotesPage,
   health: HealthPage,
   sounds: SoundsPage,
   voices: VoicesPage,

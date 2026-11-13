@@ -30,6 +30,8 @@ func newFakeNotifier() *fakeNotifier {
 
 func (f *fakeNotifier) Send(context.Context, notify.Notification) error { return nil }
 
+func (f *fakeNotifier) NotifyReminder(context.Context, string) {}
+
 func (f *fakeNotifier) NotifyMissed(_ context.Context, alert notify.MissedAlert) {
 	f.mu.Lock()
 	f.missed = append(f.missed, alert)

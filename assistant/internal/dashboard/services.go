@@ -21,9 +21,9 @@ const wyomingHealthTimeout = 2 * time.Second
 
 // ComposeServiceChecks returns the seven services in the current Compose
 // stack. The checks are endpoint checks, not Docker's health field: the page
-// answers whether the assistant can actually reach what it needs. librespot
-// has no HTTP endpoint, so its check reads the heartbeat it writes to the
-// status volume.
+// answers whether the assistant can actually reach what it needs. The Soloist
+// receiver has no HTTP endpoint, so its check reads the heartbeat it writes to
+// the shared status directory.
 func ComposeServiceChecks(cfg config.Config) []ServiceCheck {
 	webCfg := web.FromConfig(cfg)
 	return []ServiceCheck{
@@ -33,7 +33,7 @@ func ComposeServiceChecks(cfg config.Config) []ServiceCheck {
 		WyomingService("stt", cfg.STT.Addr),
 		WyomingService("tts", cfg.TTS.Addr),
 		HTTPService("web-search", strings.TrimRight(webCfg.BaseURL, "/")+"/healthz"),
-		PairingService("librespot", cfg.Spotify.PairingStatusFile, cfg.Spotify.StaleAfter.Duration()),
+		PairingService("soloist", cfg.Spotify.PairingStatusFile, cfg.Spotify.StaleAfter.Duration()),
 	}
 }
 
@@ -79,9 +79,9 @@ func WyomingService(name, addr string) ServiceCheck {
 	}}
 }
 
-// PairingService checks librespot's heartbeat file. A missing or stale file is
-// a real failure for the Compose row; the Spotify section separately reports
-// whether the cached credentials say paired or unpaired.
+// PairingService checks the Soloist heartbeat file. A missing, stale or expired
+// receiver is a real failure for the Compose row; the Spotify section
+// separately reports whether the cached credentials say paired or unpaired.
 func PairingService(name, path string, staleAfter time.Duration) ServiceCheck {
 	if strings.TrimSpace(path) == "" {
 		return ServiceCheck{Name: name}
@@ -90,6 +90,9 @@ func PairingService(name, path string, staleAfter time.Duration) ServiceCheck {
 	return ServiceCheck{Name: name, Check: func(context.Context) error {
 		status := reader.Status()
 		if !status.Available {
+			return fmt.Errorf("%s", status.Detail)
+		}
+		if status.Expired {
 			return fmt.Errorf("%s", status.Detail)
 		}
 		return nil

@@ -389,7 +389,7 @@ open_url "https://${PI_HOST}/spotify"
 step "On the /spotify page, click Connect and approve the Spotify consent screen."
 step "Back on /secrets, check SPOTIFY_REFRESH_TOKEN is listed (name only)."
 step "Phone Spotify app → Connect icon → pick '$(_existing SPOTIFY_DEVICE_NAME || echo Clanka)' → play a track."
-step "Sound should come from the Pi. /health should show librespot and Web API as separate OK rows."
+step "Sound should come from the Pi. /health should show Soloist and Web API as separate OK rows."
 note "Ducking and the music Tools only turn on once the Web API sign-in is done."
 pause "Press Enter when done"
 

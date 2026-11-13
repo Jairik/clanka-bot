@@ -93,15 +93,18 @@ services:
       ASSISTANT_STT_LANGUAGE: ${STT_LANGUAGE:-en}
       # Spotify Web API app pair. The client ID is public; PKCE means there is
       # no client secret. The refresh token is a write-only secret. Pairing is
-      # separate: librespot advertises the device and caches its own
-      # credentials on librespot-cache.
+      # separate: Soloist advertises the device and keeps its own credentials
+      # in a private host directory.
       SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID:-}
       SPOTIFY_REDIRECT_URI: ${SPOTIFY_REDIRECT_URI:-}
       SPOTIFY_DEVICE_NAME: ${SPOTIFY_DEVICE_NAME:-Clanka}
-      # Metadata-only heartbeat from librespot. The Assistant never mounts
-      # librespot-cache, so it cannot read the Connect credentials.
-      ASSISTANT_SPOTIFY_STATUS_FILE: "/spotify-status/librespot.status"
-      # ADR-0001/ADR-0004: only the assistant and librespot have audio access;
+      # Metadata-only heartbeat from the Soloist receiver. The Assistant never
+      # mounts the receiver's data directory, so it cannot read credentials.
+      ASSISTANT_SPOTIFY_STATUS_FILE: "/spotify-status/soloist.status"
+      # Case-insensitive substring of the receiver's Pulse application name,
+      # used only to duck its stream. Soloist reports "spotify".
+      ASSISTANT_SPOTIFY_STREAM_MATCH: ${SPOTIFY_STREAM_MATCH:-spotify}
+      # ADR-0001/ADR-0004: only the assistant and the Connect receiver have audio access;
       # model services stay computation-only.
       PULSE_SERVER: "unix:/run/pulse/native"
       PULSE_COOKIE: "/pulse-cookie/cookie"
@@ -135,9 +138,9 @@ services:
       # subtree can ever be mounted into tts. The database and secrets stay on
       # assistant-data and are never exposed to another service.
       - assistant-voices:/app/data/voices
-      # librespot's metadata-only heartbeat. No credentials: the cache volume
+      # Soloist's metadata-only heartbeat. No credentials: its data directory
       # is never mounted into the assistant.
-      - librespot-status:/spotify-status:ro
+      - ${SOLOIST_DIR:-${HOME}/.cache/clanka/soloist}/status:/spotify-status:ro
       # Host PipeWire through its PulseAudio-compatible socket and cookie.
       - ${XDG_RUNTIME_DIR:-/run/user/1000}/pulse:/run/pulse:ro
       - ${HOME}/.config/pulse:/pulse-cookie:ro
@@ -288,59 +291,60 @@ services:
       retries: 10
       start_period: 20s
 
-  # Spotify Connect receiver (ADR-0004). Music goes through the same Pulse
-  # sink as the Assistant's speech, so local ducking and the Focus rules stay
-  # local. Host networking is required: Spotify discovers devices over mDNS,
-  # and a Docker bridge hides that multicast from the LAN. Only its own cache
-  # and a metadata-only status volume are mounted; the database and secrets are
-  # not reachable here.
-  librespot:
+  # Spotify Connect receiver (ADR-0004): Spotify's official Soloist binary.
+  # Music goes through the same Pulse sink as the Assistant's speech, so local
+  # ducking and the Focus rules stay local. Host networking is required:
+  # Spotify discovers devices over mDNS. The proprietary binary is downloaded
+  # by scripts/soloist-setup.sh and mounted read-only; it is never baked into
+  # the image or committed. The private data directory and key are host bind
+  # mounts, so credentials stay outside the image and outside the Assistant.
+  soloist:
     build:
-      context: ./librespot
-      args:
-        LIBRESPOT_VERSION: v0.8.0
-        LIBRESPOT_COMMIT: d36f9f1907e8cc9d68a93f8ebc6b627b1bf7267d
-    image: clanka/librespot:${GIT_SHA:-dev}
+      context: ./soloist
+    image: clanka/soloist:${GIT_SHA:-dev}
     restart: unless-stopped
     network_mode: host
-    # Avahi publishes the SRV target under this name; keep it distinct from
-    # the host's own .local name.
     hostname: ${SPOTIFY_MDNS_HOSTNAME:-clanka}
-    # The entrypoint starts as root only to chown its two private volumes and
-    # start the container-local D-Bus/Avahi responder, then drops privileges
-    # before librespot runs. The UID must match the host user that owns the
-    # Pulse socket and cookie.
+    # The host user that owns the Pulse socket and cookie also owns the bind
+    # mounts. There is no root stage: the setup script creates the directories.
+    user: "${ASSISTANT_UID:-1000}:${ASSISTANT_GID:-1000}"
     environment:
-      LIBRESPOT_UID: ${ASSISTANT_UID:-1000}
-      LIBRESPOT_GID: ${ASSISTANT_GID:-1000}
-      LIBRESPOT_NAME: ${SPOTIFY_DEVICE_NAME:-Clanka}
-      LIBRESPOT_BITRATE: ${SPOTIFY_BITRATE:-320}
-      LIBRESPOT_ZEROCONF_PORT: ${SPOTIFY_ZEROCONF_PORT:-40899}
-      # Avahi's allow-interfaces value: an interface name such as wlan0, not
-      # an IP. Empty auto-detects the default-route interface, which is the
-      # LAN address a phone can reach. Set it when that guess is wrong.
-      LIBRESPOT_AVAHI_INTERFACE: ${SPOTIFY_ZEROCONF_INTERFACE:-}
-      # Same named sink as the Assistant's playback.sink; empty uses the
-      # host's default sink for both.
-      LIBRESPOT_SINK: ${ASSISTANT_PULSE_SINK:-}
-      LIBRESPOT_INITIAL_VOLUME: ${SPOTIFY_INITIAL_VOLUME:-50}
-      LIBRESPOT_CACHE_LIMIT: ${SPOTIFY_CACHE_LIMIT:-2G}
+      SOLOIST_DEVICE_NAME: ${SPOTIFY_DEVICE_NAME:-Clanka}
+      SOLOIST_INITIAL_VOLUME: ${SPOTIFY_INITIAL_VOLUME:-50}
+      # Soloist's -z unit is MB and its minimum is 100.
+      SOLOIST_CACHE_MB: ${SPOTIFY_CACHE_MB:-2048}
+      # Loopback-only control socket. The heartbeat asks this daemon for login
+      # and active-device state; playback control stays on the Web API.
+      SOLOIST_WS_ADDR: ${SPOTIFY_WS_ADDR:-127.0.0.1:24880}
+      # Optional native PipeWire node. Empty uses the Pulse default sink,
+      # which is the same sink the Assistant speaks into.
+      SOLOIST_PIPEWIRE_DEVICE: ${SPOTIFY_PIPEWIRE_DEVICE:-}
+      SOLOIST_API_KEY_FILE: /run/secrets/soloist
+      SOLOIST_DATA_DIR: /data
+      SOLOIST_CACHE_DIR: /cache
+      SOLOIST_STATUS_DIR: /status
+      SOLOIST_LOG_FILE: /data/soloist.log
       PULSE_SERVER: "unix:/run/pulse/native"
       PULSE_COOKIE: "/pulse-cookie/cookie"
       HOME: /tmp
       TZ: ${TZ:-UTC}
     volumes:
-      # Connect credentials and audio cache. Only librespot mounts this; the
-      # Assistant sees the separate metadata-only status volume.
-      - librespot-cache:/cache
-      - librespot-status:/status
+      # Operator-downloaded binary, never part of the image.
+      - ${SOLOIST_BINARY:-${HOME}/.cache/clanka/soloist/soloist}:/opt/soloist:ro
+      # Private state: credentials, device identity, settings and audio cache.
+      # The Assistant only sees the separate status directory.
+      - ${SOLOIST_DIR:-${HOME}/.cache/clanka/soloist}/data:/data
+      - ${SOLOIST_DIR:-${HOME}/.cache/clanka/soloist}/cache:/cache
+      - ${SOLOIST_DIR:-${HOME}/.cache/clanka/soloist}/status:/status
+      - ${SOLOIST_DIR:-${HOME}/.cache/clanka/soloist}/api-key:/run/secrets/soloist:ro
       - ${XDG_RUNTIME_DIR:-/run/user/1000}/pulse:/run/pulse:ro
       - ${HOME}/.config/pulse:/pulse-cookie:ro
     security_opt:
       - no-new-privileges:true
     healthcheck:
-      # Process + heartbeat, never the internet. A stale heartbeat is a real
-      # failure; the Assistant's Health page reports pairing separately.
+      # Daemon + fresh heartbeat + unexpired build, never the internet. A
+      # stale heartbeat or expired build is a real failure; the Assistant's
+      # Health page reports pairing separately.
       test: ["CMD", "/usr/local/bin/healthcheck.sh"]
       interval: 10s
       timeout: 3s
@@ -359,11 +363,3 @@ volumes:
   # backup is not a voice-recording backup; delete it with the others only on
   # purpose (`docker compose down -v`).
   assistant-samples:
-  # librespot's own cache: the Spotify Connect credentials and audio files. No
-  # other service mounts it, so the credentials never reach the assistant or a
-  # model service.
-  librespot-cache:
-  # A metadata-only heartbeat written by librespot and mounted read-only into
-  # the assistant. It contains no credentials, only pairing/session/device and
-  # a timestamp.
-  librespot-status:

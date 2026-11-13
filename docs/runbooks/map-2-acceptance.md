@@ -230,25 +230,27 @@ or a missing PAT that is not reported.
 
 **Closes:** [#71](https://github.com/Jairik/clanka-bot/issues/71). Boxes:
 
-- librespot appears as a Connect device and plays through the assistant's sink
+- Soloist appears as a Connect device and plays through the assistant's sink
 - The Connect button completes the OAuth flow and stores the refresh token as a secret
-- Health shows librespot and Web API status separately
+- Health shows Soloist and Web API status separately, including build expiry
 - Credentials survive container restarts
 
 **Prerequisites:** a Spotify Premium account. A Spotify app with a client ID.
 `SPOTIFY_CLIENT_ID` and `SPOTIFY_REDIRECT_URI` in `.env`. The redirect URI must
 be the tailnet `/spotify/callback` URL from [docs/deploy.md](../deploy.md)
 (Spotify section). The Pi and your phone must be on the same LAN for Connect
-discovery. `librespot` uses host networking. Avahi runs inside its container, so
-the host does not need it (see deploy.md).
+discovery. `soloist` uses host networking. Get a Soloist API key
+(<https://developer.spotify.com/documentation/soloist>) and let
+`scripts/soloist-setup.sh` install the binary; the host does not need Avahi.
 
 **Steps:**
 
-1. Start librespot and check it is healthy:
+1. Start the receiver and check it is healthy:
 
    ```sh
-   GIT_SHA=$(git rev-parse --short HEAD) docker compose up -d librespot
-   docker compose ps librespot
+   scripts/soloist-setup.sh
+   GIT_SHA=$(git rev-parse --short HEAD) docker compose up -d soloist
+   docker compose ps soloist
    ```
 
 2. On your phone, open Spotify, tap the Connect icon, and choose the device
@@ -258,12 +260,13 @@ the host does not need it (see deploy.md).
    Connect and finish the OAuth flow in the browser.
 4. In `/secrets`, confirm `SPOTIFY_REFRESH_TOKEN` now exists. Read the name
    only; do not copy the value.
-5. Open `/health`. librespot status and Web API status must show as two
-   separate lines, and both must be OK.
+5. Open `/health`. Soloist status and Web API status must show as two
+   separate lines, and both must be OK. The pairing detail names the remaining
+   build days; an expired build is an error with the update command.
 6. Restart and check that nothing needs pairing again:
 
    ```sh
-   docker compose restart librespot assistant
+   docker compose restart soloist assistant
    ```
 
    Wait for healthy, then check that the device still appears in Connect and
@@ -273,7 +276,7 @@ the host does not need it (see deploy.md).
 
 | Step | Result | Notes |
 | --- | --- | --- |
-| 1 librespot healthy | | |
+| 1 Soloist healthy | | |
 | 2 Connect plays through Pi | | |
 | 3 OAuth completes | | |
 | 4 refresh token stored | | |
@@ -319,7 +322,7 @@ recording through the speaker.
 
 4. For AEC-on cells only, set `ASSISTANT_PULSE_SINK=aec_music_sink` and
    `ASSISTANT_PULSE_SOURCE=aec_mic_source` in `.env`, then run
-   `GIT_SHA=$(git rev-parse --short HEAD) docker compose up -d assistant librespot`. For AEC-off cells, point both
+   `GIT_SHA=$(git rev-parse --short HEAD) docker compose up -d assistant soloist`. For AEC-off cells, point both
    back at the real sink and mic. Restart `assistant` between states.
 5. Make the blank evidence file, then record one cell after each real run:
 
@@ -350,7 +353,7 @@ recording through the speaker.
    and in #70.
 8. Roll back to the normal audio path when done (spike doc section 2.3):
    unload the module, clear the two `ASSISTANT_PULSE_*` names in `.env`, and
-   restart `assistant` and `librespot`.
+   restart `assistant` and `soloist`.
 
 **Results:**
 
@@ -404,9 +407,9 @@ playing on the Pi. Focus order is ringing alert, then reply, then music
    configured (`spotify.client_id` and redirect URI).
    Stream-restore check: after a reply, say "pause", then "resume". Music must
    come back at full level, not the ducked level. Pulse's `module-stream-restore`
-   can remember a stream's last volume for librespot, so also run
-   `pactl list sink-inputs` while music plays and confirm the librespot input
-   reads 100% between turns. The assistant resets librespot's stream to 100% at
+   can remember a stream's last volume for Soloist, so also run
+   `pactl list sink-inputs` while music plays and confirm the `spotify` input
+   reads 100% between turns. The assistant resets Soloist's stream to 100% at
    startup (best effort), so restart the assistant mid-duck once and confirm
    music is back to full.
 6. `music.max_volume` enforcement: in `/settings`, set `music.max_volume` to a
@@ -467,9 +470,9 @@ volume above `music.max_volume`, or music that does not restore after ducking.
 [#74](https://github.com/Jairik/clanka-bot/issues/74). Boxes:
 
 - #69: peak and idle RAM per container are recorded in the repo; a go/no-go for phase 4 against the 6.5 GB threshold is stated
-- #74: peak and idle RAM per container with librespot playing are recorded; a go/no-go against the 6.5 GB threshold is stated
+- #74: peak and idle RAM per container with Soloist playing are recorded; a go/no-go against the 6.5 GB threshold is stated
 
-**Prerequisites:** the stack running. Sections 4 and 6 done, so librespot and
+**Prerequisites:** the stack running. Sections 4 and 6 done, so Soloist and
 the wake loop are real. A way to run a wake-to-reply load (speak to the
 assistant).
 
@@ -500,7 +503,7 @@ Use the committed `scripts/pi-ram-sample.sh` sampler instead; the run of
    Save the file outside the repo, or name it so you do not commit it by accident.
 3. Run the wake → STT → agent → TTS load: ten wake-to-reply turns with
    short questions, then five turns with a long reply.
-4. Run the same load again with librespot playing (for #74). Keep the same
+4. Run the same load again with Soloist playing (for #74). Keep the same
    turns.
 5. From the sampler file, take the peak per container and the total across
    containers for each run. Idle is step 1.
@@ -530,11 +533,12 @@ idle minutes, 2 s during fifteen scripted wake → STT → ask → TTS turns.
 | librespot | 11.9 | 11.9 |
 | **Total (sum of containers)** | **1783.2** | **1903.0** |
 
-There is no separate "with music playing" column: librespot has no Spotify
-sign-in and the account's audio keys are refused upstream
-([#71](https://github.com/Jairik/clanka-bot/issues/71)), so it was resident but
-never decoded. It is included in both columns above, and its decode buffers are
-bounded by the PCM rate (0.35 MB per second of 44.1 kHz stereo f32).
+The receiver row was measured with the previous librespot container, which had
+no Spotify sign-in then (the account's audio keys were refused upstream,
+[#71](https://github.com/Jairik/clanka-bot/issues/71)), so it was resident but
+never decoded. A later run with Soloist playing should replace that row; its
+decode buffers are bounded by the PCM rate (0.35 MB per second of 44.1 kHz
+stereo f32).
 
 Go/no-go against 6.5 GB: **go**. Peak system usage at the lowest MemAvailable
 was 2277.7 MiB free-style `used` and 2757.4 MiB all-process PSS, against an

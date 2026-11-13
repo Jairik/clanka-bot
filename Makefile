@@ -4,13 +4,14 @@ SHELL := /bin/bash
 GIT_SHA ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
 export GIT_SHA
 
-.PHONY: web web-dev build up down logs deploy rollback build-arm64 test tts-test check routing-eval latency-report new-tool wakeword-test
+.PHONY: web web-dev build up down logs deploy rollback build-arm64 test tts-test check routing-eval latency-report new-tool wakeword-test soloist soloist-update
 
 build: ## Build every service image for this host.
 	docker compose build
 
 up: ## Start the stack in the background.
 	mkdir -p exports
+	bash scripts/soloist-setup.sh
 	docker compose up -d
 
 down: ## Stop the stack.
@@ -25,6 +26,12 @@ deploy: ## Pull, build, start and wait for health (see docs/deploy.md).
 rollback: ## Reuse an earlier commit's images: make rollback SHA=<commit>
 	@test -n "$(SHA)" || { echo "usage: make rollback SHA=<commit>" >&2; exit 2; }
 	bash scripts/deploy.sh "$(SHA)"
+
+soloist: ## Install the official Soloist receiver binary and private dirs.
+	bash scripts/soloist-setup.sh
+
+soloist-update: ## Replace the receiver binary with the current official build.
+	SOLOIST_UPDATE=1 bash scripts/soloist-setup.sh
 
 build-arm64: ## Build all images for the Pi under QEMU (not for latency work).
 	DOCKER_DEFAULT_PLATFORM=linux/arm64 docker compose build

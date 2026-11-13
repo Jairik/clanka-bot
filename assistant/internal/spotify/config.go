@@ -1,6 +1,6 @@
 // Package spotify owns the Spotify Web API authentication seam and the
-// librespot pairing status reader. The Web API refresh token is the only
-// Spotify credential stored by the assistant: it lives in the write-only
+// Connect receiver's pairing status reader. The Web API refresh token is the
+// only Spotify credential stored by the assistant: it lives in the write-only
 // secrets table, never in config, a file or a log. Access tokens stay in
 // memory and are refreshed on demand with one in-flight request.
 package spotify
@@ -20,12 +20,14 @@ const (
 	SecretName = "SPOTIFY_REFRESH_TOKEN"
 
 	// DefaultDeviceName is the Spotify Connect device name. It must match the
-	// librespot container's SPOTIFY_DEVICE_NAME so the page and the device
-	// list agree.
+	// Soloist container's SPOTIFY_DEVICE_NAME so the page and the device list
+	// agree.
 	DefaultDeviceName = "Clanka"
+	// DefaultStreamMatch is the music receiver's Pulse application name.
+	DefaultStreamMatch = "spotify"
 	// DefaultTimeout bounds one token or Web API request.
 	DefaultTimeout = 10 * time.Second
-	// DefaultStaleAfter is how long a librespot status heartbeat may be old
+	// DefaultStaleAfter is how long a receiver status heartbeat may be old
 	// before the page calls it unavailable. The container writes every 10 s.
 	DefaultStaleAfter = 45 * time.Second
 
@@ -78,12 +80,16 @@ type Config struct {
 	// RedirectURI must exactly match one entry in the Spotify app's Redirect
 	// URI allowlist. HTTPS is required except for a loopback IP literal.
 	RedirectURI string `yaml:"redirect_uri"`
-	// PairingStatusFile is the librespot heartbeat file mounted read-only into
+	// PairingStatusFile is the Soloist heartbeat file mounted read-only into
 	// the assistant. Empty disables the Connect pairing row.
 	PairingStatusFile string `yaml:"pairing_status_file"`
-	// DeviceName is the name librespot advertises. The page shows it in the
+	// DeviceName is the name Soloist advertises. The page shows it in the
 	// pairing instructions.
 	DeviceName string `yaml:"device_name"`
+	// StreamMatch is a case-insensitive substring of the music receiver's
+	// Pulse application name, used only to duck its stream. Soloist reports
+	// "spotify"; changing it requires a restart of the assistant.
+	StreamMatch string `yaml:"stream_match"`
 	// StaleAfter is how old a heartbeat may be before pairing is unknown.
 	StaleAfter Duration `yaml:"stale_after"`
 	// Timeout bounds one token or Web API request.
@@ -100,6 +106,7 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		DeviceName:   DefaultDeviceName,
+		StreamMatch:  DefaultStreamMatch,
 		StaleAfter:   Duration(DefaultStaleAfter),
 		Timeout:      Duration(DefaultTimeout),
 		AuthorizeURL: authorizeEndpoint,
@@ -116,6 +123,10 @@ func (c Config) normalized() Config {
 	c.DeviceName = strings.TrimSpace(c.DeviceName)
 	if c.DeviceName == "" {
 		c.DeviceName = DefaultDeviceName
+	}
+	c.StreamMatch = strings.TrimSpace(c.StreamMatch)
+	if c.StreamMatch == "" {
+		c.StreamMatch = DefaultStreamMatch
 	}
 	if c.StaleAfter.Duration() <= 0 {
 		c.StaleAfter = Duration(DefaultStaleAfter)

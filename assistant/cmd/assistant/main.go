@@ -21,6 +21,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/announce"
 	"github.com/Jairik/clanka-bot/assistant/internal/api"
 	"github.com/Jairik/clanka-bot/assistant/internal/audio"
+	"github.com/Jairik/clanka-bot/assistant/internal/completion"
 	"github.com/Jairik/clanka-bot/assistant/internal/config"
 	"github.com/Jairik/clanka-bot/assistant/internal/connections"
 	"github.com/Jairik/clanka-bot/assistant/internal/dashboard"
@@ -433,6 +434,12 @@ func run() error {
 	}
 	if speechSpeaker != nil {
 		ringDeps.Speaker = speechSpeaker
+	}
+	ringDeps.Media = func(ctx context.Context, text string) error {
+		if completion.IsYouTube(text) {
+			return completion.YouTube(ctx, text, cfg.Playback.Sink)
+		}
+		return spotifyModule.PlayCompletion(ctx, text)
 	}
 	ringEngine := ring.New(ringDeps)
 

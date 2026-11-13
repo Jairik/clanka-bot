@@ -66,6 +66,7 @@ type alertsView struct {
 
 // scheduledAlertView is one active Timer, Alarm or Reminder row.
 type scheduledAlertView struct {
+	Audio        string // Audio is the persisted completion media for pending alerts.
 	KindKey      string
 	Kind         string
 	Label        string
@@ -431,6 +432,7 @@ func (h *Handler) buildAlertsView(flash, errorText string, edit *alertEditState)
 			}
 			detail := fmt.Sprintf("%s of %s left", remainingLabel(item.RemainingSeconds), displayDuration(time.Duration(item.DurationSeconds)*time.Second))
 			view.Alerts = append(view.Alerts, scheduledAlertView{
+				Audio:        item.Audio,
 				KindKey:      "timer",
 				Kind:         "Timer",
 				Label:        label,
@@ -451,6 +453,7 @@ func (h *Handler) buildAlertsView(flash, errorText string, edit *alertEditState)
 				label = "—"
 			}
 			view.Alerts = append(view.Alerts, scheduledAlertView{
+				Audio:        item.Audio,
 				KindKey:      "alarm",
 				Kind:         "Alarm",
 				Label:        label,

@@ -314,6 +314,37 @@ func (p *Player) Play(ctx context.Context, req PlayRequest) (Played, error) {
 		}
 		body, _ = json.Marshal(map[string]any{"uris": uris})
 		out.Name, out.Kind = "your liked songs", KindLiked
+	case strings.HasPrefix(query, "spotify:") || strings.HasPrefix(query, "https://open.spotify.com/"):
+		uri := query
+		if strings.HasPrefix(query, "https://") {
+			u, err := url.Parse(query)
+			if err != nil {
+				return Played{}, err
+			}
+			parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+			if len(parts) != 2 {
+				return Played{}, ErrNothingFound
+			}
+			uri = "spotify:" + parts[0] + ":" + parts[1]
+		}
+		parts := strings.Split(uri, ":")
+		if len(parts) != 3 || parts[2] == "" {
+			return Played{}, ErrNothingFound
+		}
+		switch parts[1] {
+		case KindTrack:
+			body, _ = json.Marshal(map[string]any{"uris": []string{uri}})
+		case KindAlbum, KindPlaylist:
+			body, _ = json.Marshal(map[string]any{"context_uri": uri})
+		default:
+			return Played{}, ErrNothingFound
+		}
+		if parts[1] == KindPlaylist {
+			if err := p.putShuffle(ctx, d, true); err != nil {
+				return Played{}, err
+			}
+		}
+		out.Kind = parts[1]
 	case query == "":
 		out.Resumed = true
 	default:

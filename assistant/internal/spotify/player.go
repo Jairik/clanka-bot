@@ -25,7 +25,7 @@ const (
 )
 
 var (
-	// ErrDeviceNotFound means the librespot device is not in the account's
+	// ErrDeviceNotFound means the receiver device is not in the account's
 	// Connect device list, so it is not paired or not running.
 	ErrDeviceNotFound = errors.New("spotify: the Pi's Connect device is not available")
 	// ErrNothingFound means a search matched nothing playable.
@@ -74,7 +74,7 @@ type NowPlaying struct {
 }
 
 // Player is the playback control seam over the Web API. It always targets the
-// one librespot device by name so a phone or desktop elsewhere is never
+// one receiver device by name so a phone or desktop elsewhere is never
 // driven by accident. The playlist and library methods (#73) are in library.go.
 type Player struct {
 	api        API
@@ -123,8 +123,8 @@ type device struct {
 	Volume *int   `json:"volume_percent"`
 }
 
-// findDevice looks the librespot device up by name on every call. A cached ID
-// would go stale whenever librespot restarts, and the lookup is one cheap GET.
+// findDevice looks the receiver device up by name on every call. A cached ID
+// would go stale whenever the receiver restarts, and the lookup is one cheap GET.
 func (p *Player) findDevice(ctx context.Context) (device, error) {
 	raw, err := p.api.Get(ctx, "/me/player/devices", nil)
 	if err != nil {

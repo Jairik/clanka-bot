@@ -130,7 +130,7 @@ func newSpotifyFixture(t *testing.T) *spotifyFixture {
 		Store:  svc,
 		Logger: slog.New(slog.NewTextHandler(logs, nil)),
 	})
-	pairingPath := filepath.Join(t.TempDir(), "librespot.status")
+	pairingPath := filepath.Join(t.TempDir(), "soloist.status")
 	handler := newHandler(t, dashboard.Options{
 		Secrets:        svc,
 		Spotify:        auth,
@@ -144,7 +144,7 @@ func newSpotifyFixture(t *testing.T) *spotifyFixture {
 
 func (f *spotifyFixture) writePairing(t *testing.T, state string) {
 	t.Helper()
-	body := "version=1\nstate=" + state + "\nsession=connected\ndevice=Clanka\nupdated=" + time.Now().UTC().Format(time.RFC3339) + "\n"
+	body := "version=2\nstate=" + state + "\nsession=active\ndevice=Clanka\nexpires_days=89\nupdated=" + time.Now().UTC().Format(time.RFC3339) + "\n"
 	if err := os.WriteFile(f.pairingPath, []byte(body), 0o600); err != nil {
 		t.Fatalf("write pairing: %v", err)
 	}

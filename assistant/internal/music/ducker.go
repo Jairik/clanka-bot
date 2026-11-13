@@ -1,6 +1,6 @@
-// Package music lowers and restores the librespot stream locally. ADR-0004
-// puts Spotify on the Assistant's own Pulse sink so a reply, a Ring or the
-// wake word can duck it instantly without a Web API call. Ducking is a
+// Package music lowers and restores the music receiver's stream locally.
+// ADR-0004 puts Spotify on the Assistant's own Pulse sink so a reply, a Ring or
+// the wake word can duck it instantly without a Web API call. Ducking is a
 // refcounted hold: overlapping holders (a Ring during a reply) restore only
 // when the last one releases.
 package music

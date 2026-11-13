@@ -432,8 +432,9 @@ func TestLoadReadsSpotifyConfigAndEnvironment(t *testing.T) {
 spotify:
   client_id: "0123456789abcdef0123456789abcdef"
   redirect_uri: "https://pi.tailnet.ts.net/spotify/callback"
-  pairing_status_file: "/spotify-status/librespot.status"
+  pairing_status_file: "/spotify-status/soloist.status"
   device_name: "Clanka"
+  stream_match: "spotify"
   stale_after: 45s
   timeout: 5s
 `)
@@ -447,8 +448,11 @@ spotify:
 	if cfg.Spotify.RedirectURI != "https://pi.tailnet.ts.net/spotify/callback" {
 		t.Errorf("redirect uri = %q", cfg.Spotify.RedirectURI)
 	}
-	if cfg.Spotify.PairingStatusFile != "/spotify-status/librespot.status" {
+	if cfg.Spotify.PairingStatusFile != "/spotify-status/soloist.status" {
 		t.Errorf("pairing status file = %q", cfg.Spotify.PairingStatusFile)
+	}
+	if cfg.Spotify.StreamMatch != "spotify" {
+		t.Errorf("stream match = %q", cfg.Spotify.StreamMatch)
 	}
 	if cfg.Spotify.Timeout.Duration() != 5*time.Second {
 		t.Errorf("timeout = %s", cfg.Spotify.Timeout.Duration())
@@ -456,8 +460,9 @@ spotify:
 
 	t.Setenv("SPOTIFY_CLIENT_ID", "fedcba9876543210fedcba9876543210")
 	t.Setenv("SPOTIFY_REDIRECT_URI", "http://127.0.0.1:8082/spotify/callback")
-	t.Setenv("ASSISTANT_SPOTIFY_STATUS_FILE", "/tmp/librespot.status")
+	t.Setenv("ASSISTANT_SPOTIFY_STATUS_FILE", "/tmp/soloist.status")
 	t.Setenv("SPOTIFY_DEVICE_NAME", "Kitchen")
+	t.Setenv("ASSISTANT_SPOTIFY_STREAM_MATCH", "clanka-music")
 	cfg, err = config.Load(writeConfig(t, "{}\n"))
 	if err != nil {
 		t.Fatalf("Load with env: %v", err)
@@ -468,11 +473,14 @@ spotify:
 	if cfg.Spotify.RedirectURI != "http://127.0.0.1:8082/spotify/callback" {
 		t.Errorf("env redirect uri = %q", cfg.Spotify.RedirectURI)
 	}
-	if cfg.Spotify.PairingStatusFile != "/tmp/librespot.status" {
+	if cfg.Spotify.PairingStatusFile != "/tmp/soloist.status" {
 		t.Errorf("env status file = %q", cfg.Spotify.PairingStatusFile)
 	}
 	if cfg.Spotify.DeviceName != "Kitchen" {
 		t.Errorf("env device name = %q", cfg.Spotify.DeviceName)
+	}
+	if cfg.Spotify.StreamMatch != "clanka-music" {
+		t.Errorf("env stream match = %q", cfg.Spotify.StreamMatch)
 	}
 }
 

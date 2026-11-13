@@ -35,7 +35,7 @@ type Config struct {
 		// named volume here; local runs use ./data.
 		Dir string `yaml:"dir"`
 	} `yaml:"data"`
-	// Spotify is the non-secret Web API app configuration plus the librespot
+	// Spotify is the non-secret Web API app configuration plus the Soloist
 	// pairing heartbeat path. The refresh token is a write-only secret.
 	Spotify spotify.Config `yaml:"spotify"`
 	// Timezone is the IANA zone that clock-time Alarms and Reminders use. It is
@@ -620,6 +620,9 @@ func applyEnv(cfg *Config) error {
 	}
 	if v := os.Getenv("SPOTIFY_DEVICE_NAME"); v != "" {
 		cfg.Spotify.DeviceName = v
+	}
+	if v := os.Getenv("ASSISTANT_SPOTIFY_STREAM_MATCH"); v != "" {
+		cfg.Spotify.StreamMatch = v
 	}
 	if v := os.Getenv("ASSISTANT_EMBED_URL"); v != "" {
 		cfg.Embed.URL = v

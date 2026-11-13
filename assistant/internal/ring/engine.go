@@ -105,6 +105,8 @@ type Speaker interface {
 // Deps are the Engine's seams. Settings, Clip and Play are required for sound;
 // the rest are optional and stay nil-safe for tests and text-only setups.
 type Deps struct {
+	// Completed observes a Ring after its playback and Focus have ended.
+	Completed func(Kind)
 	// Focus is where the active Ring claims Ring priority. The queue below
 	// claims only after it owns the speaker, so a queued Ring cannot replace
 	// the Focus of the Ring that is actually sounding.
@@ -141,6 +143,7 @@ type Deps struct {
 // first (or the current reply sentence) and only then claims Focus, so every
 // Ring stays controllable and no older sound is orphaned by a newer claim.
 type Engine struct {
+	completed  func(Kind)
 	focus      *focus.Registry
 	boundary   Boundary
 	music      Music
@@ -167,7 +170,7 @@ func New(deps Deps) *Engine {
 	if deps.Logger == nil {
 		deps.Logger = slog.Default()
 	}
-	return &Engine{
+	return &Engine{completed: deps.Completed,
 		focus:      deps.Focus,
 		boundary:   deps.Boundary,
 		music:      deps.Music,
@@ -199,6 +202,13 @@ func (e *Engine) Ring(parent context.Context, req Request) Result {
 	case <-parent.Done():
 		return Result{Outcome: OutcomeInterrupted, EndedBy: "shutdown"}
 	}
+
+	// Completion runs after the deferred Focus release and speaker cleanup.
+	defer func() {
+		if e.completed != nil && parent.Err() == nil {
+			e.completed(req.Kind)
+		}
+	}()
 
 	// Per-alert overrides are applied to this Ring's copy of the live kind
 	// settings. Nothing global is written, so the next alert still uses the

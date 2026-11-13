@@ -267,3 +267,18 @@ _Avoid_: Spotify login, API key, client secret
 **Soloist**:
 The Spotify Connect receiver: Spotify's official proprietary binary, run by the `soloist` container. It advertises a device over mDNS on the host network, plays into the Assistant's Pulse sink ([ADR-0004](docs/adr/0004-spotify-plays-through-the-pi.md)), and expires periodically; the operator refreshes it with `make soloist-update`.
 _Avoid_: Spotify player, Spotify daemon, librespot
+
+**Command chain**:
+A request split into independently confident Tool steps that execute in order,
+waiting for each reply to finish and aborting at the first failure.
+_Avoid_: Routine, parallel commands
+
+**Follow-up window**:
+The short, cued listening period after a completed reply that accepts another
+request without a Wake phrase; disabled while music holds Focus.
+_Avoid_: Always listening, continuous recording
+
+**Deferred action**:
+An expiring request queued for music, reply or Timer Ring completion, visible
+and cancellable until dispatched. At most eight wait, for at most one hour.
+_Avoid_: Scheduled alert, Timer, Hermes job

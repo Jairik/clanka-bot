@@ -90,9 +90,11 @@ type holderEntry struct {
 // Registry tracks the current holder at each priority. The zero value is ready
 // and every method is safe for concurrent use.
 type Registry struct {
-	mu      sync.Mutex
-	seq     uint64
-	holders [3]holderEntry
+	// OnReleased is installed before use and observes completed music/reply lifetimes.
+	OnReleased func(Priority)
+	mu         sync.Mutex
+	seq        uint64
+	holders    [3]holderEntry
 }
 
 // New returns an empty Focus registry. The zero value works too; this exists
@@ -179,10 +181,16 @@ func (c *Claim) Release() {
 	}
 	c.once.Do(func() {
 		c.registry.mu.Lock()
-		defer c.registry.mu.Unlock()
 		entry := c.registry.holders[c.priority]
 		if entry.token == c.token {
 			c.registry.holders[c.priority] = holderEntry{}
+			callback := c.registry.OnReleased
+			c.registry.mu.Unlock()
+			if callback != nil {
+				callback(c.priority)
+			}
+			return
 		}
+		c.registry.mu.Unlock()
 	})
 }

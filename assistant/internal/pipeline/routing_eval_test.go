@@ -714,6 +714,24 @@ func TestRoutingEvalAgainstMiniLM(t *testing.T) {
 		t.Fatalf("pipeline.New: %v", err)
 	}
 
+	// Chaining has a separate oracle so the original single-request baseline stays comparable.
+	t.Run("chains", func(t *testing.T) {
+		p.BindChains(func() bool { return true })
+		defer p.BindChains(func() bool { return false })
+		for _, text := range []string{"what time is it and set a timer for five minutes", "what time is it then set a timer for five minutes"} {
+			count := 0
+			reply := p.HandleEvents(ctx, request(), text, pipeline.Events{StepReply: func(string) error { count++; return nil }})
+			manager.Cancel("")
+			if count != 2 || reply.Path != tool.PathFast {
+				t.Errorf("%q: steps=%d reply=%+v", text, count, reply)
+			}
+		}
+		for _, text := range []string{"play Simon and Garfunkel", "play rock and roll playlist", "set a timer for an hour and a half", "set a timer for five minutes and invent a new language"} {
+			p.HandleEvents(ctx, request(), text, pipeline.Events{StepReply: func(string) error { t.Errorf("split single or uncertain request %q", text); return nil }})
+			manager.Cancel("")
+		}
+	})
+
 	classify := func(utterance string) evalVerdict {
 		t.Helper()
 		logBuf.Reset()

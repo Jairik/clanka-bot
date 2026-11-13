@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/namematch"
@@ -187,4 +188,32 @@ func toolError(err error) error {
 		return err
 	}
 	return &tool.ToolError{Say: failureText(err)}
+}
+
+// WatchCompletion detects natural playback endings without removing paused music's resume Focus.
+func (s *Service) WatchCompletion(ctx context.Context) {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	wasPlaying := false
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if s.focus == nil || !s.focus.Held(focus.Music) {
+				wasPlaying = false
+				continue
+			}
+			probeCtx, cancel := context.WithTimeout(ctx, time.Second)
+			state, err := s.player.NowPlaying(probeCtx)
+			cancel()
+			if err != nil && !errors.Is(err, spotify.ErrNothingPlaying) {
+				continue
+			}
+			if wasPlaying && !state.Playing && s.focus.OnReleased != nil {
+				s.focus.OnReleased(focus.Music)
+			}
+			wasPlaying = state.Playing
+		}
+	}
 }

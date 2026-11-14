@@ -16,9 +16,21 @@ from typing import Iterator, Optional
 
 import numpy as np
 
+from builtin_voices import BUILTIN_VOICES
 from pcm import to_pcm16
 
 _LOGGER = logging.getLogger("tts.engine")
+
+
+def merge_catalogue(warm, extra) -> list:
+    """Warm names first, then the rest of the catalogue, de-duplicated.
+
+    Order is stable so the Dashboard list does not shuffle between starts, and
+    the warm default keeps position 0.
+    """
+    names = list(extra) if extra is not None else list(BUILTIN_VOICES)
+    return list(dict.fromkeys(list(warm) + names)) or ["alba"]
+
 
 # Voice states are pre-exported safetensors files. 32 MB matches the assistant's
 # header gate; .pt/.pth/pickle files are never opened.
@@ -93,11 +105,16 @@ class PocketTtsEngine:
         self,
         language: Optional[str] = None,
         voices=("alba",),
+        catalogue=None,
         voice_dir: Optional[str] = None,
     ) -> None:
         self.language_name = language
         self.language = language_code(language)
         self.voices = list(voices) or ["alba"]
+        # The catalogue is every voice the service advertises as selectable; the
+        # voices list is only what is warmed at startup. A catalogue voice that
+        # is still cold is loaded on first use by state_for and then cached.
+        self.catalogue = merge_catalogue(self.voices, catalogue)
         self.default_voice = self.voices[0]
         self.sample_rate = 24000
         self.version = _package_version()
@@ -120,6 +137,11 @@ class PocketTtsEngine:
             self._states[name] = self._model.get_state_for_audio_prompt(name)
             _LOGGER.info("voice %s warm", name)
         _LOGGER.info("model revision %s", self.revision)
+        _LOGGER.info(
+            "catalogue holds %d voices, %d warm at startup",
+            len(self.catalogue),
+            len(self.voices),
+        )
 
     def _revision_from_model(self) -> str:
         revision = f"pocket-tts {self.version} {self.language_name or 'default'}"

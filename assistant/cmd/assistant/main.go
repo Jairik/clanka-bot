@@ -161,7 +161,7 @@ func run() error {
 
 	// Speech is optional: without a TTS address the debug entry stays
 	// text-only. The client is created before the voice library so startup can
-	// learn the model revision and the built-in voices the image warmed.
+	// learn the model revision and the built-in catalogue the service advertises.
 	var ttsClient *wyoming.Client
 	var ttsInfo wyoming.VoiceLibrary
 	var ttsDescribe wyoming.Info
@@ -171,7 +171,7 @@ func run() error {
 	}
 
 	// Describe is a second source when an older TTS service has no voice-info
-	// event; its advertised voices are still the warm built-ins.
+	// event; its advertised voices are still the built-in catalogue.
 	if len(ttsInfo.Voices) == 0 {
 		for _, program := range ttsDescribe.TTS {
 			for _, advertised := range program.Voices {

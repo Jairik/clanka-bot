@@ -395,3 +395,22 @@ def test_resampler_changes_length_and_spans_chunks():
     out = np.concatenate([slower.process(tone[:400]), slower.process(tone[400:])])
     assert 1980 <= len(out) <= 2010
     assert np.max(np.abs(out)) <= 1.0
+
+
+class CatalogueEngine(FakeEngine):
+    """Warms one voice, advertises a larger selectable catalogue."""
+
+    voices = ["alba"]
+    catalogue = ["alba", "marius", "vera"]
+
+
+def test_describe_advertises_the_catalogue_not_only_the_warm_set():
+    srv = server.TtsServer(CatalogueEngine())
+    info = Info.from_event(srv.info_event())
+    program = info.tts[0]
+    assert [voice.name for voice in program.voices] == ["alba", "marius", "vera"]
+
+
+def test_voice_info_reports_the_catalogue():
+    srv = server.TtsServer(CatalogueEngine())
+    assert srv.voice_info_event().data["voices"] == ["alba", "marius", "vera"]

@@ -7,6 +7,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from engine import MAX_STATE_BYTES, PocketTtsEngine  # noqa: E402
+from builtin_voices import BUILTIN_VOICES  # noqa: E402
 
 
 class FakeModel:
@@ -116,3 +117,30 @@ def test_state_for_caches_a_voice_after_first_use(tmp_path):
     warm = engine.warm_voice("/voices/jarvis.safetensors")
     assert first == second == warm
     assert engine._model.state_calls == ["/voices/jarvis.safetensors"]
+
+
+def test_catalogue_is_the_whole_builtin_set_by_default(tmp_path):
+    engine = PocketTtsEngine(voice_dir=str(tmp_path))
+    assert engine.voices == ["alba"]
+    assert engine.catalogue == list(BUILTIN_VOICES)
+    assert len(engine.catalogue) == 27
+
+
+def test_catalogue_keeps_the_warm_voice_first_and_dedupes(tmp_path):
+    engine = PocketTtsEngine(
+        voices=["marius"], catalogue=["alba", "marius", "vera"], voice_dir=str(tmp_path)
+    )
+    assert engine.catalogue == ["marius", "alba", "vera"]
+
+
+def test_a_cold_catalogue_voice_loads_on_first_use(tmp_path):
+    """A catalogue voice is not warmed, but selecting it must still work."""
+    engine = PocketTtsEngine(
+        voices=["alba"], catalogue=["alba", "marius"], voice_dir=str(tmp_path)
+    )
+    engine._model = FakeModel()
+    engine.revision = "test-revision"
+    assert engine._model.state_calls == []
+    assert engine.state_for("alba") == "alba"
+    assert engine.state_for("marius") == "marius"
+    assert engine._model.state_calls == ["alba", "marius"]

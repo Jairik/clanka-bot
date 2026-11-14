@@ -4,6 +4,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import prefetch  # noqa: E402
+from builtin_voices import BUILTIN_VOICES  # noqa: E402
 
 CONFIG = {
     "weights_path": "hf://kyutai/pocket-tts/languages/english/model.safetensors@abc",
@@ -35,11 +36,16 @@ def test_files_for_tolerates_a_config_without_optional_paths():
     assert prefetch.files_for({}, [], voice_source) == []
 
 
-def test_voice_names_merges_the_list_and_the_default(monkeypatch):
+def test_voice_names_merges_the_list_the_default_and_the_catalogue(monkeypatch):
     monkeypatch.setenv("TTS_VOICES", "alba, fantine")
     monkeypatch.setenv("TTS_VOICE", "fantine")
-    assert prefetch.voice_names() == ["alba", "fantine"]
+    monkeypatch.setenv("TTS_CATALOGUE", "alba, marius")
+    assert prefetch.voice_names() == ["alba", "fantine", "marius"]
 
-    monkeypatch.delenv("TTS_VOICES")
-    monkeypatch.delenv("TTS_VOICE")
-    assert prefetch.voice_names() == []
+
+def test_voice_names_defaults_to_the_whole_catalogue(monkeypatch):
+    # Runtime is offline, so every selectable voice needs an embedding baked in.
+    monkeypatch.delenv("TTS_VOICES", raising=False)
+    monkeypatch.delenv("TTS_VOICE", raising=False)
+    monkeypatch.delenv("TTS_CATALOGUE", raising=False)
+    assert prefetch.voice_names() == list(BUILTIN_VOICES)

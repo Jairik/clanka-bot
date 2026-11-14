@@ -245,7 +245,7 @@ The built-in sounds that ship in the image plus the canonical WAV files in `soun
 _Avoid_: Sound bank, audio collection
 
 **Voice library**:
-The built-in Pocket TTS voices warmed in the `tts` image plus the pre-exported `.safetensors` voice states in `voices/` on the voices volume. The active entry is one persistent setting; other entries load on first use.
+The built-in Pocket TTS voices whose embeddings the `tts` image carries plus the pre-exported `.safetensors` voice states in `voices/` on the voices volume. The active entry is one persistent setting; built-ins are advertised as selectable and load on first use, and other entries load on first use.
 _Avoid_: Voice bank, voice pack
 
 **Voice state**:

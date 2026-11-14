@@ -9,7 +9,7 @@ import (
 )
 
 // VoiceLibrary is the TTS service's voice-library report: the model revision every
-// custom voice state must match, the built-in voices warm in the image, and the
+// custom voice state must match, the built-in catalogue the service advertises, and the
 // folder the service sees custom states in.
 type VoiceLibrary struct {
 	Revision string

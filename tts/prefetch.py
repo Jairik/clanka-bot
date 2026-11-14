@@ -13,13 +13,21 @@ import sys
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
+from builtin_voices import catalogue_names
+
 # Voice names are warmable only when Pocket TTS ships a precomputed embedding.
 # A URL or local file voice is fetched by the user's own path, not baked here.
 
 
 def voice_names() -> list[str]:
-    """Voices named by TTS_VOICES plus the single TTS_VOICE, de-duplicated."""
+    """Voices named by TTS_VOICES plus the single TTS_VOICE, de-duplicated.
+
+    The catalogue is included because a cold catalogue voice is still selectable
+    at runtime, and the image runs with HF_HUB_OFFLINE=1: an embedding that is
+    not baked in here cannot be loaded later.
+    """
     raw = os.environ.get("TTS_VOICES", "") + "," + os.environ.get("TTS_VOICE", "")
+    raw += "," + ",".join(catalogue_names(os.environ.get("TTS_CATALOGUE")))
     names = [name.strip() for name in raw.split(",") if name.strip()]
     return list(dict.fromkeys(names))
 

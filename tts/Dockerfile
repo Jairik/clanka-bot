@@ -20,11 +20,15 @@ RUN pip install -r requirements.txt
 ARG TTS_LANGUAGE=english
 ARG TTS_VOICES=alba
 ARG TTS_VOICE=alba
-ENV TTS_LANGUAGE=$TTS_LANGUAGE TTS_VOICES=$TTS_VOICES TTS_VOICE=$TTS_VOICE
+# The catalogue is what the service advertises as selectable; every embedding in
+# it is baked in here because runtime is offline. `all` is the full built-in set.
+ARG TTS_CATALOGUE=all
+ENV TTS_LANGUAGE=$TTS_LANGUAGE TTS_VOICES=$TTS_VOICES TTS_VOICE=$TTS_VOICE \
+    TTS_CATALOGUE=$TTS_CATALOGUE
 
 # Weights and voices come from public Hugging Face repos with an anonymous
 # request: no token is passed to this build, and nothing is downloaded later.
-COPY prefetch.py .
+COPY builtin_voices.py prefetch.py .
 RUN python prefetch.py \
     && HF_HUB_OFFLINE=1 python prefetch.py --check \
     && rm -f prefetch.py

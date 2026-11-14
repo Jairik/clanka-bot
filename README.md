@@ -678,7 +678,8 @@ token stays on the configured host, and response bodies are never logged.
 #### Voice library and rate
 
 Voice is a persistent setting, not a per-request choice. The library is the
-Pocket TTS voices warmed in the `tts` image (`TTS_VOICES`, default `alba`) plus
+built-in Pocket TTS catalogue the `tts` image carries (`TTS_CATALOGUE`, default
+`all`: 27 voices, each with a precomputed embedding baked in at build time) plus
 pre-exported `.safetensors` voice states copied into `voices/` on the separate
 `assistant-voices` volume. Compose mounts that volume read-only into `tts` at
 `/voices`, so `tts` sees only voice states and never the database or secrets;

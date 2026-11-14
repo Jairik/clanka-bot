@@ -25,6 +25,7 @@ from wyoming.tts import (
     SynthesizeStopped,
 )
 
+from builtin_voices import catalogue_names
 from engine import MAX_RATE, MIN_RATE, PocketTtsEngine
 from pcm import to_pcm16
 
@@ -33,6 +34,16 @@ _LOGGER = logging.getLogger("tts")
 _SENTENCE_END = ".?!"
 _WIDTH = 2
 _CHANNELS = 1
+
+
+def advertised_voices(engine) -> list[str]:
+    """The voices to advertise: the catalogue when the engine has one.
+
+    A fake or older engine exposes only `voices`, so the fallback keeps the
+    advertised list equal to what it actually warms.
+    """
+    catalogue = getattr(engine, "catalogue", None)
+    return list(catalogue or getattr(engine, "voices", []))
 
 
 class TtsServer:
@@ -76,7 +87,7 @@ class TtsServer:
                 version=None,
                 languages=[language],
             )
-            for name in getattr(self.engine, "voices", [])
+            for name in advertised_voices(self.engine)
         ]
         program = TtsProgram(
             name="pocket-tts",
@@ -90,12 +101,16 @@ class TtsServer:
         return Info(tts=[program]).event()
 
     def voice_info_event(self) -> Event:
-        """The revision and built-in voices the assistant's library indexes."""
+        """The revision and the built-in voices the assistant's library indexes.
+
+        This advertises the catalogue, not the warm set: a cold catalogue voice
+        is selectable, and the engine loads it on first use.
+        """
         return Event(
             type="voice-info-result",
             data={
                 "revision": getattr(self.engine, "revision", "unknown"),
-                "voices": list(getattr(self.engine, "voices", [])),
+                "voices": advertised_voices(self.engine),
                 "dir": str(getattr(self.engine, "voice_dir", "")),
             },
         )
@@ -349,20 +364,23 @@ def main() -> None:
     voice_list = os.environ.get("TTS_VOICES", os.environ.get("TTS_VOICE", "alba"))
     voices = [name.strip() for name in voice_list.split(",") if name.strip()] or ["alba"]
     default_voice = os.environ.get("TTS_VOICE", voices[0])
+    catalogue = catalogue_names(os.environ.get("TTS_CATALOGUE"))
 
     engine = PocketTtsEngine(
         language=os.environ.get("TTS_LANGUAGE") or None,
         voices=voices,
+        catalogue=catalogue,
         voice_dir=os.environ.get("TTS_VOICE_DIR") or None,
     )
     started = time.monotonic()
     engine.load()  # warm the model before the health check can pass
     engine.default_voice = default_voice
     _LOGGER.info(
-        "model warm in %.1fs (sample rate %s Hz, voices %s)",
+        "model warm in %.1fs (sample rate %s Hz, voices %s, catalogue %d)",
         time.monotonic() - started,
         engine.sample_rate,
         ", ".join(voices),
+        len(engine.catalogue),
     )
 
     try:

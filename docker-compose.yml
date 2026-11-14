@@ -257,6 +257,9 @@ services:
         TTS_LANGUAGE: ${TTS_LANGUAGE:-english}
         TTS_VOICES: ${TTS_VOICES:-${TTS_VOICE:-alba}}
         TTS_VOICE: ${TTS_VOICE:-alba}
+        # Selectable built-in voices, baked into the image. `all` is the full
+        # Pocket TTS set; a subset trims the image and the Dashboard list.
+        TTS_CATALOGUE: ${TTS_CATALOGUE:-all}
     image: clanka/tts:${GIT_SHA:-dev}
     restart: unless-stopped
     environment:
@@ -268,6 +271,9 @@ services:
       TTS_LANGUAGE: ${TTS_LANGUAGE:-english}
       TTS_VOICES: ${TTS_VOICES:-${TTS_VOICE:-alba}}
       TTS_VOICE: ${TTS_VOICE:-alba}
+      # Must match the build arg: the image carries an embedding only for names
+      # it prefetched, and runtime is offline.
+      TTS_CATALOGUE: ${TTS_CATALOGUE:-all}
       # Custom pre-exported Pocket TTS voice states. The assistant writes them
       # to the voices volume; tts only reads this subtree.
       TTS_VOICE_DIR: "/voices"

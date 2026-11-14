@@ -220,8 +220,9 @@ tts:
   # address disables spoken replies and leaves the debug entry text-only.
   addr: "tts:10200"
   # Pocket TTS voice name. This is the config layer of the live `voice.name`
-  # setting; a Dashboard or voice override wins. Built-in names are the voices
-  # the tts image warmed (TTS_VOICES), not an invented catalogue.
+  # setting; a Dashboard or voice override wins. Built-in names are the
+  # catalogue the tts service advertises (TTS_CATALOGUE, default `all`); a
+  # catalogue voice that is still cold loads on first use.
   voice: "alba"
   # Covers connect plus the gap between audio chunks.
   timeout: 30s

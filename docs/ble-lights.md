@@ -29,8 +29,13 @@ embedded Python helper with pinned Bleak, using host BlueZ over D-Bus. Each
 write opens and closes its own connection and retries once. Queueing and the
 helper together have a fourteen-second deadline, long enough for a cold
 ELK-BLEDOM connect; discovery lasts three seconds.
-Health reports opt-in and the last transport result, never inferred power or
-colour. A successful GATT write does not prove the strip changed.
+Health reports opt-in and the last transport result for the named controller,
+including the helper's reason (for example
+`ELK-BLEDOB04: failed to discover services, device disconnected`), never
+inferred power or colour. A successful GATT write does not prove the strip
+changed. One saved light that stops answering keeps that row red until a later
+write succeeds, so "Forget" a controller that is gone and power-cycle one that
+the vendor phone app still holds.
 
 Compose mounts only the host system bus socket. No bluetoothd, privileged mode,
 HCI reset, adapter power change, pairing removal or speaker configuration change

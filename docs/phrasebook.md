@@ -48,7 +48,8 @@ every overridable Tool's description and shipped default to the configured
 Agent model. The prompt asks for 1–4 words per Tool, in character, with no
 invented facts. The response is validated: unknown Tools are dropped, empty or
 over-long values are dropped, and only then does one transaction replace the
-Persona's existing overrides.
+Persona's existing overrides. The new set is live immediately; the page is where
+the owner reviews it, and each row can be edited or reset afterwards.
 
 Generation uses `Agent.Complete`, a non-streaming call with the same provider,
 key, model and forced ZDR / data-collection-denial fields as a normal turn. It

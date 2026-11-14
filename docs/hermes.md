@@ -25,8 +25,12 @@ Tool surface an adapter would publish, and the accounts you can link today.
 
 The link form writes the same secrets the Tool modules already resolve. Values
 are write-only: the page shows only `set`, `source` and the last four
-characters, never the value. Unlink clears every secret that account owns,
-including optional ones.
+characters, never the value. A blank field on a link form keeps an already
+stored value, so adding an optional secret never forces a required one to be
+retyped. Unlink clears every **stored** value that account owns, including
+optional ones. A value supplied by `.env` cannot be removed from here; the row
+keeps reporting it as active (`From environment`), and the flash says only the
+stored values were cleared.
 
 Use scoped credentials. A GitHub fine-grained PAT limited to the repositories
 and read/write scopes Hermes should have is the intended shape; do not paste a

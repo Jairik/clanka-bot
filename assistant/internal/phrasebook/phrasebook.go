@@ -7,8 +7,8 @@
 // There are two layers. The code default is the terse phrase shipped for each
 // overridable Tool, so the assistant is brief even with no Persona selected.
 // A Persona may replace any of them; the Agent path can generate the whole set
-// from that Persona's personality prompt and the owner reviews it on the
-// Phrase book page before it is used.
+// from that Persona's personality prompt; the Phrase book page is where the
+// owner reviews, edits or resets it. Generation applies immediately.
 //
 // The registry asks this package for a replacement through a hook installed by
 // main, so no Tool knows about Personas or the phrase book.
@@ -253,7 +253,16 @@ func (s *Service) Set(ctx context.Context, persona, name, text string, source So
 		source = SourceManual
 	}
 	now := time.Now().UTC().Truncate(time.Second)
-	entry := Entry{Persona: persona, Tool: name, Phrase: text, Source: source, UpdatedAt: now}
+	// The column stores the folded lookup key, not the display spelling: the
+	// personas table matches case-insensitively with EqualFold, while SQLite's
+	// NOCASE only folds ASCII. Storing the key keeps the database and the
+	// in-memory map on exactly the same row for any Unicode name.
+	key := personaKey(persona)
+	entry := Entry{Persona: key, Tool: name, Phrase: text, Source: source, UpdatedAt: now}
+	// Hold the lock across the write and the memory swap, so two tabs cannot
+	// commit in one order and update the map in the other.
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if _, err := s.db.ExecContext(ctx,
 		`INSERT INTO persona_phrases (persona, tool, phrase, source, updated_at)
 		 VALUES (?, ?, ?, ?, ?)
@@ -261,17 +270,14 @@ func (s *Service) Set(ctx context.Context, persona, name, text string, source So
 		   phrase = excluded.phrase,
 		   source = excluded.source,
 		   updated_at = excluded.updated_at`,
-		persona, name, text, string(source), now.UnixMilli()); err != nil {
+		key, name, text, string(source), now.UnixMilli()); err != nil {
 		return Entry{}, fmt.Errorf("phrasebook: save %s: %w", name, err)
 	}
-	key := personaKey(persona)
-	s.mu.Lock()
 	if s.byPersona[key] == nil {
 		s.byPersona[key] = make(map[string]Entry)
 	}
 	s.byPersona[key][name] = entry
-	s.mu.Unlock()
-	s.logger.Info("phrase saved", "persona", persona, "tool", name, "source", source)
+	s.logger.Info("phrase saved", "persona", key, "tool", name, "source", source)
 	return entry, nil
 }
 
@@ -302,12 +308,15 @@ func (s *Service) Replace(ctx context.Context, persona string, phrases map[strin
 		return nil, fmt.Errorf("%w: no phrases", ErrInvalidPhrase)
 	}
 	now := time.Now().UTC().Truncate(time.Second)
+	key := personaKey(persona)
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, fmt.Errorf("phrasebook: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if _, err := tx.ExecContext(ctx, `DELETE FROM persona_phrases WHERE persona = ?`, persona); err != nil {
+	if _, err := tx.ExecContext(ctx, `DELETE FROM persona_phrases WHERE persona = ?`, key); err != nil {
 		return nil, fmt.Errorf("phrasebook: clear: %w", err)
 	}
 	names := make([]string, 0, len(clean))
@@ -318,23 +327,25 @@ func (s *Service) Replace(ctx context.Context, persona string, phrases map[strin
 	for _, name := range names {
 		if _, err := tx.ExecContext(ctx,
 			`INSERT INTO persona_phrases (persona, tool, phrase, source, updated_at) VALUES (?, ?, ?, ?, ?)`,
-			persona, name, clean[name], string(source), now.UnixMilli()); err != nil {
+			key, name, clean[name], string(source), now.UnixMilli()); err != nil {
 			return nil, fmt.Errorf("phrasebook: save %s: %w", name, err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("phrasebook: commit: %w", err)
 	}
-	key := personaKey(persona)
 	set := make(map[string]Entry, len(clean))
 	for name, text := range clean {
-		set[name] = Entry{Persona: persona, Tool: name, Phrase: text, Source: source, UpdatedAt: now}
+		set[name] = Entry{Persona: key, Tool: name, Phrase: text, Source: source, UpdatedAt: now}
 	}
-	s.mu.Lock()
 	s.byPersona[key] = set
-	s.mu.Unlock()
-	s.logger.Info("phrase book replaced", "persona", persona, "phrases", len(clean), "source", source)
-	return s.Entries(persona), nil
+	s.logger.Info("phrase book replaced", "persona", key, "phrases", len(clean), "source", source)
+	entries := make([]Entry, 0, len(set))
+	for _, entry := range set {
+		entries = append(entries, entry)
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Tool < entries[j].Tool })
+	return entries, nil
 }
 
 // Delete removes one override, restoring the shipped default.
@@ -343,13 +354,13 @@ func (s *Service) Delete(ctx context.Context, persona, name string) error {
 	if persona == "" {
 		return fmt.Errorf("%w: persona is required", ErrInvalidPhrase)
 	}
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM persona_phrases WHERE persona = ? AND tool = ?`, persona, name); err != nil {
-		return fmt.Errorf("phrasebook: delete %s: %w", name, err)
-	}
 	key := personaKey(persona)
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM persona_phrases WHERE persona = ? AND tool = ?`, key, name); err != nil {
+		return fmt.Errorf("phrasebook: delete %s: %w", name, err)
+	}
 	delete(s.byPersona[key], name)
-	s.mu.Unlock()
 	return nil
 }
 
@@ -494,7 +505,12 @@ func parseJSONObject(raw string) (map[string]string, error) {
 // text is spoken and shown as one row.
 func cleanPhrase(text string) (string, error) {
 	text = strings.TrimSpace(text)
-	text = strings.Trim(text, "\"'")
+	// Strip only a matched surrounding quote pair. A manual phrase such as
+	// "Rockin'" keeps its apostrophe; the model's quoted output loses only the
+	// wrapper.
+	if len(text) >= 2 && (text[0] == '"' || text[0] == '\'') && text[len(text)-1] == text[0] {
+		text = strings.TrimSpace(text[1 : len(text)-1])
+	}
 	if text == "" {
 		return "", fmt.Errorf("%w: phrase is empty", ErrInvalidPhrase)
 	}

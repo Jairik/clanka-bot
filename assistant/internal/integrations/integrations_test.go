@@ -150,3 +150,40 @@ func TestGrantIsPerAccountAndRevocable(t *testing.T) {
 		t.Fatal("unknown account grant succeeded")
 	}
 }
+
+func TestLinkAllowsBlankRequiredWhenAlreadyStored(t *testing.T) {
+	svc, secretSvc, _ := newFixture(t)
+	ctx := context.Background()
+	if err := svc.Link(ctx, "github", map[string]string{"GITHUB_TOKEN": "ghp_first_value_long_enough"}); err != nil {
+		t.Fatalf("first Link: %v", err)
+	}
+	// Adding the optional token must not force the stored required one to be
+	// retyped.
+	if err := svc.Link(ctx, "github", map[string]string{
+		"GITHUB_TOKEN":               "",
+		"GITHUB_NOTIFICATIONS_TOKEN": "ghp_notify",
+	}); err != nil {
+		t.Fatalf("second Link: %v", err)
+	}
+	if meta, _ := secretSvc.Metadata("GITHUB_TOKEN"); !meta.Set {
+		t.Fatalf("GITHUB_TOKEN was cleared: %+v", meta)
+	}
+	if meta, _ := secretSvc.Metadata("GITHUB_NOTIFICATIONS_TOKEN"); !meta.Set {
+		t.Fatal("GITHUB_NOTIFICATIONS_TOKEN was not stored")
+	}
+}
+
+func TestUnlinkLeavesEnvironmentValueActive(t *testing.T) {
+	t.Setenv("WEATHERAPI_API_KEY", "env-weather-key")
+	svc, _, _ := newFixture(t)
+	if err := svc.Unlink(context.Background(), "weather"); err != nil {
+		t.Fatalf("Unlink: %v", err)
+	}
+	view, _ := svc.Get("weather")
+	if view.Status != integrations.StatusEnvironment {
+		t.Fatalf("status after unlink = %q, want environment", view.Status)
+	}
+	if !view.Secrets[0].Set {
+		t.Fatal("environment value was reported as cleared")
+	}
+}

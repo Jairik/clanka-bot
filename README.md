@@ -807,8 +807,8 @@ Every Fast path Tool still renders its own full sentence. The **Phrase book**
 page at `/phrasebook` replaces the acknowledgements with the shortest useful
 line: `timer.set` → "Set.", `spotify.play` → "Playing.", and so on. A Persona
 can override any of them; **Generate from persona** asks the one Agent provider
-for a complete in-character set (1–4 words per Tool) and the page lets you
-review, edit or reset every row before the next request. Content-bearing replies
+for a complete in-character set (1–4 words per Tool); it is applied immediately,
+and the page lets you edit or reset any row. Content-bearing replies
 (the time, the weather, a list, what is playing) are deliberately not
 overridable. The shipped defaults apply when no Persona is active, and the
 registry hook is installed once at startup, so no restart is needed after an

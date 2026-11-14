@@ -43,24 +43,34 @@ export function useDesktopNotifications(
     for (const id of timers.current) window.clearTimeout(id);
     timers.current = [];
     if (!enabled || !alerts?.length) return;
-    for (const alert of alerts) {
-      if (alert.KindKey !== "reminder") continue;
+    // A browser timeout is a 32-bit signed delay (about 24.8 days); this hook
+    // re-arms in bounded chunks so a Reminder weeks away is not dropped and a
+    // long-lived tab still fires on time.
+    const schedule = (alert: DesktopReminder) => {
       const at = Date.parse(alert.NextISO);
-      const delay = at - Date.now();
-      if (!Number.isFinite(at) || delay <= 0 || delay > MAX_DELAY_MS) continue;
-      const id = window.setTimeout(() => {
-        try {
-          new Notification("Reminder", {
-            body: alert.Label || "A reminder is due.",
-            tag: alert.CancelAction,
-          });
-        } catch {
-          // A browser that exposes Notification but refuses the constructor
-          // (for example a permission change mid-session) must not break the
-          // page; the next render shows the blocked state instead.
+      if (!Number.isFinite(at) || at <= Date.now()) return;
+      const tick = () => {
+        const remaining = at - Date.now();
+        if (remaining <= 0) {
+          try {
+            new Notification("Reminder", {
+              body: alert.Label || "A reminder is due.",
+              tag: alert.CancelAction,
+            });
+          } catch {
+            // A browser that exposes Notification but refuses the constructor
+            // (for example a permission change mid-session) must not break the
+            // page; the next render shows the blocked state instead.
+          }
+          return;
         }
-      }, delay);
-      timers.current.push(id);
+        const id = window.setTimeout(tick, Math.min(remaining, MAX_DELAY_MS));
+        timers.current.push(id);
+      };
+      tick();
+    };
+    for (const alert of alerts) {
+      if (alert.KindKey === "reminder") schedule(alert);
     }
     return () => {
       for (const id of timers.current) window.clearTimeout(id);

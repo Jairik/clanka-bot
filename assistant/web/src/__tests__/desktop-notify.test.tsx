@@ -61,6 +61,20 @@ describe("useDesktopNotifications", () => {
     expect(screen.getByTestId("reason").textContent).toContain("Notifications are off");
   });
 
+  it("re-arms a reminder more than 24 hours away", () => {
+    render(<Probe view={{ DesktopNotify: true, Alerts: [reminder(30 * 60 * 60 * 1000)] }} />);
+    act(() => vi.advanceTimersByTime(24 * 60 * 60 * 1000));
+    expect(FakeNotification.instances).toHaveLength(0);
+    act(() => vi.advanceTimersByTime(6 * 60 * 60 * 1000 + 1000));
+    expect(FakeNotification.instances).toHaveLength(1);
+  });
+
+  it("skips a reminder that is already past", () => {
+    render(<Probe view={{ DesktopNotify: true, Alerts: [reminder(-1000)] }} />);
+    act(() => vi.advanceTimersByTime(1000));
+    expect(FakeNotification.instances).toHaveLength(0);
+  });
+
   it("clears a pending notification when the reminder disappears", () => {
     const view = { DesktopNotify: true, Alerts: [reminder(1000)] };
     const { rerender } = render(<Probe view={view} />);

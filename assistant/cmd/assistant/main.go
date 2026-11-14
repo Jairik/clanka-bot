@@ -1116,6 +1116,10 @@ func run() error {
 			Phrases:     phraseSvc,
 			PhraseSlots: phrasebook.Slots(registry),
 			PhraseGen:   agentPath,
+			PhraseGenReady: func() bool {
+				value, _ := secretsSvc.Get(provider.APIKeyEnv)
+				return strings.TrimSpace(value) != ""
+			},
 			// The Routes page reads live Tool metadata; the Hermes page reads the
 			// same registry and the account registry.
 			Registry:     registry,

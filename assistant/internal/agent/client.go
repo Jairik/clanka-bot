@@ -15,6 +15,10 @@ import (
 	"github.com/openai/openai-go/v3/option"
 )
 
+// ErrNoAPIKey means the provider has no key, so a bounded helper call must not
+// pretend to reach the model. The Dashboard maps it to a configuration error.
+var ErrNoAPIKey = errors.New("agent: no provider API key")
+
 var (
 	// errFirstTokenTimeout means the model produced nothing within the budget.
 	errFirstTokenTimeout = errors.New("agent: first token timeout")
@@ -238,9 +242,11 @@ func (p *provider) complete(ctx context.Context, system, user string) (string, e
 	// generated phrase book leaves the device under the same rules as a turn.
 	params.SetExtraFields(map[string]any{"provider": providerFields(p.routing)})
 	var opts []option.RequestOption
-	if key := strings.TrimSpace(p.apiKey()); key != "" {
-		opts = append(opts, option.WithAPIKey(key))
+	key := strings.TrimSpace(p.apiKey())
+	if key == "" {
+		return "", ErrNoAPIKey
 	}
+	opts = append(opts, option.WithAPIKey(key))
 	runCtx, cancel := context.WithTimeout(ctx, p.requestTimeout)
 	defer cancel()
 	resp, err := p.client.Chat.Completions.New(runCtx, params, opts...)

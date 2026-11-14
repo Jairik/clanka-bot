@@ -304,8 +304,9 @@ var migrations = []migration{
 	}},
 	{version: 13, name: "persona_phrases", statements: []string{
 		// One short spoken confirmation per Persona and overridable Tool.
-		// Persona names are matched case-insensitively, like the personas
-		// table itself; a Persona edit never renames the row. source is
+		// persona is the folded lookup key (Unicode lower-case), so the row
+		// matches the Persona library's case-insensitive names for non-ASCII
+		// spellings too. A Persona edit never renames the row. source is
 		// "manual" or "agent" so the page can show where the text came from.
 		`CREATE TABLE persona_phrases (
 			persona    TEXT NOT NULL COLLATE NOCASE,

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/agent"
 	"github.com/Jairik/clanka-bot/assistant/internal/persona"
 	"github.com/Jairik/clanka-bot/assistant/internal/phrasebook"
 )
@@ -112,7 +113,7 @@ func (h *Handler) phrasebookReset(w http.ResponseWriter, r *http.Request) {
 	toolName := strings.TrimSpace(r.FormValue("tool"))
 	if err := h.phrases.Delete(r.Context(), name, toolName); err != nil {
 		h.logger.Warn("phrase book reset failed", "persona", name, "tool", toolName, "error", err.Error())
-		h.phrasebookFail(w, r, http.StatusBadRequest, "The phrase could not be reset.", name)
+		h.phrasebookFail(w, r, http.StatusInternalServerError, "The phrase could not be reset.", name)
 		return
 	}
 	h.writeJSON(w, http.StatusOK, h.buildPhrasebookView(name, flashPhraseReset, ""))
@@ -150,8 +151,8 @@ func (h *Handler) phrasebookGenerate(w http.ResponseWriter, r *http.Request) {
 		h.phrasebookFail(w, r, http.StatusNotFound, "That persona does not exist.", name)
 		return
 	}
-	if h.phraseGen == nil {
-		h.phrasebookFail(w, r, http.StatusServiceUnavailable, "The Agent provider is not configured, so phrases cannot be generated.", name)
+	if h.phraseGen == nil || (h.phraseGenReady != nil && !h.phraseGenReady()) {
+		h.phrasebookFail(w, r, http.StatusServiceUnavailable, "Add an agent provider key on Secrets first, then generate phrases.", name)
 		return
 	}
 	if len(h.phraseSlots) == 0 {
@@ -164,9 +165,9 @@ func (h *Handler) phrasebookGenerate(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		status := http.StatusBadGateway
 		message := "The agent couldn't generate phrases. Check the model and key on Secrets."
-		if errors.Is(err, phrasebook.ErrNoCompleter) {
+		if errors.Is(err, phrasebook.ErrNoCompleter) || errors.Is(err, agent.ErrNoAPIKey) {
 			status = http.StatusServiceUnavailable
-			message = "The Agent provider is not configured, so phrases cannot be generated."
+			message = "Add an agent provider key on Secrets first, then generate phrases."
 		}
 		h.logger.Warn("phrase book generation failed", "persona", name, "error", err.Error())
 		h.phrasebookFail(w, r, status, message, name)
@@ -217,7 +218,7 @@ func (h *Handler) buildPhrasebookView(selected, flash, problem string) phraseboo
 		Flash:        phrasebookFlashMessage(flash),
 		Error:        problem,
 		HasService:   h.phrases != nil && h.personas != nil,
-		HasGenerator: h.phraseGen != nil,
+		HasGenerator: h.phraseGen != nil && (h.phraseGenReady == nil || h.phraseGenReady()),
 		Selected:     strings.TrimSpace(selected),
 		Slots:        []phrasebookSlotView{},
 	}
@@ -296,7 +297,7 @@ func phrasebookFlashMessage(name string) string {
 	case flashPhraseReset:
 		return "Phrase reset to the default."
 	case flashPhraseGenerated:
-		return "Phrase book generated. Review the rows before the next request."
+		return "Generated and applied. Edit or reset any row now."
 	case flashPhraseCleared:
 		return "All overrides cleared; the defaults are back."
 	default:

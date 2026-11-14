@@ -25,6 +25,14 @@ const GrantPrefix = "hermes.integrations."
 // GrantKey is the live boolean one account's Hermes access is stored under.
 func GrantKey(id string) string { return GrantPrefix + id }
 
+// Validation sentinels let the Dashboard map a refused write to a 4xx without
+// inspecting message text, while a secrets or settings fault stays a 5xx.
+var (
+	ErrUnknownAccount  = errors.New("integrations: unknown account")
+	ErrUnknownField    = errors.New("integrations: unknown field")
+	ErrMissingRequired = errors.New("integrations: missing required value")
+)
+
 // Status is the derived account state shown on the page.
 type Status string
 
@@ -256,7 +264,7 @@ func (s *Service) grant(id string) bool {
 func (s *Service) Link(ctx context.Context, id string, values map[string]string) error {
 	account, ok := Find(id)
 	if !ok {
-		return fmt.Errorf("integrations: unknown account %q", id)
+		return fmt.Errorf("%w: %q", ErrUnknownAccount, id)
 	}
 	if s.secrets == nil {
 		return errors.New("integrations: the secrets service is not available")
@@ -267,13 +275,20 @@ func (s *Service) Link(ctx context.Context, id string, values map[string]string)
 	}
 	for name := range values {
 		if !allowed[name] {
-			return fmt.Errorf("integrations: %s does not belong to %s", name, account.Name)
+			return fmt.Errorf("%w: %s does not belong to %s", ErrUnknownField, name, account.Name)
 		}
 	}
 	for _, name := range account.Secrets {
-		if strings.TrimSpace(values[name]) == "" {
-			return fmt.Errorf("integrations: %s is required for %s", name, account.Name)
+		if strings.TrimSpace(values[name]) != "" {
+			continue
 		}
+		// A blank field is allowed when the account already has a value (from
+		// the store or the environment), so adding an optional secret never
+		// forces the owner to retype a stored required one.
+		if meta, ok := s.secrets.Metadata(name); ok && meta.Set {
+			continue
+		}
+		return fmt.Errorf("%w: %s is required for %s", ErrMissingRequired, name, account.Name)
 	}
 	names := make([]string, 0, len(values))
 	for name := range values {
@@ -292,12 +307,14 @@ func (s *Service) Link(ctx context.Context, id string, values map[string]string)
 	return nil
 }
 
-// Unlink clears every secret the account owns. Optional values are cleared
-// too, so "unlink" means the account is gone rather than half present.
+// Unlink clears every stored secret the account owns. An environment value
+// cannot be removed here; the row's status keeps reporting it as active, and
+// the page says stored values were cleared rather than claiming the account is
+// gone.
 func (s *Service) Unlink(ctx context.Context, id string) error {
 	account, ok := Find(id)
 	if !ok {
-		return fmt.Errorf("integrations: unknown account %q", id)
+		return fmt.Errorf("%w: %q", ErrUnknownAccount, id)
 	}
 	if s.secrets == nil {
 		return errors.New("integrations: the secrets service is not available")
@@ -316,7 +333,7 @@ func (s *Service) Unlink(ctx context.Context, id string) error {
 // SetGrant writes one account's Hermes grant.
 func (s *Service) SetGrant(ctx context.Context, id string, allowed bool) error {
 	if _, ok := Find(id); !ok {
-		return fmt.Errorf("integrations: unknown account %q", id)
+		return fmt.Errorf("%w: %q", ErrUnknownAccount, id)
 	}
 	if s.settings == nil {
 		return errors.New("integrations: the settings service is not available")

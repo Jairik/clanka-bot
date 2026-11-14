@@ -112,6 +112,10 @@ type Options struct {
 	Phrases     *phrasebook.Service
 	PhraseSlots []phrasebook.Slot
 	PhraseGen   phrasebook.Completer
+	// PhraseGenReady reports whether the provider key is configured. The page
+	// hides Generate when it is false; nil keeps the button visible for tests
+	// and for a deployment that resolves the key another way.
+	PhraseGenReady func() bool
 	// Registry is the one live Tool registry. The Routes and Hermes pages read
 	// its metadata to show what is deterministic, what only the Agent may call,
 	// and what stays on the Pi. Nil makes those pages explanatory.
@@ -194,6 +198,7 @@ type Handler struct {
 	phrases        *phrasebook.Service
 	phraseSlots    []phrasebook.Slot
 	phraseGen      phrasebook.Completer
+	phraseGenReady func() bool
 	registry       *tool.Registry
 	integrations   *integrations.Service
 	spotify        *spotify.Auth
@@ -301,6 +306,7 @@ func New(opts Options) (*Handler, error) {
 		phrases:        opts.Phrases,
 		phraseSlots:    opts.PhraseSlots,
 		phraseGen:      opts.PhraseGen,
+		phraseGenReady: opts.PhraseGenReady,
 		registry:       opts.Registry,
 		integrations:   opts.Integrations,
 		spotify:        opts.Spotify,

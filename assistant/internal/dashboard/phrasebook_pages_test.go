@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/dashboard"
 	"github.com/Jairik/clanka-bot/assistant/internal/integrations"
@@ -18,6 +19,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/secrets"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
+	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/internal/voicelib"
 	"github.com/Jairik/clanka-bot/assistant/internal/wording"
 )
@@ -341,4 +343,140 @@ func formRequest(method, target string, values url.Values) *http.Request {
 	r.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	r.Header.Set("Sec-Fetch-Site", "same-origin")
 	return r
+}
+
+func TestPhrasebookGeneratorHiddenWithoutAKey(t *testing.T) {
+	handler := newHandler(t, dashboard.Options{
+		PhraseGen:      fakePhraseGen{reply: `{}`},
+		PhraseGenReady: func() bool { return false },
+	})
+	var view phraseResp
+	getJSON(t, handler, "/api/ui/phrasebook", &view)
+	if view.HasGenerator {
+		t.Fatal("HasGenerator = true without a provider key")
+	}
+}
+
+type routeIn struct{}
+
+type routeOut struct{ Text string }
+
+func routeTool(name string, perm tool.Permission, agentOnly, speak bool) tool.Tool[routeIn, routeOut] {
+	t := tool.Tool[routeIn, routeOut]{
+		Name:        name,
+		Description: name,
+		Permission:  perm,
+		LocalOnly:   tool.LocalOnlyNo,
+		AgentOnly:   agentOnly,
+		Handler: func(context.Context, routeIn) (routeOut, error) {
+			return routeOut{Text: "ok"}, nil
+		},
+	}
+	if speak {
+		t.Speak = func(routeOut) string { return "ok" }
+	}
+	if !agentOnly {
+		t.Examples = []string{"do " + name}
+	}
+	return t
+}
+
+func TestRoutesPageClassifiesLiveRegistry(t *testing.T) {
+	reg := tool.NewRegistry(time.Second)
+	for _, item := range []tool.Tool[routeIn, routeOut]{
+		routeTool("test.act", tool.PermissionAct, false, true),
+		routeTool("test.confirm", tool.PermissionConfirm, false, true),
+		routeTool("test.agentonly", tool.PermissionRead, true, true),
+		routeTool("test.read", tool.PermissionRead, false, false),
+	} {
+		if err := tool.Add(reg, item); err != nil {
+			t.Fatalf("register %s: %v", item.Name, err)
+		}
+	}
+	handler := newHandler(t, dashboard.Options{Registry: reg})
+	var view struct {
+		HasRegistry bool
+		Totals      struct{ Tools, FastPath, AgentOnly, LocalOnly, Confirm, Hermes int }
+		Rows        []struct {
+			Name     string
+			FastPath bool
+			Confirm  bool
+			Hermes   bool
+		}
+	}
+	getJSON(t, handler, "/api/ui/routes", &view)
+	if !view.HasRegistry || view.Totals.Tools != 4 {
+		t.Fatalf("view = %+v", view)
+	}
+	if view.Totals.FastPath != 1 {
+		t.Fatalf("FastPath = %d, want 1 (only test.act)", view.Totals.FastPath)
+	}
+	if view.Totals.Hermes != 3 {
+		t.Fatalf("Hermes = %d, want 3 (all non-local read/act Tools; confirm is withheld)", view.Totals.Hermes)
+	}
+	want := map[string]struct{ fast, confirm bool }{
+		"test.act":       {true, false},
+		"test.confirm":   {false, true},
+		"test.agentonly": {false, false},
+		"test.read":      {false, false},
+	}
+	for _, row := range view.Rows {
+		expected, ok := want[row.Name]
+		if !ok {
+			t.Fatalf("unexpected row %s", row.Name)
+		}
+		if row.FastPath != expected.fast || row.Confirm != expected.confirm {
+			t.Errorf("%s = fast:%v confirm:%v, want %+v", row.Name, row.FastPath, row.Confirm, expected)
+		}
+	}
+}
+
+func TestPhrasebookPersonaPathMustExist(t *testing.T) {
+	f := newPhraseFixture(t, fakePhraseGen{})
+	for _, target := range []string{"/phrasebook/NoSuchPersona", "/phrasebook/NoSuchPersona/reset"} {
+		rec := serve(f.handler, formRequest(http.MethodPost, target, url.Values{"tool": {"timer.set"}, "phrase": {"Set."}}))
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("%s status = %d, want 404", target, rec.Code)
+		}
+	}
+}
+
+func TestPhrasebookQueryShowsPersonaOverrides(t *testing.T) {
+	f := newPhraseFixture(t, fakePhraseGen{})
+	rec := serve(f.handler, formRequest(http.MethodPost, "/phrasebook/Scuzz", url.Values{"tool": {"timer.set"}, "phrase": {"Timer's set, fucker."}}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("save status = %d", rec.Code)
+	}
+	var view phraseResp
+	getJSON(t, f.handler, "/api/ui/phrasebook?persona=Scuzz", &view)
+	if view.Selected != "Scuzz" {
+		t.Fatalf("selected = %q", view.Selected)
+	}
+	if view.Overridden != 1 {
+		t.Fatalf("overridden = %d, want 1", view.Overridden)
+	}
+	for _, slot := range view.Slots {
+		if slot.Tool == "timer.set" {
+			if slot.Phrase != "Timer's set, fucker." || slot.Source != "manual" || !slot.Overridden {
+				t.Fatalf("timer.set slot = %+v", slot)
+			}
+		}
+	}
+}
+
+func TestHermesGrantRequiresAnAgentSurface(t *testing.T) {
+	f := newPhraseFixture(t, nil)
+	rec := serve(f.handler, formRequest(http.MethodPost, "/hermes/integrations/monster/grant", url.Values{"allowed": {"on"}}))
+	var view hermesResp
+	decodeJSON(t, rec, &view)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("monster grant status = %d, want 400", rec.Code)
+	}
+	if view.Granted != 0 {
+		t.Fatalf("granted = %d, want 0", view.Granted)
+	}
+	rec = serve(f.handler, formRequest(http.MethodPost, "/hermes/integrations/nope/unlink", url.Values{}))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown unlink status = %d, want 404", rec.Code)
+	}
 }

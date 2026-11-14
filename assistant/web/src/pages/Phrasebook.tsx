@@ -25,6 +25,9 @@ export function PhrasebookPage() {
   // only applies to the first load, so it cannot be used here.
   const pick = async (name: string) => {
     if (!data || switching || name === data.Selected) return;
+    // A flash from the previous Persona ("Phrase saved.") must not sit over the
+    // newly selected one.
+    actions.clear();
     setSelectError("");
     setSwitching(name);
     try {

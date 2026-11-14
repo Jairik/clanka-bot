@@ -962,3 +962,15 @@ func TestAgentStartsWithNoKeyAndUsesAStoredKeyStoredAfterStartup(t *testing.T) {
 		t.Fatalf("Authorization = %q, want the stored key with no environment value", got)
 	}
 }
+
+func TestCompleteRejectsMissingKey(t *testing.T) {
+	settings := testSettings("http://127.0.0.1:1")
+	settings.APIKey = func() string { return "   " }
+	a, err := agent.New(settings, newRegistry(t), nil)
+	if err != nil {
+		t.Fatalf("agent.New: %v", err)
+	}
+	if _, err := a.Complete(context.Background(), "system", "user"); !errors.Is(err, agent.ErrNoAPIKey) {
+		t.Fatalf("Complete error = %v, want ErrNoAPIKey", err)
+	}
+}

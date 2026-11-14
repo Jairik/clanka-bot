@@ -244,3 +244,42 @@ func mustStore(t *testing.T) *store.Store {
 	t.Cleanup(func() { _ = st.Close() })
 	return st
 }
+
+func TestCleanPhraseKeepsApostropheAndMatchedQuotes(t *testing.T) {
+	svc, _ := newService(t, func() string { return "Scuzz" })
+	ctx := context.Background()
+	entry, err := svc.Set(ctx, "Scuzz", "timer.set", `"Rockin'"`, phrasebook.SourceManual)
+	if err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if entry.Phrase != "Rockin'" {
+		t.Fatalf("phrase = %q, want Rockin'", entry.Phrase)
+	}
+	entry, err = svc.Set(ctx, "Scuzz", "lights.power", `"Lit."`, phrasebook.SourceManual)
+	if err != nil {
+		t.Fatalf("Set quoted: %v", err)
+	}
+	if entry.Phrase != "Lit." {
+		t.Fatalf("quoted phrase = %q, want Lit.", entry.Phrase)
+	}
+}
+
+func TestPersonaNamesFoldUnicodeCase(t *testing.T) {
+	svc, _ := newService(t, func() string { return "Éclair" })
+	ctx := context.Background()
+	if _, err := svc.Set(ctx, "Éclair", "timer.set", "Set.", phrasebook.SourceManual); err != nil {
+		t.Fatalf("Set accented: %v", err)
+	}
+	if _, err := svc.Set(ctx, "éclair", "lights.power", "Lit.", phrasebook.SourceManual); err != nil {
+		t.Fatalf("Set lower: %v", err)
+	}
+	if got := len(svc.Entries("ÉCLAIR")); got != 2 {
+		t.Fatalf("entries = %d, want 2 under one folded key", got)
+	}
+	if err := svc.Delete(ctx, "ÉCLAIR", "timer.set"); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if got := len(svc.Entries("éclair")); got != 1 {
+		t.Fatalf("entries after delete = %d, want 1", got)
+	}
+}

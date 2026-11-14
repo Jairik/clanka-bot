@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/agent"
 	"github.com/Jairik/clanka-bot/assistant/internal/latency"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
@@ -222,5 +223,34 @@ func TestRequestTimelineOwnsTheSingleRequestLine(t *testing.T) {
 	}
 	if _, exists := line["response_ms"]; exists {
 		t.Fatalf("a text-only turn invented response latency: %v", line)
+	}
+}
+
+func TestSpeakerHookReplacesReplyAndRecordedHistory(t *testing.T) {
+	reg := tool.NewRegistry(time.Second)
+	if err := tool.Add(reg, fakeTool("test.short", func(context.Context, fakeIn) (fakeOut, error) {
+		return fakeOut{Value: "The long sentence the Tool renders."}, nil
+	})); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	reg.SetSpeaker(func(name, text string) string {
+		if name == "test.short" {
+			return "Brief."
+		}
+		return text
+	})
+	history := agent.NewHistory(10, 0, nil)
+	logger, _ := testLogger()
+	p, err := pipeline.New(reg, map[string]string{"shorten me": "test.short"}, logger, pipeline.WithHistory(history))
+	if err != nil {
+		t.Fatalf("pipeline.New: %v", err)
+	}
+	reply := p.Handle(context.Background(), request(), "shorten me")
+	if reply.Text != "Brief." {
+		t.Fatalf("reply = %q, want Brief.", reply.Text)
+	}
+	turns := history.Recent()
+	if len(turns) != 1 || turns[0].Reply != "Brief." {
+		t.Fatalf("history = %+v, want one turn with Brief.", turns)
 	}
 }

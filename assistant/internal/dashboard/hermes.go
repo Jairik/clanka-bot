@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"errors"
 	"net/http"
 	"sort"
 	"strings"
@@ -142,7 +143,7 @@ func (h *Handler) hermesLink(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := h.integrations.Link(r.Context(), id, values); err != nil {
 		h.logger.Warn("integration link failed", "id", id, "error", err.Error())
-		h.writeJSON(w, http.StatusBadRequest, h.buildHermesView("", integrationLinkMessage(err)))
+		h.writeJSON(w, integrationErrorStatus(err), h.buildHermesView("", integrationLinkMessage(err)))
 		return
 	}
 	h.logger.Info("integration linked from dashboard", "id", id)
@@ -158,7 +159,12 @@ func (h *Handler) hermesUnlink(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	if err := h.integrations.Unlink(r.Context(), id); err != nil {
 		h.logger.Warn("integration unlink failed", "id", id, "error", err.Error())
-		h.writeJSON(w, http.StatusBadRequest, h.buildHermesView("", "The account could not be unlinked."))
+		status := integrationErrorStatus(err)
+		message := "The account could not be unlinked."
+		if status == http.StatusNotFound {
+			message = "That account does not exist."
+		}
+		h.writeJSON(w, status, h.buildHermesView("", message))
 		return
 	}
 	h.logger.Info("integration unlinked from dashboard", "id", id)
@@ -177,10 +183,19 @@ func (h *Handler) hermesGrant(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
+	view, ok := h.integrations.Get(id)
+	if !ok {
+		h.writeJSON(w, http.StatusNotFound, h.buildHermesView("", "That account does not exist."))
+		return
+	}
+	if !view.CanGrant {
+		h.writeJSON(w, http.StatusBadRequest, h.buildHermesView("", "This account has no Agent Tools, so there is no access to grant."))
+		return
+	}
 	allowed := strings.TrimSpace(r.FormValue("allowed")) == "on"
 	if err := h.integrations.SetGrant(r.Context(), id, allowed); err != nil {
 		h.logger.Warn("integration grant failed", "id", id, "error", err.Error())
-		h.writeJSON(w, http.StatusBadRequest, h.buildHermesView("", "The grant could not be changed."))
+		h.writeJSON(w, integrationErrorStatus(err), h.buildHermesView("", "The grant could not be changed."))
 		return
 	}
 	flash := flashHermesRevoked
@@ -226,7 +241,7 @@ func (h *Handler) buildRoutesView(flash, problem string) routesView {
 			Name:           name,
 			Description:    info.Description,
 			Permission:     string(info.Permission),
-			FastPath:       !info.AgentOnly && (info.HasSpeak || phrases > 0),
+			FastPath:       !info.AgentOnly && info.Permission != tool.PermissionConfirm && (info.HasSpeak || phrases > 0),
 			AgentOnly:      info.AgentOnly,
 			LocalOnly:      info.LocalOnly,
 			Confirm:        info.Permission == tool.PermissionConfirm,
@@ -340,15 +355,28 @@ func integrationStatusLabel(status integrations.Status) string {
 	}
 }
 
+// integrationErrorStatus distinguishes a refused form from a server fault.
+func integrationErrorStatus(err error) int {
+	switch {
+	case errors.Is(err, integrations.ErrUnknownAccount):
+		return http.StatusNotFound
+	case errors.Is(err, integrations.ErrUnknownField), errors.Is(err, integrations.ErrMissingRequired):
+		return http.StatusBadRequest
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
 // integrationLinkMessage turns a validation error into the one sentence the
 // page shows, without echoing a secret value.
 func integrationLinkMessage(err error) string {
-	text := err.Error()
 	switch {
-	case strings.Contains(text, "is required"):
+	case errors.Is(err, integrations.ErrMissingRequired):
 		return "Fill every required field before saving."
-	case strings.Contains(text, "does not belong"):
+	case errors.Is(err, integrations.ErrUnknownField):
 		return "The form contained an unknown field."
+	case errors.Is(err, integrations.ErrUnknownAccount):
+		return "That account does not exist."
 	default:
 		return "The account could not be linked."
 	}
@@ -360,7 +388,7 @@ func hermesFlashMessage(name string) string {
 	case flashHermesLinked:
 		return "Account linked."
 	case flashHermesUnlinked:
-		return "Account unlinked; its secrets were cleared."
+		return "Stored values cleared. Environment values, if any, remain in effect."
 	case flashHermesGranted:
 		return "Hermes access granted. It applies once Hermes is installed."
 	case flashHermesRevoked:

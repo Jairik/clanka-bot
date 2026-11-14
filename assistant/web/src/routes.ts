@@ -7,6 +7,7 @@ export const pageLoaders = {
   activity: () => import("./pages/Activity"),
   alerts: () => import("./pages/Alerts"),
   health: () => import("./pages/Health"),
+  lights: () => import("./pages/Lights"),
   notes: () => import("./pages/Notes"),
   personas: () => import("./pages/Personas"),
   secrets: () => import("./pages/Secrets"),

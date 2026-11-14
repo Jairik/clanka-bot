@@ -1,6 +1,6 @@
 # BLE lights (experimental)
 
-Disabled by default. Settings → Bluetooth lights enables `lights.enabled`, scans,
+Disabled by default. The Lights page enables `lights.enabled`, scans,
 and saves named devices with a protocol choice into `lights.devices` in the
 assistant's existing SQLite settings store. These controllers normally need no
 OS-level pairing: close the phone app, scan, select the appropriate protocol and
@@ -27,7 +27,8 @@ green, blue and white. Modes are rainbow, red pulse and strobe.
 A Driver supplies command bytes and a characteristic. The transport is an
 embedded Python helper with pinned Bleak, using host BlueZ over D-Bus. Each
 write opens and closes its own connection and retries once. Queueing and the
-helper together have a seven-second deadline; discovery lasts three seconds.
+helper together have a fourteen-second deadline, long enough for a cold
+ELK-BLEDOM connect; discovery lasts three seconds.
 Health reports opt-in and the last transport result, never inferred power or
 colour. A successful GATT write does not prove the strip changed.
 
@@ -44,7 +45,7 @@ group). Do not loosen the whole system bus policy to solve an access failure.
 - Identify the actual controller variant, save one of each protocol, restart
   the assistant, and confirm the saved selections survive.
 - Test on/off, RGB primaries, brightness 0/50/100 and all three modes through
-  Settings and assistant requests. Check multiple-device Agent selection.
+  the Lights page and assistant requests. Check multiple-device Agent selection.
 - Unplug a strip: confirm bounded failure, truthful Health, responsive voice
   requests, and recovery when it returns. Close the vendor phone app first.
 - Check the speaker keeps playing through discovery, writes and reconnects.

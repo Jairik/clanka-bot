@@ -312,6 +312,14 @@ export type Setting = {
   SaveAction: string;
   ResetAction: string;
   Target: string;
+  // PreviewAction and PreviewKind are set only for the agent wording rows.
+  // Spoken wording (PreviewKind "spoken") is synthesized through
+  // PreviewAction; match wording (PreviewKind "match") has no audio and
+  // leaves the action empty, because it is checked by typing a request. Every
+  // other setting leaves both empty. The key-to-preview mapping stays
+  // server-side so the app never matches setting key strings.
+  PreviewAction: string;
+  PreviewKind: string;
 };
 
 export type SettingTool = {
@@ -346,6 +354,13 @@ export type SettingsView = {
   Quiet: Setting[] | null;
   Live: Setting[] | null;
   Restart: Setting[] | null;
+  // Voice is the display name of the voice a spoken preview would use:
+  // empty when the voice library is unwired. CanPreview agrees exactly with
+  // the /settings/wording/preview endpoint's own check, and PreviewMaxRunes
+  // is the draft bound the page should apply before uploading.
+  Voice: string;
+  CanPreview: boolean;
+  PreviewMaxRunes: number;
   // Wakeword is read-only: the allowlist and thresholds are connection
   // settings read once at startup.
   Wakeword: WakewordSettings;

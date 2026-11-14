@@ -79,12 +79,18 @@ func (s *Service) Devices() []Device {
 }
 func (s *Service) Last() string { s.mu.Lock(); defer s.mu.Unlock(); return s.last }
 
+// writeBudget is the shared limit for queueing plus one helper run.
+// A cold ELK-BLEDOM connect on the Pi took about eight seconds, so the old
+// seven-second cap gave up before the controller answered. A missing
+// controller still fails inside this budget.
+const writeBudget = 14 * time.Second
+
 // run bounds queueing and subprocess execution together, including missing hardware.
 func (s *Service) run(ctx context.Context, args ...string) ([]byte, error) {
 	if !s.Enabled() {
-		return nil, errors.New("lights are disabled in Settings")
+		return nil, errors.New("lights are disabled on the Lights page")
 	}
-	ctx, cancel := context.WithTimeout(ctx, 7*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, writeBudget)
 	defer cancel()
 	select {
 	case s.gate <- struct{}{}:

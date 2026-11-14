@@ -15,6 +15,7 @@ const ROUTES = [
   "/personas",
   "/voice-samples",
   "/spotify",
+  "/lights",
   "/secrets",
   "/settings",
 ];

@@ -18,13 +18,16 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/voicesample"
 )
 
-// VoicePreview is the TTS boundary the Voice page uses for one bounded sample.
-// It returns PCM rather than a file so the same synthesis can be served to the
-// browser as a WAV or queued for the Pi speaker. voicesample.Sampler is the
-// production implementation; tests can use a fake without opening the audio
-// device. An empty text means voicesample.Phrase.
+// VoicePreview is the TTS boundary the Voice page and the Settings wording
+// preview use. Synthesize returns PCM rather than a file so the Voice page can
+// serve the same synthesis to the browser as a WAV or queue it for the Pi
+// speaker; PreviewText answers the Settings wording preview with a WAV, bounded
+// by voicesample.MaxPreviewRunes. voicesample.Sampler is the one production
+// implementation of both methods, so a single Options field wires every
+// endpoint; tests can use a fake without opening the audio device.
 type VoicePreview interface {
 	Synthesize(ctx context.Context, voiceRef, text string, rate float64) ([]byte, audio.Format, error)
+	PreviewText(ctx context.Context, voiceRef string, rate float64, text string) ([]byte, error)
 }
 
 // voicesView is the Voice page's data model. Readiness, status text and every

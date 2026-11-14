@@ -129,13 +129,17 @@ type settingRow struct {
 	Source, SourceLabel, LowerLabel                         string
 	Restart, Override                                       bool
 	SaveAction, ResetAction                                 string
+	PreviewAction, PreviewKind                              string
 }
 
 type settingsResp struct {
-	Flash       string
-	Error       string
-	HasSettings bool
-	Tools       []struct {
+	Flash           string
+	Error           string
+	HasSettings     bool
+	Voice           string
+	CanPreview      bool
+	PreviewMaxRunes int
+	Tools           []struct {
 		Name                              string
 		Enabled                           bool
 		EnabledSource, EnabledLabel       string

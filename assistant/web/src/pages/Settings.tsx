@@ -9,10 +9,13 @@ import { ResetButton, SelectField, SettingRow, Toggle, useActions } from "../for
 import { PageFrame } from "../shell";
 import type { Setting, SettingTool, SettingsView } from "../types";
 import { Badge, Empty, Lede, Notice, Section, SourceBadge } from "../ui";
+import { useWordingPlayer, WordingPreview } from "../wording-preview";
 
 export function SettingsPage() {
   const { data, error, set } = usePageData("settings");
   const actions = useActions<SettingsView>(set);
+  // One audio element for every wording preview on the page.
+  const wording = useWordingPlayer();
   const list = (items: Setting[] | null) => (
     <ul className="divide-y divide-separator">
       {(items ?? []).map((s) => (
@@ -75,7 +78,32 @@ export function SettingsPage() {
 
           <Section title="Agent wording" summary={`${data.Agent?.length ?? 0} settings`} flush>
             <Lede>Editable as ordinary text. A blank line in a list is ignored; an empty list is valid where the setting allows it.</Lede>
-            {data.Agent?.length ? list(data.Agent) : <Empty>No Agent wording settings are defined.</Empty>}
+            {data.Agent?.length ? (
+              // Only the Agent wording rows have a live preview, so they get
+              // their own mapping; `list` stays shared by every other section.
+              <ul className="divide-y divide-separator">
+                {data.Agent.map((s) => (
+                  <li key={s.Key} id={s.Anchor}>
+                    <SettingRow
+                      s={s}
+                      actions={actions}
+                      preview={(draft) => (
+                        <WordingPreview
+                          s={s}
+                          draft={draft}
+                          voice={data.Voice}
+                          canPreview={data.CanPreview === true}
+                          maxRunes={data.PreviewMaxRunes}
+                          player={wording}
+                        />
+                      )}
+                    />
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <Empty>No Agent wording settings are defined.</Empty>
+            )}
           </Section>
 
           <Section title="Per-Tool wording" summary={`${data.ToolWording?.length ?? 0} tools`} flush>

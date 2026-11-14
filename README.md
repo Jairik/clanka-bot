@@ -839,6 +839,16 @@ Settings the service exposes but this page does not know by name (for example a
 future sound setting) appear automatically, and connection settings carry a
 Restart required badge.
 
+Agent wording has a live preview. Each value shows the phrase as it will be
+used, following the unsaved draft rather than the saved value, and the Filler
+and Unavailable message add a Play button that synthesizes that draft in the
+current voice. Play is an authenticated GET that returns WAV bytes: it never
+plays through the Pi speaker and never writes `voice.name`. A draft longer than
+240 characters, or blank, is refused before the speech service is called, so a
+rejected draft is a `400` rather than a failed synthesis. Request prefixes
+preview what they match instead of how they sound, because a prefix is matched
+in what you say, never spoken by the assistant.
+
 The **Sounds** page at `/sounds` is the upload/library/role/preview surface
 described under Sound library and Cue roles below. Its Ring section renders the
 per-kind Timer and Alarm definitions from the settings service, so a new key

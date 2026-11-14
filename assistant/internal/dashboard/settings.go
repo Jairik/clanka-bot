@@ -13,6 +13,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/internal/toolpolicy"
+	"github.com/Jairik/clanka-bot/assistant/internal/voicesample"
 	"github.com/Jairik/clanka-bot/assistant/internal/wording"
 )
 
@@ -38,6 +39,13 @@ type settingsView struct {
 	Quiet       []settingView
 	Live        []settingView
 	Restart     []settingView
+	// Voice is the display name of the voice a spoken preview would use:
+	// empty when the voice library is unwired. CanPreview agrees exactly with
+	// the /settings/wording/preview endpoint's own check, and PreviewMaxRunes
+	// is the draft bound the page should apply before uploading.
+	Voice           string
+	CanPreview      bool
+	PreviewMaxRunes int
 	// Wakeword is read-only: the allowlist and thresholds are connection
 	// settings read once at startup.
 	Wakeword wakewordSettingsView
@@ -104,6 +112,14 @@ type settingView struct {
 	SaveAction  string
 	ResetAction string
 	Target      string
+	// PreviewAction and PreviewKind are set only for the agent wording rows.
+	// Spoken wording (PreviewKind "spoken") is synthesized through
+	// PreviewAction; match wording (PreviewKind "match") has no audio and
+	// leaves the action empty, because it is checked by typing a request. Every
+	// other setting leaves both empty. The key-to-preview mapping stays
+	// server-side so the app never matches setting key strings.
+	PreviewAction string
+	PreviewKind   string
 }
 
 // editState preserves one rejected submission for the re-rendered form.
@@ -297,6 +313,18 @@ func flashMessage(flash string) string {
 // remaining setting from one service snapshot.
 func (h *Handler) buildSettingsView(flash, errorText string, edit *editState) settingsView {
 	view := settingsView{Owner: h.owner, Page: "settings", Flash: flash, Error: errorText, Wakeword: h.wakewordSettings()}
+	// The voice fields are independent of the settings service: an unwired
+	// library is reported as no voice and no preview rather than a panic, and
+	// CanPreview applies the same nil checks the preview endpoint does. The
+	// label comes from speechVoiceName, so it names the voice the endpoint
+	// actually synthesizes with (a stale active voice reports the default).
+	view.Voice = h.speechVoiceName()
+	if h.voices != nil {
+		view.CanPreview = h.voicePreview != nil
+		if view.CanPreview {
+			view.PreviewMaxRunes = voicesample.MaxPreviewRunes
+		}
+	}
 	if h.settings == nil {
 		return view
 	}
@@ -314,9 +342,17 @@ func (h *Handler) buildSettingsView(flash, errorText string, edit *editState) se
 	values := h.settings.List()
 	for _, value := range values {
 		switch value.Key {
-		case wording.FillerKey, wording.UnavailableKey, wording.PrefixesKey:
+		case wording.FillerKey, wording.UnavailableKey:
 			seen[value.Key] = true
-			view.Agent = append(view.Agent, newSettingView(value, edit))
+			setting := newSettingView(value, edit)
+			setting.PreviewAction = wordingPreviewAction
+			setting.PreviewKind = wordingPreviewSpoken
+			view.Agent = append(view.Agent, setting)
+		case wording.PrefixesKey:
+			seen[value.Key] = true
+			setting := newSettingView(value, edit)
+			setting.PreviewKind = wordingPreviewMatch
+			view.Agent = append(view.Agent, setting)
 		}
 	}
 

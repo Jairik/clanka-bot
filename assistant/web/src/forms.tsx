@@ -157,8 +157,16 @@ export function ResetButton({ onPress, label, isPending }: { onPress: () => void
 /**
  * A setting row: label, effective value and source at a glance; the editor
  * folds open below. Bool settings save on toggle, everything else on Save.
+ * `preview` renders the caller's view of the unsaved draft inside the fold
+ * body; without it the row is unchanged.
  */
-export function SettingRow<T extends Flashable>({ s, actions }: { s: Setting; actions: Actions<T> }) {
+export function SettingRow<T extends Flashable>({
+  s, actions, preview,
+}: {
+  s: Setting;
+  actions: Actions<T>;
+  preview?: (draft: string) => ReactNode;
+}) {
   const [draft, setDraft] = useState(s.Edit);
   useEffect(() => setDraft(s.Edit), [s.Edit]);
   const saving = actions.pending === s.SaveAction;
@@ -206,6 +214,7 @@ export function SettingRow<T extends Flashable>({ s, actions }: { s: Setting; ac
           mono={kind !== "text" && kind !== "lines"}
         />
         {kind === "lines" && <p className="text-[11px] text-subtle">One entry per line; blank lines are ignored.</p>}
+        {preview?.(draft)}
         <div className="flex flex-wrap items-center gap-2">
           <Button size="sm" type="submit" isPending={saving} isDisabled={draft === s.Edit && !s.Restart}>
             Save

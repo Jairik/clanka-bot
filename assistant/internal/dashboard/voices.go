@@ -15,11 +15,14 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/voicelib"
 )
 
-// VoicePreview is the TTS boundary the Voice page uses for one bounded browser
-// sample. voicesample.Sampler is the production implementation; tests can use
-// a fake without opening the audio device.
+// VoicePreview is the TTS boundary the Voice page and the Settings wording
+// preview use for one bounded browser sample: the fixed phrase, or the user's
+// draft text within voicesample.MaxPreviewRunes. voicesample.Sampler is the one
+// production implementation of both methods, so a single Options field wires
+// both endpoints; tests can use a fake without opening the audio device.
 type VoicePreview interface {
 	Preview(ctx context.Context, voiceRef string, rate float64) ([]byte, error)
+	PreviewText(ctx context.Context, voiceRef string, rate float64, text string) ([]byte, error)
 }
 
 // voicesView is the Voice page's data model. Readiness, status text and every

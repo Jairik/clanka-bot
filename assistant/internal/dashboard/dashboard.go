@@ -367,6 +367,9 @@ func New(opts Options) (*Handler, error) {
 	h.Mutating("POST /settings/tools/{name}/reset", h.settingsToolReset)
 	h.Mutating("POST /settings/values/{key}", h.settingsValueSave)
 	h.Mutating("POST /settings/values/{key}/reset", h.settingsValueReset)
+	// The wording preview returns bytes only: it never plays through the Pi and
+	// never changes the active voice, so it is an authenticated GET.
+	h.Handle("GET /settings/wording/preview", h.settingsWordingPreview)
 	// The Scheduled alerts page lists every active Timer, Alarm and Reminder,
 	// cancels one by its manager id, and edits the per-Alarm Ring overrides.
 	// Every write goes through Mutating for identity and same-origin.

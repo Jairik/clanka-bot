@@ -27,8 +27,9 @@ import (
 // renamed or deleted Go struct fails this command instead of silently
 // disappearing from the bundle.
 var roots = []string{
-	"activityView", "alertsView", "healthView", "notesView", "personasView",
-	"secretsView", "sessionView", "settingsView", "soundsView", "spotifyView",
+	"activityView", "alertsView", "healthView", "hermesView", "notesView",
+	"personasView", "phrasebookView", "routesView", "secretsView",
+	"sessionView", "settingsView", "soundsView", "spotifyView",
 	"voiceSamplesView", "voicesView", "volumeView",
 }
 

@@ -62,6 +62,9 @@ type alertsView struct {
 	Alarms      []alarmEditorView
 	Missed      []missedAlertView
 	MissedLimit int
+	// DesktopNotify is true when a due Reminder may show a browser
+	// notification now: notify.reminders is on and Quiet hours allow it.
+	DesktopNotify bool
 }
 
 // scheduledAlertView is one active Timer, Alarm or Reminder row.
@@ -401,12 +404,13 @@ func alertsFlashMessage(flash string) string {
 // and the bounded missed history from one snapshot.
 func (h *Handler) buildAlertsView(flash, errorText string, edit *alertEditState) alertsView {
 	view := alertsView{
-		Owner:       h.owner,
-		Page:        "alerts",
-		Flash:       flash,
-		Error:       errorText,
-		ZoneName:    h.alertZoneName(),
-		MissedLimit: missedDisplayLimit,
+		Owner:         h.owner,
+		Page:          "alerts",
+		Flash:         flash,
+		Error:         errorText,
+		ZoneName:      h.alertZoneName(),
+		MissedLimit:   missedDisplayLimit,
+		DesktopNotify: h.desktopNotify != nil && h.desktopNotify(),
 	}
 	deps := h.alertDeps()
 	timers, alarms, reminders := deps.timers, deps.alarms, deps.reminders

@@ -62,7 +62,10 @@ Replace it with the real operation:
   `assistant/config.yaml` when the setting should be discoverable; an omitted
   block uses the defaults.
 - `Health(ctx)` is optional; add it when the module depends on an upstream.
-- `Speak`: the one-line Fast path reply. Keep it short and stable.
+- `Speak`: the one-line Fast path reply. Keep it short and stable. If the reply
+  is only an acknowledgement ("Set.", "Playing."), add one entry to `defaults`
+  in `assistant/internal/phrasebook` so a Persona can override it and the
+  shipped default stays terse; content-bearing replies must not be added there.
 
 Completion: the Tool does the real work, the placeholder config is replaced, and
 `go test ./tools/<module>` still passes.

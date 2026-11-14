@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Button, Checkbox } from "@heroui/react";
 import { AlarmClock, BellRing, ChevronDown, Hourglass, StickyNote, X } from "lucide-react";
 import { usePageData } from "../api";
+import { useDesktopNotifications } from "../desktop-notify";
 import { Field, SelectField, TextField, useActions, type Actions } from "../forms";
 import { PageFrame } from "../shell";
 import type { AlarmEditor, AlertsView } from "../types";
@@ -24,6 +25,7 @@ export function AlertsPage() {
       {data?.HasManagers && (
         <div className="space-y-2.5">
           <CreateAlert actions={actions} />
+          <DesktopNotifications view={data} />
           <Section title="Active" summary={`${data.Alerts?.length ?? 0} scheduled · ${data.ZoneName}`} defaultOpen flush>
             {data.Alerts?.length ? (
               <ul className="divide-y divide-separator">
@@ -215,6 +217,29 @@ function CompletionAudio({ current, action, actions }: { current: string; action
 }
 
 // The form uses the Dashboard's existing monochrome fields and action feedback.
+function DesktopNotifications({ view }: { view: AlertsView }) {
+  const notify = useDesktopNotifications(view);
+  const status = !notify.supported ? "unsupported" : notify.permission === "granted" ? (notify.enabled ? "on" : "muted") : notify.permission;
+  return (
+    <Section title="Desktop notifications" summary={notify.enabled ? "on" : "off"} flush>
+      <div className="flex flex-wrap items-center gap-2 px-3.5 py-3">
+        <BellRing className="size-4 shrink-0 text-muted" strokeWidth={1.5} />
+        <p className="min-w-0 flex-1 text-xs text-muted">
+          A due Reminder also shows a browser notification while this Dashboard is open. It uses the same <span className="font-mono">notify.reminders</span> switch and
+          Quiet-hours rule as the phone push; the text is not stored.
+        </p>
+        <Badge tone={notify.enabled ? "ok" : notify.supported && notify.permission === "granted" ? "warn" : "neutral"}>{status}</Badge>
+        {notify.supported && notify.permission !== "granted" && (
+          <Button size="sm" variant="secondary" onPress={() => void notify.request()}>
+            Enable
+          </Button>
+        )}
+      </div>
+      {notify.blockedReason && <p className="border-t px-3.5 py-2 text-[11px] text-subtle">{notify.blockedReason}</p>}
+    </Section>
+  );
+}
+
 function CreateAlert({ actions }: { actions: Actions<AlertsView> }) {
   const [kind, setKind] = useState("timer");
   const [label, setLabel] = useState("");

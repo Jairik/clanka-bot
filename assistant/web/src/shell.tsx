@@ -3,8 +3,8 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
 import { Button, Drawer, Popover, SearchField } from "@heroui/react";
 import {
-  Activity, AlarmClock, Bell, HeartPulse, KeyRound, Lamp, Lightbulb, MessageSquare, Mic, Minus, MoreHorizontal, Music, Plus,
-  Settings, Smile, StickyNote, Volume, Volume1, Volume2, VolumeX, Waves, type LucideIcon,
+  Activity, AlarmClock, Bell, BookOpenText, Bot, HeartPulse, KeyRound, Lamp, Lightbulb, MessageSquare, Mic, Minus, MoreHorizontal, Music, Plus,
+  Settings, Smile, StickyNote, Volume, Volume1, Volume2, VolumeX, Waves, Waypoints, type LucideIcon,
 } from "lucide-react";
 import { APIVersionMismatch, getJSON, navigate, postForm, useLocation } from "./api";
 import { API_VERSION } from "./api-version";
@@ -16,7 +16,7 @@ import { prefetch } from "./routes";
 import { snapVolume, VOL_STEP } from "./volume";
 import { Logo } from "./logo";
 
-export type PageId = "home" | "activity" | "alerts" | "notes" | "health" | "sounds" | "voices" | "personas" | "voice-samples" | "spotify" | "lights" | "monster" | "secrets" | "settings";
+export type PageId = "home" | "activity" | "alerts" | "notes" | "health" | "sounds" | "voices" | "personas" | "phrasebook" | "voice-samples" | "spotify" | "lights" | "monster" | "secrets" | "routes" | "hermes" | "settings";
 
 export const PAGES: { id: PageId; path: string; title: string; blurb: string; icon: LucideIcon }[] = [
   { id: "home", path: "/", title: "Chat", blurb: "", icon: MessageSquare },
@@ -27,11 +27,14 @@ export const PAGES: { id: PageId; path: string; title: string; blurb: string; ic
   { id: "sounds", path: "/sounds", title: "Sounds", blurb: "The sound library, Cue roles and Ring behaviour.", icon: Bell },
   { id: "voices", path: "/voices", title: "Voices", blurb: "The speaking voice, its rate, and the voice library.", icon: Waves },
   { id: "personas", path: "/personas", title: "Personas", blurb: "Bundles of voice, personality and wording, applied in one step.", icon: Smile },
+  { id: "phrasebook", path: "/phrasebook", title: "Phrase book", blurb: "The short confirmation each Tool speaks, per Persona.", icon: BookOpenText },
   { id: "voice-samples", path: "/voice-samples", title: "Voice samples", blurb: "Record takes for a wake phrase, then export the set for desktop training.", icon: Mic },
   { id: "spotify", path: "/spotify", title: "Spotify", blurb: "Connect pairing for playback and Web API auth for control.", icon: Music },
   { id: "lights", path: "/lights", title: "Lights", blurb: "Bluetooth controllers: power, colour, brightness and modes.", icon: Lightbulb },
   { id: "monster", path: "/monster", title: "Monster lights", blurb: "Monster Smart Lighting: power, white, colour and scenes over the cloud.", icon: Lamp },
   { id: "secrets", path: "/secrets", title: "Secrets", blurb: "Write-only values the Agent and Tool modules read.", icon: KeyRound },
+  { id: "routes", path: "/routes", title: "Routes", blurb: "Which path answers each request, and which Tools stay on the Pi.", icon: Waypoints },
+  { id: "hermes", path: "/hermes", title: "Hermes", blurb: "The Tool surface and accounts Hermes would get once it is installed.", icon: Bot },
   { id: "settings", path: "/settings", title: "Settings", blurb: "Tools, wording, quiet hours and every other live setting.", icon: Settings },
 ];
 export const pageFor = (path: string) => PAGES.find((p) => p.path === path.replace(/\/+$/, "") || (p.path === "/" && path === "/"));

@@ -61,7 +61,10 @@ type migration struct {
 // durable Activity history (#96): every completed request, with search text
 // maintained by the writer and indexed on at/source/outcome so paging is one
 // bounded range scan. Rows are always written with 0600 database permissions
-// and never leave this process. The versions stay contiguous in either merge
+// and never leave this process. Version 12 adds the optional completion audio
+// on Timers and Alarms. Version 13 is the per-Persona phrase book: one short
+// spoken confirmation per Persona and overridable Tool, with the shipped
+// terse default kept in code. The versions stay contiguous in either merge
 // order.
 var migrations = []migration{
 	{
@@ -298,6 +301,20 @@ var migrations = []migration{
 		// Empty media preserves the existing Ring defaults for saved alerts.
 		`ALTER TABLE timers ADD COLUMN audio TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE alarms ADD COLUMN audio TEXT NOT NULL DEFAULT ''`,
+	}},
+	{version: 13, name: "persona_phrases", statements: []string{
+		// One short spoken confirmation per Persona and overridable Tool.
+		// Persona names are matched case-insensitively, like the personas
+		// table itself; a Persona edit never renames the row. source is
+		// "manual" or "agent" so the page can show where the text came from.
+		`CREATE TABLE persona_phrases (
+			persona    TEXT NOT NULL COLLATE NOCASE,
+			tool       TEXT NOT NULL,
+			phrase     TEXT NOT NULL,
+			source     TEXT NOT NULL DEFAULT 'manual',
+			updated_at INTEGER NOT NULL,
+			PRIMARY KEY (persona, tool)
+		)`,
 	}},
 }
 

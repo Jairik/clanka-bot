@@ -11,7 +11,11 @@ import (
 	"strings"
 )
 
-const maxResponseBytes = 8 << 20
+// maxResponseBytes bounds one embed response. The semantic index is embedded
+// in one batch at startup, so the cap must fit the whole index: 559 examples at
+// 768 dimensions is about 8.6 MB of JSON. 32 MB keeps a real index with room to
+// grow while still refusing an unbounded body.
+const maxResponseBytes = 32 << 20
 
 // Client calls one embed service. Timeouts come from the caller's context.
 type Client struct {

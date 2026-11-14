@@ -133,7 +133,7 @@ export default defineConfig({
   },
   server: {    proxy: {
       // Page paths (/alerts) stay with Vite; their sub-routes are the API.
-      "^/(api|activity|settings|secrets|sounds|voices|personas|voice-samples|alerts|spotify)/.*": {
+      "^/(api|activity|settings|secrets|sounds|voices|personas|phrasebook|voice-samples|alerts|spotify|hermes)/.*": {
         target: backend,
         headers: { "Tailscale-User-Login": owner },
         changeOrigin: true,

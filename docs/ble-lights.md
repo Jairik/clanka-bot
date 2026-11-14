@@ -6,6 +6,11 @@ assistant's existing SQLite settings store. These controllers normally need no
 OS-level pairing: close the phone app, scan, select the appropriate protocol and
 save. Forget removes only the saved selection; it never unpairs host devices.
 
+Monster Smart Lighting Wi-Fi devices (the Duo+ monitor light bar, RGBIC
+strips and bulbs) are not BLE-controlled: their Bluetooth radio only hands
+over Wi-Fi credentials during onboarding. They live on the separate Monster
+lights page; see `docs/monster-lights.md`.
+
 The four `lights.*` Tools accept a saved device name/address and a value. An
 omitted device is accepted only with exactly one saved light. Fast path commands
 currently target that single light; use the Agent path for a named device when

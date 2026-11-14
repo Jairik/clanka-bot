@@ -8,6 +8,7 @@ export const pageLoaders = {
   alerts: () => import("./pages/Alerts"),
   health: () => import("./pages/Health"),
   lights: () => import("./pages/Lights"),
+  monster: () => import("./pages/Monster"),
   notes: () => import("./pages/Notes"),
   personas: () => import("./pages/Personas"),
   secrets: () => import("./pages/Secrets"),

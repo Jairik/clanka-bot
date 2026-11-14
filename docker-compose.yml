@@ -128,6 +128,10 @@ services:
       # PAT with only the notifications scope for github.notifications.
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       GITHUB_NOTIFICATIONS_TOKEN: ${GITHUB_NOTIFICATIONS_TOKEN:-}
+      # Monster Smart Lighting account bootstrap. Both are write-only secrets;
+      # the Secrets page wins over these values. Leave empty to add them there.
+      MONSTER_EMAIL: ${MONSTER_EMAIL:-}
+      MONSTER_PASSWORD: ${MONSTER_PASSWORD:-}
       TZ: ${TZ:-UTC}
     volumes:
       # BLE uses the host BlueZ daemon; do not run a second bluetoothd.

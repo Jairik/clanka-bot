@@ -308,6 +308,9 @@ var migrations = []migration{
 		// matches the Persona library's case-insensitive names for non-ASCII
 		// spellings too. A Persona edit never renames the row. source is
 		// "manual" or "agent" so the page can show where the text came from.
+		// This table first shipped on the same branch as the folded write, so
+		// no production row predates it; a local dev row written with a
+		// non-ASCII display spelling can be cleared by re-seeding.
 		`CREATE TABLE persona_phrases (
 			persona    TEXT NOT NULL COLLATE NOCASE,
 			tool       TEXT NOT NULL,

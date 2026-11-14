@@ -824,6 +824,18 @@ func NewSet(m *Manager) tool.Tool[SetIn, SetOut] {
 			"start a timer for an hour",
 			"set a timer for an hour and a half",
 			"timer for 30 seconds",
+			// Duration variants are the live paraphrases most likely to fall to
+			// the Agent because timer.remaining and timer.list share the word
+			// "timer"; a closer match widens the margin without moving the
+			// threshold.
+			"set a timer for three minutes",
+			"set a timer for 3 minutes",
+			"set a timer for two minutes",
+			"set a timer for 15 minutes",
+			"set a three minute timer",
+			"start a five minute timer",
+			"timer for 10 minutes",
+			"set a timer for 90 seconds",
 			// A labelled phrasing proves the name is carried through Extract
 			// without making the label itself a routing signal.
 			"set a laundry timer for 10 minutes",

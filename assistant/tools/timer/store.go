@@ -68,11 +68,12 @@ func (m *Manager) recover() error {
 	}
 
 	rows, err := m.db.QueryContext(ctx,
-		`SELECT id, label, duration_ms, fires_at FROM timers ORDER BY fires_at, id`)
+		`SELECT id, label, duration_ms, fires_at, audio FROM timers ORDER BY fires_at, id`)
 	if err != nil {
 		return fmt.Errorf("timer: read saved timers: %w", err)
 	}
 	type saved struct {
+		audio    string
 		id       string
 		label    string
 		duration time.Duration
@@ -83,14 +84,16 @@ func (m *Manager) recover() error {
 		var (
 			id         int64
 			label      string
+			audio      string
 			durationMS int64
 			firesMS    int64
 		)
-		if err := rows.Scan(&id, &label, &durationMS, &firesMS); err != nil {
+		if err := rows.Scan(&id, &label, &durationMS, &firesMS, &audio); err != nil {
 			rows.Close()
 			return fmt.Errorf("timer: read saved timer: %w", err)
 		}
 		timers = append(timers, saved{
+			audio:    audio,
 			id:       strconv.FormatInt(id, 10),
 			label:    label,
 			duration: time.Duration(durationMS) * time.Millisecond,
@@ -107,6 +110,7 @@ func (m *Manager) recover() error {
 	var missed []Timer
 	for _, saved := range timers {
 		savedTimer := Timer{
+			Audio:           saved.audio,
 			ID:              saved.id,
 			Label:           saved.label,
 			DurationSeconds: int(saved.duration.Round(time.Second) / time.Second),
@@ -249,13 +253,13 @@ func describeTimer(timer Timer) string {
 }
 
 // insert writes one new Timer row and returns its database id.
-func (m *Manager) insert(ctx context.Context, label string, duration time.Duration, firesAt, createdAt time.Time) (string, error) {
+func (m *Manager) insert(ctx context.Context, label string, duration time.Duration, firesAt, createdAt time.Time, audio string) (string, error) {
 	result, err := m.db.ExecContext(ctx,
-		`INSERT INTO timers (label, duration_ms, fires_at, created_at) VALUES (?, ?, ?, ?)`,
+		`INSERT INTO timers (label, duration_ms, fires_at, created_at, audio) VALUES (?, ?, ?, ?, ?)`,
 		label,
 		duration.Milliseconds(),
 		firesAt.UnixMilli(),
-		createdAt.UnixMilli())
+		createdAt.UnixMilli(), audio)
 	if err != nil {
 		return "", fmt.Errorf("timer: save timer: %w", err)
 	}

@@ -283,7 +283,7 @@ func missedSummary(missed []Alarm) string {
 func (m *Manager) readAlarms(ctx context.Context) ([]storedAlarm, error) {
 	rows, err := m.db.QueryContext(ctx,
 		`SELECT id, label, hour, minute, schedule, weekdays, next_fires_at,
-		        created_at, snoozed_until, sound, volume, ramp_ms
+		        created_at, snoozed_until, sound, volume, ramp_ms, audio
 		 FROM alarms ORDER BY next_fires_at, id`)
 	if err != nil {
 		return nil, fmt.Errorf("alarm: read saved alarms: %w", err)
@@ -302,11 +302,12 @@ func (m *Manager) readAlarms(ctx context.Context) ([]storedAlarm, error) {
 			createdMS int64
 			snoozeMS  sql.NullInt64
 			sound     string
+			audio     string
 			volume    sql.NullInt64
 			rampMS    sql.NullInt64
 		)
 		if err := rows.Scan(&id, &label, &hour, &minute, &schedule, &days,
-			&nextMS, &createdMS, &snoozeMS, &sound, &volume, &rampMS); err != nil {
+			&nextMS, &createdMS, &snoozeMS, &sound, &volume, &rampMS, &audio); err != nil {
 			return nil, fmt.Errorf("alarm: read saved alarm: %w", err)
 		}
 		saved := storedAlarm{
@@ -316,6 +317,7 @@ func (m *Manager) readAlarms(ctx context.Context) ([]storedAlarm, error) {
 				Hour:     hour,
 				Minute:   minute,
 				Schedule: storedSchedule(schedule),
+				Audio:    audio,
 				Sound:    sound,
 			},
 			days:        uint8(days),
@@ -372,15 +374,16 @@ func (m *Manager) beginFire(id string, snoozed bool) (fireState, bool, error) {
 		nextMS   int64
 		snoozeMS sql.NullInt64
 		sound    string
+		audio    string
 		volume   sql.NullInt64
 		rampMS   sql.NullInt64
 	)
 	err = tx.QueryRowContext(ctx,
 		`SELECT label, hour, minute, schedule, weekdays, next_fires_at, snoozed_until,
-		        sound, volume, ramp_ms
+		        sound, volume, ramp_ms, audio
 		 FROM alarms WHERE id = ?`, id).
 		Scan(&label, &hour, &minute, &schedule, &days, &nextMS, &snoozeMS,
-			&sound, &volume, &rampMS)
+			&sound, &volume, &rampMS, &audio)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fireState{}, false, nil
 	}
@@ -432,6 +435,7 @@ func (m *Manager) beginFire(id string, snoozed bool) (fireState, bool, error) {
 		Minute:      minute,
 		Schedule:    storedSchedule(schedule),
 		NextFiresAt: occurrence,
+		Audio:       audio,
 		Sound:       sound,
 	}
 	if alarm.Schedule == Chosen {
@@ -479,6 +483,10 @@ func (m *Manager) setNext(ctx context.Context, id string, next time.Time) error 
 func (m *Manager) updateRow(ctx context.Context, id string, in UpdateIn, updated Alarm) (bool, error) {
 	var sets []string
 	var args []any
+	if in.Audio != nil {
+		sets = append(sets, "audio = ?")
+		args = append(args, updated.Audio)
+	}
 	if in.SoundReset || strings.TrimSpace(in.Sound) != "" {
 		sets = append(sets, "sound = ?")
 		args = append(args, updated.Sound)

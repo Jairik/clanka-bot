@@ -56,6 +56,7 @@ const alertTimeout = 30 * time.Second
 
 // Timer is one running or recently set timer.
 type Timer struct {
+	Audio            string    `json:"audio,omitempty"` // Audio replaces the completion speech.
 	ID               string    `json:"id"`
 	Label            string    `json:"label,omitempty"`
 	DurationSeconds  int       `json:"duration_seconds"`
@@ -258,15 +259,20 @@ func (m *Manager) Set(d time.Duration) Timer {
 }
 
 // Start persists (when a store is attached) and schedules one timer.
-func (m *Manager) Start(label string, d time.Duration) (Timer, error) {
+func (m *Manager) Start(label string, d time.Duration, audio ...string) (Timer, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
 		return Timer{}, errors.New("timer: manager is closed")
 	}
+	media := ""
+	if len(audio) > 0 {
+		media = strings.TrimSpace(audio[0])
+	}
 	now := m.now()
 	label = cleanLabel(label)
 	timer := Timer{
+		Audio:            media,
 		Label:            label,
 		DurationSeconds:  int(d.Round(time.Second) / time.Second),
 		RemainingSeconds: int(d.Round(time.Second) / time.Second),
@@ -276,7 +282,7 @@ func (m *Manager) Start(label string, d time.Duration) (Timer, error) {
 	if m.db != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), storeTimeout)
 		defer cancel()
-		id, err := m.insert(ctx, label, d, timer.FiresAt, now)
+		id, err := m.insert(ctx, label, d, timer.FiresAt, now, media)
 		if err != nil {
 			return Timer{}, err
 		}
@@ -370,6 +376,7 @@ func (m *Manager) fire(id string) {
 	if engine != nil {
 		result := engine.Ring(ringCtx, ring.Request{
 			Kind:         ring.Timer,
+			Audio:        timer.Audio,
 			ID:           timer.ID,
 			Label:        timer.Label,
 			Duration:     time.Duration(timer.DurationSeconds) * time.Second,
@@ -754,6 +761,7 @@ func (m *Manager) Close() {
 
 // SetIn asks for a timer length and an optional label.
 type SetIn struct {
+	Audio           string `json:"audio,omitempty"` // Audio replaces the completion speech.
 	DurationSeconds int    `json:"duration_seconds"`
 	Label           string `json:"label,omitempty"`
 }
@@ -794,14 +802,14 @@ type ListOut struct {
 func NewSet(m *Manager) tool.Tool[SetIn, SetOut] {
 	return tool.Tool[SetIn, SetOut]{
 		Name:        SetName,
-		Description: "Start a countdown timer, optionally with a label.",
+		Description: "Start a countdown timer, optionally with a label and completion audio. Audio is a song name, Spotify track/album/playlist link, playlist: name (shuffled), or YouTube video link; play it only when the timer finishes.",
 		Permission:  tool.PermissionAct,
 		LocalOnly:   tool.LocalOnlyNo,
 		Handler: func(_ context.Context, in SetIn) (SetOut, error) {
 			if in.DurationSeconds <= 0 {
 				return SetOut{}, &tool.ToolError{Say: "How long should the timer be?"}
 			}
-			return m.Start(in.Label, time.Duration(in.DurationSeconds)*time.Second)
+			return m.Start(in.Label, time.Duration(in.DurationSeconds)*time.Second, in.Audio)
 		},
 		Speak: func(out SetOut) string {
 			duration := parse.HumanDuration(time.Duration(out.DurationSeconds) * time.Second)
@@ -821,11 +829,13 @@ func NewSet(m *Manager) tool.Tool[SetIn, SetOut] {
 			"set a laundry timer for 10 minutes",
 		},
 		Extract: func(text string) (SetIn, bool) {
+			text, media := ring.SplitAudio(text)
 			d, ok := parse.Duration(text, time.Minute)
 			if !ok || d <= 0 {
 				return SetIn{}, false
 			}
 			return SetIn{
+				Audio:           media,
 				DurationSeconds: int(d.Round(time.Second) / time.Second),
 				Label:           labelForTimer(text),
 			}, true

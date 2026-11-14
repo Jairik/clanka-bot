@@ -22,7 +22,7 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/assistant ./cmd/as
 
 FROM alpine:3.22
 # pacat from pulseaudio-utils streams raw PCM to the configured Pulse sink.
-RUN apk add --no-cache ca-certificates tzdata pulseaudio-utils && adduser -D -u 10001 assistant
+RUN apk add --no-cache ca-certificates tzdata pulseaudio-utils yt-dlp ffmpeg && adduser -D -u 10001 assistant
 COPY --from=build /out/assistant /usr/local/bin/assistant
 # The runtime user must read config even when the host checkout uses umask 077.
 COPY --chmod=0644 config.yaml /app/config.yaml

@@ -294,6 +294,11 @@ var migrations = []migration{
 			`CREATE INDEX activity_outcome_at ON activity (outcome, at DESC)`,
 		},
 	},
+	{version: 12, name: "completion_audio", statements: []string{
+		// Empty media preserves the existing Ring defaults for saved alerts.
+		`ALTER TABLE timers ADD COLUMN audio TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE alarms ADD COLUMN audio TEXT NOT NULL DEFAULT ''`,
+	}},
 }
 
 // Open opens (creating if needed) the database at path, applies pending

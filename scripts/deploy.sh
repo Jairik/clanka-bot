@@ -139,6 +139,19 @@ wait_for_health() {
 	done
 }
 
+# The Soloist receiver's proprietary binary is not in the image. Provision it
+# (and its private directories) on this host before Compose starts. A rollback
+# to a commit without the service skips this.
+ensure_receiver() {
+	local services
+	services="$(docker compose config --services 2>/dev/null || true)"
+	if ! grep -qx 'soloist' <<<"$services"; then
+		return
+	fi
+	bash "$ROOT/scripts/soloist-setup.sh" ||
+		die "could not prepare the Soloist receiver"
+}
+
 main() {
 	local requested="" arg sha image missing
 	for arg in "$@"; do
@@ -173,6 +186,11 @@ main() {
 
 	require_clean_worktree
 
+	# Host-visible voice-sample bundles. Created before Compose so the bind
+	# mount is owned by the deploy user rather than root; the directory is
+	# gitignored because it holds the owner's recordings.
+	mkdir -p "$ROOT/exports"
+
 	if [[ -n "$requested" ]]; then
 		sha="$(resolve_sha "$requested")"
 		log "rolling back to $sha"
@@ -194,6 +212,7 @@ main() {
 		done <<<"$(docker compose config --images)"
 		((missing == 0)) || exit 1
 
+		ensure_receiver
 		if ! docker compose up -d --no-build --remove-orphans; then
 			printf -- '--- docker compose ps ---\n' >&2
 			docker compose ps >&2 || true
@@ -206,6 +225,7 @@ main() {
 		fi
 		sha="$(git rev-parse --short HEAD)"
 		export GIT_SHA="$sha"
+		ensure_receiver
 		log "building and starting clanka/<service>:$sha"
 		if ! docker compose up -d --build --remove-orphans; then
 			printf -- '--- docker compose ps ---\n' >&2

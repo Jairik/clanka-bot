@@ -37,7 +37,7 @@ type VoiceInfo struct {
 	Languages []string `json:"languages"`
 }
 
-// Program is one TTS program advertised in an info response.
+// Program is one TTS or wake-word program advertised in an info response.
 type Program struct {
 	Name                        string      `json:"name"`
 	Description                 string      `json:"description"`
@@ -45,12 +45,26 @@ type Program struct {
 	Installed                   bool        `json:"installed"`
 	Languages                   []string    `json:"languages"`
 	Voices                      []VoiceInfo `json:"voices"`
+	Models                      []WakeModel `json:"models"`
 	SupportsSynthesizeStreaming bool        `json:"supports_synthesize_streaming"`
+}
+
+// WakeModel is one wake-word model an info response advertises. The upstream
+// openWakeWord service lists every model it can serve, not only the detectors a
+// connection has loaded; loading happens on the first detect for a name.
+type WakeModel struct {
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Phrase      string   `json:"phrase"`
+	Installed   bool     `json:"installed"`
+	Languages   []string `json:"languages"`
+	Version     string   `json:"version"`
 }
 
 // Info is the parsed describe response.
 type Info struct {
-	TTS []Program `json:"tts"`
+	TTS  []Program `json:"tts"`
+	Wake []Program `json:"wake"`
 }
 
 // Client talks to one Wyoming service address.

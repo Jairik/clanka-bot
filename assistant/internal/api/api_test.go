@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/api"
+	"github.com/Jairik/clanka-bot/assistant/internal/latency"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/tools/clock"
@@ -41,6 +42,8 @@ func newTestServerWith(t *testing.T, opts ...api.Option) (http.Handler, *bytes.B
 func postTranscript(t *testing.T, handler http.Handler, body string) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/debug/transcript", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Host = "127.0.0.1:8081"
 	req.RemoteAddr = "127.0.0.1:12345"
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -144,6 +147,7 @@ func TestDebugEntryOnlyAcceptsPost(t *testing.T) {
 	handler, _ := newTestServer(t)
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/debug/transcript", nil)
+	req.Host = "127.0.0.1:8081"
 	req.RemoteAddr = "127.0.0.1:12345"
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusMethodNotAllowed {
@@ -168,6 +172,8 @@ func TestDebugEntryRejectsSiblingContainers(t *testing.T) {
 
 	post := func(remote string) *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodPost, "/debug/transcript", strings.NewReader(`{"text":"what time is it"}`))
+		req.Header.Set("Content-Type", "application/json")
+		req.Host = "127.0.0.1:8081"
 		req.RemoteAddr = remote
 		rec := httptest.NewRecorder()
 		handler.ServeHTTP(rec, req)
@@ -182,5 +188,109 @@ func TestDebugEntryRejectsSiblingContainers(t *testing.T) {
 	}
 	if rec := post("172.18.0.5:40000"); rec.Code != http.StatusForbidden {
 		t.Fatalf("sibling status = %d, want 403: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSettingsRoutesAreLocalOnlyAndAbsentFromTheHealthListener(t *testing.T) {
+	calls := 0
+	settings := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusOK)
+	})
+	handler, _ := newTestServerWith(t,
+		api.WithSettings(settings),
+		api.WithDebugAllowlist(func(ip net.IP) bool { return ip.IsLoopback() }),
+	)
+
+	get := func(remote string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/api/settings", nil)
+		req.Host = "127.0.0.1:8081"
+		req.RemoteAddr = remote
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := get("127.0.0.1:40000"); rec.Code != http.StatusOK {
+		t.Fatalf("loopback settings status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if rec := get("172.18.0.5:40000"); rec.Code != http.StatusForbidden {
+		t.Fatalf("sibling settings status = %d, want 403", rec.Code)
+	}
+	if calls != 1 {
+		t.Fatalf("settings handler calls = %d, want only the loopback request", calls)
+	}
+
+	health := api.NewHandler(nil, slog.Default(), false, api.WithSettings(settings))
+	rec := httptest.NewRecorder()
+	health.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/settings", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("settings route on the health listener = %d, want 404", rec.Code)
+	}
+}
+
+// TestWithAPIMountsComposedHandlersBehindTheDebugGate proves the general
+// composition seam (settings, Tools and secrets share one mux) is local-only
+// and never appears on the health listener.
+func TestWithAPIMountsComposedHandlersBehindTheDebugGate(t *testing.T) {
+	calls := 0
+	apiHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusOK)
+	})
+	handler, _ := newTestServerWith(t,
+		api.WithAPI(apiHandler),
+		api.WithDebugAllowlist(func(ip net.IP) bool { return ip.IsLoopback() }),
+	)
+
+	get := func(remote string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "/api/secrets", nil)
+		req.Host = "127.0.0.1:8081"
+		req.RemoteAddr = remote
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		return rec
+	}
+	if rec := get("127.0.0.1:40000"); rec.Code != http.StatusOK {
+		t.Fatalf("loopback API status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if rec := get("172.18.0.5:40000"); rec.Code != http.StatusForbidden {
+		t.Fatalf("sibling API status = %d, want 403", rec.Code)
+	}
+	if calls != 1 {
+		t.Fatalf("API handler calls = %d, want only the loopback request", calls)
+	}
+
+	health := api.NewHandler(nil, slog.Default(), false, api.WithAPI(apiHandler))
+	rec := httptest.NewRecorder()
+	health.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/secrets", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("API route on the health listener = %d, want 404", rec.Code)
+	}
+}
+
+// TestDebugTranscriptFeedsTheActivityObserver proves the localhost typed entry
+// uses the same completion seam as voice and the Dashboard; its reply and Tool
+// call are available to the one Activity store without a second log parser.
+func TestDebugTranscriptFeedsTheActivityObserver(t *testing.T) {
+	var completed []latency.Completed
+	handler, _ := newTestServerWith(t, api.WithObserver(func(c latency.Completed) {
+		completed = append(completed, c)
+	}))
+	rec := postTranscript(t, handler, `{"text":"what time is it"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if len(completed) != 1 {
+		t.Fatalf("observer calls = %d, want 1", len(completed))
+	}
+	got := completed[0]
+	if got.Source != latency.SourceDebug || got.Path != "control_phrase" || got.Tool != "time.now" {
+		t.Fatalf("completed = %+v", got)
+	}
+	if got.Outcome != latency.OutcomeNoAudio || got.HasResponse {
+		t.Fatalf("typed entry claimed audio or a Response latency: %+v", got)
+	}
+	if got.Detail == nil || got.Detail.Reply == "" || len(got.Detail.Calls) != 1 {
+		t.Fatalf("display detail = %+v", got.Detail)
 	}
 }

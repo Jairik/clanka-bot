@@ -37,9 +37,29 @@ type DetectStream struct {
 	closeMu sync.Mutex
 }
 
+// DetectOption adjusts one detect request.
+type DetectOption func(map[string]any)
+
+// WithDetectThresholds sends the per-model detection thresholds. The wakeword
+// service applies them per model; a model without an entry keeps the service's
+// global --threshold. The map is copied so a later config change cannot alter
+// an in-flight stream.
+func WithDetectThresholds(thresholds map[string]float64) DetectOption {
+	return func(data map[string]any) {
+		if len(thresholds) == 0 {
+			return
+		}
+		copied := make(map[string]float64, len(thresholds))
+		for name, threshold := range thresholds {
+			copied[name] = threshold
+		}
+		data["thresholds"] = copied
+	}
+}
+
 // Detect opens a detection stream and announces the audio format. names limits
 // the models the service may fire; empty accepts any loaded model.
-func (c *Client) Detect(ctx context.Context, names []string, format Format) (*DetectStream, error) {
+func (c *Client) Detect(ctx context.Context, names []string, format Format, opts ...DetectOption) (*DetectStream, error) {
 	conn, err := c.dial(ctx)
 	if err != nil {
 		return nil, err
@@ -57,6 +77,11 @@ func (c *Client) Detect(ctx context.Context, names []string, format Format) (*De
 	data := map[string]any{}
 	if len(names) > 0 {
 		data["names"] = names
+	}
+	for _, opt := range opts {
+		if opt != nil {
+			opt(data)
+		}
 	}
 	if err := s.write("detect", data); err != nil {
 		s.Close()

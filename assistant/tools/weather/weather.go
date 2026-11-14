@@ -1,6 +1,5 @@
-// Package weather implements the weather.current Tool against Open-Meteo,
-// which needs no API key. It geocodes the city name locally; the IP lookup's
-// coordinates are never used.
+// Package weather implements weather.current with WeatherAPI, Open-Meteo and wttr.in.
+// Providers resolve city names; the IP lookup's coordinates are never used.
 package weather
 
 import (
@@ -23,17 +22,28 @@ import (
 // Name is the canonical Tool name.
 const Name = "weather.current"
 
+// SecretName is the optional WeatherAPI key. The module declares it, so the
+// write-only store can hold it and the Dashboard Secrets page lists it; the
+// .env variable of the same name is the bootstrap.
+const SecretName = "WEATHERAPI_API_KEY"
+
 const (
+	// DefaultWeatherAPIURL resolves a city and returns current conditions in one call.
+	DefaultWeatherAPIURL = "https://api.weatherapi.com/v1/current.json"
 	// DefaultGeocodingURL is Open-Meteo's city search.
 	DefaultGeocodingURL = "https://geocoding-api.open-meteo.com/v1/search"
 	// DefaultForecastURL is Open-Meteo's current-conditions endpoint.
 	DefaultForecastURL = "https://api.open-meteo.com/v1/forecast"
-	currentFields      = "temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m"
-	maxResponseBytes   = 256 << 10
-	defaultHTTPTimeout = 1500 * time.Millisecond
-	defaultBudget      = 2 * time.Second
-	geocodeTTL         = 10 * time.Minute
-	forecastTTL        = time.Minute
+	// DefaultFallbackURL serves wttr.in's current conditions when Open-Meteo fails.
+	DefaultFallbackURL   = "https://wttr.in"
+	currentFields        = "temperature_2m,apparent_temperature,relative_humidity_2m,weather_code,wind_speed_10m"
+	maxResponseBytes     = 256 << 10
+	defaultFallbackDelay = 250 * time.Millisecond
+	// Leave roughly one second of the Fast path budget for endpointing, STT and TTS.
+	defaultBudget = time.Second
+	geocodeTTL    = 10 * time.Minute
+	// Reuse successful conditions for 15 minutes to avoid repeated network waits.
+	forecastTTL = 15 * time.Minute
 )
 
 // upstreamUnavailable is the truthful message for a timeout, transport error
@@ -59,33 +69,44 @@ type Out struct {
 // Deps are the Tool's outside dependencies. Tests replace the URLs and the
 // location source; production leaves the defaults.
 type Deps struct {
-	HTTP         *http.Client
-	GeocodingURL string
-	ForecastURL  string
-	Location     func() (location.Location, bool)
-	// Timeout bounds each upstream call; zero uses 1.5s. Budget bounds
-	// geocode plus forecast together; zero uses 2s. Both keep a bad upstream
-	// from turning one Fast path request into a 6+ second turn.
-	Timeout time.Duration
-	Budget  time.Duration
+	HTTP *http.Client
+	// APIKey returns the optional WeatherAPI key. Nil or empty skips that
+	// provider and leaves the two keyless ones. The module reads it per
+	// request, so a Dashboard rotation applies without a restart.
+	APIKey        func() (string, bool)
+	WeatherAPIURL string
+	GeocodingURL  string
+	ForecastURL   string
+	FallbackURL   string
+	Location      func() (location.Location, bool)
+	// FallbackDelay starts the next provider if one is still pending; zero uses 250ms.
+	// Budget bounds all providers together; zero uses 1s.
+	FallbackDelay time.Duration
+	Budget        time.Duration
 }
 
 // New builds the weather.current Tool.
 func New(deps Deps) tool.Tool[In, Out] {
-	if deps.Timeout <= 0 {
-		deps.Timeout = defaultHTTPTimeout
+	if deps.FallbackDelay <= 0 {
+		deps.FallbackDelay = defaultFallbackDelay
 	}
 	if deps.Budget <= 0 {
 		deps.Budget = defaultBudget
 	}
 	if deps.HTTP == nil {
-		deps.HTTP = &http.Client{Timeout: deps.Timeout}
+		deps.HTTP = &http.Client{Timeout: deps.Budget}
+	}
+	if deps.WeatherAPIURL == "" {
+		deps.WeatherAPIURL = DefaultWeatherAPIURL
 	}
 	if deps.GeocodingURL == "" {
 		deps.GeocodingURL = DefaultGeocodingURL
 	}
 	if deps.ForecastURL == "" {
 		deps.ForecastURL = DefaultForecastURL
+	}
+	if deps.FallbackURL == "" {
+		deps.FallbackURL = DefaultFallbackURL
 	}
 
 	cache := newCache()
@@ -94,7 +115,7 @@ func New(deps Deps) tool.Tool[In, Out] {
 		Description: "Get the current weather where the user is, or in a named city.",
 		Permission:  tool.PermissionRead,
 		LocalOnly:   tool.LocalOnlyNo,
-		Timeout:     8 * time.Second,
+		Timeout:     deps.Budget,
 		Handler: func(ctx context.Context, in In) (Out, error) {
 			return current(ctx, deps, in, cache)
 		},
@@ -146,36 +167,119 @@ func current(ctx context.Context, deps Deps, in In, cache *cache) (Out, error) {
 		ctx, cancel = context.WithTimeout(ctx, deps.Budget)
 		defer cancel()
 	}
-	city := strings.TrimSpace(in.City)
-	if city == "" {
-		if deps.Location == nil {
-			return Out{}, unknownLocation()
-		}
-		loc, ok := deps.Location()
-		if !ok {
-			return Out{}, unknownLocation()
-		}
-		city = strings.TrimSpace(loc.City)
-		if city == "" {
-			city = strings.TrimSpace(loc.Region)
-		}
-		if city == "" {
-			city = strings.TrimSpace(loc.Timezone)
-		}
-		if city == "" {
-			return Out{}, unknownLocation()
-		}
+	city, err := resolveCity(in, deps)
+	if err != nil {
+		return Out{}, err
 	}
 
+	// Cache the whole answer so fallback hits also bypass a failing geocoder.
+	key := cacheKey(city)
+	cache.mu.Lock()
+	entry, ok := cache.forecasts[key]
+	cache.mu.Unlock()
+	if ok && time.Since(entry.at) < forecastTTL {
+		return entry.value, nil
+	}
+	out, err := fetchCurrent(ctx, deps, cache, city)
+	if err != nil {
+		return Out{}, userFacing(err)
+	}
+	cache.mu.Lock()
+	cache.forecasts[key] = cacheEntry[Out]{value: out, at: time.Now()}
+	cache.mu.Unlock()
+	return out, nil
+}
+
+// apiKey resolves the optional WeatherAPI key. A nil resolver or a blank value
+// means the two keyless providers are used alone.
+func apiKey(deps Deps) (string, bool) {
+	if deps.APIKey == nil {
+		return "", false
+	}
+	key, ok := deps.APIKey()
+	key = strings.TrimSpace(key)
+	return key, ok && key != ""
+}
+
+// fetchCurrent starts fallback on primary failure or delay, keeping the first successful answer.
+func fetchCurrent(ctx context.Context, deps Deps, cache *cache, city string) (Out, error) {
+	type result struct {
+		out Out
+		err error
+	}
+	providers := []func() (Out, error){
+		func() (Out, error) { return primaryCurrent(ctx, deps, cache, city) },
+		func() (Out, error) { return fallbackForecast(ctx, deps, city) },
+	}
+	// Without a configured key, the two keyless providers remain usable.
+	if key, ok := apiKey(deps); ok {
+		providers = append([]func() (Out, error){
+			func() (Out, error) { return weatherAPICurrent(ctx, deps, key, city) },
+		}, providers...)
+	}
+	// Buffered results let the cancelled loser exit without waiting for a receiver.
+	results := make(chan result, len(providers))
+	started := 0
+	startNext := func() {
+		provider := providers[started]
+		started++
+		go func() {
+			out, err := provider()
+			results <- result{out: out, err: err}
+		}()
+	}
+	startNext()
+	delay := time.NewTimer(deps.FallbackDelay)
+	defer delay.Stop()
+	// A ToolError ("I couldn't find that place") is a definitive answer about
+	// the request, so no further provider starts: wttr.in would otherwise
+	// guess some place for a name the geocoder rejected. It must not cancel a
+	// provider already in flight, though: a fast keyless geocoder miss can
+	// arrive while WeatherAPI is about to answer, and that answer still wins.
+	var lastErr, sayErr error
+	for completed := 0; completed < started; {
+		select {
+		case <-ctx.Done():
+			if sayErr != nil {
+				return Out{}, sayErr
+			}
+			return Out{}, ctx.Err()
+		case reply := <-results:
+			completed++
+			if reply.err == nil {
+				return reply.out, nil
+			}
+			var toolErr *tool.ToolError
+			if errors.As(reply.err, &toolErr) {
+				if sayErr == nil {
+					sayErr = reply.err
+				}
+			} else {
+				lastErr = reply.err
+			}
+		case <-delay.C:
+		}
+		if sayErr == nil && started < len(providers) && ctx.Err() == nil {
+			startNext()
+			delay.Reset(deps.FallbackDelay)
+		}
+	}
+	if sayErr != nil {
+		return Out{}, sayErr
+	}
+	return Out{}, lastErr
+}
+
+// primaryCurrent shares the overall deadline across Open-Meteo's two requests.
+func primaryCurrent(ctx context.Context, deps Deps, cache *cache, city string) (Out, error) {
 	place, err := cachedGeocode(ctx, deps, cache, city)
 	if err != nil {
-		return Out{}, userFacing(err)
+		return Out{}, err
 	}
-	forecast, err := cachedForecast(ctx, deps, cache, place)
+	forecast, err := forecast(ctx, deps, place.Latitude, place.Longitude)
 	if err != nil {
-		return Out{}, userFacing(err)
+		return Out{}, err
 	}
-
 	return Out{
 		City:         place.Name,
 		Condition:    condition(forecast.Current.WeatherCode),
@@ -188,6 +292,27 @@ func current(ctx context.Context, deps Deps, in In, cache *cache) (Out, error) {
 
 func unknownLocation() error {
 	return &tool.ToolError{Say: "I don't know where I am yet."}
+}
+
+// resolveCity uses the named city, then city, region and timezone from the
+// current location, so an incomplete lookup still gives a geocodable name.
+func resolveCity(in In, deps Deps) (string, error) {
+	if city := strings.TrimSpace(in.City); city != "" {
+		return city, nil
+	}
+	if deps.Location == nil {
+		return "", unknownLocation()
+	}
+	loc, ok := deps.Location()
+	if !ok {
+		return "", unknownLocation()
+	}
+	for _, candidate := range []string{loc.City, loc.Region, loc.Timezone} {
+		if city := strings.TrimSpace(candidate); city != "" {
+			return city, nil
+		}
+	}
+	return "", unknownLocation()
 }
 
 // userFacing keeps a specific ToolError (unknown place, unknown location) but
@@ -211,13 +336,13 @@ type cacheEntry[T any] struct {
 type cache struct {
 	mu        sync.Mutex
 	places    map[string]cacheEntry[place]
-	forecasts map[string]cacheEntry[forecastResponse]
+	forecasts map[string]cacheEntry[Out]
 }
 
 func newCache() *cache {
 	return &cache{
 		places:    make(map[string]cacheEntry[place]),
-		forecasts: make(map[string]cacheEntry[forecastResponse]),
+		forecasts: make(map[string]cacheEntry[Out]),
 	}
 }
 
@@ -240,32 +365,6 @@ func cachedGeocode(ctx context.Context, deps Deps, c *cache, city string) (place
 	if c != nil {
 		c.mu.Lock()
 		c.places[key] = cacheEntry[place]{value: value, at: time.Now()}
-		c.mu.Unlock()
-	}
-	return value, nil
-}
-
-func forecastKey(p place) string {
-	return strconv.FormatFloat(p.Latitude, 'f', 4, 64) + "," + strconv.FormatFloat(p.Longitude, 'f', 4, 64)
-}
-
-func cachedForecast(ctx context.Context, deps Deps, c *cache, p place) (forecastResponse, error) {
-	key := forecastKey(p)
-	if c != nil {
-		c.mu.Lock()
-		entry, ok := c.forecasts[key]
-		c.mu.Unlock()
-		if ok && time.Since(entry.at) < forecastTTL {
-			return entry.value, nil
-		}
-	}
-	value, err := forecast(ctx, deps, p.Latitude, p.Longitude)
-	if err != nil {
-		return forecastResponse{}, err
-	}
-	if c != nil {
-		c.mu.Lock()
-		c.forecasts[key] = cacheEntry[forecastResponse]{value: value, at: time.Now()}
 		c.mu.Unlock()
 	}
 	return value, nil
@@ -332,6 +431,8 @@ func getJSON(ctx context.Context, client *http.Client, target string, out any) e
 	if err != nil {
 		return fmt.Errorf("weather: build request: %w", err)
 	}
+	// Identify the application consistently to both public weather services.
+	req.Header.Set("User-Agent", "clanka-bot/0.1 (+https://github.com/Jairik/clanka-bot)")
 	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("weather: request: %w", err)

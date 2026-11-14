@@ -1,0 +1,100 @@
+{
+  "schema": "wake-over-music/v1",
+  "kind": "synthetic-fixture",
+  "issue": 70,
+  "wake_word": "okay_nabu",
+  "host": {
+    "device": "SYNTHETIC fixture, not a host",
+    "pipewire": "fixture",
+    "pipewire_pulse": "fixture",
+    "capture_source": "fixture",
+    "playback_sink": "fixture",
+    "aec_source": "fixture",
+    "aec_sink": "fixture",
+    "aec_method": "webrtc",
+    "aec_args": "",
+    "note": "Arithmetic fixture only. Never copy into an evidence file."
+  },
+  "volumes": [
+    25,
+    50,
+    75
+  ],
+  "targets": {
+    "hit_rate": null,
+    "false_wakes_per_hour": null
+  },
+  "cells": [
+    {
+      "volume": 25,
+      "aec": "off",
+      "trials": 20,
+      "hits": 19,
+      "false_wakes": 0,
+      "exposure_min": 30,
+      "started_at": "2026-11-11T20:00:00+01:00",
+      "ended_at": "2026-11-11T20:40:00+01:00",
+      "note": "synthetic"
+    },
+    {
+      "volume": 25,
+      "aec": "on",
+      "trials": 20,
+      "hits": 20,
+      "false_wakes": 0,
+      "exposure_min": 30,
+      "started_at": "2026-11-11T20:45:00+01:00",
+      "ended_at": "2026-11-11T21:25:00+01:00",
+      "note": "synthetic"
+    },
+    {
+      "volume": 50,
+      "aec": "off",
+      "trials": 20,
+      "hits": 14,
+      "false_wakes": 2,
+      "exposure_min": 30,
+      "started_at": "2026-11-11T21:30:00+01:00",
+      "ended_at": "2026-11-11T22:10:00+01:00",
+      "note": "synthetic"
+    },
+    {
+      "volume": 50,
+      "aec": "on",
+      "trials": 20,
+      "hits": 19,
+      "false_wakes": 1,
+      "exposure_min": 30,
+      "started_at": "2026-11-11T22:15:00+01:00",
+      "ended_at": "2026-11-11T22:55:00+01:00",
+      "note": "synthetic"
+    },
+    {
+      "volume": 75,
+      "aec": "off",
+      "trials": 20,
+      "hits": 8,
+      "false_wakes": 5,
+      "exposure_min": 30,
+      "started_at": "2026-11-12T09:00:00+01:00",
+      "ended_at": "2026-11-12T09:40:00+01:00",
+      "note": "synthetic"
+    },
+    {
+      "volume": 75,
+      "aec": "on",
+      "trials": 20,
+      "hits": 18,
+      "false_wakes": 2,
+      "exposure_min": 30,
+      "started_at": "2026-11-12T09:45:00+01:00",
+      "ended_at": "2026-11-12T10:25:00+01:00",
+      "note": "synthetic"
+    }
+  ],
+  "decision": {
+    "status": "pending",
+    "max_volume": null,
+    "note": "Fixture only; no decision."
+  }
+}

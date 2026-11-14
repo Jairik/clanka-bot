@@ -17,3 +17,9 @@ Default five-role vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `
 ### Domain docs
 
 Single-context: one `GLOSSARY.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
+### Adding a Tool
+
+`make new-tool name=<module>.<tool>` scaffolds a Tool module; the full recipe
+(Permission, Local-only, Examples, routing eval, conformance) is
+`docs/agents/adding-a-tool.md`.

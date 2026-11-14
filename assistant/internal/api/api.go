@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/httpguard"
 	"github.com/Jairik/clanka-bot/assistant/internal/latency"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
@@ -27,6 +28,12 @@ type Responder interface {
 	Ask(ctx context.Context, req tool.Request, transcript string) (pipeline.Reply, error)
 }
 
+// Announcer queues unprompted speech for the debug entry. announce.Queue
+// satisfies it.
+type Announcer interface {
+	Enqueue(text string) bool
+}
+
 // Option configures the HTTP surface.
 type Option func(*server)
 
@@ -37,6 +44,13 @@ func WithResponder(responder Responder) Option {
 	return func(s *server) { s.responder = responder }
 }
 
+// WithAnnouncements lets the debug entry queue an Announcement, so the
+// between-turns behaviour can be demoed without waiting for a Reminder. Without
+// it the endpoint reports that speech is not configured.
+func WithAnnouncements(announcer Announcer) Option {
+	return func(s *server) { s.announcer = announcer }
+}
+
 // WithDebugAllowlist replaces the source-address check. It exists for tests
 // and for a deployment whose bridge gateway is known another way. Production
 // uses the default: loopback plus this container's default gateway (the host
@@ -45,19 +59,54 @@ func WithDebugAllowlist(allowed func(net.IP) bool) Option {
 	return func(s *server) { s.debugAllowed = allowed }
 }
 
+// WithSettings mounts the settings and Tool-override API under /api/ on the
+// debug handler. It is ignored when the debug entry is disabled, so the public
+// health listener can never serve settings writes. The mounted handler has no
+// authentication of its own; the debug source allowlist guards it here, and
+// the authenticated Dashboard mounts the same handler behind Tailscale
+// identity.
+func WithSettings(handler http.Handler) Option {
+	return WithAPI(handler)
+}
+
+// WithAPI mounts any composable API handler under /api/ on the debug handler.
+// main passes one mux that serves the settings, Tool-override and secrets
+// subtrees together; the authenticated Dashboard mounts the same handler. The
+// handler is absent when the debug entry is disabled, so the public health
+// listener can never serve it.
+func WithAPI(handler http.Handler) Option {
+	return func(s *server) { s.api = handler }
+}
+
+// WithObserver feeds completed debug requests into the Dashboard Activity
+// store, so a localhost typed request appears in the same recent list as voice
+// and Dashboard requests. A nil observer leaves the debug entry unchanged.
+func WithObserver(observer latency.Observer) Option {
+	return func(s *server) { s.observer = observer }
+}
+
 // NewHandler builds the HTTP surface: GET /healthz, plus POST
 // /debug/transcript when the debug entry is enabled.
 func NewHandler(p *pipeline.Pipeline, logger *slog.Logger, debugEnabled bool, opts ...Option) http.Handler {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	s := &server{pipeline: p, logger: logger, debugEnabled: debugEnabled, debugAllowed: defaultDebugAllowlist}
+	s := &server{pipeline: p, logger: logger, debugEnabled: debugEnabled, debugAllowed: defaultDebugAllowlist, hosts: httpguard.Hosts{}}
 	for _, opt := range opts {
 		opt(s)
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.healthz)
-	mux.HandleFunc("/debug/transcript", s.debugTranscript)
+	// The debug entries and the mounted API share one browser guard: loopback
+	// Host only, same-origin Fetch Metadata, and a JSON Content-Type on a
+	// mutation body. The source-address check stays in the handlers below.
+	mux.HandleFunc("/debug/transcript", s.guarded(s.debugTranscript))
+	mux.HandleFunc("/debug/announce", s.guarded(s.debugAnnounce))
+	if debugEnabled && s.api != nil {
+		// Settings, Tool and secret writes are local-only: the same guard and
+		// source check as the debug entry wrap the whole /api/ subtree.
+		mux.Handle("/api/", s.guardedHandler(s.localOnly(http.StripPrefix("/api", s.api))))
+	}
 	return mux
 }
 
@@ -66,7 +115,14 @@ type server struct {
 	logger       *slog.Logger
 	debugEnabled bool
 	responder    Responder
+	api          http.Handler
+	announcer    Announcer
+	observer     latency.Observer
 	debugAllowed func(net.IP) bool
+	// hosts is the debug listener's Host allowlist. It is loopback-only: the
+	// listener is documented for curl on the Pi host, and Docker publishes it
+	// on 127.0.0.1.
+	hosts httpguard.Hosts
 }
 
 func (s *server) healthz(w http.ResponseWriter, r *http.Request) {
@@ -113,13 +169,7 @@ func (s *server) debugTranscript(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("X-Request-ID", requestID)
 
 	var body transcriptRequest
-	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxTranscriptBytes))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&body); err != nil {
-		s.reject(w, requestID, "invalid JSON body", http.StatusBadRequest)
-		return
-	}
-	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+	if !decodeJSON(w, r, &body) {
 		s.reject(w, requestID, "invalid JSON body", http.StatusBadRequest)
 		return
 	}
@@ -136,7 +186,7 @@ func (s *server) debugTranscript(w http.ResponseWriter, r *http.Request) {
 	}
 	// The debug entry has no endpointing or STT, so its timeline never
 	// reports Response latency; routing and playback stages still correlate.
-	timeline := latency.New(requestID, latency.SourceDebug)
+	timeline := latency.New(requestID, latency.SourceDebug, latency.WithObserver(s.observer))
 	requestCtx := latency.WithContext(r.Context(), timeline)
 
 	// Speaking is part of the reply, so the request waits for playback to
@@ -168,6 +218,118 @@ func (s *server) debugTranscript(w http.ResponseWriter, r *http.Request) {
 		RequestID: reply.RequestID,
 		Spoken:    spoken,
 	})
+}
+
+// guarded applies the debug listener's browser checks to a mutating or
+// reading entry: OPTIONS is answered without side effects, the Host must be
+// loopback (a rebinding page cannot borrow 127.0.0.1), browser metadata must
+// be same-origin, and a JSON body must say so. A non-browser client with no
+// Origin is accepted so the documented curl smoke test keeps working; the Host
+// and source checks still gate it.
+func (s *server) guarded(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.debugGuard(w, r) {
+			return
+		}
+		next(w, r)
+	}
+}
+
+func (s *server) guardedHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.debugGuard(w, r) {
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// debugGuard returns false after writing a rejection. It performs no state
+// change for OPTIONS, which is a browser preflight probe.
+func (s *server) debugGuard(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method == http.MethodOptions {
+		w.Header().Set("Allow", "OPTIONS")
+		w.WriteHeader(http.StatusNoContent)
+		return false
+	}
+	if !s.hosts.Allows(r) {
+		s.reject(w, tool.NewRequestID(), "unexpected host", http.StatusForbidden)
+		return false
+	}
+	if !httpguard.SameOriginOrLocal(r) {
+		s.reject(w, tool.NewRequestID(), "cross-origin request rejected", http.StatusForbidden)
+		return false
+	}
+	if httpguard.NeedsJSONBody(r.Method) && !httpguard.IsJSON(r) {
+		s.reject(w, tool.NewRequestID(), "content type must be application/json", http.StatusUnsupportedMediaType)
+		return false
+	}
+	return true
+}
+
+// localOnly wraps the API subtree in the same source check as the debug entry.
+// The mounted handlers perform no authentication themselves.
+func (s *server) localOnly(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.debugSourceAllowed(r.RemoteAddr) {
+			s.reject(w, tool.NewRequestID(), "settings entry is local only", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+type announceRequest struct {
+	Text string `json:"text"`
+}
+
+// debugAnnounce queues unprompted speech on the shared Announcement queue. It
+// shares the transcript entry's debug gate: disabled means absent, and only the
+// host loopback or its bridge gateway may post.
+func (s *server) debugAnnounce(w http.ResponseWriter, r *http.Request) {
+	if !s.debugEnabled {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.debugSourceAllowed(r.RemoteAddr) {
+		s.reject(w, tool.NewRequestID(), "debug entry is local only", http.StatusForbidden)
+		return
+	}
+	if s.announcer == nil {
+		s.reject(w, tool.NewRequestID(), "speech is not configured", http.StatusServiceUnavailable)
+		return
+	}
+
+	var body announceRequest
+	if !decodeJSON(w, r, &body) {
+		s.reject(w, tool.NewRequestID(), "invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	text := strings.TrimSpace(body.Text)
+	if text == "" {
+		s.reject(w, tool.NewRequestID(), "text is required", http.StatusBadRequest)
+		return
+	}
+	if !s.announcer.Enqueue(text) {
+		s.reject(w, tool.NewRequestID(), "announcements are unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]bool{"queued": true})
+}
+
+// decodeJSON reads one bounded JSON object and rejects trailing data.
+func decodeJSON(w http.ResponseWriter, r *http.Request, value any) bool {
+	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxTranscriptBytes))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(value); err != nil {
+		return false
+	}
+	return errors.Is(decoder.Decode(&struct{}{}), io.EOF)
 }
 
 func (s *server) debugSourceAllowed(remoteAddr string) bool {

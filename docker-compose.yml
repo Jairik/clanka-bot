@@ -32,36 +32,120 @@ services:
     # Run as the host user so the read-only Pulse socket and cookie are usable.
     user: "${ASSISTANT_UID:-1000}:${ASSISTANT_GID:-1000}"
     ports:
-      # Both ports are published on the host loopback only.
+      # All three ports are published on the host loopback only.
       - "127.0.0.1:${ASSISTANT_HTTP_PORT:-8080}:8080"
       - "127.0.0.1:${ASSISTANT_DEBUG_PORT:-8081}:8081"
+      - "127.0.0.1:${ASSISTANT_DASHBOARD_PORT:-8082}:8082"
     environment:
       # The health listener binds all interfaces because Docker healthchecks
-      # reach it through 127.0.0.1. The debug listener must bind all interfaces
-      # too: a container-bound 127.0.0.1 is unreachable through Docker's
-      # published-port DNAT. The host publication above is loopback-only, and
-      # the debug handler itself accepts only loopback or this container's
-      # default gateway, so sibling containers get 403.
+      # reach it through 127.0.0.1. The debug and Dashboard listeners must bind
+      # all interfaces too: a container-bound 127.0.0.1 is unreachable through
+      # Docker's published-port DNAT. The host publications above are
+      # loopback-only, and both handlers accept only loopback or this
+      # container's default gateway, so sibling containers get 403.
       ASSISTANT_HTTP_ADDR: ":8080"
       ASSISTANT_DEBUG_ADDR: ":8081"
+      ASSISTANT_DASHBOARD_ADDR: ":8082"
+      # Empty keeps the Dashboard off. Set it to the owner's Tailscale login;
+      # tailscale serve on the host proxies to 127.0.0.1:8082 (docs/deploy.md).
+      ASSISTANT_DASHBOARD_OWNER: ${ASSISTANT_DASHBOARD_OWNER:-}
+      # Exact public Host(s) tailscale serve sends, comma-separated (for
+      # example pi.example.ts.net). Empty fails closed: only a loopback Host is
+      # accepted, so the Dashboard is reachable by curl but not through serve.
+      ASSISTANT_DASHBOARD_HOSTS: ${ASSISTANT_DASHBOARD_HOSTS:-}
+      # The Dashboard UI ships as its own SHA-tagged artifact (dashboard-web).
+      # The assistant proxies to it on the same origin; when it is stopped the
+      # embedded copy in the binary serves instead. Empty disables the artifact.
+      ASSISTANT_DASHBOARD_UI_URL: ${ASSISTANT_DASHBOARD_UI_URL:-http://dashboard-web:8080}
+      ASSISTANT_DASHBOARD_UI_VERSION: ${GIT_SHA:-dev}
       ASSISTANT_EMBED_URL: "http://embed:8085"
       ASSISTANT_TTS_ADDR: "tts:10200"
+      # ADR-0003: the one SQLite database lives on the assistant-data volume.
+      ASSISTANT_DATA_DIR: "/app/data"
+      # Wake-phrase samples recorded in the Dashboard. Takes are their own
+      # volume so a database backup does not pull in the owner's voice; a
+      # submitted bundle is written to /exports, a host-visible bind mount, so
+      # the copy command names a path the desktop can scp.
+      ASSISTANT_VOICE_SAMPLES_DIR: "/app/data/wake-samples"
+      ASSISTANT_VOICE_SAMPLES_EXPORT_DIR: "/exports"
+      # Empty hides the scp and Taildrop lines. Set these in .env for the Pi:
+      # the host path of the bind mount, and the desktop's Tailscale name.
+      ASSISTANT_VOICE_SAMPLES_HOST_DIR: ${ASSISTANT_VOICE_SAMPLES_HOST_DIR:-}
+      ASSISTANT_EXPORT_SSH_USER: ${ASSISTANT_EXPORT_SSH_USER:-}
+      ASSISTANT_EXPORT_SSH_HOST: ${ASSISTANT_EXPORT_SSH_HOST:-}
+      ASSISTANT_EXPORT_DESKTOP: ${ASSISTANT_EXPORT_DESKTOP:-}
       ASSISTANT_PULSE_SINK: ${ASSISTANT_PULSE_SINK:-}
-      # Voice input: one named Pulse source and the two Wyoming services.
+      # Voice input: one named Pulse source and the two Wyoming services. The
+      # model list is the explicit allowlist; every detection outside it is
+      # ignored, so a typo cannot wake the Assistant with another model.
       ASSISTANT_PULSE_SOURCE: ${ASSISTANT_PULSE_SOURCE:-}
       ASSISTANT_WAKEWORD_ADDR: "wakeword:10400"
-      ASSISTANT_WAKEWORD_MODEL: ${WAKEWORD_MODEL:-okay_nabu}
+      ASSISTANT_WAKEWORD_MODELS: ${WAKEWORD_MODELS:-${WAKEWORD_MODEL:-clanker}}
+      # The default for every model, and the per-model overrides the Assistant
+      # sends with each detect stream (clanker:0.6,okay_nabu:0.5).
+      ASSISTANT_WAKEWORD_THRESHOLD: ${WAKEWORD_THRESHOLD:-0.5}
+      ASSISTANT_WAKEWORD_THRESHOLDS: ${WAKEWORD_THRESHOLDS:-}
+      # Wake-free commands (#81): off by default. When enabled, the Assistant
+      # requests these models and handles a detection without STT; the image
+      # bakes every wakeword/models/*.tflite it ships. A command model still
+      # needs its threshold in WAKEWORD_THRESHOLDS (default 0.7).
+      ASSISTANT_WAKEWORD_COMMANDS_ENABLED: ${WAKEWORD_COMMANDS_ENABLED:-false}
+      ASSISTANT_WAKEWORD_COMMANDS: ${WAKEWORD_COMMANDS:-volume_up,volume_down}
+      ASSISTANT_WAKEWORD_COMMAND_STEP: ${WAKEWORD_COMMAND_STEP:-10}
+      ASSISTANT_WAKEWORD_COMMAND_COOLDOWN: ${WAKEWORD_COMMAND_COOLDOWN:-1.5s}
       ASSISTANT_STT_ADDR: "stt:10300"
       ASSISTANT_STT_MODEL: ${STT_MODEL:-small-streaming}
       ASSISTANT_STT_LANGUAGE: ${STT_LANGUAGE:-en}
-      # ADR-0001: the assistant container is the only one with audio access.
+      # Spotify Web API app pair. The client ID is public; PKCE means there is
+      # no client secret. The refresh token is a write-only secret. Pairing is
+      # separate: Soloist advertises the device and keeps its own credentials
+      # in a private host directory.
+      SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID:-}
+      SPOTIFY_REDIRECT_URI: ${SPOTIFY_REDIRECT_URI:-}
+      SPOTIFY_DEVICE_NAME: ${SPOTIFY_DEVICE_NAME:-Clanka}
+      # Metadata-only heartbeat from the Soloist receiver. The Assistant never
+      # mounts the receiver's data directory, so it cannot read credentials.
+      ASSISTANT_SPOTIFY_STATUS_FILE: "/spotify-status/soloist.status"
+      # Case-insensitive substring of the receiver's Pulse application name,
+      # used only to duck its stream. Soloist reports "spotify".
+      ASSISTANT_SPOTIFY_STREAM_MATCH: ${SPOTIFY_STREAM_MATCH:-spotify}
+      # ADR-0001/ADR-0004: only the assistant and the Connect receiver have audio access;
+      # model services stay computation-only.
       PULSE_SERVER: "unix:/run/pulse/native"
       PULSE_COOKIE: "/pulse-cookie/cookie"
       HOME: /tmp
-      # Secrets stay in .env; config.yaml names these variables.
+      # Secrets bootstrap from .env; the write-only store in the database wins
+      # when the Dashboard stores the same name. config.yaml names these vars.
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      # WeatherAPI is preferred when configured; keyless providers remain fallbacks.
+      WEATHERAPI_API_KEY: ${WEATHERAPI_API_KEY:-}
+      # Optional ntfy bootstrap. The topic is generated once into the secrets
+      # table when this is empty; set it before first use to connect a phone.
+      # NTFY_TOKEN must be issued by the ntfy server, never generated locally.
+      NTFY_TOPIC: ${NTFY_TOPIC:-}
+      NTFY_TOKEN: ${NTFY_TOKEN:-}
+      # GitHub Tools: fine-grained PAT for issues/PRs, and an optional classic
+      # PAT with only the notifications scope for github.notifications.
+      GITHUB_TOKEN: ${GITHUB_TOKEN:-}
+      GITHUB_NOTIFICATIONS_TOKEN: ${GITHUB_NOTIFICATIONS_TOKEN:-}
       TZ: ${TZ:-UTC}
     volumes:
+      # The one SQLite database (ADR-0003). Only assistant mounts this volume;
+      # restarting or rebuilding a service keeps it.
+      - assistant-data:/app/data
+      # Takes are isolated from the database backup path: this volume holds
+      # only the owner's voice samples and the assistant is its only mounter.
+      - assistant-samples:/app/data/wake-samples
+      # Host-visible sample bundles. deploy.sh creates ./exports with the
+      # deploy user's ownership; the assistant writes only this directory.
+      - ./exports:/exports
+      # Voice states are their own volume, nested under data.dir, so only this
+      # subtree can ever be mounted into tts. The database and secrets stay on
+      # assistant-data and are never exposed to another service.
+      - assistant-voices:/app/data/voices
+      # Soloist's metadata-only heartbeat. No credentials: its data directory
+      # is never mounted into the assistant.
+      - ${SOLOIST_DIR:-${HOME}/.cache/clanka/soloist}/status:/spotify-status:ro
       # Host PipeWire through its PulseAudio-compatible socket and cookie.
       - ${XDG_RUNTIME_DIR:-/run/user/1000}/pulse:/run/pulse:ro
       - ${HOME}/.config/pulse:/pulse-cookie:ro
@@ -74,6 +158,32 @@ services:
         condition: service_healthy
       stt:
         condition: service_healthy
+      web-search:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+
+  # The Dashboard UI as its own versioned artifact (#105). The assistant is the
+  # only client and proxies on the same origin, so identity, Host and CSP stay
+  # on the server that owns them. A page-only change rebuilds and restarts this
+  # service: `make web-image`. The assistant embeds the same build as the
+  # offline fallback, so stopping this service does not break the Dashboard.
+  # No depends_on: the assistant must start and serve the embedded copy even
+  # when this artifact is absent.
+  dashboard-web:
+    build:
+      context: ./assistant
+      dockerfile: web/Dockerfile.web
+      args:
+        WEB_VERSION: ${GIT_SHA:-dev}
+    image: clanka/dashboard-web:${GIT_SHA:-dev}
+    restart: unless-stopped
+    expose:
+      - "8080"
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
       interval: 10s
@@ -89,9 +199,18 @@ services:
       context: ./wakeword
     image: clanka/wakeword:${GIT_SHA:-dev}
     restart: unless-stopped
-    # Preload one model to keep CPU low; it must match the assistant's
-    # wakeword.model. Upstream ships okay_nabu, hey_jarvis and others.
-    command: ["--preload-model", "${WAKEWORD_MODEL:-okay_nabu}", "--threshold", "${WAKEWORD_THRESHOLD:-0.5}"]
+    # The image bakes the locally trained "clanker" detector and serves it from
+    # /usr/src/custom_models next to the upstream built-ins (okay_nabu,
+    # hey_jarvis, ...), so WAKEWORD_MODELS can name either. The name must match
+    # the assistant's wakeword.models; a name the service does not know is
+    # skipped and the Assistant's allowlist then refuses any detection it did
+    # not request. Models load on the first Detect, so startup does not pay for
+    # one nobody asks for.
+    #
+    # --threshold is the fallback for clients that do not send the per-model
+    # map; the Assistant sends a threshold for every model it requests, so
+    # WAKEWORD_THRESHOLD/WAKEWORD_THRESHOLDS in .env are the real knobs.
+    command: ["--custom-model-dir", "/usr/src/custom_models", "--threshold", "${WAKEWORD_THRESHOLD:-0.5}"]
     expose:
       - "10400"
     healthcheck:
@@ -142,12 +261,21 @@ services:
       TTS_HOST: "0.0.0.0"
       TTS_PORT: "10200"
       TTS_ADDR: "tcp://127.0.0.1:10200"
+      # Pi benchmarks favor one thread; four matches its measured original default.
+      OMP_NUM_THREADS: ${TTS_THREADS:-4}
       TTS_LANGUAGE: ${TTS_LANGUAGE:-english}
       TTS_VOICES: ${TTS_VOICES:-${TTS_VOICE:-alba}}
       TTS_VOICE: ${TTS_VOICE:-alba}
+      # Custom pre-exported Pocket TTS voice states. The assistant writes them
+      # to the voices volume; tts only reads this subtree.
+      TTS_VOICE_DIR: "/voices"
       TZ: ${TZ:-UTC}
     # No Pulse mount and no weights volume: model services do computation only
-    # (ADR-0001) and the image already carries the weights.
+    # (ADR-0001) and the image already carries the weights. Only the voices
+    # volume is mounted read-only, so tts can never read the database or the
+    # secrets that share assistant-data.
+    volumes:
+      - assistant-voices:/voices:ro
     expose:
       - "10200"
     healthcheck:
@@ -157,3 +285,109 @@ services:
       timeout: 5s
       retries: 12
       start_period: 180s
+
+  # SearXNG behind the Agent-path web.search Tool. Internal-only: Compose
+  # publishes no host port, runs no valkey and mounts no database. Two Granian
+  # workers, limiter off, three fast engines and a 1.5 s engine timeout live in
+  # searxng/config/settings.yml; JSON output is enabled for the Tool.
+  web-search:
+    build:
+      context: ./searxng
+    image: clanka/web-search:${GIT_SHA:-dev}
+    restart: unless-stopped
+    # Run as the image's searxng user (977). The config mount is read-only and
+    # the image-owned /var/cache/searxng stays writable for engine metadata.
+    user: "977:977"
+    environment:
+      # Official Granian worker option, not the retired uWSGI variables.
+      # Two workers is the assistant's Pi-sized bound.
+      GRANIAN_WORKERS: "2"
+      SEARXNG_BASE_URL: "http://web-search:8080/"
+      # Internal hashing key, not an authentication secret. The settings file
+      # carries the same safe value; set this on a host that rotates secrets.
+      SEARXNG_SECRET: ${SEARXNG_SECRET:-clanka-internal-search}
+    volumes:
+      # Settings only. No cache/data volume: this instance stores no history
+      # and shares no volume with the assistant (ADR-0003).
+      - ./searxng/config:/etc/searxng:ro
+    expose:
+      - "8080"
+    healthcheck:
+      # The official image ships wget. /healthz is SearXNG's documented probe.
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 20s
+
+  # Spotify Connect receiver (ADR-0004): Spotify's official Soloist binary.
+  # Music goes through the same Pulse sink as the Assistant's speech, so local
+  # ducking and the Focus rules stay local. Host networking is required:
+  # Spotify discovers devices over mDNS. The proprietary binary is downloaded
+  # by scripts/soloist-setup.sh and mounted read-only; it is never baked into
+  # the image or committed. The private data directory and key are host bind
+  # mounts, so credentials stay outside the image and outside the Assistant.
+  soloist:
+    build:
+      context: ./soloist
+    image: clanka/soloist:${GIT_SHA:-dev}
+    restart: unless-stopped
+    network_mode: host
+    hostname: ${SPOTIFY_MDNS_HOSTNAME:-clanka}
+    # The host user that owns the Pulse socket and cookie also owns the bind
+    # mounts. There is no root stage: the setup script creates the directories.
+    user: "${ASSISTANT_UID:-1000}:${ASSISTANT_GID:-1000}"
+    environment:
+      SOLOIST_DEVICE_NAME: ${SPOTIFY_DEVICE_NAME:-Clanka}
+      SOLOIST_INITIAL_VOLUME: ${SPOTIFY_INITIAL_VOLUME:-50}
+      # Soloist's -z unit is MB and its minimum is 100.
+      SOLOIST_CACHE_MB: ${SPOTIFY_CACHE_MB:-2048}
+      # Loopback-only control socket. The heartbeat asks this daemon for login
+      # and active-device state; playback control stays on the Web API.
+      SOLOIST_WS_ADDR: ${SPOTIFY_WS_ADDR:-127.0.0.1:24880}
+      # Share the exact configured speech sink; empty uses the Pulse default.
+      PULSE_SINK: ${ASSISTANT_PULSE_SINK:-}
+      SOLOIST_API_KEY_FILE: /run/secrets/soloist
+      SOLOIST_DATA_DIR: /data
+      SOLOIST_CACHE_DIR: /cache
+      SOLOIST_STATUS_DIR: /status
+      SOLOIST_LOG_FILE: /data/soloist.log
+      PULSE_SERVER: "unix:/run/pulse/native"
+      PULSE_COOKIE: "/pulse-cookie/cookie"
+      HOME: /tmp
+      TZ: ${TZ:-UTC}
+    volumes:
+      # Operator-downloaded binary, never part of the image.
+      - ${SOLOIST_BINARY:-${HOME}/.cache/clanka/soloist/soloist}:/opt/soloist:ro
+      # Private state: credentials, device identity, settings and audio cache.
+      # The Assistant only sees the separate status directory.
+      - ${SOLOIST_DIR:-${HOME}/.cache/clanka/soloist}/data:/data
+      - ${SOLOIST_DIR:-${HOME}/.cache/clanka/soloist}/cache:/cache
+      - ${SOLOIST_DIR:-${HOME}/.cache/clanka/soloist}/status:/status
+      - ${SOLOIST_DIR:-${HOME}/.cache/clanka/soloist}/api-key:/run/secrets/soloist:ro
+      - ${XDG_RUNTIME_DIR:-/run/user/1000}/pulse:/run/pulse:ro
+      - ${HOME}/.config/pulse:/pulse-cookie:ro
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      # Daemon + fresh heartbeat + unexpired build, never the internet. A
+      # stale heartbeat or expired build is a real failure; the Assistant's
+      # Health page reports pairing separately.
+      test: ["CMD", "/usr/local/bin/healthcheck.sh"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 30s
+
+volumes:
+  # Named so the database survives `docker compose down`, rebuilds and deploys.
+  # Only assistant mounts assistant-data.
+  assistant-data:
+  # Voice states are isolated in their own volume: assistant mounts it
+  # read-write under data.dir, tts mounts the same subtree read-only at /voices.
+  # This is ADR-0003's one cross-service data exception, narrowed to voices.
+  assistant-voices:
+  # The owner's wake-phrase takes. Separate from assistant-data so a database
+  # backup is not a voice-recording backup; delete it with the others only on
+  # purpose (`docker compose down -v`).
+  assistant-samples:

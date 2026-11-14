@@ -23,6 +23,35 @@ const (
 	PermissionConfirm Permission = "confirm"
 )
 
+// Valid reports whether p is one of the three Permission levels.
+func (p Permission) Valid() bool {
+	switch p {
+	case PermissionRead, PermissionAct, PermissionConfirm:
+		return true
+	default:
+		return false
+	}
+}
+
+// AtLeast reports whether p is at least as strict as min. Permission
+// overrides may only tighten: read -> act -> confirm.
+func (p Permission) AtLeast(min Permission) bool {
+	return permissionRank(p) >= permissionRank(min)
+}
+
+func permissionRank(p Permission) int {
+	switch p {
+	case PermissionRead:
+		return 0
+	case PermissionAct:
+		return 1
+	case PermissionConfirm:
+		return 2
+	default:
+		return -1
+	}
+}
+
 // LocalOnly is the required privacy declaration for a Tool. The zero value is
 // invalid so registration fails until the author makes an explicit choice.
 type LocalOnly uint8
@@ -43,6 +72,13 @@ type Tool[In, Out any] struct {
 	Timeout     time.Duration // zero uses the registry default
 	Handler     func(ctx context.Context, in In) (Out, error)
 
+	// AgentOnly marks a Tool the semantic router must never choose: it is
+	// offered to the Agent path only. Examples and Extract exist for the Fast
+	// path and are rejected here, so the exclusion is deliberate rather than a
+	// missing Speak renderer. Speak stays optional for a Tool that renders its
+	// result on another path (for example a confirmed action).
+	AgentOnly bool
+
 	Speak    func(Out) string             // optional Fast path renderer
 	Examples []string                     // optional Fast path sample phrasings
 	Extract  func(text string) (In, bool) // optional Fast path argument filler
@@ -52,19 +88,37 @@ type Tool[In, Out any] struct {
 	Summary func(In) string
 }
 
-// Info is the type-erased view of a registered Tool.
+// Info is the type-erased view of a registered Tool. Permission and Enabled
+// are the effective values when the registry has a live Policy; otherwise
+// they are the code declarations.
 type Info struct {
 	Name         string
 	WireName     string
 	Description  string
 	Permission   Permission
 	LocalOnly    bool
+	AgentOnly    bool
+	Enabled      bool
 	Timeout      time.Duration
 	InputSchema  json.RawMessage
 	OutputSchema json.RawMessage
 	Examples     []string
 	HasSpeak     bool
 	HasExtract   bool
+}
+
+// ToolSettings is a Tool's live availability: whether a stored override has
+// disabled it, and the effective (never loosened) Permission.
+type ToolSettings struct {
+	Enabled    bool
+	Permission Permission
+}
+
+// Policy is the live settings seam the registry consults on every call, so a
+// stored override applies to the next request without a restart. The declared
+// Permission is passed so an implementation can enforce tighten-only.
+type Policy interface {
+	Effective(name string, declared Permission) ToolSettings
 }
 
 type entry struct {
@@ -81,8 +135,9 @@ type entry struct {
 type Registry struct {
 	defaultTimeout time.Duration
 
-	mu    sync.RWMutex
-	tools map[string]*entry
+	mu     sync.RWMutex
+	tools  map[string]*entry
+	policy Policy
 
 	// pending is the one confirm call waiting for a spoken yes. Confirmation
 	// enforcement lives here so no caller, including the model, can run a
@@ -98,6 +153,14 @@ func NewRegistry(defaultTimeout time.Duration) *Registry {
 		defaultTimeout: defaultTimeout,
 		tools:          make(map[string]*entry),
 	}
+}
+
+// SetPolicy installs the live Tool override policy. nil clears it, which
+// restores every code-declared value. It is safe to call while serving.
+func (r *Registry) SetPolicy(p Policy) {
+	r.mu.Lock()
+	r.policy = p
+	r.mu.Unlock()
 }
 
 // Add registers one typed Tool. It is a free function because Go methods
@@ -122,6 +185,21 @@ func Add[In, Out any](r *Registry, t Tool[In, Out]) error {
 	}
 	if t.Timeout < 0 {
 		return fmt.Errorf("tool %q: timeout must not be negative", t.Name)
+	}
+	// Agent-only is a routing declaration, not a missing renderer. Reject the
+	// Fast path hooks so a later edit cannot half-add the Tool back to that path.
+	if t.AgentOnly {
+		// Local-only Tools are hidden from the Agent path, so pairing the two
+		// would leave no caller at all. A confirm-Agent Tool is still allowed.
+		if t.LocalOnly == LocalOnlyYes {
+			return fmt.Errorf("tool %q: AgentOnly cannot be LocalOnly: no path could call it", t.Name)
+		}
+		if len(t.Examples) > 0 {
+			return fmt.Errorf("tool %q: AgentOnly must not declare Examples", t.Name)
+		}
+		if t.Extract != nil {
+			return fmt.Errorf("tool %q: AgentOnly must not declare Extract", t.Name)
+		}
 	}
 
 	inSchema, err := jsonschema.For[In](nil)
@@ -159,6 +237,8 @@ func Add[In, Out any](r *Registry, t Tool[In, Out]) error {
 			Description:  t.Description,
 			Permission:   t.Permission,
 			LocalOnly:    t.LocalOnly == LocalOnlyYes,
+			AgentOnly:    t.AgentOnly,
+			Enabled:      true,
 			Timeout:      timeout,
 			InputSchema:  inJSON,
 			OutputSchema: outJSON,
@@ -234,10 +314,14 @@ func (r *Registry) Execute(ctx context.Context, name string, args json.RawMessag
 	if !ok {
 		return nil, fmt.Errorf("tool: unknown tool %q", name)
 	}
+	info := r.effective(e)
+	if !info.Enabled {
+		return nil, &DisabledError{Tool: name}
+	}
 	if err := validateArgs(e.schema, args); err != nil {
 		return nil, fmt.Errorf("tool %q: %w", name, err)
 	}
-	if e.info.Permission == PermissionConfirm {
+	if info.Permission == PermissionConfirm {
 		return nil, &ConfirmationRequiredError{Pending: PendingConfirmation{
 			Tool:    e.info.Name,
 			Args:    append(json.RawMessage(nil), args...),
@@ -245,6 +329,21 @@ func (r *Registry) Execute(ctx context.Context, name string, args json.RawMessag
 		}}
 	}
 	return r.run(ctx, e, args)
+}
+
+// effective returns a Tool's metadata with the live policy applied.
+func (r *Registry) effective(e *entry) Info {
+	info := e.info
+	r.mu.RLock()
+	policy := r.policy
+	r.mu.RUnlock()
+	if policy == nil {
+		return info
+	}
+	setting := policy.Effective(e.info.Name, e.info.Permission)
+	info.Enabled = setting.Enabled
+	info.Permission = setting.Permission
+	return info
 }
 
 // lookup returns a registered entry.
@@ -296,13 +395,11 @@ func (r *Registry) Extract(name, text string) (json.RawMessage, bool) {
 
 // Info returns a registered Tool's metadata.
 func (r *Registry) Info(name string) (Info, bool) {
-	r.mu.RLock()
-	e, ok := r.tools[name]
-	r.mu.RUnlock()
+	e, ok := r.lookup(name)
 	if !ok {
 		return Info{}, false
 	}
-	info := e.info
+	info := r.effective(e)
 	info.Examples = append([]string(nil), e.info.Examples...)
 	return info, true
 }
@@ -344,6 +441,10 @@ func FailureMessage(err error) string {
 	var toolErr *ToolError
 	if errors.As(err, &toolErr) && toolErr.Say != "" {
 		return toolErr.Say
+	}
+	var disabled *DisabledError
+	if errors.As(err, &disabled) {
+		return DisabledMessage
 	}
 	return DefaultFailureMessage
 }

@@ -10,11 +10,14 @@ import (
 )
 
 // Request is one utterance handed from the loop to the responder: the
-// transcript and when the endpointer fired. The reply Filler clock starts at
-// Ended, so a slow transcription does not delay the cue.
+// transcript, when the endpointer fired, and the wake model that started the
+// turn. The reply Filler clock starts at Ended, so a slow transcription does
+// not delay the cue. WakeWord is empty for a turn that was not started by a
+// model (the debug entry and Dashboard typed requests).
 type Request struct {
 	Transcript string
 	Ended      time.Time
+	WakeWord   string
 }
 
 // Asker answers one utterance out loud. reply.Session satisfies it and is the
@@ -49,9 +52,10 @@ func (r *PipelineResponder) Respond(ctx context.Context, req Request) error {
 		id = tool.NewRequestID()
 	}
 	_, err := r.session.AskFrom(ctx, tool.Request{
-		ID:     id,
-		Path:   tool.PathFallthrough,
-		Device: r.device,
+		ID:       id,
+		Path:     tool.PathFallthrough,
+		Device:   r.device,
+		WakeWord: req.WakeWord,
 	}, req.Transcript, req.Ended)
 	return err
 }

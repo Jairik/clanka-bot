@@ -3,6 +3,7 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -37,6 +38,8 @@ semantic:
   threshold: 0.75
   margin: 0.1
   joiners: ["and", "then"]
+name_match:
+  threshold: 0.66
 agent:
   request_prefixes: ["ask the agent", "hey agent"]
 `)
@@ -77,6 +80,9 @@ agent:
 	if len(cfg.Semantic.Joiners) != 2 || cfg.Semantic.Joiners[0] != "and" {
 		t.Errorf("Semantic.Joiners = %v", cfg.Semantic.Joiners)
 	}
+	if cfg.NameMatch.Threshold != 0.66 {
+		t.Errorf("NameMatch.Threshold = %v, want 0.66", cfg.NameMatch.Threshold)
+	}
 	if len(cfg.Agent.RequestPrefixes) != 2 || cfg.Agent.RequestPrefixes[1] != "hey agent" {
 		t.Errorf("Agent.RequestPrefixes = %v", cfg.Agent.RequestPrefixes)
 	}
@@ -108,17 +114,102 @@ func TestLoadAppliesDefaultsForOmittedFields(t *testing.T) {
 	if cfg.Embed.Timeout.Duration() != 150*time.Millisecond {
 		t.Errorf("Embed.Timeout = %s, want 150ms", cfg.Embed.Timeout.Duration())
 	}
-	if cfg.Semantic.Threshold != 0.70 {
-		t.Errorf("Semantic.Threshold = %v, want 0.70", cfg.Semantic.Threshold)
+	if cfg.Semantic.Threshold != 0.71 {
+		t.Errorf("Semantic.Threshold = %v, want 0.71", cfg.Semantic.Threshold)
 	}
-	if cfg.Semantic.Margin != 0.08 {
-		t.Errorf("Semantic.Margin = %v, want 0.08", cfg.Semantic.Margin)
+	if cfg.Semantic.Margin != 0.23 {
+		t.Errorf("Semantic.Margin = %v, want 0.23", cfg.Semantic.Margin)
 	}
 	if len(cfg.Semantic.Joiners) == 0 {
 		t.Error("Semantic.Joiners is empty")
 	}
+	if cfg.NameMatch.Threshold != 0.60 {
+		t.Errorf("NameMatch.Threshold = %v, want 0.60", cfg.NameMatch.Threshold)
+	}
 	if len(cfg.Agent.RequestPrefixes) == 0 {
 		t.Error("Agent.RequestPrefixes is empty")
+	}
+}
+
+func TestLoadDefaultsTheDashboardToDisabled(t *testing.T) {
+	cfg, err := config.Load(writeConfig(t, "{}\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Dashboard.Owner != "" {
+		t.Errorf("Dashboard.Owner = %q, want empty", cfg.Dashboard.Owner)
+	}
+	if cfg.Dashboard.Enabled() {
+		t.Error("Dashboard.Enabled() = true, want false without an owner")
+	}
+	if cfg.Dashboard.Addr != "127.0.0.1:8082" {
+		t.Errorf("Dashboard.Addr = %q, want 127.0.0.1:8082", cfg.Dashboard.Addr)
+	}
+	if cfg.Dashboard.HealthTimeout.Duration() != 3*time.Second {
+		t.Errorf("Dashboard.HealthTimeout = %s, want 3s", cfg.Dashboard.HealthTimeout.Duration())
+	}
+}
+
+func TestLoadEnablesTheDashboardWithALoopbackOrContainerAddress(t *testing.T) {
+	for _, addr := range []string{"127.0.0.1:8082", "[::1]:8082", "localhost:8082", ":8082", "0.0.0.0:8082"} {
+		t.Run(addr, func(t *testing.T) {
+			cfg, err := config.Load(writeConfig(t, "dashboard:\n  owner: alice@example.com\n  addr: \""+addr+"\"\n"))
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			if !cfg.Dashboard.Enabled() {
+				t.Error("Dashboard.Enabled() = false, want true")
+			}
+			if cfg.Dashboard.Addr != addr {
+				t.Errorf("Dashboard.Addr = %q, want %q", cfg.Dashboard.Addr, addr)
+			}
+		})
+	}
+}
+
+func TestLoadRejectsADashboardOnALANAddress(t *testing.T) {
+	_, err := config.Load(writeConfig(t, "dashboard:\n  owner: alice@example.com\n  addr: \"192.168.1.10:8082\"\n"))
+	if err == nil {
+		t.Fatal("Load succeeded, want a loopback-only Dashboard error")
+	}
+	if !strings.Contains(err.Error(), "dashboard.addr") {
+		t.Errorf("error = %v, want dashboard.addr", err)
+	}
+}
+
+func TestLoadRejectsMalformedDashboardSettings(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"no address", "dashboard:\n  owner: alice@example.com\n  addr: \"\"\n"},
+		{"missing port", "dashboard:\n  owner: alice@example.com\n  addr: \"127.0.0.1\"\n"},
+		{"bad port", "dashboard:\n  owner: alice@example.com\n  addr: \"127.0.0.1:http\"\n"},
+		{"owner with spaces", "dashboard:\n  owner: \"alice @ example.com\"\n"},
+		{"zero health timeout", "dashboard:\n  owner: alice@example.com\n  health_timeout: 0s\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := config.Load(writeConfig(t, tt.body)); err == nil {
+				t.Fatal("Load succeeded, want error")
+			}
+		})
+	}
+}
+
+func TestLoadAppliesDashboardEnvironmentOverrides(t *testing.T) {
+	t.Setenv("ASSISTANT_DASHBOARD_OWNER", "alice@example.com")
+	t.Setenv("ASSISTANT_DASHBOARD_ADDR", ":7082")
+
+	cfg, err := config.Load(writeConfig(t, "{}\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Dashboard.Owner != "alice@example.com" {
+		t.Errorf("Dashboard.Owner = %q", cfg.Dashboard.Owner)
+	}
+	if cfg.Dashboard.Addr != ":7082" {
+		t.Errorf("Dashboard.Addr = %q", cfg.Dashboard.Addr)
 	}
 }
 
@@ -158,6 +249,80 @@ func TestLoadAppliesEnvironmentOverrides(t *testing.T) {
 	}
 }
 
+func TestLoadReadsDataAndToolOverrideSettings(t *testing.T) {
+	path := writeConfig(t, `
+data:
+  dir: "/var/lib/assistant"
+tools:
+  disabled: ["weather.current", "timer.list"]
+  permissions:
+    "timer.set": confirm
+  weather:
+    timeout: 500ms
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Data.Dir != "/var/lib/assistant" {
+		t.Errorf("Data.Dir = %q", cfg.Data.Dir)
+	}
+	if len(cfg.Tools.Disabled) != 2 || cfg.Tools.Disabled[0] != "weather.current" {
+		t.Errorf("Tools.Disabled = %v", cfg.Tools.Disabled)
+	}
+	if got := cfg.Tools.Permissions["timer.set"]; got != "confirm" {
+		t.Errorf("Tools.Permissions[timer.set] = %q", got)
+	}
+	if _, ok := cfg.Tools.Sections["weather"]; !ok {
+		t.Error("Tools.Sections lost the weather module section")
+	}
+	for _, leaked := range []string{"disabled", "permissions"} {
+		if _, ok := cfg.Tools.Sections[leaked]; ok {
+			t.Errorf("Tools.Sections captured the %q setting as a module", leaked)
+		}
+	}
+}
+
+func TestLoadDefaultsTheDataDir(t *testing.T) {
+	cfg, err := config.Load(writeConfig(t, "{}\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Data.Dir != "data" {
+		t.Errorf("Data.Dir = %q, want the code default data", cfg.Data.Dir)
+	}
+}
+
+func TestLoadAppliesDataDirEnvironmentOverride(t *testing.T) {
+	t.Setenv("ASSISTANT_DATA_DIR", "/srv/assistant")
+	cfg, err := config.Load(writeConfig(t, "{}\n"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Data.Dir != "/srv/assistant" {
+		t.Errorf("Data.Dir = %q", cfg.Data.Dir)
+	}
+}
+
+func TestLoadRejectsInvalidToolOverrideSettings(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{"empty data dir", "data:\n  dir: \"  \"\n"},
+		{"empty disabled name", "tools:\n  disabled: [\"\"]\n"},
+		{"unknown permission", "tools:\n  permissions:\n    weather.current: admin\n"},
+		{"empty permission tool", "tools:\n  permissions:\n    \"\": act\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := config.Load(writeConfig(t, tt.body)); err == nil {
+				t.Fatal("Load succeeded, want error")
+			}
+		})
+	}
+}
+
 func TestLoadRejectsInvalidSettings(t *testing.T) {
 	tests := []struct {
 		name string
@@ -173,6 +338,8 @@ func TestLoadRejectsInvalidSettings(t *testing.T) {
 		{"threshold above one", "semantic:\n  threshold: 1.5\n"},
 		{"negative margin", "semantic:\n  margin: -0.1\n"},
 		{"margin of one", "semantic:\n  margin: 1.0\n"},
+		{"zero name match threshold", "name_match:\n  threshold: 0\n"},
+		{"name match threshold above one", "name_match:\n  threshold: 1.5\n"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -257,5 +424,121 @@ func TestLoadDefaultsTheAgentFiller(t *testing.T) {
 	}
 	if cfg.Agent.Filler == "" {
 		t.Fatal("Agent.Filler is empty, want a default phrase")
+	}
+}
+
+func TestLoadReadsSpotifyConfigAndEnvironment(t *testing.T) {
+	path := writeConfig(t, `
+spotify:
+  client_id: "0123456789abcdef0123456789abcdef"
+  redirect_uri: "https://pi.tailnet.ts.net/spotify/callback"
+  pairing_status_file: "/spotify-status/soloist.status"
+  device_name: "Clanka"
+  stream_match: "spotify"
+  stale_after: 45s
+  timeout: 5s
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Spotify.ClientID != "0123456789abcdef0123456789abcdef" {
+		t.Errorf("client id = %q", cfg.Spotify.ClientID)
+	}
+	if cfg.Spotify.RedirectURI != "https://pi.tailnet.ts.net/spotify/callback" {
+		t.Errorf("redirect uri = %q", cfg.Spotify.RedirectURI)
+	}
+	if cfg.Spotify.PairingStatusFile != "/spotify-status/soloist.status" {
+		t.Errorf("pairing status file = %q", cfg.Spotify.PairingStatusFile)
+	}
+	if cfg.Spotify.StreamMatch != "spotify" {
+		t.Errorf("stream match = %q", cfg.Spotify.StreamMatch)
+	}
+	if cfg.Spotify.Timeout.Duration() != 5*time.Second {
+		t.Errorf("timeout = %s", cfg.Spotify.Timeout.Duration())
+	}
+
+	t.Setenv("SPOTIFY_CLIENT_ID", "fedcba9876543210fedcba9876543210")
+	t.Setenv("SPOTIFY_REDIRECT_URI", "http://127.0.0.1:8082/spotify/callback")
+	t.Setenv("ASSISTANT_SPOTIFY_STATUS_FILE", "/tmp/soloist.status")
+	t.Setenv("SPOTIFY_DEVICE_NAME", "Kitchen")
+	t.Setenv("ASSISTANT_SPOTIFY_STREAM_MATCH", "clanka-music")
+	cfg, err = config.Load(writeConfig(t, "{}\n"))
+	if err != nil {
+		t.Fatalf("Load with env: %v", err)
+	}
+	if cfg.Spotify.ClientID != "fedcba9876543210fedcba9876543210" {
+		t.Errorf("env client id = %q", cfg.Spotify.ClientID)
+	}
+	if cfg.Spotify.RedirectURI != "http://127.0.0.1:8082/spotify/callback" {
+		t.Errorf("env redirect uri = %q", cfg.Spotify.RedirectURI)
+	}
+	if cfg.Spotify.PairingStatusFile != "/tmp/soloist.status" {
+		t.Errorf("env status file = %q", cfg.Spotify.PairingStatusFile)
+	}
+	if cfg.Spotify.DeviceName != "Kitchen" {
+		t.Errorf("env device name = %q", cfg.Spotify.DeviceName)
+	}
+	if cfg.Spotify.StreamMatch != "clanka-music" {
+		t.Errorf("env stream match = %q", cfg.Spotify.StreamMatch)
+	}
+}
+
+func TestLoadRejectsHalfConfiguredSpotify(t *testing.T) {
+	if _, err := config.Load(writeConfig(t, "spotify:\n  client_id: \"abc\"\n")); err == nil {
+		t.Fatal("Load accepted a client ID without a redirect URI")
+	}
+	if _, err := config.Load(writeConfig(t, "spotify:\n  redirect_uri: \"https://pi.tailnet.ts.net/spotify/callback\"\n")); err == nil {
+		t.Fatal("Load accepted a redirect URI without a client ID")
+	}
+}
+
+// TestSemanticDefaultsMatchTheShippedPolicy locks the code default that a
+// config without a semantic block inherits. The old 0.70/0.08 pair silently
+// weakened the margin when the block was omitted.
+func TestSemanticDefaultsMatchTheShippedPolicy(t *testing.T) {
+	cfg := config.Default()
+	if cfg.Semantic.Threshold != 0.71 || cfg.Semantic.Margin != 0.23 {
+		t.Fatalf("Default semantic = %.3f/%.3f, want 0.710/0.230", cfg.Semantic.Threshold, cfg.Semantic.Margin)
+	}
+
+	path := writeConfig(t, `
+http:
+  addr: ":8080"
+`)
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.Semantic.Threshold != 0.71 || loaded.Semantic.Margin != 0.23 {
+		t.Fatalf("omitted semantic block loaded %.3f/%.3f, want 0.710/0.230", loaded.Semantic.Threshold, loaded.Semantic.Margin)
+	}
+}
+
+// TestDashboardHostsAreParsedAndValidated covers the S2 config seam.
+func TestDashboardHostsAreParsedAndValidated(t *testing.T) {
+	t.Setenv("ASSISTANT_DASHBOARD_HOSTS", "pi.example.ts.net, assistant.example ")
+	path := writeConfig(t, `
+dashboard:
+  owner: "alice@example.com"
+  addr: "127.0.0.1:8082"
+`)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.Dashboard.Hosts) != 2 || cfg.Dashboard.Hosts[0] != "pi.example.ts.net" {
+		t.Fatalf("Dashboard.Hosts = %#v", cfg.Dashboard.Hosts)
+	}
+
+	t.Setenv("ASSISTANT_DASHBOARD_HOSTS", "")
+	path = writeConfig(t, `
+dashboard:
+  owner: "alice@example.com"
+  addr: "127.0.0.1:8082"
+  hosts: ["*.ts.net"]
+`)
+	if _, err := config.Load(path); err == nil {
+		t.Fatal("Load accepted a wildcard dashboard host")
 	}
 }

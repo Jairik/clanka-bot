@@ -121,7 +121,7 @@ func TestEndpointerNoiseBelowThresholdIsNotSpeech(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewEndpointer: %v", err)
 	}
-	// -45 dBFS is roughly the measured noise floor of the dev box mic.
+	// -45 dBFS represents a calibrated source, below the -38 dBFS speech threshold.
 	quiet := int16(math.Round(math.Pow(10, -45.0/20) * math.MaxInt16))
 	for i := 0; i < 20; i++ {
 		if endpointer.Add(frame(quiet)) {

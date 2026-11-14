@@ -21,6 +21,13 @@ const (
 	// SourceDebug is the localhost typed-transcript entry. It has no
 	// endpointing or STT stages, so it never reports response latency.
 	SourceDebug Source = "debug"
+	// SourceDashboard is the authenticated Dashboard's typed-request box. It
+	// is text-only for the request, so it never reports response latency.
+	SourceDashboard Source = "dashboard"
+	// SourceDashboardMic is speech recorded in the Dashboard and transcribed
+	// by the STT service. Nothing is played back for it, so it also never
+	// reports response latency.
+	SourceDashboardMic Source = "dashboard_mic"
 )
 
 // Stage is one measured pipeline stage. Each value is a duration measured by
@@ -80,6 +87,67 @@ type timelineStage struct {
 	count int
 }
 
+// Detail is display-only information about one request. It is deliberately
+// kept out of the JSON request line: the authenticated Dashboard Activity page
+// is its only consumer, and it is where a Local-only Tool result may be shown.
+// Never marshal it into a log, prompt, Notification or any other egress path.
+type Detail struct {
+	// Reply is the answer text the user saw or would have heard.
+	Reply string
+	// LocalOnly marks a reply that came from a Local-only Tool.
+	LocalOnly bool
+	// Pending marks a reply that asks a Confirmation question.
+	Pending bool
+	// Calls are the Tool calls made for this request, in order. A Local-only
+	// call keeps its result on the Pi.
+	Calls []ToolCallDetail
+}
+
+// ToolCallDetail is one Tool call's human-facing result for the Activity page.
+// Result is the same text the reply would speak, or a bounded Tool payload on
+// the Agent path; it is display data, never model-visible metadata.
+type ToolCallDetail struct {
+	Name      string
+	LocalOnly bool
+	Result    string
+}
+
+// Completed is one finished request, handed to an Observer at the same moment
+// the single structured request log line is written. Detail is nil when the
+// request ended before routing (for example a failed transcription).
+type Completed struct {
+	ID          string
+	Source      Source
+	Path        string
+	Tool        string
+	Transcript  string
+	Outcome     Outcome
+	Error       string
+	Response    time.Duration
+	HasResponse bool
+	Stages      map[Stage]time.Duration
+	Checkpoints map[string]time.Duration
+	Detail      *Detail
+}
+
+// Observer receives every completed request. The Activity store implements
+// this seam, so it is built from the same event that writes the request log
+// instead of a second tracing protocol.
+type Observer func(Completed)
+
+// Option configures a Timeline.
+type Option func(*Timeline)
+
+// WithObserver attaches the one completion observer. A nil observer is
+// ignored, which keeps the no-Activity setups unchanged.
+func WithObserver(observer Observer) Option {
+	return func(t *Timeline) {
+		if observer != nil {
+			t.observer = observer
+		}
+	}
+}
+
 // Timeline is one request's timings. It is safe for concurrent use: the
 // pipeline, Agent path and playback goroutine all mark the same request.
 // Methods return early after Complete so a late stage cannot rewrite a logged
@@ -102,13 +170,16 @@ type Timeline struct {
 	failure    string
 	failed     bool
 	done       bool
+	detail     *Detail
+	observer   Observer
 }
 
 // New opens a timeline. The request ID is the one every layer logs, so voice,
-// session, Agent and playback lines correlate.
-func New(id string, source Source) *Timeline {
+// session, Agent and playback lines correlate. WithObserver attaches the
+// Activity store; without one the timeline behaves exactly as before.
+func New(id string, source Source, opts ...Option) *Timeline {
 	now := time.Now()
-	return &Timeline{
+	t := &Timeline{
 		id:         id,
 		source:     source,
 		created:    now,
@@ -117,6 +188,62 @@ func New(id string, source Source) *Timeline {
 		checkpoint: make(map[string]time.Duration),
 		attrs:      make(map[string]any),
 	}
+	for _, opt := range opts {
+		opt(t)
+	}
+	return t
+}
+
+// SetSummary records the reply's display summary and provenance. It is not
+// part of the request log; only the Activity observer sees it.
+func (t *Timeline) SetSummary(reply string, localOnly, pending bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.done {
+		return
+	}
+	t.ensureDetailLocked()
+	t.detail.Reply = reply
+	t.detail.LocalOnly = localOnly
+	t.detail.Pending = pending
+}
+
+// AddToolCall appends one Tool call's display result. Repeated Agent steps
+// still show every call in order.
+func (t *Timeline) AddToolCall(call ToolCallDetail) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.done {
+		return
+	}
+	t.ensureDetailLocked()
+	t.detail.Calls = append(t.detail.Calls, call)
+}
+
+func (t *Timeline) ensureDetailLocked() {
+	if t.detail == nil {
+		t.detail = &Detail{}
+	}
+}
+
+// DisplayDetail returns a copy of the display-only detail, for tests and the
+// observer. A nil detail means the request ended before routing.
+func (t *Timeline) DisplayDetail() *Detail {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.detail == nil {
+		return nil
+	}
+	copied := *t.detail
+	copied.Calls = append([]ToolCallDetail(nil), t.detail.Calls...)
+	return &copied
+}
+
+// Done reports whether the request line has already been completed.
+func (t *Timeline) Done() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.done
 }
 
 // ID is the request ID shared by every log line for this request.
@@ -299,6 +426,8 @@ func (t *Timeline) Complete(logger *slog.Logger, outcome Outcome, err error) {
 	}
 	t.done = true
 	line := t.line(outcome, err)
+	completed := t.completedLocked(outcome, err)
+	observer := t.observer
 	t.mu.Unlock()
 
 	if logger == nil {
@@ -313,6 +442,47 @@ func (t *Timeline) Complete(logger *slog.Logger, outcome Outcome, err error) {
 	default:
 		logger.Info("request", attrs...)
 	}
+	// The Activity store is fed from this exact completion. It is in-memory
+	// and bounded, and its Detail never enters the log line above.
+	if observer != nil {
+		observer(completed)
+	}
+}
+
+// completedLocked snapshots one request for the observer. It must be called
+// with the lock held and copies every map and slice so a later reader cannot
+// observe a mutation.
+func (t *Timeline) completedLocked(outcome Outcome, err error) Completed {
+	completed := Completed{
+		ID:          t.id,
+		Source:      t.source,
+		Path:        t.path,
+		Tool:        t.tool,
+		Transcript:  t.transcript,
+		Outcome:     outcome,
+		Stages:      make(map[Stage]time.Duration, len(t.stages)),
+		Checkpoints: make(map[string]time.Duration, len(t.checkpoint)),
+	}
+	if d, ok := t.responseLocked(); ok {
+		completed.Response = d
+		completed.HasResponse = true
+	}
+	for stage, value := range t.stages {
+		completed.Stages[stage] = value.total
+	}
+	for name, value := range t.checkpoint {
+		completed.Checkpoints[name] = value
+	}
+	completed.Error = t.failure
+	if completed.Error == "" && err != nil {
+		completed.Error = err.Error()
+	}
+	if t.detail != nil {
+		copied := *t.detail
+		copied.Calls = append([]ToolCallDetail(nil), t.detail.Calls...)
+		completed.Detail = &copied
+	}
+	return completed
 }
 
 type logLine struct {
@@ -458,6 +628,20 @@ func SetAttr(ctx context.Context, key string, value any) {
 func SetFailure(ctx context.Context, message string) {
 	if t := FromContext(ctx); t != nil {
 		t.SetFailure(message)
+	}
+}
+
+// SetSummary records the reply display summary on ctx's timeline.
+func SetSummary(ctx context.Context, reply string, localOnly, pending bool) {
+	if t := FromContext(ctx); t != nil {
+		t.SetSummary(reply, localOnly, pending)
+	}
+}
+
+// AddToolCall records one Tool call's display result on ctx's timeline.
+func AddToolCall(ctx context.Context, call ToolCallDetail) {
+	if t := FromContext(ctx); t != nil {
+		t.AddToolCall(call)
 	}
 }
 

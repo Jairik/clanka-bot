@@ -74,6 +74,11 @@ func (s *scriptSource) Close() error { return nil }
 // fakeWake fires once per opened stream after the configured number of frames.
 type fakeWake struct {
 	afterWords int
+	// name is the model the fake reports; empty means okay_nabu.
+	name string
+	// names is an optional per-fire sequence consumed before name, so a test
+	// can script a command detection followed by a wake word.
+	names []string
 	// maxFires caps firings across streams so a test can let the loop settle
 	// after the interruptions it means to observe.
 	maxFires int
@@ -124,9 +129,16 @@ func (s *fakeWakeStream) Write(pcm []byte) error {
 			return nil
 		}
 		s.owner.fires++
+		name := s.owner.name
+		if s.owner.fires <= len(s.owner.names) {
+			name = s.owner.names[s.owner.fires-1]
+		}
 		s.owner.mu.Unlock()
+		if name == "" {
+			name = "okay_nabu"
+		}
 		select {
-		case s.detections <- voice.Detection{Name: "okay_nabu"}:
+		case s.detections <- voice.Detection{Name: name}:
 		default:
 		}
 	}
@@ -231,6 +243,22 @@ type fakeResponder struct {
 	block  time.Duration
 	calls  chan string
 	onCall func(ctx context.Context)
+
+	mu        sync.Mutex
+	wakes     []string
+	cancelled bool
+}
+
+func (r *fakeResponder) wakeWords() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.wakes...)
+}
+
+func (r *fakeResponder) sawCancel() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.cancelled
 }
 
 type ownerRef struct {
@@ -239,6 +267,9 @@ type ownerRef struct {
 }
 
 func (r *fakeResponder) Respond(ctx context.Context, req voice.Request) error {
+	r.mu.Lock()
+	r.wakes = append(r.wakes, req.WakeWord)
+	r.mu.Unlock()
 	if r.owner != nil {
 		_, open, _ := r.owner.wake.snapshot()
 		r.owner.openAtReply.Store(int32(open))
@@ -247,17 +278,18 @@ func (r *fakeResponder) Respond(ctx context.Context, req voice.Request) error {
 		r.onCall(ctx)
 	}
 	if r.block > 0 {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(r.block):
-		}
+		<-time.After(r.block)
 	}
+	r.mu.Lock()
+	if ctx.Err() != nil {
+		r.cancelled = true
+	}
+	r.mu.Unlock()
 	select {
 	case r.calls <- req.Transcript:
 	default:
 	}
-	return nil
+	return ctx.Err()
 }
 
 func newLoop(t *testing.T, cfg voice.Config, deps voice.Deps) *voice.Loop {
@@ -685,5 +717,54 @@ func TestLoopDropsBufferedChimeEchoFrames(t *testing.T) {
 		if !isSilent(frame) {
 			t.Fatal("a chime echo frame reached STT; only post-chime audio should")
 		}
+	}
+}
+
+// TestLoopFeedsTheActivityObserver proves the voice path hands its completed
+// request to the same store the Dashboard reads. The responder plays the part
+// the reply session does in production: set route and reply, then complete the
+// one timeline.
+func TestLoopFeedsTheActivityObserver(t *testing.T) {
+	source := &scriptSource{frames: append(repeat(loudFrame(), 8), repeat(silentFrame(), 40)...)}
+	wake := &fakeWake{afterWords: 5}
+	stt := &fakeSTT{text: "what time is it"}
+	completed := make(chan latency.Completed, 1)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	responder := &fakeResponder{
+		calls: make(chan string, 1),
+		onCall: func(ctx context.Context) {
+			latency.SetRoute(ctx, "control_phrase", "time.now", "what time is it")
+			latency.SetSummary(ctx, "It's 3:04 PM.", false, false)
+			latency.Complete(ctx, logger, latency.OutcomeNoAudio, nil)
+		},
+	}
+	loop := newLoop(t, voice.Config{
+		FrameBytes: frameBytes,
+		Endpoint:   endpointConfig(500 * time.Millisecond),
+	}, voice.Deps{
+		Source: source, Wake: wake, STT: stt, Responder: responder,
+		Observer: func(c latency.Completed) {
+			select {
+			case completed <- c:
+			default:
+			}
+		},
+		Logger: logger,
+	})
+	runLoop(t, loop)
+
+	select {
+	case got := <-completed:
+		if got.Source != latency.SourceVoice || got.Path != "control_phrase" || got.Tool != "time.now" {
+			t.Fatalf("completed = %+v", got)
+		}
+		if got.Transcript != "what time is it" || got.Detail == nil || got.Detail.Reply != "It's 3:04 PM." {
+			t.Fatalf("completed detail = %+v", got.Detail)
+		}
+		if got.HasResponse {
+			t.Fatal("a text-only fake reply claimed a Response latency")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("voice completion did not reach the observer")
 	}
 }

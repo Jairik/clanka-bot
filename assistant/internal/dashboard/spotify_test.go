@@ -1,0 +1,445 @@
+package dashboard_test
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/Jairik/clanka-bot/assistant/internal/dashboard"
+	"github.com/Jairik/clanka-bot/assistant/internal/secrets"
+	"github.com/Jairik/clanka-bot/assistant/internal/spotify"
+	"github.com/Jairik/clanka-bot/assistant/internal/store"
+)
+
+const (
+	spotifyTestClientID = "0123456789abcdef0123456789abcdef"
+	spotifyTestRedirect = "http://127.0.0.1:8082/spotify/callback"
+	spotifyTestCode     = "dashboard-code"
+)
+
+// spotifyTokenServer is the real HTTP boundary for the Dashboard OAuth tests.
+// It validates the PKCE verifier, so the callback's exchange path is not
+// stubbed.
+type spotifyTokenServer struct {
+	t      *testing.T
+	server *httptest.Server
+
+	mu             sync.Mutex
+	challenge      string
+	exchangeCalls  int
+	refreshCalls   int
+	accessSeq      int
+	currentRefresh string
+}
+
+func newSpotifyTokenServer(t *testing.T) *spotifyTokenServer {
+	t.Helper()
+	fake := &spotifyTokenServer{t: t, currentRefresh: "refresh-1"}
+	fake.server = httptest.NewServer(http.HandlerFunc(fake.handle))
+	t.Cleanup(fake.server.Close)
+	return fake
+}
+
+func (f *spotifyTokenServer) handle(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/token" {
+		http.NotFound(w, r)
+		return
+	}
+	_ = r.ParseForm()
+	w.Header().Set("Content-Type", "application/json")
+	switch r.Form.Get("grant_type") {
+	case "authorization_code":
+		f.mu.Lock()
+		f.exchangeCalls++
+		challenge := f.challenge
+		f.mu.Unlock()
+		if r.Form.Get("code") != spotifyTestCode || r.Form.Get("redirect_uri") != spotifyTestRedirect {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"error":"invalid_grant"}`)
+			return
+		}
+		sum := sha256.Sum256([]byte(r.Form.Get("code_verifier")))
+		if base64.RawURLEncoding.EncodeToString(sum[:]) != challenge {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = io.WriteString(w, `{"error":"invalid_grant"}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"access_token":"dash-access-1","token_type":"Bearer","expires_in":3600,"refresh_token":"dash-refresh-1"}`)
+	case "refresh_token":
+		f.mu.Lock()
+		f.refreshCalls++
+		f.accessSeq++
+		seq := f.accessSeq + 1
+		f.mu.Unlock()
+		_, _ = io.WriteString(w, `{"access_token":"dash-access-`+string(rune('0'+seq))+`","token_type":"Bearer","expires_in":3600}`)
+	default:
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = io.WriteString(w, `{"error":"unsupported_grant_type"}`)
+	}
+}
+
+func (f *spotifyTokenServer) counts() (exchange, refresh int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.exchangeCalls, f.refreshCalls
+}
+
+type spotifyFixture struct {
+	t           *testing.T
+	ctx         context.Context
+	handler     *dashboard.Handler
+	secrets     *secrets.Service
+	auth        *spotify.Auth
+	fake        *spotifyTokenServer
+	logs        *lockedBuffer
+	pairingPath string
+}
+
+func newSpotifyFixture(t *testing.T) *spotifyFixture {
+	t.Helper()
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "spotify.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	svc, err := secrets.New(ctx, st.DB(), []string{spotify.SecretName})
+	if err != nil {
+		t.Fatalf("secrets.New: %v", err)
+	}
+	fake := newSpotifyTokenServer(t)
+	cfg := spotify.DefaultConfig()
+	cfg.ClientID = spotifyTestClientID
+	cfg.RedirectURI = spotifyTestRedirect
+	cfg.AuthorizeURL = fake.server.URL + "/authorize"
+	cfg.TokenURL = fake.server.URL + "/token"
+	logs := &lockedBuffer{}
+	auth := spotify.NewAuth(spotify.Options{
+		Config: cfg,
+		Store:  svc,
+		Logger: slog.New(slog.NewTextHandler(logs, nil)),
+	})
+	pairingPath := filepath.Join(t.TempDir(), "soloist.status")
+	handler := newHandler(t, dashboard.Options{
+		Secrets:        svc,
+		Spotify:        auth,
+		SpotifyPairing: &spotify.PairingReader{Path: pairingPath, StaleAfter: 45 * time.Second},
+		Logger:         slog.New(slog.NewTextHandler(logs, nil)),
+	})
+	return &spotifyFixture{
+		t: t, ctx: ctx, handler: handler, secrets: svc, auth: auth, fake: fake, logs: logs, pairingPath: pairingPath,
+	}
+}
+
+func (f *spotifyFixture) writePairing(t *testing.T, state string) {
+	t.Helper()
+	body := "version=2\nstate=" + state + "\nsession=active\ndevice=Clanka\nexpires_days=89\nupdated=" + time.Now().UTC().Format(time.RFC3339) + "\n"
+	if err := os.WriteFile(f.pairingPath, []byte(body), 0o600); err != nil {
+		t.Fatalf("write pairing: %v", err)
+	}
+}
+
+func (f *spotifyFixture) get(target string) *httptest.ResponseRecorder {
+	f.t.Helper()
+	return serve(f.handler, request(http.MethodGet, target, owner))
+}
+
+// spotifyResp decodes the Spotify view (encoding/json default field names).
+type spotifyResp struct {
+	Flash, Error string
+	Pairing      struct {
+		Configured, Available, Paired bool
+		Label, Detail, Device         string
+	}
+	WebAPI struct {
+		State, Label, Detail                 string
+		ClientConfigured, RedirectConfigured bool
+		RedirectURI                          string
+		Set                                  bool
+		Source, SourceLabel                  string
+		CanConnect, CanVerify, CanDisconnect bool
+	}
+	Scopes []string
+}
+
+// view reads /api/ui/spotify, which must be a 200.
+func (f *spotifyFixture) view() (spotifyResp, string) {
+	f.t.Helper()
+	var v spotifyResp
+	rec := getJSON(f.t, f.handler, "/api/ui/spotify", &v)
+	if rec.Code != http.StatusOK {
+		f.t.Fatalf("GET spotify = %d: %s", rec.Code, rec.Body.String())
+	}
+	return v, rec.Body.String()
+}
+
+func (f *spotifyFixture) post(target string) *httptest.ResponseRecorder {
+	f.t.Helper()
+	req := request(http.MethodPost, target, owner)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	return serve(f.handler, req)
+}
+
+// startConnect follows the same-origin GET link and returns the state and
+// binding cookie from the redirect. It also teaches the fake token server the
+// PKCE challenge from the authorize URL.
+func (f *spotifyFixture) startConnect(t *testing.T) (string, string) {
+	t.Helper()
+	rec := f.get("/spotify/connect")
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("connect status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	location := rec.Header().Get("Location")
+	parsed, err := url.Parse(location)
+	if err != nil {
+		t.Fatalf("parse authorize URL: %v", err)
+	}
+	cookies := rec.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("connect cookies = %d, want one binding cookie", len(cookies))
+	}
+	f.fake.mu.Lock()
+	f.fake.challenge = parsed.Query().Get("code_challenge")
+	f.fake.mu.Unlock()
+	return parsed.Query().Get("state"), cookies[0].Value
+}
+
+func (f *spotifyFixture) callback(state, binding, query string) *httptest.ResponseRecorder {
+	f.t.Helper()
+	req := request(http.MethodGet, "/spotify/callback?"+query+"&state="+url.QueryEscape(state), owner)
+	if binding != "" {
+		req.AddCookie(&http.Cookie{Name: "clanka_spotify_oauth", Value: binding})
+	}
+	return serve(f.handler, req)
+}
+
+func TestSpotifyReadShowsSeparatePairingAndWebAPIAuth(t *testing.T) {
+	f := newSpotifyFixture(t)
+	f.writePairing(t, "paired")
+	v, body := f.view()
+	if !v.Pairing.Paired || v.Pairing.Device != "Clanka" || !strings.Contains(v.Pairing.Detail+v.Pairing.Label, "Paired as Clanka") {
+		t.Errorf("pairing = %+v, want paired as Clanka", v.Pairing)
+	}
+	if v.WebAPI.State != "not_configured" && v.WebAPI.Label != "not configured" {
+		t.Errorf("Web API = %+v, want not connected yet", v.WebAPI)
+	}
+	if v.WebAPI.Set || v.WebAPI.CanVerify || v.WebAPI.CanDisconnect {
+		t.Errorf("Web API offers verify/disconnect with no token: %+v", v.WebAPI)
+	}
+	if !v.WebAPI.CanConnect || v.WebAPI.RedirectURI != spotifyTestRedirect {
+		t.Errorf("Web API = %+v, want a connectable client with the redirect %s", v.WebAPI, spotifyTestRedirect)
+	}
+	scopes := strings.Join(v.Scopes, " ")
+	for _, want := range []string{"user-modify-playback-state", "playlist-read-private"} {
+		if !strings.Contains(scopes, want) {
+			t.Errorf("scopes %q lack %q", scopes, want)
+		}
+	}
+	if strings.Contains(body, "dash-access") || strings.Contains(body, "dash-refresh") {
+		t.Error("view carried a Spotify token")
+	}
+}
+
+func TestSpotifyConnectStartsAPKCEFlowOnlyFromASameOriginPost(t *testing.T) {
+	f := newSpotifyFixture(t)
+	rec := f.get("/spotify/connect")
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("connect status = %d", rec.Code)
+	}
+	location, err := url.Parse(rec.Header().Get("Location"))
+	if err != nil {
+		t.Fatalf("Location: %v", err)
+	}
+	query := location.Query()
+	if query.Get("response_type") != "code" || query.Get("client_id") != spotifyTestClientID {
+		t.Fatalf("authorize query = %v", query)
+	}
+	if query.Get("redirect_uri") != spotifyTestRedirect || query.Get("scope") != spotify.ScopeString() {
+		t.Fatalf("authorize query = %v", query)
+	}
+	if query.Get("code_challenge_method") != "S256" || len(query.Get("code_challenge")) < 43 {
+		t.Fatalf("PKCE query = %v", query)
+	}
+	if len(query.Get("state")) < 43 {
+		t.Fatalf("state = %q", query.Get("state"))
+	}
+	cookies := rec.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("cookies = %d", len(cookies))
+	}
+	cookie := cookies[0]
+	if cookie.Name != "clanka_spotify_oauth" || !cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode || cookie.Path != "/spotify" {
+		t.Fatalf("binding cookie = %+v", cookie)
+	}
+
+	// A POST is not a route: the browser cannot submit Spotify's origin as a
+	// form target, so the document policy needs no exception for it.
+	req := request(http.MethodPost, "/spotify/connect", owner)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	if rec := serve(f.handler, req); rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST connect = %d, want 405", rec.Code)
+	}
+}
+
+func TestSpotifyCallbackStoresTheRefreshTokenAndRejectsReplay(t *testing.T) {
+	f := newSpotifyFixture(t)
+	state, binding := f.startConnect(t)
+	rec := f.callback(state, binding, "code="+spotifyTestCode)
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/spotify?flash=spotify-connected" {
+		t.Fatalf("callback = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	if stored, ok := f.secrets.Get(spotify.SecretName); !ok || stored != "dash-refresh-1" {
+		t.Fatalf("stored token = %q, %v", stored, ok)
+	}
+	v, page := f.view()
+	if !v.WebAPI.Set || v.WebAPI.SourceLabel != "stored" || !v.WebAPI.CanDisconnect || !strings.Contains(v.WebAPI.Label, "connected") {
+		t.Errorf("Web API after the callback = %+v, want connected from the store", v.WebAPI)
+	}
+	// The landing page's ?flash= read carries the closed message.
+	var landed spotifyResp
+	getJSON(t, f.handler, "/api/ui/spotify?flash=spotify-connected", &landed)
+	if !strings.HasPrefix(landed.Flash, "Spotify Web API connected") {
+		t.Errorf("?flash= read Flash = %q", landed.Flash)
+	}
+	if strings.Contains(page, "dash-access-1") || strings.Contains(page, "dash-refresh-1") {
+		t.Error("view carried a token after the callback")
+	}
+	if strings.Contains(f.logs.String(), "dash-access-1") || strings.Contains(f.logs.String(), "dash-refresh-1") || strings.Contains(f.logs.String(), state) {
+		t.Errorf("logs contain a credential or state:\n%s", f.logs.String())
+	}
+
+	// Replaying the same callback is rejected and cannot exchange again.
+	rec = f.callback(state, binding, "code="+spotifyTestCode)
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/spotify?flash=spotify-invalid-state" {
+		t.Fatalf("replay = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	if exchange, _ := f.fake.counts(); exchange != 1 {
+		t.Fatalf("exchange calls = %d, want one", exchange)
+	}
+}
+
+func TestSpotifyCallbackRejectsAWrongBindingCookie(t *testing.T) {
+	f := newSpotifyFixture(t)
+	state, _ := f.startConnect(t)
+	rec := f.callback(state, "wrong-binding", "code="+spotifyTestCode)
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/spotify?flash=spotify-invalid-state" {
+		t.Fatalf("wrong cookie = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	if _, ok := f.secrets.Get(spotify.SecretName); ok {
+		t.Fatal("a wrong binding cookie stored a token")
+	}
+	if exchange, _ := f.fake.counts(); exchange != 0 {
+		t.Fatal("a wrong binding cookie reached the token endpoint")
+	}
+}
+
+func TestSpotifyCallbackHandlesDenialAndAForgedCode(t *testing.T) {
+	f := newSpotifyFixture(t)
+	state, binding := f.startConnect(t)
+	rec := f.callback(state, binding, "error=access_denied")
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/spotify?flash=spotify-denied" {
+		t.Fatalf("denial = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	if _, ok := f.secrets.Get(spotify.SecretName); ok {
+		t.Fatal("a denied callback stored a token")
+	}
+
+	state, binding = f.startConnect(t)
+	rec = f.callback(state, binding, "code=forged-code")
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/spotify?flash=spotify-exchange-failed" {
+		t.Fatalf("forged code = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	if _, ok := f.secrets.Get(spotify.SecretName); ok {
+		t.Fatal("a forged code stored a token")
+	}
+}
+
+func TestSpotifyCallbackWithoutStateDoesNothing(t *testing.T) {
+	f := newSpotifyFixture(t)
+	rec := serve(f.handler, request(http.MethodGet, "/spotify/callback?code="+spotifyTestCode, owner))
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/spotify?flash=spotify-invalid-state" {
+		t.Fatalf("no state = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	if exchange, _ := f.fake.counts(); exchange != 0 {
+		t.Fatal("a callback without state reached the token endpoint")
+	}
+}
+
+func TestSpotifyVerifyAndDisconnectKeepPairingSeparate(t *testing.T) {
+	f := newSpotifyFixture(t)
+	f.writePairing(t, "paired")
+	state, binding := f.startConnect(t)
+	f.callback(state, binding, "code="+spotifyTestCode)
+
+	rec := f.post("/spotify/verify")
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/spotify?flash=spotify-verified" {
+		t.Fatalf("verify = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	if _, refresh := f.fake.counts(); refresh == 0 {
+		t.Fatal("verify did not refresh the token")
+	}
+
+	rec = f.post("/spotify/disconnect")
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/spotify?flash=spotify-disconnected" {
+		t.Fatalf("disconnect = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	if _, ok := f.secrets.Get(spotify.SecretName); ok {
+		t.Fatal("disconnect left the refresh token stored")
+	}
+	v, _ := f.view()
+	if !v.Pairing.Paired || !strings.Contains(v.Pairing.Detail+v.Pairing.Label, "Paired as Clanka") {
+		t.Errorf("disconnecting the Web API changed the Connect pairing status: %+v", v.Pairing)
+	}
+	if v.WebAPI.Set {
+		t.Errorf("Web API still set after disconnect: %+v", v.WebAPI)
+	}
+}
+
+func TestHealthShowsSpotifyPairingAndWebAPIAuthSeparately(t *testing.T) {
+	f := newSpotifyFixture(t)
+	f.writePairing(t, "paired")
+	state, binding := f.startConnect(t)
+	f.callback(state, binding, "code="+spotifyTestCode)
+	rec := f.get("/api/ui/health")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("health = %d", rec.Code)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{"Connect pairing", "Web API auth", "Paired as Clanka", "connected"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("health lacks %q", want)
+		}
+	}
+}
+
+// Connect is a GET link, so the document never needs Spotify's origin as a
+// form target. This keeps form-action 'self' on every document and JSON read.
+func TestSpotifyPageCSPKeepsFormActionSelf(t *testing.T) {
+	f := newSpotifyFixture(t)
+	for _, target := range []string{"/spotify", "/", "/health"} {
+		csp := f.get(target).Header().Get("Content-Security-Policy")
+		if !strings.Contains(csp, "form-action 'self'") || strings.Contains(csp, "accounts.spotify.com") {
+			t.Errorf("app document %s CSP = %q, want form-action 'self' only", target, csp)
+		}
+		if !strings.Contains(csp, "frame-ancestors 'none'") || !strings.Contains(csp, "script-src 'self';") {
+			t.Errorf("app document %s CSP lost the base policy: %q", target, csp)
+		}
+	}
+	for _, target := range []string{"/api/ui/spotify", "/api/ui/health", "/assets/app.js"} {
+		other := f.get(target).Header().Get("Content-Security-Policy")
+		if !strings.HasSuffix(other, "form-action 'self'") {
+			t.Errorf("%s must keep form-action 'self', got %q", target, other)
+		}
+	}
+}

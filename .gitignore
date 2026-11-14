@@ -4,3 +4,17 @@ __pycache__/
 .pytest_cache/
 *.pyc
 scripts/prototype-run/.run/
+
+# Local SQLite database when running the assistant outside Compose.
+assistant/data/
+
+# Recorded voice takes live in the training work dir (~/.cache/clanka/...), never
+# in the checkout. This guard catches someone pointing record.py at a relative
+# path: the only WAVs git tracks are the synthesized detection fixtures.
+wakeword/training/real/
+wakeword/training/**/*.wav
+!wakeword/tests/fixtures/*.wav
+
+# Wake-phrase sample bundles exported from the Dashboard. They contain the
+# owner's voice and are copied off the Pi by hand, never committed.
+/exports/

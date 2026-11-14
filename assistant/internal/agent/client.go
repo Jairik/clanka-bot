@@ -41,8 +41,14 @@ func (e *providerError) Unwrap() error { return e.Err }
 // provider is the single OpenAI-compatible client. Only one is active at a
 // time; there is no failover.
 type provider struct {
-	client         openai.Client
-	model          string
+	client openai.Client
+	// apiKey is read before every request, so a secret stored through the
+	// Dashboard applies to the next turn without rebuilding the client.
+	apiKey func() string
+	// model is resolved per request; fallbackModel keeps the construction-time
+	// value when a resolver returns nothing.
+	model          func() string
+	fallbackModel  string
 	routing        map[string]any
 	firstToken     time.Duration
 	requestTimeout time.Duration
@@ -51,17 +57,29 @@ type provider struct {
 func newProvider(settings Settings) *provider {
 	opts := []option.RequestOption{
 		option.WithBaseURL(settings.BaseURL),
-		// An empty key is left for the provider to reject, so the Fast path
-		// still works and the failure looks like any other provider error.
-		option.WithAPIKey(os.Getenv(settings.APIKeyEnv)),
 		option.WithMaxRetries(0),
 	}
 	for name, value := range settings.Headers {
 		opts = append(opts, option.WithHeader(name, value))
 	}
+	// The key is not a client option: it is applied per request below, after
+	// the secrets store has had a chance to win over the environment.
+	apiKey := settings.APIKey
+	if apiKey == nil {
+		env := settings.APIKeyEnv
+		apiKey = func() string { return os.Getenv(env) }
+	}
+	// The model is resolved per request, like the key. A nil resolver keeps the
+	// static construction-time model.
+	model := settings.ModelFunc
+	if model == nil {
+		model = func() string { return settings.Model }
+	}
 	return &provider{
 		client:         openai.NewClient(opts...),
-		model:          settings.Model,
+		apiKey:         apiKey,
+		model:          model,
+		fallbackModel:  settings.Model,
 		routing:        settings.Routing,
 		firstToken:     settings.FirstTokenTimeout,
 		requestTimeout: settings.RequestTimeout,
@@ -78,7 +96,11 @@ type completion struct {
 // set, receives content deltas as they arrive (the hook #21's sentence
 // streaming uses).
 func (p *provider) stream(ctx context.Context, messages []openai.ChatCompletionMessageParamUnion, tools []openai.ChatCompletionToolUnionParam, onDelta func(string)) (completion, error) {
-	params := openai.ChatCompletionNewParams{Model: p.model, Messages: messages}
+	model := strings.TrimSpace(p.model())
+	if model == "" {
+		model = p.fallbackModel
+	}
+	params := openai.ChatCompletionNewParams{Model: model, Messages: messages}
 	if len(tools) > 0 {
 		params.Tools = tools
 	}
@@ -92,21 +114,22 @@ func (p *provider) stream(ctx context.Context, messages []openai.ChatCompletionM
 	defer func() { timer.Stop() }()
 
 	started := time.Now()
-	stream := p.client.Chat.Completions.NewStreaming(runCtx, params)
+	// Apply the current key per request. An empty key is left for the provider
+	// to reject, so the Fast path still works and a key stored later needs no
+	// restart.
+	var requestOpts []option.RequestOption
+	if key := p.apiKey(); key != "" {
+		requestOpts = append(requestOpts, option.WithAPIKey(key))
+	}
+	stream := p.client.Chat.Completions.NewStreaming(runCtx, params, requestOpts...)
 	defer stream.Close()
 
 	var out completion
 	var order []int64
 	partial := make(map[int64]*partialCall)
-	first := true
 	firstToken := true
 
 	for stream.Next() {
-		if first {
-			first = false
-			timer.Stop()
-			timer = time.AfterFunc(p.requestTimeout, func() { cancel(errRequestTimeout) })
-		}
 		chunk := stream.Current()
 		if len(chunk.Choices) == 0 {
 			continue
@@ -114,6 +137,12 @@ func (p *provider) stream(ctx context.Context, messages []openai.ChatCompletionM
 		delta := chunk.Choices[0].Delta
 		if firstToken && (delta.Content != "" || len(delta.ToolCalls) > 0) {
 			firstToken = false
+			// The first-token budget ends only on real content or a Tool call.
+			// A role-only prologue must not replace it with the longer request
+			// budget, or a provider could stall past FirstTokenTimeout. The
+			// request timer then covers the rest of the stream.
+			timer.Stop()
+			timer = time.AfterFunc(p.requestTimeout, func() { cancel(errRequestTimeout) })
 			// Agent first token is the first token with content or a Tool
 			// call, not a role-only prologue. First-wins across Agent steps.
 			latency.SetStage(ctx, latency.StageAgentFirstToken, time.Since(started))

@@ -18,10 +18,10 @@ Infer the repo from `git remote -v`; `gh` does this automatically when run insid
 
 ## Project board
 
-Every issue in this repo lives on the linked kanban board: **Project #21 "clanka-bot"** (owner `Jairik`, https://github.com/users/Jairik/projects/21). Its `Kanban` view is grouped by the built-in `Status` field: **Todo → In Progress → Done**. Managing it requires the `project` token scope (`gh auth refresh -s project`).
+Every issue in this repo lives on the linked kanban board: **Project #21 "clanka-bot"** (owner `Jairik`, https://github.com/users/Jairik/projects/21). Its `Kanban` view is grouped by the built-in `Status` field: **Backlog → Todo → In Progress → Done**. **Backlog** holds potential future features and ideas under consideration — not committed, no owner, may never be scheduled. Managing it requires the `project` token scope (`gh auth refresh -s project`).
 
 - **Add every new issue to the board**: right after `gh issue create`, run `gh project item-add 21 --owner Jairik --url <issue-url>`. Or create and add in one step with `gh issue create --project "clanka-bot" ...`. New items start in **Todo**.
-- **Move a card**: find the item id with `gh project item-list 21 --owner Jairik --format json --jq '.items[] | select(.content.number == <n>) | .id'`, then `gh project item-edit --project-id PVT_kwHOCNhoZ84BrLH2 --id <item-id> --field-id PVTSSF_lAHOCNhoZ84BrLH2zhpe_qQ --single-select-option-id <option>`. The options are `Todo` = `f75ad846`, `In Progress` = `47fc9ee4`, `Done` = `98236657`.
+- **Move a card**: find the item id with `gh project item-list 21 --owner Jairik --format json --jq '.items[] | select(.content.number == <n>) | .id'`, then `gh project item-edit --project-id PVT_kwHOCNhoZ84BrLH2 --id <item-id> --field-id PVTSSF_lAHOCNhoZ84BrLH2zhpe_qQ --single-select-option-id <option>`. The options are `Backlog` = `0dfb47fa`, `Todo` = `f75ad846`, `In Progress` = `47fc9ee4`, `Done` = `98236657`.
 - **When work starts** (an issue is claimed or assigned): move it to **In Progress**.
 - **When an issue closes**: GitHub's default project workflow moves it to **Done** automatically. If it doesn't, move it by hand.
 - **Backfill**: any open issue that isn't on the board should be added with `item-add`.

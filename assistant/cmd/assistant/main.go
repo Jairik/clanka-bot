@@ -11,23 +11,57 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/activity"
 	"github.com/Jairik/clanka-bot/assistant/internal/agent"
+	"github.com/Jairik/clanka-bot/assistant/internal/announce"
 	"github.com/Jairik/clanka-bot/assistant/internal/api"
 	"github.com/Jairik/clanka-bot/assistant/internal/audio"
 	"github.com/Jairik/clanka-bot/assistant/internal/config"
+	"github.com/Jairik/clanka-bot/assistant/internal/connections"
+	"github.com/Jairik/clanka-bot/assistant/internal/dashboard"
 	"github.com/Jairik/clanka-bot/assistant/internal/embed"
+	"github.com/Jairik/clanka-bot/assistant/internal/focus"
+	"github.com/Jairik/clanka-bot/assistant/internal/lastreply"
+	"github.com/Jairik/clanka-bot/assistant/internal/latency"
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
+	"github.com/Jairik/clanka-bot/assistant/internal/music"
+	"github.com/Jairik/clanka-bot/assistant/internal/namematch"
+	"github.com/Jairik/clanka-bot/assistant/internal/notify"
+	"github.com/Jairik/clanka-bot/assistant/internal/persona"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
+	"github.com/Jairik/clanka-bot/assistant/internal/playback"
+	"github.com/Jairik/clanka-bot/assistant/internal/quiet"
 	"github.com/Jairik/clanka-bot/assistant/internal/reply"
+	"github.com/Jairik/clanka-bot/assistant/internal/ring"
+	"github.com/Jairik/clanka-bot/assistant/internal/secrets"
+	"github.com/Jairik/clanka-bot/assistant/internal/secretsapi"
+	"github.com/Jairik/clanka-bot/assistant/internal/settings"
+	"github.com/Jairik/clanka-bot/assistant/internal/settingsapi"
+	"github.com/Jairik/clanka-bot/assistant/internal/sound"
 	"github.com/Jairik/clanka-bot/assistant/internal/speech"
+	"github.com/Jairik/clanka-bot/assistant/internal/spotify"
+	"github.com/Jairik/clanka-bot/assistant/internal/status"
+	"github.com/Jairik/clanka-bot/assistant/internal/store"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
+	"github.com/Jairik/clanka-bot/assistant/internal/toolpolicy"
+	"github.com/Jairik/clanka-bot/assistant/internal/tz"
 	"github.com/Jairik/clanka-bot/assistant/internal/voice"
+	"github.com/Jairik/clanka-bot/assistant/internal/voicecmd"
+	"github.com/Jairik/clanka-bot/assistant/internal/voicelib"
+	"github.com/Jairik/clanka-bot/assistant/internal/voicesample"
+	"github.com/Jairik/clanka-bot/assistant/internal/wakesample"
+	"github.com/Jairik/clanka-bot/assistant/internal/wording"
 	"github.com/Jairik/clanka-bot/assistant/internal/wyoming"
 	"github.com/Jairik/clanka-bot/assistant/tools"
-	"github.com/Jairik/clanka-bot/assistant/tools/weather"
+	"github.com/Jairik/clanka-bot/assistant/tools/alarm"
+	personatools "github.com/Jairik/clanka-bot/assistant/tools/persona"
+	spotifytools "github.com/Jairik/clanka-bot/assistant/tools/spotify"
+	"github.com/Jairik/clanka-bot/assistant/tools/timer"
 )
 
 func main() {
@@ -49,6 +83,10 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	// Keep the loaded config untouched for settings layers. cfg itself is
+	// updated with effective connection values below, because those are read
+	// once at startup.
+	baseCfg := cfg
 
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
@@ -57,6 +95,199 @@ func run() error {
 	// location watch.
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// The one database (ADR-0003) opens before any Tool module registers so
+	// every writer shares the same handle. Compose mounts its volume here;
+	// migrations run now and keep the file across restarts and rebuilds.
+	storePath := filepath.Join(cfg.Data.Dir, "assistant.db")
+	st, err := store.Open(ctx, storePath)
+	if err != nil {
+		return fmt.Errorf("open store: %w", err)
+	}
+	defer func() {
+		if err := st.Close(); err != nil {
+			logger.Error("store close", "error", err.Error())
+		}
+	}()
+
+	// One bounded Activity ring is fed by the same latency completion that
+	// writes the structured request log, and the same completion also writes
+	// the durable history (#96). The ring stays the fast first page; the
+	// database answers anything older and any search. It is display-only: the
+	// Dashboard is its only reader, and Local-only results never leave it.
+	activityHistory := activity.NewHistory(st.DB(), activity.HistoryOptions{})
+	activityStore := activity.NewWithHistory(activity.DefaultLimit, activityHistory)
+	go func() {
+		// Enforce retention now and then hourly, so the file is bounded even
+		// without another request and the read path never prunes.
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for {
+			result, err := activityHistory.Prune(ctx)
+			if err != nil {
+				logger.Warn("activity history prune", "error", err.Error())
+			} else if result.Deleted > 0 || result.Trimmed > 0 {
+				logger.Info("activity history pruned",
+					"deleted", result.Deleted,
+					"trimmed", result.Trimmed,
+					"remaining", result.Remaining,
+				)
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+		}
+	}()
+
+	// Connection-level settings (devices, Wyoming endpoints, ports) are read
+	// here, once. A stored override is persisted and reported as
+	// restart-required; applying it would need a new device or listener, so
+	// this startup resolution is the only place it takes effect.
+	connSettings, err := settings.New(ctx, st, connections.Definitions(config.Default(), cfg)...)
+	if err != nil {
+		return fmt.Errorf("connection settings: %w", err)
+	}
+	connections.Apply(&cfg, connSettings)
+	// Re-check the combination after overrides, so a restart cannot settle on
+	// an invalid device/endpoint set.
+	if err := cfg.Validate(); err != nil {
+		return fmt.Errorf("connection settings: %w", err)
+	}
+
+	// Speech is optional: without a TTS address the debug entry stays
+	// text-only. The client is created before the voice library so startup can
+	// learn the model revision and the built-in voices the image warmed.
+	var ttsClient *wyoming.Client
+	var ttsInfo wyoming.VoiceLibrary
+	var ttsDescribe wyoming.Info
+	if cfg.TTS.Addr != "" {
+		ttsClient = wyoming.NewClient(cfg.TTS.Addr, wyoming.WithTimeout(cfg.TTS.Timeout.Duration()))
+		ttsDescribe, ttsInfo = checkTTSService(logger, ttsClient, cfg.TTS.Addr)
+	}
+
+	// Describe is a second source when an older TTS service has no voice-info
+	// event; its advertised voices are still the warm built-ins.
+	if len(ttsInfo.Voices) == 0 {
+		for _, program := range ttsDescribe.TTS {
+			for _, advertised := range program.Voices {
+				ttsInfo.Voices = append(ttsInfo.Voices, advertised.Name)
+			}
+		}
+	}
+
+	// The voice library owns the copied .safetensors states and their validation
+	// revisions. It indexes files now; Rescan below runs the model smoke test
+	// against the live TTS revision once the settings service exists.
+	voiceSvc, err := voicelib.New(ctx, st, voicelib.Config{
+		Dir:      cfg.VoiceDir(),
+		TTSDir:   cfg.Voice.TTSDir,
+		Default:  cfg.TTS.Voice,
+		Builtins: ttsInfo.Voices,
+		Logger:   logger,
+	})
+	if err != nil {
+		return fmt.Errorf("voice library: %w", err)
+	}
+
+	// The Persona library is the persistent bundle store. It validates against
+	// the same voice library, and the settings service is bound below once its
+	// definitions exist. Creating or listing Personas never opens a model call.
+	personaSvc, err := persona.New(ctx, st, voiceSvc, logger)
+	if err != nil {
+		return fmt.Errorf("persona library: %w", err)
+	}
+
+	// The Cue library indexes built-in sounds and WAV files dropped into the
+	// data volume's sounds/ folder. Cues render to the capture format so the
+	// wake path keeps the endpointing timing it already had (#18).
+	cueFormat := audio.Format{Rate: cfg.Capture.Rate, Width: 2, Channels: 1}
+	if cueFormat.Rate <= 0 {
+		cueFormat.Rate = 16000
+	}
+	cues, err := sound.New(ctx, st, cfg.Data.Dir, cueFormat, logger)
+	if err != nil {
+		return fmt.Errorf("sound library: %w", err)
+	}
+	// The config-layer Cue defaults also serve startup recovery, before the
+	// live settings service exists, so a recovered Timer rings its sound.
+	cueConfig := sound.Config{
+		Wake:      baseCfg.Sounds.Wake,
+		TimerRing: baseCfg.Sounds.TimerRing,
+		AlarmRing: baseCfg.Sounds.AlarmRing,
+		Reminder:  baseCfg.Sounds.Reminder,
+		Error:     baseCfg.Sounds.Error,
+	}
+
+	// Startup recovery needs the live Ring behaviour and Quiet volume before
+	// Tool modules register: a Timer overdue from the previous run must not
+	// blast the code-default volume. This small reader sees the saved
+	// overrides; the full settings service below replaces it for the running
+	// process. It is read-only, so two views of the same DB cannot diverge.
+	zone := tz.New(os.Getenv("TZ"), logger)
+	recoveryDefs := append(ring.Definitions(), quiet.Definitions(baseCfg.Quiet)...)
+	recoveryDefs = append(recoveryDefs, notify.Definitions(baseCfg.Notify)...)
+	recoveryDefs = append(recoveryDefs, tz.Definition(baseCfg.Timezone))
+	recoverySettings, err := settings.New(ctx, st, recoveryDefs...)
+	if err != nil {
+		return fmt.Errorf("recovery settings: %w", err)
+	}
+	zone.Bind(recoverySettings)
+	// Quiet hours is created before the Ring engine so recovery Rings already
+	// read the saved quiet.volume. Bind later swaps in the full service.
+	quietSvc := quiet.New(quiet.Options{
+		Reader:   recoverySettings,
+		Now:      time.Now,
+		Location: zone.Location,
+		Logger:   logger,
+	})
+
+	// The provider entry names the secret key and is needed before Tool
+	// registration so the secrets service knows every writable name.
+	provider, err := cfg.Agent.ActiveProvider()
+	if err != nil {
+		return err
+	}
+	toolSet := tools.NewSet()
+	// The persona Tools read the one library through this late-bound binding;
+	// the module list stays the single wiring point and the registry does not
+	// import the Persona package.
+	if module, ok := toolSet.Module("persona").(*personatools.Module); ok {
+		module.Bind(personaSvc)
+	}
+	// The declared names are the write-only allowlist: Tool modules first, then
+	// the Agent provider's key. Environment variables with the same names are
+	// the bootstrap; a stored value wins.
+	secretNames := append(toolSet.SecretNames(), provider.APIKeyEnv)
+	secretsSvc, err := secrets.New(ctx, st.DB(), secretNames)
+	if err != nil {
+		return fmt.Errorf("secrets: %w", err)
+	}
+	// Spotify's non-secret app pair is bound before Tool registration; the
+	// module builds its shared auth seam from the secrets service above. The
+	// module declares SPOTIFY_REFRESH_TOKEN, so the secret is already in the
+	// allowlist and on the Secrets page.
+	spotifyModule, _ := toolSet.Module("spotify").(*spotifytools.Module)
+	if spotifyModule != nil {
+		spotifyModule.BindConfig(cfg.Spotify)
+	}
+	// Notifications are created before Tool registration so a Timer/Alarm
+	// recovered during Register already has the missed hook. The startup reader
+	// supplies the saved notify.* values until the full service is bound below.
+	notifySvc, err := notify.New(notify.Options{
+		Reader:  recoverySettings,
+		Quiet:   quietSvc,
+		Secrets: secretsSvc,
+		Logger:  logger,
+		Config:  baseCfg.Notify,
+	})
+	if err != nil {
+		return fmt.Errorf("notify: %w", err)
+	}
+	// The previous reply stays in memory with its provenance so a follow-up
+	// "send that to my phone" can resolve it without persisting private text.
+	lastReplyStore := lastreply.New()
 
 	// Resolve the place once before serving so the first request has it; Watch
 	// keeps it fresh every 24h. The prompt reads the service per request.
@@ -76,6 +307,16 @@ func run() error {
 	go locSvc.Watch(ctx)
 	registry := tool.NewRegistry(cfg.Tools.DefaultTimeout.Duration())
 
+	// One bounded health snapshot feeds both the Dashboard Health page and the
+	// system.status Tool, so the two can never use different service lists or
+	// check semantics.
+	systemStatus := status.New(status.Options{
+		Timeout:  cfg.Dashboard.HealthTimeout.Duration(),
+		Services: dashboard.ComposeServiceChecks(cfg),
+		Modules:  toolSet,
+		Location: locSvc,
+	})
+
 	// One sink serves reply playback, the wake chime, timer alerts and the
 	// audio Tools, so audio.stop can cancel whatever the assistant is playing.
 	sink := audio.NewPulseSink(cfg.Playback.Binary, cfg.Playback.Sink)
@@ -83,81 +324,461 @@ func run() error {
 	// overlapping on the single speaker. The wake chime uses the raw sink:
 	// it plays before any reply is chosen.
 	playSink := speech.NewSerialSink(sink)
+	// ADR-0004: the Soloist receiver plays into the same Pulse server, so a
+	// reply, a Ring and the wake word duck its stream locally with pactl,
+	// never through the Web API. One refcounted Ducker serves all three.
+	// Without the Web API app there is no music to duck, so the Ducker stays
+	// nil (a no-op that never spawns pactl).
+	var musicDucker *music.Ducker
+	if cfg.Spotify.Enabled() {
+		musicDucker = music.NewDucker(music.NewPulseStreams(cfg.Playback.Binary, cfg.Spotify.StreamMatch), music.DefaultDuckPercent, logger)
+		// A crash while ducked, or Pulse's stream-restore remembering the
+		// ducked level, must not leave the music quiet. Best effort: the
+		// receiver may not be running yet.
+		resetCtx, cancelReset := context.WithTimeout(ctx, 2*time.Second)
+		if err := musicDucker.Reset(resetCtx); err != nil {
+			logger.Warn("music startup volume reset", "error", err.Error())
+		}
+		cancelReset()
+	}
 
 	// Speech is optional: without a TTS address the debug entry stays text-only.
-	// The Filler is synthesized once here, from the config read at startup, so a
-	// phrase change is picked up by a restart rather than live.
+	// The Filler audio is synthesized after the settings service resolves the
+	// live wording, so a stored override applies at startup. The speaker's
+	// voice/rate source is bound to the settings service below.
 	var speechSpeaker *speech.Speaker
-	var filler *speech.Filler
-	if cfg.TTS.Addr != "" {
-		client := wyoming.NewClient(cfg.TTS.Addr, wyoming.WithTimeout(cfg.TTS.Timeout.Duration()))
-		checkTTSService(logger, client, cfg.TTS.Addr)
-		wantVoice := wyoming.Voice{Name: cfg.TTS.Voice}
-		speechSpeaker = speech.New(client, playSink, wantVoice, logger)
-		filler = loadAgentFiller(logger, client, wantVoice, cfg.Agent.Filler, cfg.TTS.Timeout.Duration())
+	ttsVoice := wyoming.Voice{Name: cfg.TTS.Voice}
+	if ttsClient != nil {
+		speechSpeaker = speech.New(ttsClient, playSink, ttsVoice, logger)
 	}
 
-	// Timers reuse the reply Speaker for their alert.
-	var timerAlert func(context.Context, string) error
-	if speechSpeaker != nil {
-		timerAlert = speechSpeaker.SayText
+	// The speech gate lets a Ring wait for the current reply sentence and then
+	// take the one speaker; the reply's next sentence waits for the Ring.
+	speechGate := playback.NewGate()
+
+	// One Focus registry routes the shared Control phrases to a ringing alert,
+	// the current reply or music, in that fixed order. It is shared by the
+	// pipeline (routing), the reply session (the current reply) and the Tool
+	// modules that can hold Focus.
+	focusRegistry := focus.New()
+
+	// One Announcement queue owns unprompted speech and Dashboard previews: it
+	// waits for the current reply, a pending Confirmation and a ringing alert,
+	// then plays one item at a time. With a Dashboard but no TTS it still runs
+	// for Pi previews (WithPlayback); text announcements remain unavailable.
+	var announcements *announce.Queue
+	if speechSpeaker != nil || cfg.Dashboard.Enabled() {
+		var speaker announce.Speaker
+		queueOpts := []announce.Option{
+			announce.WithBlocked(func() bool {
+				_, pending := registry.Pending()
+				return pending || focusRegistry.Held(focus.Ring)
+			}),
+			// A Ring preempts a long Pi preview instead of waiting behind it.
+			announce.WithPreempt(func() bool { return focusRegistry.Held(focus.Ring) }),
+			// Quiet hours holds text announcements, then releases them as one
+			// summary. Audio previews keep their own slots.
+			announce.WithHoldSummary(),
+		}
+		if speechSpeaker != nil {
+			// Announcements use the same speech gate as replies: a Ring waits
+			// for the current line and a line waits for an active Ring.
+			speaker = playback.NewGatedSpeaker(speechSpeaker, speechGate)
+		} else {
+			queueOpts = append(queueOpts, announce.WithPlayback())
+		}
+		announcements = announce.New(speaker, logger, queueOpts...)
+		defer announcements.Close()
 	}
-	if err := tools.RegisterAll(registry, tools.Options{
-		Weather:    weather.Deps{Location: locSvc.Current},
-		Audio:      sink,
-		TimerAlert: timerAlert,
-		Logger:     logger,
-	}); err != nil {
+
+	// The Ring engine exists before Tool modules register, so an overdue Timer
+	// that fires during recovery already Rings instead of using the old spoken
+	// alert. Its settings reader is late-bound: the settings service is created
+	// below, and a startup-time Ring before that falls back to code defaults.
+	var settingsSvc *settings.Service
+	ringDeps := ring.Deps{
+		Focus:    focusRegistry,
+		Music:    musicDucker,
+		Boundary: speechGate,
+		Settings: func(kind ring.Kind) ring.Settings {
+			var reader ring.Reader = recoverySettings
+			if settingsSvc != nil {
+				reader = settingsSvc
+			}
+			return quietSvc.RingSettings(kind, ring.ReadSettings(reader, kind))
+		},
+		// Timer labels follow quiet.volume; an Alarm label stays at normal
+		// volume, including a Ring recovered during startup.
+		SpeechGain: quietSvc.RingSpeechGain,
+		Clip: func(kind ring.Kind) (sound.Clip, bool) {
+			role := sound.RoleTimerRing
+			if kind == ring.Alarm {
+				role = sound.RoleAlarmRing
+			}
+			if settingsSvc == nil {
+				// Startup recovery rings before the live settings service exists.
+				return cues.DefaultClip(cueConfig, role)
+			}
+			return cues.Clip(role)
+		},
+		// A per-Alarm sound override names one library sound; it is resolved
+		// through the same library and Alarm Ring cap as sounds.alarm_ring.
+		ClipName: func(name string) (sound.Clip, bool) {
+			return cues.ClipName(sound.RoleAlarmRing, name)
+		},
+		Play: func(ctx context.Context, clip sound.Clip) error {
+			return clip.Play(ctx, playSink)
+		},
+		Logger: logger,
+	}
+	if speechSpeaker != nil {
+		ringDeps.Speaker = speechSpeaker
+	}
+	ringEngine := ring.New(ringDeps)
+
+	// One module list owns Tool wiring; each module reads its tools.<name>
+	// section and falls back to code defaults. The timezone seam exists before
+	// modules register (they capture Deps), but it only becomes live once the
+	// settings service below is created and bound.
+	//
+	// One matcher serves sound, voice and playlist names. Its threshold is
+	// bound to the settings service below, after the definitions are built;
+	// until then it uses the config value as its fallback.
+	nameThreshold := namematch.NewThreshold(baseCfg.NameMatch.Threshold)
+	embedClient := embed.NewClient(cfg.Embed.URL, cfg.Embed.Model)
+	names := namematch.New(embedClient, namematch.Config{Threshold: nameThreshold.Get})
+	deps := tool.Deps{
+		Logger:        logger,
+		Location:      locSvc.Current,
+		Audio:         sink,
+		Store:         st,
+		Secrets:       secretsSvc,
+		Announcements: announcements,
+		Focus:         focusRegistry,
+		Zone:          zone,
+		Cues:          cues,
+		Ring:          ringEngine,
+		Names:         names,
+		// The local MiniLM client ranks note text by meaning; it is the same
+		// service the semantic router and the name matcher use.
+		Embed: embedClient,
+		// The live settings service is created below; a module reads it per
+		// action through this late-bound closure and never snapshots it.
+		Settings:  func() *settings.Service { return settingsSvc },
+		Quiet:     quietSvc,
+		Voices:    voiceSvc,
+		Notify:    notifySvc,
+		LastReply: lastReplyStore,
+		Status:    systemStatus.Status,
+	}
+	if speechSpeaker != nil {
+		deps.Speaker = speechSpeaker
+	}
+	if err := toolSet.RegisterAll(registry, deps, cfg.Tools.Sections); err != nil {
 		return fmt.Errorf("register tools: %w", err)
 	}
+	// Modules with a scheduler implement the optional Closer hook. Shutdown
+	// runs in reverse registration order and before the store closes, so a
+	// pending write can finish. This is deliberately generic: #53 can add its
+	// own lifecycle without another hardcoded block in main.
+	for _, module := range toolSet.Modules() {
+		if closer, ok := module.(tool.Closer); ok {
+			defer closer.Close()
+		}
+	}
 
-	provider, err := cfg.Agent.ActiveProvider()
+	// Tool enable/disable, Permission overrides and the user-facing wording all
+	// share the three layers. Definitions are built before the policy is
+	// installed, while registry.Info still returns the code declarations.
+	wordingSetup, err := wording.Build(registry, wording.Config{
+		ControlPhrases:     baseCfg.ControlPhrases,
+		RequestPrefixes:    baseCfg.Agent.RequestPrefixes,
+		Filler:             baseCfg.Agent.Filler,
+		UnavailableMessage: baseCfg.Agent.UnavailableMessage,
+	})
 	if err != nil {
 		return err
 	}
+	toolDefs, err := toolpolicy.Definitions(registry, toolpolicy.Config{
+		Disabled:    baseCfg.Tools.Disabled,
+		Permissions: baseCfg.Tools.Permissions,
+	})
+	if err != nil {
+		return err
+	}
+	defs := append(connections.Definitions(config.Default(), baseCfg), wordingSetup.Definitions...)
+	defs = append(defs, toolDefs...)
+	defs = append(defs, tz.Definition(baseCfg.Timezone))
+	defs = append(defs, namematch.Definition(baseCfg.NameMatch.Threshold))
+	// Sound role assignments are live settings too, so the Dashboard write and
+	// the running Cue resolution share the same service.
+	defs = append(defs, cues.Definitions(cueConfig)...)
+	// Ring behaviour is per kind: Timer and Alarm share the engine but keep
+	// independent live max_ring, volume, ramp, gap and speak_label settings.
+	defs = append(defs, ring.Definitions()...)
+	// Quiet hours shares the one settings service with the Dashboard and voice
+	// Tools; the startup reader above is replaced by this full service.
+	defs = append(defs, quiet.Definitions(baseCfg.Quiet)...)
+	// music.max_volume is a live Spotify setting, unset (no cap) by default.
+	defs = append(defs, spotify.Definitions()...)
+	// Notify's URL and missed-alert switch are live settings; the topic and
+	// optional token remain write-only secrets.
+	defs = append(defs, notify.Definitions(baseCfg.Notify)...)
+	// The model name is a live setting like the wording. Its default comes
+	// from the active provider's code default when that provider is built in;
+	// otherwise the configured model is both the default and the config layer.
+	modelDefault := provider.Model
+	if defaultProvider, err := config.Default().Agent.ActiveProvider(); err == nil && config.Default().Agent.Provider == baseCfg.Agent.Provider {
+		modelDefault = defaultProvider.Model
+	}
+	defs = append(defs, agent.ModelDefinition(modelDefault, provider.Model))
+	// Voice name and rate are live settings shared with the Dashboard and the
+	// voice Tools. The name's config layer is tts.voice; the library adds the
+	// custom .safetensors entries once Rescan runs.
+	defs = append(defs, voiceSvc.Definitions(voicelib.DefinitionConfig{
+		Name: baseCfg.TTS.Voice,
+		Rate: baseCfg.Voice.Rate,
+	})...)
+	// The active Persona marker is a live setting. Selecting a Persona writes
+	// it together with voice.name, agent.filler and agent.unavailable_message
+	// in one transaction through this same service.
+	defs = append(defs, personaSvc.Definitions()...)
+	// The Dashboard's opt-in to speak its chat replies on the Pi. Live, so the
+	// top-bar toggle applies to the next request without a restart.
+	defs = append(defs, dashboard.SpeakRepliesDefinition())
+	settingsSvc, err = settings.New(ctx, st, defs...)
+	if err != nil {
+		return fmt.Errorf("settings: %w", err)
+	}
+	// Bind after the service exists so the timezone is live overridable: the
+	// Dashboard's settings handler and any voice Tool write the same service.
+	zone.Bind(settingsSvc)
+	// Quiet hours now reads and writes the one live service: a Dashboard edit
+	// or a voice Tool write is visible to the next Status read.
+	quietSvc.Bind(settingsSvc)
+	quietSvc.BindWriter(settingsSvc)
+	// Notify now reads the same live settings as the Dashboard and the Tools.
+	notifySvc.Bind(settingsSvc)
+	// One small worker applies the current Quiet status to the Announcement
+	// queue. It reevaluates at the next window boundary or after one second, so
+	// a Dashboard edit applies promptly without a request or a second settings
+	// observer.
+	var quietQueue quiet.HoldQueue
+	if announcements != nil {
+		quietQueue = announcements
+	}
+	quietController := quiet.NewController(quietSvc, quietQueue, logger)
+	quietController.Start(ctx)
+	defer quietController.Close()
+	// The matcher reads this per lookup, so a Dashboard change applies without
+	// a restart and without a second settings observer.
+	nameThreshold.Bind(settingsSvc)
+	// Bind the same live settings service the Dashboard writes, so a role
+	// change applies on the next Cue. The shared serial sink keeps a Cue from
+	// overlapping a reply.
+	cues.Bind(settingsSvc, playSink)
+	// Bind the voice library to the same live settings service. The first
+	// rescan records the TTS revision, smoke-tests copied files, and falls back
+	// an unusable active voice before the speaker is bound or a reply starts.
+	voiceSvc.Bind(settingsSvc)
+	// The Persona library now applies selections through the same live settings
+	// service, so a select and the wording/voice observers share one snapshot.
+	personaSvc.Bind(settingsSvc)
+	voiceCtx, cancelVoice := context.WithTimeout(ctx, 5*time.Minute)
+	var voiceProbe voicelib.Probe
+	var voicePreview dashboard.VoicePreview
+	if ttsClient != nil {
+		voiceProbe = voicelib.NewTTSProbe(ttsClient, cfg.TTS.Timeout.Duration())
+		// The browser preview synthesizes one bounded phrase and never opens
+		// the audio sink or changes the persistent active voice.
+		voicePreview = voicesample.New(ttsClient, cfg.TTS.Timeout.Duration())
+	}
+	if err := voiceSvc.Rescan(voiceCtx, voiceProbe); err != nil {
+		// A library problem must not stop speech: the built-in default still
+		// works, and the next rescan can index the files.
+		logger.Warn("voice library rescan failed", "error", err.Error())
+	}
+	if fallback, err := voiceSvc.EnsureActive(voiceCtx); err != nil {
+		logger.Warn("voice fallback failed", "error", err.Error())
+	} else if fallback != nil && announcements != nil {
+		// Exactly one Announcement for the stale active voice. The setting is
+		// now the default built-in, so a later rescan or turn cannot repeat it.
+		announcements.Enqueue(fmt.Sprintf(
+			"The %s voice needs re-exporting for the updated speech model, so I'm using %s.",
+			fallback.From, fallback.To))
+	}
+	// Warm the speaking voice and the active Persona's voice through the one
+	// TTS client. Other voices load on first use and stay cached.
+	warmStartupVoices(voiceCtx, logger, ttsClient, voiceSvc, personaSvc, cfg.TTS.Timeout.Duration())
+	cancelVoice()
+	// Every reply, Filler and alert reads the same live voice/rate snapshot.
+	if speechSpeaker != nil {
+		speechSpeaker.BindVoice(func() speech.VoiceSettings {
+			voice, rate := currentSpeechVoice(voiceSvc)
+			return speech.VoiceSettings{Voice: voice, Rate: rate}
+		})
+	}
+
+	// Timer and Alarm installed the Notify missed hook before Start's
+	// recovery, so open/downtime rows already reached ntfy. Only the shutdown
+	// waits remain, and Close waits for the final history write.
+	if module, ok := toolSet.Module("timer").(*timer.Module); ok {
+		if manager := module.Manager(); manager != nil {
+			defer manager.Close()
+		}
+	}
+	if module, ok := toolSet.Module("alarm").(*alarm.Module); ok {
+		if manager := module.Manager(); manager != nil {
+			defer manager.Close()
+		}
+	}
+	// Start persisted schedules only now: the effective settings, Cues, Zone
+	// and Ring engine are bound, so the first recovered Timer or Alarm Ring
+	// obeys stored settings instead of the code defaults. One module-list hook
+	// keeps this out of per-domain main wiring.
+	if err := toolSet.StartAll(ctx); err != nil {
+		return fmt.Errorf("start tools: %w", err)
+	}
+	if zone.IsUTC() {
+		// UTC is a safe default, not a guess: warn once so a silent one-hour
+		// error in a clock-time Alarm is visible at startup.
+		logger.Warn("timezone is UTC: set the timezone setting or TZ so clock-time alerts use local time")
+	}
+	toolPolicy, err := toolpolicy.New(settingsSvc, registry)
+	if err != nil {
+		return fmt.Errorf("tool settings: %w", err)
+	}
+	// The settings API has no authentication of its own. It is mounted on the
+	// localhost debug listener and, from #47, on the authenticated Dashboard.
+	settingsHandler := settingsapi.New(settingsSvc, toolPolicy, logger)
+
+	// The Filler is cached from the effective wording, not the raw config: a
+	// stored override applies on the first request after a restart. Later text
+	// changes re-synthesize in the background through the wording manager.
+	var filler *speech.Filler
+	var synthFiller wording.FillerSynth
+	if ttsClient != nil {
+		voice, rate := currentSpeechVoice(voiceSvc)
+		filler = loadAgentFiller(logger, ttsClient, voice, rate, settingsSvc.String(wording.FillerKey), cfg.TTS.Timeout.Duration())
+		synthFiller = func(ctx context.Context, text string) (*speech.Filler, error) {
+			ctx, cancel := context.WithTimeout(ctx, cfg.TTS.Timeout.Duration())
+			defer cancel()
+			voice, rate := currentSpeechVoice(voiceSvc)
+			return speech.SynthesizeFiller(ctx, ttsClient, voice, text, wyoming.WithRate(rate))
+		}
+	}
+	// The wording worker keeps the single settings observer. The extra keys and
+	// signature make a voice/rate change re-synthesize the cached Filler, so
+	// the spoken cue never keeps the old voice forever.
+	wordingMgr, err := wording.NewManager(settingsSvc, wordingSetup, filler, synthFiller, logger,
+		wording.WithFillerKeys(voicelib.KeyName, voicelib.KeyRate),
+		wording.WithFillerSignature(func() string {
+			ref, rate, ok := voiceSvc.ActiveSpeech()
+			if !ok {
+				ref = voiceSvc.DefaultName()
+				rate = voiceSvc.Rate()
+			}
+			return fmt.Sprintf("%s@%.2f", ref, rate)
+		}),
+	)
+	if err != nil {
+		return err
+	}
+	defer wordingMgr.Close()
+
+	// One composable mux also serves the write-only secrets routes, so both
+	// surfaces get the same handlers and neither exposes them publicly.
+	secretsHandler := secretsapi.New(secretsSvc, logger)
+	apiHandler := http.NewServeMux()
+	mountAPI := func(prefix string, handler http.Handler) {
+		apiHandler.Handle(prefix, handler)
+		apiHandler.Handle(prefix+"/", handler)
+	}
+	mountAPI("/settings", settingsHandler)
+	mountAPI("/tools", settingsHandler)
+	mountAPI("/secrets", secretsHandler)
+
 	agentPath, err := agent.New(agent.Settings{
-		BaseURL:            provider.BaseURL,
-		APIKeyEnv:          provider.APIKeyEnv,
-		Model:              provider.Model,
-		Headers:            provider.Headers,
-		Routing:            provider.Routing,
-		SystemPrompt:       cfg.Agent.SystemPrompt,
-		SystemPromptFunc:   func() string { return locSvc.SystemPrompt(cfg.Agent.SystemPrompt) },
-		UnavailableMessage: cfg.Agent.UnavailableMessage,
-		FirstTokenTimeout:  cfg.Agent.FirstTokenTimeout.Duration(),
-		RequestTimeout:     cfg.Agent.RequestTimeout.Duration(),
-		MaxSteps:           cfg.Agent.MaxSteps,
-		HistoryTurns:       cfg.Agent.History.Turns,
-		HistoryQuiet:       cfg.Agent.History.Quiet.Duration(),
+		BaseURL:   provider.BaseURL,
+		APIKeyEnv: provider.APIKeyEnv,
+		// Read the resolved key per request: a value stored from the Dashboard
+		// takes effect on the next turn without a restart.
+		APIKey: func() string {
+			value, _ := secretsSvc.Get(provider.APIKeyEnv)
+			return value
+		},
+		Model: provider.Model,
+		// Read the live setting per request, so a Dashboard model change
+		// applies to the next turn without rebuilding the Agent path.
+		ModelFunc:        func() string { return settingsSvc.String(agent.ModelKey) },
+		Headers:          provider.Headers,
+		Routing:          provider.Routing,
+		SystemPrompt:     cfg.Agent.SystemPrompt,
+		SystemPromptFunc: func() string { return locSvc.SystemPrompt(cfg.Agent.SystemPrompt) },
+		// The personality prompt is read once per turn and added only to the
+		// labelled system part by the one prompt builder (ADR-0002).
+		PersonaFunc: func() agent.Persona {
+			personality := personaSvc.Personality()
+			return agent.Persona{Name: personality.Name, Prompt: personality.Prompt}
+		},
+		UnavailableMessage: baseCfg.Agent.UnavailableMessage,
+		// The live wording is read per failure, so a Dashboard change applies
+		// to the next model failure without rebuilding the Agent path.
+		UnavailableMessageFunc: wordingMgr.UnavailableMessage,
+		FirstTokenTimeout:      cfg.Agent.FirstTokenTimeout.Duration(),
+		RequestTimeout:         cfg.Agent.RequestTimeout.Duration(),
+		MaxSteps:               cfg.Agent.MaxSteps,
+		HistoryTurns:           cfg.Agent.History.Turns,
+		HistoryQuiet:           cfg.Agent.History.Quiet.Duration(),
 	}, registry, logger)
 	if err != nil {
 		return err
 	}
 
 	opts := []pipeline.Option{
-		pipeline.WithAgent(agentPath, cfg.Agent.RequestPrefixes),
+		pipeline.WithAgent(agentPath, baseCfg.Agent.RequestPrefixes),
 		pipeline.WithHistory(agentPath.History()),
 		// Spoken Confirmation for confirm Tools, enforced by the registry.
 		pipeline.WithConfirmationResolver(pipeline.NewConfirmation(registry, logger)),
+		// Control phrases and Agent request prefixes are read per request.
+		pipeline.WithWording(wordingMgr),
+		// Shared Control phrases reach whatever holds Focus; with nothing in
+		// Focus they fall through to the semantic Fast path.
+		pipeline.WithFocus(focusRegistry),
+		// Keep the previous completed reply and its provenance so
+		// assistant.repeat and notify.phone can resolve it.
+		pipeline.WithLastReply(lastReplyStore),
 	}
-	// Compute Tool example vectors once; a dead embed service only disables
-	// semantic matching, leaving Control phrases and the Agent path working.
-	semantic := pipeline.NewSemanticRouter(registry, embed.NewClient(cfg.Embed.URL, cfg.Embed.Model), pipeline.SemanticConfig{
+	// Compute Tool example vectors from the effective Examples (a stored
+	// override may already exist). A dead embed service only disables semantic
+	// matching, leaving Control phrases and the Agent path working.
+	semantic := pipeline.NewSemanticRouter(registry, embedClient, pipeline.SemanticConfig{
 		Threshold: cfg.Semantic.Threshold,
 		Margin:    cfg.Semantic.Margin,
 		Joiners:   cfg.Semantic.Joiners,
 		Timeout:   cfg.Embed.Timeout.Duration(),
 	})
+	semantic.SetExamplesSource(wordingMgr)
+	initialExamples := wordingMgr.Examples()
 	buildCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	err = semantic.Build(buildCtx)
+	exampleSet, err := semantic.BuildSet(buildCtx, initialExamples)
 	cancel()
 	if err != nil {
-		logger.Warn("semantic routing disabled", "embed_url", cfg.Embed.URL, "error", err.Error())
+		// Keep the router attached and let the wording worker retry with
+		// bounded backoff. Semantic matching is unavailable until the embed
+		// service returns, but Control phrases and the Agent path keep working
+		// and recovery needs no edit or restart.
+		logger.Warn("semantic routing will retry in the background", "embed_url", cfg.Embed.URL, "error", err.Error())
 	} else {
-		opts = append(opts, pipeline.WithSemanticRouter(semantic))
+		semantic.Swap(exampleSet)
+		wordingMgr.MarkExamplesBuilt(initialExamples)
 	}
+	// Always attach the router: the worker owns the one settings observer and
+	// retries a failed startup build (or any later failed rebuild) itself.
+	opts = append(opts, pipeline.WithSemanticRouter(semantic))
+	wordingMgr.Start(ctx, semantic)
 
-	p, err := pipeline.New(registry, cfg.ControlPhrases, logger, opts...)
+	p, err := pipeline.New(registry, baseCfg.ControlPhrases, logger, opts...)
 	if err != nil {
 		return err
 	}
@@ -168,7 +789,51 @@ func run() error {
 	if speechSpeaker != nil {
 		speaker = speechSpeaker
 	}
-	session := reply.New(p, speaker, playSink, filler)
+	var sessionOpts []reply.Option
+	if announcements != nil {
+		// Every turn holds the Announcement queue, so unprompted speech only
+		// plays between turns and once a pending Confirmation resolves.
+		sessionOpts = append(sessionOpts, reply.WithAnnouncements(announcements))
+	}
+	// The error Cue plays before an Agent-path Unavailable message. Other
+	// consumers come from the same library via tool.Deps.Cues.
+	sessionOpts = append(sessionOpts, reply.WithCues(cues))
+	// The error Cue follows the same quiet gain as the Unavailable message.
+	sessionOpts = append(sessionOpts, reply.WithCueScale(quietSvc.Clip))
+	// The Filler is read once per turn from the live source, so a re-synthesized
+	// phrase is heard from the next request onward.
+	sessionOpts = append(sessionOpts, reply.WithFillerSource(wordingMgr))
+	// Replies, Fillers and the error Cue use the absolute quiet volume while
+	// the Quiet window is active. The gain is software-only; the media sink
+	// volume is never changed and nothing needs restoring.
+	sessionOpts = append(sessionOpts, reply.WithVolumeSource(quietSvc.Gain))
+	// A speaking reply holds Focus, so a shared "stop" cancels its model stream
+	// and playback rather than the stop request itself.
+	sessionOpts = append(sessionOpts, reply.WithFocus(focusRegistry))
+	// A Ring waits for the current reply sentence, then the reply's next
+	// sentence waits for the Ring. With no Ring the gate is a fast no-op.
+	sessionOpts = append(sessionOpts, reply.WithSpeechGate(speechGate))
+	session := reply.New(p, speaker, playSink, filler, sessionOpts...)
+
+	// The Dashboard typed box uses the same pipeline and reply Session code
+	// with no speaker: it shows the reply in the page and never starts Pi
+	// audio. Turn gating still applies, so unprompted speech does not talk
+	// into a typed turn.
+	typedOpts := []reply.Option{reply.WithLogger(logger)}
+	if announcements != nil {
+		typedOpts = append(typedOpts, reply.WithAnnouncements(announcements))
+	}
+	typedSession := reply.New(p, nil, nil, nil, typedOpts...)
+	// The opt-in path reuses the voice Session's speaker, Focus, announcement
+	// queue and Quiet hours gain, so a Dashboard answer queues like a reply and
+	// never talks over one. Only wired when TTS is configured.
+	// A typed nil must not become a non-nil interface: the Dashboard hides the
+	// toggle when this is nil.
+	var spokenSession dashboard.TypedResponder
+	if speechSpeaker != nil {
+		spokenOpts := append([]reply.Option{reply.WithLogger(logger)}, sessionOpts...)
+		spokenSession = reply.New(p, speaker, playSink, filler, spokenOpts...)
+	}
 
 	// The debug entry is only spoken when a TTS service is configured.
 	var responder api.Responder
@@ -176,12 +841,73 @@ func run() error {
 		responder = session
 	}
 
+	// voiceDone closes when the voice loop returns, so shutdown can wait for
+	// its deferred music restore. Nil when the voice loop is off.
+	var voiceDone chan struct{}
+	var sampleRecorder dashboard.SampleRecorder
 	if cfg.VoiceEnabled() {
-		loop, err := newVoiceLoop(cfg, session, p, sink, logger)
+		// Read the wake role per detection so a Dashboard write applies live.
+		// wakeword.chime.enabled stays the master switch it was before #55.
+		wakeCue := func() ([]byte, audio.Format, bool) {
+			if !cfg.Wakeword.Chime.Enabled {
+				return nil, audio.Format{}, false
+			}
+			clip, ok := cues.Clip(sound.RoleWake)
+			if !ok {
+				return nil, audio.Format{}, false
+			}
+			return clip.PCM, clip.Format, true
+		}
+		// Wake-free command models (#81): a detection runs the volume step and
+		// Cue with no STT and no routing. The handler reads Focus and the live
+		// music cap per detection, so a Dashboard change applies immediately.
+		var wakeCommands map[string]voice.WakeCommand
+		if models := cfg.Wakeword.CommandModels(); len(models) > 0 {
+			handler, err := voicecmd.New(
+				voicecmd.Config{Step: cfg.Wakeword.Commands.Step, Cooldown: cfg.Wakeword.Commands.Cooldown.Duration()},
+				voicecmd.Deps{
+					Sink: sink,
+					Focus: func() (bool, bool) {
+						return focusRegistry.Held(focus.Reply), focusRegistry.Held(focus.Music)
+					},
+					MaxVolume: func() int { return spotify.MaxVolume(settingsSvc) },
+					// The wake Cue is the fixed short acknowledgement: the Cue
+					// role list is code, and adding a sixth role for one sound
+					// would widen the settings surface for no new choice.
+					Cue: func(cueCtx context.Context) {
+						go func() {
+							if err := cues.Play(cueCtx, sound.RoleWake); err != nil {
+								logger.Warn("voice command cue", "error", err.Error())
+							}
+						}()
+					},
+					Logger: logger,
+				},
+			)
+			if err != nil {
+				return fmt.Errorf("voice commands: %w", err)
+			}
+			wakeCommands = make(map[string]voice.WakeCommand, len(models))
+			for _, name := range models {
+				wakeCommands[name] = handler.Handle
+			}
+			logger.Info("wake-free commands enabled",
+				"models", models,
+				"step", cfg.Wakeword.Commands.Step,
+				"cooldown", cfg.Wakeword.Commands.Cooldown.Duration().String(),
+				"thresholds", cfg.Wakeword.ModelThresholds(),
+			)
+		}
+		loop, err := newVoiceLoop(cfg, session, p, sink, announcements, wakeCue, activityStore.Observe, musicDucker, wakeCommands, logger)
 		if err != nil {
 			return err
 		}
+		if cfg.Capture.Rate == 16000 && cfg.Capture.Width == 2 && cfg.Capture.Channels == 1 {
+			sampleRecorder = loop
+		}
+		voiceDone = make(chan struct{})
 		go func() {
+			defer close(voiceDone)
 			if err := loop.Run(ctx); err != nil {
 				logger.Error("voice loop stopped", "error", err.Error())
 			}
@@ -199,6 +925,17 @@ func run() error {
 		if responder != nil {
 			opts = append(opts, api.WithResponder(responder))
 		}
+		if announcements != nil {
+			// The debug entry can queue an Announcement, so the between-turns
+			// behaviour is demonstrable without a Reminder.
+			opts = append(opts, api.WithAnnouncements(announcements))
+		}
+		// Settings, Tool-override and secret writes live on the localhost
+		// debug listener and on the authenticated Dashboard. The health
+		// listener never mounts this handler.
+		opts = append(opts, api.WithAPI(apiHandler))
+		// Localhost typed requests appear in the same bounded Activity list.
+		opts = append(opts, api.WithObserver(activityStore.Observe))
 		servers = append(servers, &http.Server{
 			Addr:              cfg.Debug.Addr,
 			Handler:           api.NewHandler(p, logger, true, opts...),
@@ -206,31 +943,165 @@ func run() error {
 		})
 	}
 
+	// The Dashboard is a separate listener and is absent until a Tailscale
+	// owner is configured. Its source and identity checks live in the handler,
+	// so this listener is never an unauthenticated surface.
+	if cfg.Dashboard.Enabled() {
+		// Keep the typed nil out of the interface so the Sounds page can fall
+		// back to synchronous playback on a text-only setup.
+		var previewQueue dashboard.PreviewQueue
+		if announcements != nil {
+			previewQueue = announcements
+		}
+		wakesampleSvc, err := wakesample.New(wakesample.Options{
+			Dir:       cfg.VoiceSamplesDir(),
+			ExportDir: cfg.VoiceSamplesExportDir(),
+			HostDir:   cfg.VoiceSamples.HostDir,
+			SSHUser:   cfg.VoiceSamples.SSHUser,
+			SSHHost:   cfg.VoiceSamples.SSHHost,
+			Desktop:   cfg.VoiceSamples.Desktop,
+			MaxTakes:  cfg.VoiceSamples.MaxTakes,
+		})
+		if err != nil {
+			return fmt.Errorf("voice samples: %w", err)
+		}
+		if cfg.VoiceSamples.HostDir == "" {
+			logger.Info("voice sample copy commands hidden", "reason", "voice_samples.host_dir is empty")
+		}
+		dashboardHandler, err := dashboard.New(dashboard.Options{
+			Owner:         cfg.Dashboard.Owner,
+			Hosts:         cfg.Dashboard.Hosts,
+			Logger:        logger,
+			HealthTimeout: cfg.Dashboard.HealthTimeout.Duration(),
+			Services:      dashboard.ComposeServiceChecks(cfg),
+			Wakeword:      dashboard.WakewordFromConfig(cfg),
+			Modules:       toolSet,
+			Location:      locSvc,
+			Status:        systemStatus,
+			Settings:      settingsSvc,
+			ToolPolicy:    toolPolicy,
+			Secrets:       secretsSvc,
+			Sounds:        cues,
+			PreviewQueue:  previewQueue,
+			Voices:        voiceSvc,
+			VoiceProbe:    voiceProbe,
+			VoicePreview:  voicePreview,
+			// The wake-phrase recorder stores takes on its own volume and
+			// exports bundles to the host-visible bind mount. It is a file
+			// store only: no audio leaves the box without an explicit copy.
+			VoiceSamples:   wakesampleSvc,
+			SampleRecorder: sampleRecorder,
+			// One module list reaches the Timer, Alarm and Reminder managers
+			// for the Scheduled alerts page; no second registry is created.
+			ToolModules: toolSet,
+			Zone:        zone,
+			Personas:    personaSvc,
+			Spotify:     spotifyModule.Auth(),
+			SpotifyPairing: &spotify.PairingReader{
+				Path:       cfg.Spotify.PairingStatusFile,
+				StaleAfter: cfg.Spotify.StaleAfter.Duration(),
+			},
+			// One recent-request ring and the text-only session; both share
+			// the pipeline, registry and settings of the voice path.
+			Activity: activityStore,
+			Typed:    typedSession,
+			Spoken:   spokenSession,
+			// The mic button reuses the voice loop's STT service; the top bar
+			// volume drives the same Pulse sink as replies and audio.volume_set.
+			Transcriber: dashboardTranscriber(cfg),
+			Volume:      sink,
+			API:         apiHandler,
+			// The standalone dashboard-web artifact; the embedded bundle stays
+			// the fallback, so a stopped service still serves the Dashboard.
+			UIURL:     cfg.Dashboard.UIURL,
+			UIVersion: cfg.Dashboard.UIVersion,
+		})
+		if err != nil {
+			return err
+		}
+		servers = append(servers, &http.Server{
+			Addr:              cfg.Dashboard.Addr,
+			Handler:           dashboardHandler,
+			ReadHeaderTimeout: 5 * time.Second,
+		})
+		if len(cfg.Dashboard.Hosts) == 0 {
+			// Fail closed: only a loopback Host is accepted until the operator
+			// names the tailnet endpoint. This is the setup instruction, not a
+			// silently widened trust boundary.
+			logger.Warn("dashboard hosts are not configured",
+				"detail", "only loopback Host headers are accepted; set ASSISTANT_DASHBOARD_HOSTS to the exact tailscale serve name (for example pi.example.ts.net) or requests through the proxy will be refused",
+			)
+		}
+		uiSource := "embedded"
+		if cfg.Dashboard.UIURL != "" {
+			uiSource = cfg.Dashboard.UIURL
+		}
+		logger.Info("dashboard enabled",
+			"addr", cfg.Dashboard.Addr,
+			"owner", cfg.Dashboard.Owner,
+			"hosts", cfg.Dashboard.Hosts,
+			"ui", uiSource,
+			"ui_version", cfg.Dashboard.UIVersion,
+		)
+	} else {
+		logger.Info("dashboard disabled", "reason", "dashboard.owner is empty")
+	}
+
 	logger.Info("assistant started",
 		"http_addr", cfg.HTTP.Addr,
 		"debug_enabled", cfg.Debug.Enabled,
 		"debug_addr", cfg.Debug.Addr,
+		"data_dir", cfg.Data.Dir,
+		"store", st.Path(),
+		"settings", len(settingsSvc.List()),
+		"sounds", len(cues.List()),
+		"voices", len(voiceSvc.List()),
+		"personas", len(personaSvc.List()),
+		"persona", personaSvc.Personality().Name,
+		"activity_limit", activity.DefaultLimit,
+		"voice_name", settingsSvc.String(voicelib.KeyName),
+		"voice_rate", settingsSvc.Float(voicelib.KeyRate),
+		"voice_revision", voiceSvc.Revision(),
+		"timezone", zone.Name(),
 		"speech", cfg.TTS.Addr != "",
 		"tts_addr", cfg.TTS.Addr,
 		"pulse_sink", cfg.Playback.Sink,
 		"pulse_source", cfg.Capture.Source,
-		"voice", cfg.VoiceEnabled(),
+		"spotify_web_api", cfg.Spotify.Enabled(),
+		"spotify_device", cfg.Spotify.DeviceName,
+		"spotify_pairing_status", cfg.Spotify.PairingStatusFile != "",
+		"speech_enabled", cfg.VoiceEnabled(),
 		"wakeword_addr", cfg.Wakeword.Addr,
+		"wakeword_models", cfg.Wakeword.WakeModels(),
+		"wakeword_commands", cfg.Wakeword.CommandModels(),
 		"stt_addr", cfg.STT.Addr,
-		"agent_filler", cfg.Agent.Filler,
+		"agent_filler", settingsSvc.String(wording.FillerKey),
 		"tools", len(registry.Names()),
+		"focus_intents", toolSet.FocusIntents(),
 		"embed_model", cfg.Embed.Model,
 		"semantic_tools", semantic.ToolCount(),
 		"location_city", currentCity(locSvc),
 	)
 
-	return serve(ctx, logger, servers)
+	serveErr := serve(ctx, logger, servers)
+	// Cancel the loop and give its deferred music restore a moment to run,
+	// so a shutdown mid-turn does not leave the music ducked.
+	stop()
+	if voiceDone != nil {
+		select {
+		case <-voiceDone:
+		case <-time.After(2 * time.Second):
+			logger.Warn("voice loop did not stop in time")
+		}
+	}
+	return serveErr
 }
 
 // newVoiceLoop wires the microphone path: Pulse capture, Wyoming wake word and
-// STT, the wake chime, and the shared reply Session. The pipeline is the
-// Barge-in seam that drops a waiting Confirmation.
-func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingDropper, sink audio.Sink, logger *slog.Logger) (*voice.Loop, error) {
+// STT, the live wake Cue, and the shared reply Session. The pipeline is the
+// Barge-in seam that drops a waiting Confirmation, and the Announcement queue
+// stops unprompted speech as soon as a wake word starts a turn.
+func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingDropper, sink audio.Sink, announcements *announce.Queue, wakeCue func() ([]byte, audio.Format, bool), observer latency.Observer, ducker voice.Ducker, wakeCommands map[string]voice.WakeCommand, logger *slog.Logger) (*voice.Loop, error) {
 	captureFormat := audio.Format{Rate: cfg.Capture.Rate, Width: cfg.Capture.Width, Channels: cfg.Capture.Channels}
 	frameBytes := cfg.Capture.Rate * cfg.Capture.Width * cfg.Capture.Channels * cfg.Capture.FrameMS / 1000
 	if frameBytes <= 0 {
@@ -238,10 +1109,12 @@ func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingD
 	}
 	wireFormat := wyoming.Format{Rate: captureFormat.Rate, Width: captureFormat.Width, Channels: captureFormat.Channels}
 
-	var names []string
-	if cfg.Wakeword.Model != "" {
-		names = []string{cfg.Wakeword.Model}
-	}
+	// The explicit allowlist is both what the service is asked to detect and
+	// what the loop accepts, so an unlisted model never starts a turn. The
+	// detect list also carries the enabled command models; the loop keeps the
+	// two lists apart, so a command never starts a turn.
+	names := cfg.Wakeword.WakeModels()
+	detectModels := cfg.Wakeword.DetectModels()
 	wakeClient := wyoming.NewClient(cfg.Wakeword.Addr, wyoming.WithTimeout(cfg.Wakeword.Timeout.Duration()))
 	sttClient := wyoming.NewClient(cfg.STT.Addr, wyoming.WithTimeout(cfg.STT.Timeout.Duration()))
 
@@ -256,36 +1129,45 @@ func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingD
 		},
 		ChimeFormat: audio.Format{Rate: captureFormat.Rate, Width: 2, Channels: 1},
 	}
-	if cfg.Wakeword.Chime.Enabled {
-		voiceCfg.Chime = audio.Chime(captureFormat.Rate)
-	}
-
 	logger.Info("voice input enabled",
 		"pulse_source", cfg.Capture.Source,
 		"wakeword_addr", cfg.Wakeword.Addr,
-		"wakeword_model", cfg.Wakeword.Model,
+		"wakeword_models", names,
+		"wakeword_commands", cfg.Wakeword.CommandModels(),
+		"wakeword_thresholds", cfg.Wakeword.ModelThresholds(),
 		"stt_addr", cfg.STT.Addr,
 		"stt_model", cfg.STT.Model,
 		"endpoint_silence", cfg.STT.Endpoint.Silence.Duration().String(),
 	)
 
-	return voice.New(voiceCfg, voice.Deps{
+	deps := voice.Deps{
 		Source:    audio.NewPulseSource(cfg.Capture.Binary, cfg.Capture.Source, captureFormat),
-		Wake:      voice.NewWyomingWake(wakeClient, names, wireFormat),
+		Wake:      voice.NewWyomingWake(wakeClient, detectModels, wireFormat, cfg.Wakeword.ModelThresholds()),
 		STT:       voice.NewWyomingSTT(sttClient, wyoming.TranscribeOptions{Name: cfg.STT.Model, Language: cfg.STT.Language}, wireFormat),
 		Player:    audio.NewPCMPlayer(sink),
 		Responder: voice.NewPipelineResponder(session, tool.DevicePi),
+		WakeWords: names,
 		Dropper:   pending,
+		WakeCue:   wakeCue,
+		Observer:  observer,
+		Ducker:    ducker,
 		Logger:    logger,
-	})
+	}
+	deps.WakeCommands = wakeCommands
+	// Leave the seam absent rather than storing a typed nil: a text-only setup
+	// has no speech to stop.
+	if announcements != nil {
+		deps.Announcer = announcements
+	}
+	return voice.New(voiceCfg, deps)
 }
 
 // loadAgentFiller caches the Agent path cue before the HTTP server starts. A
 // TTS failure is not fatal: replies still work, just without the immediate cue.
-func loadAgentFiller(logger *slog.Logger, client *wyoming.Client, voice wyoming.Voice, text string, timeout time.Duration) *speech.Filler {
+func loadAgentFiller(logger *slog.Logger, client *wyoming.Client, voice wyoming.Voice, rate float64, text string, timeout time.Duration) *speech.Filler {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	filler, err := speech.SynthesizeFiller(ctx, client, voice, text)
+	filler, err := speech.SynthesizeFiller(ctx, client, voice, text, wyoming.WithRate(rate))
 	if err != nil {
 		logger.Warn("agent filler unavailable", "error", err.Error())
 		return nil
@@ -294,15 +1176,70 @@ func loadAgentFiller(logger *slog.Logger, client *wyoming.Client, voice wyoming.
 	return filler
 }
 
-// checkTTSService logs whether the TTS service answers describe. A failure is
-// not fatal: the text reply still works and compose gates startup anyway.
-func checkTTSService(logger *slog.Logger, client *wyoming.Client, addr string) {
+// warmStartupVoices warms the active voice and the active Persona's voice once
+// each through the one TTS client. The usual case is one shared ref, so the
+// list is deduplicated. A stale or unknown Persona voice is logged and skipped:
+// voicelib.EnsureActive has already made the speaking voice safe and queued at
+// most one Announcement (#63), so startup never fails and never repeats it.
+func warmStartupVoices(ctx context.Context, logger *slog.Logger, client *wyoming.Client, voices *voicelib.Service, personas *persona.Service, timeout time.Duration) {
+	if client == nil || voices == nil {
+		return
+	}
+	refs := make([]string, 0, 2)
+	seen := make(map[string]bool, 2)
+	add := func(ref string) {
+		ref = strings.TrimSpace(ref)
+		if ref == "" || seen[ref] {
+			return
+		}
+		seen[ref] = true
+		refs = append(refs, ref)
+	}
+	if ref, _, ok := voices.ActiveSpeech(); ok {
+		add(ref)
+	}
+	if personas != nil {
+		ref, err := personas.ActiveVoiceRef()
+		switch {
+		case err == nil:
+			add(ref)
+		case errors.Is(err, persona.ErrNoActivePersona):
+			// No Persona is selected: the active voice above is the whole job.
+		default:
+			logger.Warn("active persona voice not warmed", "error", err.Error())
+		}
+	}
+	for _, ref := range refs {
+		warmCtx, cancel := context.WithTimeout(ctx, timeout)
+		if err := client.WarmVoice(warmCtx, ref); err != nil {
+			logger.Warn("voice warm-load failed", "voice", ref, "error", err.Error())
+		}
+		cancel()
+	}
+}
+
+// currentSpeechVoice resolves the live active voice and rate. The default
+// built-in is the final fallback, so speech never depends on a stale state.
+func currentSpeechVoice(service *voicelib.Service) (wyoming.Voice, float64) {
+	if service != nil {
+		if ref, rate, ok := service.ActiveSpeech(); ok {
+			return wyoming.Voice{Name: ref}, rate
+		}
+		return wyoming.Voice{Name: service.DefaultName()}, service.Rate()
+	}
+	return wyoming.Voice{}, 1.0
+}
+
+// checkTTSService logs whether the TTS service answers describe and voice-info.
+// A failure is not fatal: the text reply still works and compose gates startup
+// anyway.
+func checkTTSService(logger *slog.Logger, client *wyoming.Client, addr string) (wyoming.Info, wyoming.VoiceLibrary) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	info, err := client.Describe(ctx)
 	if err != nil {
 		logger.Warn("tts not ready", "addr", addr, "error", err.Error())
-		return
+		return wyoming.Info{}, wyoming.VoiceLibrary{}
 	}
 	voices := 0
 	streaming := false
@@ -311,6 +1248,14 @@ func checkTTSService(logger *slog.Logger, client *wyoming.Client, addr string) {
 		streaming = streaming || program.SupportsSynthesizeStreaming
 	}
 	logger.Info("tts ready", "addr", addr, "programs", len(info.TTS), "voices", voices, "streaming", streaming)
+	voiceInfo, err := client.VoiceInfo(ctx)
+	if err != nil {
+		// An older wrapper without the custom events still serves built-ins
+		// from describe; only custom-state staleness needs the revision.
+		logger.Warn("tts voice-info unavailable", "addr", addr, "error", err.Error())
+		return info, wyoming.VoiceLibrary{}
+	}
+	return info, voiceInfo
 }
 
 // currentCity returns the resolved city for the startup log, or "" when no
@@ -351,4 +1296,16 @@ func serve(ctx context.Context, logger *slog.Logger, servers []*http.Server) err
 		}
 	}
 	return serveErr
+}
+
+// dashboardTranscriber is nil when STT is not configured, which hides the
+// Dashboard mic button.
+func dashboardTranscriber(cfg config.Config) dashboard.Transcriber {
+	if strings.TrimSpace(cfg.STT.Addr) == "" {
+		return nil
+	}
+	return wyomingTranscriber{
+		client: wyoming.NewClient(cfg.STT.Addr, wyoming.WithTimeout(cfg.STT.Timeout.Duration())),
+		opts:   wyoming.TranscribeOptions{Name: cfg.STT.Model, Language: cfg.STT.Language},
+	}
 }

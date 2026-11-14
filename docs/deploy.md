@@ -347,6 +347,12 @@ out. These are endpoint/status checks, not Docker's container health field.
 - [ ] Install the host audio stack (PipeWire with its PulseAudio-compatible
       socket, plus Bluetooth support). Package names differ between Pi OS
       releases; confirm `pactl info` talks to a running server before pairing.
+- [ ] Install the equalizer's LADSPA plugin on the host, not in a container
+      (ADR-0008): `sudo apt install caps`. The Assistant loads it through the
+      audio server, so a container image cannot supply it. Without it the
+      Dashboard Health page shows `Equalizer` as an error with
+      `Failure: No such entity` and playback stays flat. Verify with
+      `ls /usr/lib/ladspa/caps.so`; see [audio/equalizer.md](audio/equalizer.md).
 - [ ] Pair and trust the Echo Dot:
 
       ```sh

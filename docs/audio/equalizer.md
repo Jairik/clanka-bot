@@ -6,6 +6,14 @@ The Pulse server must support `module-ladspa-sink`; PipeWire-Pulse implements
 this module too. The assistant and Soloist images need no additional packages:
 LADSPA is loaded by the host daemon, not by either container.
 
+Without the plugin, `pactl load-module ... plugin=caps` fails with
+`Failure: No such entity` (PipeWire-Pulse reuses that code for an unknown
+plugin), the Dashboard Health page shows `Equalizer` as an error, and playback
+stays on the flat path. Confirm the host library exists with
+`ls /usr/lib/ladspa/caps.so`; the Assistant retries every 500 ms, so the Health
+check clears once the package is installed. Adding `caps` to a Compose image
+does not help, because the audio server loads plugins from its own filesystem.
+
 Keep the configured playback sink and Soloist's `ASSISTANT_PULSE_SINK` on the
 original `aec_music_sink` when AEC is in use. Leave native Soloist PipeWire
 routing disabled. The controller inserts EQ ahead of that sink automatically.

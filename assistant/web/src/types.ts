@@ -587,6 +587,7 @@ export type VoicesView = {
 
 export type Volume = {
   Available: boolean;
+  Stale: boolean;
   Percent: number;
   Muted: boolean;
   Error: string;

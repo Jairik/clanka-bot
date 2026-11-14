@@ -55,8 +55,23 @@ func (v *fakeVolume) state() (int, bool, int) {
 	return v.percent, v.muted, len(v.writes)
 }
 
+// fail makes every later read fail, as a sleeping Bluetooth sink does.
+func (v *fakeVolume) fail(err error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.readErr = err
+}
+
+// recover makes later reads answer the current state again.
+func (v *fakeVolume) recover() {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.readErr = nil
+}
+
 type volumeResp struct {
 	Available bool
+	Stale     bool
 	Percent   int
 	Muted     bool
 	Error     string
@@ -215,10 +230,97 @@ func TestVolumeFailedReadHidesTheControl(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d", rec.Code)
 	}
-	if v.Available || v.Error == "" {
+	if v.Available || v.Stale || v.Error == "" {
 		t.Errorf("view = %+v, want unavailable with a message", v)
 	}
 	if strings.Contains(rec.Body.String(), "connection refused") {
 		t.Error("the Pulse error text leaked to the client")
+	}
+}
+
+// A read that fails after a good one keeps the last known level on screen, so
+// a slow Bluetooth wake does not make the control disappear (#160).
+func TestVolumeFailedReadServesTheLastKnownLevel(t *testing.T) {
+	speaker := &fakeVolume{percent: 42, muted: true}
+	handler := newHandler(t, dashboard.Options{Volume: speaker})
+
+	var v volumeResp
+	getJSON(t, handler, "/api/ui/volume", &v)
+	if !v.Available || v.Stale || v.Percent != 42 {
+		t.Fatalf("first read = %+v, want a fresh 42%%", v)
+	}
+
+	speaker.fail(errors.New("audio: pactl get-sink-volume: signal: killed"))
+	rec := getJSON(t, handler, "/api/ui/volume", &v)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if !v.Available || !v.Stale || v.Percent != 42 || !v.Muted || v.Error != "" {
+		t.Errorf("stale view = %+v, want available, stale, 42%% muted and no error sentence", v)
+	}
+	if strings.Contains(rec.Body.String(), "killed") {
+		t.Error("the Pulse error text leaked to the client")
+	}
+}
+
+// A refused write is answered with a view, and that view still has to carry
+// the refusal when the read behind it timed out. Otherwise the top bar falls
+// back to a generic sentence and loses the reason.
+func TestVolumeRefusedWriteKeepsItsMessageWhenTheReadTimesOut(t *testing.T) {
+	speaker := &fakeVolume{percent: 42}
+	handler := newHandler(t, dashboard.Options{Volume: speaker})
+	var v volumeResp
+	getJSON(t, handler, "/api/ui/volume", &v)
+
+	speaker.fail(errors.New("audio: pactl get-sink-volume: signal: killed"))
+	rec := postVolume(handler, url.Values{"percent": {"101"}}, nil)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", rec.Code)
+	}
+	decodeJSON(t, rec, &v)
+	if !v.Available || !v.Stale || v.Percent != 42 {
+		t.Errorf("view = %+v, want the stale 42%%", v)
+	}
+	if !strings.Contains(v.Error, "0 to 100") {
+		t.Errorf("error = %q, want the refusal to survive the stale read", v.Error)
+	}
+}
+
+func TestVolumeSuccessfulReadClearsStale(t *testing.T) {
+	speaker := &fakeVolume{percent: 30}
+	handler := newHandler(t, dashboard.Options{Volume: speaker})
+
+	var v volumeResp
+	getJSON(t, handler, "/api/ui/volume", &v)
+	speaker.fail(errors.New("audio: pactl get-sink-mute: signal: killed"))
+	getJSON(t, handler, "/api/ui/volume", &v)
+	if !v.Stale || v.Percent != 30 {
+		t.Fatalf("stale view = %+v", v)
+	}
+
+	speaker.recover()
+	if rec := postVolume(handler, url.Values{"percent": {"55"}}, nil); rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	getJSON(t, handler, "/api/ui/volume", &v)
+	if !v.Available || v.Stale || v.Percent != 55 || v.Error != "" {
+		t.Errorf("recovered view = %+v, want a fresh 55%%", v)
+	}
+}
+
+// The cached level belongs to one handler; a sibling must not inherit it.
+func TestVolumeCacheIsPerHandler(t *testing.T) {
+	warm := newHandler(t, dashboard.Options{Volume: &fakeVolume{percent: 30}})
+	var v volumeResp
+	getJSON(t, warm, "/api/ui/volume", &v)
+	if !v.Available || v.Stale {
+		t.Fatalf("warm read = %+v", v)
+	}
+
+	cold := newHandler(t, dashboard.Options{Volume: &fakeVolume{readErr: errors.New("killed")}})
+	v = volumeResp{}
+	getJSON(t, cold, "/api/ui/volume", &v)
+	if v.Available || v.Stale || v.Error == "" {
+		t.Errorf("cold view = %+v, want unavailable with no borrowed cache", v)
 	}
 }

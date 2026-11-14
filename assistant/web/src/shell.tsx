@@ -347,33 +347,61 @@ export function VolumeControl() {
   const eff = muted ? 0 : level;
   const Icon = eff === 0 ? VolumeX : eff < 34 ? Volume : eff < 67 ? Volume1 : Volume2;
   const label = muted ? "Muted" : `${level}%`;
+  // A read that timed out answers with the last level the speaker gave (#160).
+  // That is a guess about now, not a failure: the control stays usable and the
+  // treatment is a dimmed number plus one mark, so no colour and no new width.
+  const stale = state.Stale;
+  const staleHint = "The speaker has not answered just now; this is the last level it reported.";
 
   return (
     <div className="flex items-center gap-1">
-      <Tip hint={muted ? `The Pi speaker is muted at ${level}%.` : `The Pi speaker is at ${level}%.`}>
-        <Button isIconOnly variant="ghost" onPress={toggle} aria-label={muted ? "Unmute speaker" : "Mute speaker"} aria-pressed={muted}>
+      <Tip hint={stale ? staleHint : muted ? `The Pi speaker is muted at ${level}%.` : `The Pi speaker is at ${level}%.`}>
+        <Button
+          isIconOnly
+          variant="ghost"
+          onPress={toggle}
+          aria-label={muted ? "Unmute speaker" : "Mute speaker"}
+          aria-description={stale ? staleHint : undefined}
+          aria-pressed={muted}
+        >
           <Icon className={cn("size-5", muted && "text-danger")} strokeWidth={1.5} />
         </Button>
       </Tip>
       <div className="hidden w-28 px-1 sm:block">
         <Range label="Speaker volume" value={eff} onChange={setTo} step={VOL_STEP} />
       </div>
-      <span className="hidden w-12 text-right font-mono text-xs tabular-nums text-muted sm:inline">{label}</span>
+      <span
+        title={stale ? staleHint : undefined}
+        className={cn("hidden w-12 text-right font-mono text-xs tabular-nums sm:inline", stale ? "text-subtle" : "text-muted")}
+      >
+        {label}
+        {/* The mark's width is reserved in both states so the digits never move. */}
+        <span aria-hidden className="inline-block w-2">
+          {stale ? "?" : ""}
+        </span>
+        {stale && <span className="sr-only">, last level the speaker reported</span>}
+      </span>
       {error && (
         <span className="max-w-40 truncate text-[11px] text-danger" role="status">
           {error}
         </span>
       )}
       <Popover>
-        <Button size="sm" variant="ghost" className="font-mono text-xs tabular-nums text-muted sm:hidden" aria-label={`Volume ${label}`}>
+        <Button
+          size="sm"
+          variant="ghost"
+          className={cn("font-mono text-xs tabular-nums sm:hidden", stale ? "text-subtle" : "text-muted")}
+          aria-label={stale ? `Volume ${label}, last level the speaker reported` : `Volume ${label}`}
+        >
           {label}
         </Button>
         <Popover.Content placement="bottom end" className="w-[min(18rem,calc(100vw-1.5rem))]">
           <Popover.Dialog className="p-4">
             <div className="mb-3 flex items-center justify-between">
               <Popover.Heading className="text-sm">Speaker</Popover.Heading>
-              <span className="font-mono text-sm tabular-nums">{label}</span>
+              <span className={cn("font-mono text-sm tabular-nums", stale && "text-subtle")}>{label}</span>
             </div>
+            {stale && <p className="mb-3 text-[11px] text-subtle">{staleHint}</p>}
             <div className="flex items-center gap-2">
               <Tip>
                 <Button isIconOnly variant="outline" onPress={() => setTo(eff - VOL_STEP)} aria-label="Down 5%">

@@ -176,6 +176,9 @@ type Handler struct {
 	spoken         TypedResponder
 	transcriber    Transcriber
 	volume         VolumeControl
+	// volumeCache is the last successful speaker read, served marked stale when
+	// a later read fails (see volume.go).
+	volumeCache volumeCache
 	// wakeword is the configured allowlist and thresholds shown on Settings
 	// and probed on Health.
 	wakeword WakewordInfo

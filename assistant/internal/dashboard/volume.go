@@ -4,13 +4,15 @@ import (
 	"context"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/audio"
 )
 
-// volumeTimeout bounds one pactl round trip so a wedged Pulse server cannot
-// hang the top bar.
+// volumeTimeout bounds one pactl read so a wedged Pulse server cannot hang the
+// top bar. Reads now cover two concurrent queries, so this is the budget for
+// the whole read rather than half of it.
 const volumeTimeout = 3 * time.Second
 
 // VolumeControl is the Pi speaker's level and mute. main passes the same
@@ -21,10 +23,36 @@ type VolumeControl interface {
 	SetMute(ctx context.Context, muted bool) error
 }
 
-// volumeView is the top bar's speaker state. Available is false when no sink
-// is wired or the read failed, and the control hides itself.
+// volumeCache remembers the last successful read. A Bluetooth sink can take
+// seconds to wake, so a failed read serves the last level the user can still
+// drag instead of taking the control off the screen; a stale slider beats no
+// slider. The zero value is ready to use and each Handler owns its own.
+type volumeCache struct {
+	mu     sync.Mutex
+	state  audio.VolumeState
+	loaded bool
+}
+
+func (c *volumeCache) get() (audio.VolumeState, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.state, c.loaded
+}
+
+func (c *volumeCache) put(state audio.VolumeState) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.state = state
+	c.loaded = true
+}
+
+// volumeView is the top bar's speaker state. Available is false only when no
+// sink is wired or a read failed with nothing cached; the control hides then.
+// Stale marks a level we could not confirm on this read: it is the last known
+// good value, and the client shows its own note instead of an error sentence.
 type volumeView struct {
 	Available bool
+	Stale     bool
 	Percent   int
 	Muted     bool
 	Error     string
@@ -96,7 +124,14 @@ func (h *Handler) readVolume(ctx context.Context, errorText string) volumeView {
 	state, err := h.volume.Volume(ctx)
 	if err != nil {
 		h.logger.Warn("dashboard volume read", "error", err.Error())
+		if cached, ok := h.volumeCache.get(); ok {
+			// The sink did not answer, but the last level still works. Keep the
+			// control on screen and let the client mark it stale. errorText is
+			// a write's refusal and is still the client's message to show.
+			return volumeView{Available: true, Stale: true, Percent: cached.Percent, Muted: cached.Muted, Error: errorText}
+		}
 		return volumeView{Error: "The speaker volume is unavailable."}
 	}
+	h.volumeCache.put(state)
 	return volumeView{Available: true, Percent: state.Percent, Muted: state.Muted, Error: errorText}
 }

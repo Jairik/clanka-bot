@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -766,5 +767,52 @@ func TestLoopFeedsTheActivityObserver(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("voice completion did not reach the observer")
+	}
+}
+
+// A completed reply opens a no-wake turn, while a zero window leaves the wake gate closed.
+func TestFollowUpWithoutWakeAndDisable(t *testing.T) {
+	for _, enabled := range []bool{true, false} {
+		t.Run(fmt.Sprint(enabled), func(t *testing.T) {
+			source := &scriptSource{frames: append(repeat(loudFrame(), 8), repeat(silentFrame(), 40)...)}
+			wake := &fakeWake{afterWords: 3, maxFires: 1}
+			stt := &fakeSTT{text: "what time is it"}
+			var once sync.Once
+			responder := &fakeResponder{calls: make(chan string, 4), onCall: func(context.Context) {
+				once.Do(func() {
+					source.mu.Lock()
+					source.frames = append(append(repeat(silentFrame(), 400), repeat(loudFrame(), 8)...), repeat(silentFrame(), 40)...)
+					source.index = 0
+					source.mu.Unlock()
+				})
+			}}
+			loop := newLoop(t, voice.Config{FrameBytes: frameBytes, Endpoint: endpointConfig(300 * time.Millisecond)}, voice.Deps{Source: source, Wake: wake, STT: stt, Responder: responder})
+			loop.BindFollowUp(func() time.Duration {
+				if enabled {
+					return time.Second
+				}
+				return 0
+			})
+			runLoop(t, loop)
+			select {
+			case <-responder.calls:
+			case <-time.After(2 * time.Second):
+				t.Fatal("first turn missing")
+			}
+			select {
+			case <-responder.calls:
+				if !enabled {
+					t.Fatal("disabled follow-up accepted speech")
+				}
+				words := responder.wakeWords()
+				if len(words) < 2 || words[1] != "" {
+					t.Fatalf("follow-up used wake: %v", words)
+				}
+			case <-time.After(time.Second):
+				if enabled {
+					t.Fatal("no-wake follow-up missing")
+				}
+			}
+		})
 	}
 }

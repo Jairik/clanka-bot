@@ -20,6 +20,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/embed"
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/lastreply"
+	lightcore "github.com/Jairik/clanka-bot/assistant/internal/lights"
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
 	corenotify "github.com/Jairik/clanka-bot/assistant/internal/notify"
 	personacore "github.com/Jairik/clanka-bot/assistant/internal/persona"
@@ -38,6 +39,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/tools/calc"
 	"github.com/Jairik/clanka-bot/assistant/tools/clock"
 	"github.com/Jairik/clanka-bot/assistant/tools/github"
+	lighttools "github.com/Jairik/clanka-bot/assistant/tools/lights"
 	listtools "github.com/Jairik/clanka-bot/assistant/tools/list"
 	notetools "github.com/Jairik/clanka-bot/assistant/tools/note"
 	notifytools "github.com/Jairik/clanka-bot/assistant/tools/notify"
@@ -57,6 +59,7 @@ import (
 
 // routingEvalTools is the complete Fast path surface this corpus must cover.
 var routingEvalTools = []string{
+	"lights.power", "lights.brightness", "lights.color", "lights.mode",
 	clock.Name,
 	clock.DateName,
 	clock.CityName,
@@ -413,7 +416,7 @@ func evalRegistry(t *testing.T) (*tool.Registry, *timer.Manager, *alarm.Manager,
 		t.Fatalf("open eval store: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	quietSettings, err := settings.New(context.Background(), st, quietcore.Definitions(quietcore.DefaultConfig())...)
+	quietSettings, err := settings.New(context.Background(), st, append(quietcore.Definitions(quietcore.DefaultConfig()), lightcore.Definitions()...)...)
 	if err != nil {
 		t.Fatalf("quiet settings: %v", err)
 	}
@@ -556,6 +559,18 @@ func evalRegistry(t *testing.T) (*tool.Registry, *timer.Manager, *alarm.Manager,
 	if err := spotifytools.RegisterTools(reg, spotifytools.NewService(evalSpotifyPlayer{}, nil).WithLibrary(evalSpotifyPlayer{}, evalPlaylists{}, nil)); err != nil {
 		t.Fatalf("register spotify: %v", err)
 	}
+	// BLE routing executes the real encoders against a fake transport, never hardware.
+	lm := lighttools.NewModule()
+	if err := lm.Register(reg, tool.Deps{Settings: func() *settings.Service { return quietSettings }}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := quietSettings.SetJSON(context.Background(), "lights.enabled", []byte(`true`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := quietSettings.SetJSON(context.Background(), "lights.devices", []byte(`"[{\"address\":\"AA:BB:CC:DD:EE:FF\",\"name\":\"Desk\",\"protocol\":\"lotus\"}]"`)); err != nil {
+		t.Fatal(err)
+	}
+	lm.Service.Run = func(context.Context, ...string) ([]byte, error) { return nil, nil }
 	return reg, manager, alarmManager, reminderModule.Manager()
 }
 
@@ -713,6 +728,24 @@ func TestRoutingEvalAgainstMiniLM(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pipeline.New: %v", err)
 	}
+
+	// Chaining has a separate oracle so the original single-request baseline stays comparable.
+	t.Run("chains", func(t *testing.T) {
+		p.BindChains(func() bool { return true })
+		defer p.BindChains(func() bool { return false })
+		for _, text := range []string{"what time is it and set a timer for five minutes", "what time is it then set a timer for five minutes"} {
+			count := 0
+			reply := p.HandleEvents(ctx, request(), text, pipeline.Events{StepReply: func(string) error { count++; return nil }})
+			manager.Cancel("")
+			if count != 2 || reply.Path != tool.PathFast {
+				t.Errorf("%q: steps=%d reply=%+v", text, count, reply)
+			}
+		}
+		for _, text := range []string{"play Simon and Garfunkel", "play rock and roll playlist", "set a timer for an hour and a half", "set a timer for five minutes and invent a new language"} {
+			p.HandleEvents(ctx, request(), text, pipeline.Events{StepReply: func(string) error { t.Errorf("split single or uncertain request %q", text); return nil }})
+			manager.Cancel("")
+		}
+	})
 
 	classify := func(utterance string) evalVerdict {
 		t.Helper()

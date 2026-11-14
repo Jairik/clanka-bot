@@ -261,3 +261,28 @@ func TestAPIStatusExposesTheMachineReason(t *testing.T) {
 		t.Fatalf("APIStatus = %d %q (%v)", status, reason, err)
 	}
 }
+
+// Spotify links bypass search and playlists explicitly enable shuffle.
+func TestCompletionLinks(t *testing.T) {
+	for _, tc := range []struct{ query, body string }{
+		{"https://open.spotify.com/track/abc?si=x", `"uris":["spotify:track:abc"]`},
+		{"https://open.spotify.com/album/abc", `"context_uri":"spotify:album:abc"`},
+		{"https://open.spotify.com/playlist/abc", `"context_uri":"spotify:playlist:abc"`},
+	} {
+		t.Run(tc.query, func(t *testing.T) {
+			p, f := newPlayerFixture(t, 0)
+			if _, err := p.Play(t.Context(), spotify.PlayRequest{Query: tc.query}); err != nil {
+				t.Fatal(err)
+			}
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			joined := strings.Join(f.calls, "\n")
+			if !strings.Contains(joined, tc.body) || strings.Contains(joined, "/search") {
+				t.Fatalf("calls=%s", joined)
+			}
+			if strings.Contains(tc.query, "playlist") && !strings.Contains(joined, "state=true") {
+				t.Fatalf("shuffle missing: %s", joined)
+			}
+		})
+	}
+}

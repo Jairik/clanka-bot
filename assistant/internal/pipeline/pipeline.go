@@ -36,6 +36,8 @@ type AgentRunner interface {
 // Events are optional callbacks for one streaming request. They are called
 // from the routing goroutine, so they must not block.
 type Events struct {
+	// StepReply synchronously finishes a chain step before the next Tool runs.
+	StepReply func(string) error
 	// AgentPath runs once when routing picks the Agent path, before the model
 	// call. The Agent path Filler plays here, while the first tokens are pending.
 	AgentPath func()
@@ -180,6 +182,8 @@ type Pipeline struct {
 	confirmation ConfirmationResolver
 	focus        *focus.Registry
 	lastReply    *lastreply.Store
+	chainEnabled func() bool
+	deferred     *DeferredQueue
 }
 
 // New builds a pipeline and rejects a Control phrase table that points at
@@ -361,6 +365,20 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 			p.callAgent(ctx, req, rest, events, &reply)
 		}
 		return reply
+	}
+
+	// Explicit deferred requests and cancellation precede ordinary Tool routing.
+	if reply, handled := p.deferredRequest(ctx, req, transcript, phrases); handled {
+		markRouting()
+		return reply
+	}
+	// Validate the whole chain before executing any of its Tools.
+	if p.chainEnabled != nil && p.chainEnabled() {
+		if steps := p.chainPlan(ctx, transcript, phrases); len(steps) > 1 {
+			markRouting()
+			record.reason = ""
+			return p.runChain(ctx, req, steps, events, record)
+		}
 	}
 
 	// 3. Control phrase is an exact match and must not wait on embeddings. A
@@ -636,3 +654,6 @@ func (p *Pipeline) finish(ctx context.Context, started time.Time, req tool.Reque
 func NormalizePhrase(text string) string {
 	return phrase.Normalize(text)
 }
+
+// BindChains sets the live chain switch before serving requests.
+func (p *Pipeline) BindChains(enabled func() bool) { p.chainEnabled = enabled }

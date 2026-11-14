@@ -55,16 +55,28 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const [view, setView] = useState<ActivityView | null>(null);
   const [pending, setPending] = useState<PendingAsk[]>([]);
   const [loadError, setLoadError] = useState("");
-  const { live, generation, subscribe } = useLive();
+  const { live, generation, subscribe, resync } = useLive();
 
   const load = useCallback(async () => {
     try {
-      setView(await getJSON<ActivityView>("/api/ui/activity"));
+      // A completed request that arrives while the snapshot is in flight is
+      // merged over it (#149): the activity store is append-only.
+      setView(
+        await resync(
+          "activity",
+          () => getJSON<ActivityView>("/api/ui/activity"),
+          (snapshot: ActivityView, deltas: unknown[]) =>
+            deltas.reduce<ActivityView>(
+              (v, delta) => ({ ...v, Requests: mergeActivity(v.Requests ?? [], delta as Request, v.DisplayLimit || 50) }),
+              snapshot,
+            ),
+        ),
+      );
       setLoadError("");
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : String(e));
     }
-  }, []);
+  }, [resync]);
   useEffect(() => {
     void load();
     // Four seconds is the fallback only: while the stream is open a completed

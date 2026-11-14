@@ -242,6 +242,7 @@ export type RingKind = {
 };
 
 export type ScheduledAlert = {
+  Audio: string;
   KindKey: string;
   Kind: string;
   Label: string;

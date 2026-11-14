@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 import { APIVersionMismatch, getJSON, navigate, postForm, useLocation } from "./api";
 import { API_VERSION } from "./api-version";
-import { useLive } from "./events";
+import { latestDelta, useLive } from "./events";
 import type { HealthView, Session, Volume as VolumeState } from "./types";
 import { Range, Tip, cn } from "./ui";
 import { SpeakToggle } from "./speak";
@@ -91,10 +91,16 @@ const healthIsBad = (h: HealthView) =>
 /** A red dot on Health when any check fails. The stream carries the change; polling is the fallback. */
 function useHealthAlarm() {
   const [bad, setBad] = useState(false);
-  const { live, generation, subscribe } = useLive();
+  const { live, generation, subscribe, resync } = useLive();
   const load = useCallback(
-    () => getJSON<HealthView>("/api/ui/health").then((h) => setBad(healthIsBad(h)), () => {}),
-    [],
+    // A health delta is a whole view, so one that arrives while the snapshot is
+    // in flight is the newer state (#149).
+    () =>
+      resync("health", () => getJSON<HealthView>("/api/ui/health"), latestDelta).then(
+        (h) => setBad(healthIsBad(h)),
+        () => {},
+      ),
+    [resync],
   );
   useEffect(() => {
     void load();
@@ -249,11 +255,13 @@ export function VolumeControl() {
   // the control back here: the slider is optimistic, and showing a level the
   // speaker never took is worse than showing the old one.
   const lastServer = useRef<VolumeState | null>(null);
-  const { live, generation, subscribe } = useLive();
+  const { live, generation, subscribe, resync } = useLive();
 
   const load = useCallback(
+    // A volume delta that arrives while the snapshot is in flight is newer than
+    // the snapshot, so it is applied after it (#149).
     () =>
-      getJSON<VolumeState>("/api/ui/volume").then(
+      resync("volume", () => getJSON<VolumeState>("/api/ui/volume"), latestDelta).then(
         (v) => {
           lastServer.current = v;
           setState(v);
@@ -262,7 +270,7 @@ export function VolumeControl() {
         },
         () => {},
       ),
-    [],
+    [resync],
   );
   useEffect(() => {
     if (!wired) return;

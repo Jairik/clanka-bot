@@ -60,6 +60,7 @@ type CueSource interface {
 // Session is the seam for one spoken turn: #18's capture loop calls Ask, and
 // #25 cancels playback through the request context.
 type Session struct {
+	textCompleted func()
 	pipeline      Pipeline
 	speaker       Speaker
 	sink          speech.Sink
@@ -177,6 +178,9 @@ func (s *Session) ask(ctx context.Context, req tool.Request, transcript string, 
 	if s.speaker == nil {
 		reply := s.pipeline.HandleEvents(ctx, req, transcript, pipeline.Events{})
 		s.complete(ctx, nil)
+		if s.textCompleted != nil && ctx.Err() == nil {
+			s.textCompleted()
+		}
 		return reply, nil
 	}
 
@@ -219,6 +223,15 @@ func (s *Session) ask(ctx context.Context, req tool.Request, transcript string, 
 	streamed := 0
 
 	events := pipeline.Events{
+		// A chain step owns playback until its final PCM has drained.
+		StepReply: func(text string) error {
+			claimFocus()
+			player.play(item{text: text, sentenceEnd: true})
+			streamed++
+			err := player.finish()
+			player = newPlayer(turnCtx, s.speaker, s.sink, s.gate, func() { firstSound() })
+			return err
+		},
 		// The path is known before the model call, so the cached phrase is heard
 		// while the first tokens are still pending.
 		AgentPath: func() {
@@ -552,3 +565,6 @@ func (p *player) finish() error {
 	defer p.mu.Unlock()
 	return p.err
 }
+
+// WithTextCompletion observes a completed Dashboard reply that has no speaker Focus.
+func WithTextCompletion(done func()) Option { return func(s *Session) { s.textCompleted = done } }

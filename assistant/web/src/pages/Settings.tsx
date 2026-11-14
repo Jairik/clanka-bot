@@ -1,3 +1,9 @@
+import { LightsSection } from "./Lights";
+import { useEffect, useState } from "react";
+import { Button } from "@heroui/react";
+import { getJSON, postForm } from "../api";
+// Settings shares the global equalizer with every Pi audio client.
+import { Equalizer } from "./Equalizer";
 import { Lock } from "lucide-react";
 import { usePageData } from "../api";
 import { ResetButton, SelectField, SettingRow, Toggle, useActions } from "../forms";
@@ -20,6 +26,7 @@ export function SettingsPage() {
 
   return (
     <PageFrame id="settings">
+      <LightsSection />
       <Notice error={error || actions.error} flash={actions.flash} onDismiss={actions.clear} />
       {data && !data.HasSettings && (
         <Section title="Settings are not configured" defaultOpen>
@@ -28,6 +35,7 @@ export function SettingsPage() {
       )}
       {data?.HasSettings && (
         <div className="space-y-2.5">
+          <Equalizer />
           <Section title="Tools" summary={`${(data.Tools ?? []).filter((t) => t.Enabled).length}/${data.Tools?.length ?? 0} enabled`} defaultOpen flush>
             <Lede>
               Enable or disable a Tool, or tighten its Permission. A Permission can only move towards Confirm; Local-only is declared in code. Changes apply on the
@@ -98,9 +106,11 @@ export function SettingsPage() {
           )}
 
           {!!data.Live?.length && (
-            <Section title="Other live settings" summary={`${data.Live.length} settings`} flush>
+            <Section title="Conversation and other live settings" summary={`${data.Live.length} settings`} flush>
               <Lede>Every other setting the service exposes is listed here automatically.</Lede>
+              <Lede>Chained commands run in order. Follow-up seconds: 0 disables listening without a wake word; music always requires a wake word.</Lede>
               {list(data.Live)}
+              <QueuedActions />
             </Section>
           )}
 
@@ -151,5 +161,35 @@ function ToolRow({ t, actions }: { t: SettingTool; actions: ReturnType<typeof us
         {t.EnabledOverride && <ResetButton label="Enabled" onPress={() => void actions.run(reset, { field: "enabled" })} />}
       </div>
     </li>
+  );
+}
+
+// Pending orchestration shares the authenticated API and stays cancellable from Settings.
+function QueuedActions() {
+  const [items, setItems] = useState<{ id: number; event: string; text: string; expires: string }[]>([]);
+  const [error, setError] = useState("");
+  const refresh = () => getJSON<typeof items>("/api/deferred").then(setItems).catch((e) => setError(String(e)));
+  useEffect(() => {
+    void refresh();
+    const timer = setInterval(refresh, 3000);
+    return () => clearInterval(timer);
+  }, []);
+  return (
+    <div className="p-3.5 space-y-2">
+      <p>Queued actions · {items.length}/8</p>
+      {error && <p role="alert">{error}</p>}
+      {items.map((item) => (
+        <div key={item.id} className="flex items-center justify-between gap-3">
+          <span>{item.text} · after {item.event} · expires {new Date(item.expires).toLocaleTimeString()}</span>
+          <Button variant="secondary" onPress={async () => {
+            try {
+              const result = await postForm("/api/deferred", { id: String(item.id) });
+              if (!result.ok) throw new Error(result.text);
+              await refresh();
+            } catch (e) { setError(String(e)); }
+          }}>Cancel</Button>
+        </div>
+      ))}
+    </div>
   );
 }

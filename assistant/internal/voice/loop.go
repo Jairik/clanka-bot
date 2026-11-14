@@ -138,6 +138,8 @@ type Deps struct {
 	// moment the structured request log line is written. It feeds the
 	// Dashboard Activity page; nil leaves the loop unchanged.
 	Observer latency.Observer
+	// FollowUp returns the live no-wake listening window; zero disables it.
+	FollowUp func() time.Duration
 	Logger   *slog.Logger
 }
 
@@ -161,6 +163,7 @@ type Loop struct {
 	sampleFrames   chan []byte
 	sampleOverflow bool
 	inTurn         bool
+	followUntil    time.Time
 }
 
 // New validates the config and returns a loop.
@@ -252,6 +255,10 @@ func (l *Loop) listen(ctx context.Context) error {
 		}
 		pending = ""
 		haveTurn = false
+		// Only a completed spoken turn can open the next listening window.
+		if !l.followUntil.IsZero() && time.Now().Before(l.followUntil) {
+			haveTurn = true
+		}
 	}
 }
 
@@ -367,6 +374,9 @@ func (l *Loop) session(ctx context.Context, wakeWord string) (bool, string, erro
 			defer restore()
 		}
 	}
+	// Follow-up capture has a deadline only until speech starts.
+	followUntil := l.followUntil
+	l.followUntil = time.Time{}
 	sessCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
@@ -411,12 +421,24 @@ func (l *Loop) session(ctx context.Context, wakeWord string) (bool, string, erro
 	// endpointing them after chimeDone and opening a 15 s utterance on the tail
 	// (#18/S6). Frames captured after the chime ends are the user.
 	chimeOver := len(wakePCM) == 0
+	// Drop queued TTS frames even when the opening Cue is disabled.
+	captureAfter := time.Now()
+	// Allow the physical speaker/room tail to decay before accepting no-wake audio.
+	if !followUntil.IsZero() {
+		captureAfter = captureAfter.Add(300 * time.Millisecond)
+	}
 	var chimeEnd time.Time
 	for ended := false; !ended; {
 		select {
 		case <-ctx.Done():
 			return false, "", ctx.Err()
 		case fr := <-l.frames:
+			if fr.at.Before(captureAfter) {
+				continue
+			}
+			if !followUntil.IsZero() && !endpointer.SpeechHeard() && time.Now().After(followUntil) {
+				return false, "", nil
+			}
 			if !chimeOver {
 				select {
 				case <-chimeDone:
@@ -502,6 +524,12 @@ func (l *Loop) session(ctx context.Context, wakeWord string) (bool, string, erro
 		case err := <-done:
 			if err != nil && sessCtx.Err() == nil {
 				return false, "", err
+			}
+			// Playback has drained; keep music ducked by skipping follow-ups when music safety is unknown.
+			if l.deps.FollowUp != nil {
+				if window := l.deps.FollowUp(); window > 0 {
+					l.followUntil = time.Now().Add(window)
+				}
 			}
 			return false, "", nil
 		case fr := <-l.frames:
@@ -635,3 +663,6 @@ func sleep(ctx context.Context, d time.Duration) bool {
 		return true
 	}
 }
+
+// BindFollowUp installs the live window source before Run starts.
+func (l *Loop) BindFollowUp(source func() time.Duration) { l.deps.FollowUp = source }

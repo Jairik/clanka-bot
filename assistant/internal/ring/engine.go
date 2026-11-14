@@ -34,7 +34,8 @@ const (
 // Request is one alert that wants to Ring. The engine is generic so #53 can
 // pass an Alarm with the same shape.
 type Request struct {
-	Kind Kind
+	Audio string // Audio is a song, playlist: name, or supported media link.
+	Kind  Kind
 	// ID and Label are the alert's identity for logs and label speech.
 	ID    string
 	Label string
@@ -105,6 +106,9 @@ type Speaker interface {
 // Deps are the Engine's seams. Settings, Clip and Play are required for sound;
 // the rest are optional and stay nil-safe for tests and text-only setups.
 type Deps struct {
+	// Completed observes a Ring after its playback and Focus have ended.
+	Completed func(Kind)
+	Media     func(context.Context, string) error // Media blocks until stopped or playback fails.
 	// Focus is where the active Ring claims Ring priority. The queue below
 	// claims only after it owns the speaker, so a queued Ring cannot replace
 	// the Focus of the Ring that is actually sounding.
@@ -141,6 +145,8 @@ type Deps struct {
 // first (or the current reply sentence) and only then claims Focus, so every
 // Ring stays controllable and no older sound is orphaned by a newer claim.
 type Engine struct {
+	completed  func(Kind)
+	media      func(context.Context, string) error
 	focus      *focus.Registry
 	boundary   Boundary
 	music      Music
@@ -168,6 +174,8 @@ func New(deps Deps) *Engine {
 		deps.Logger = slog.Default()
 	}
 	return &Engine{
+		completed:  deps.Completed,
+		media:      deps.Media,
 		focus:      deps.Focus,
 		boundary:   deps.Boundary,
 		music:      deps.Music,
@@ -199,6 +207,13 @@ func (e *Engine) Ring(parent context.Context, req Request) Result {
 	case <-parent.Done():
 		return Result{Outcome: OutcomeInterrupted, EndedBy: "shutdown"}
 	}
+
+	// Completion runs after the deferred Focus release and speaker cleanup.
+	defer func() {
+		if e.completed != nil && parent.Err() == nil {
+			e.completed(req.Kind)
+		}
+	}()
 
 	// Per-alert overrides are applied to this Ring's copy of the live kind
 	// settings. Nothing global is written, so the next alert still uses the
@@ -241,6 +256,32 @@ func (e *Engine) Ring(parent context.Context, req Request) Result {
 		return holder.result(parent)
 	}
 	defer release()
+
+	// Completion media keeps Ring Focus and replaces both Cues and speech.
+	if req.Audio != "" {
+		mediaCtx, stop := context.WithTimeout(ctx, 10*time.Minute)
+		defer stop()
+		var mediaErr error
+		if e.media != nil {
+			mediaErr = e.media(mediaCtx, req.Audio)
+		} else {
+			mediaErr = errors.New("media unavailable")
+		}
+		if result, done := holder.interrupted(parent); done {
+			return result
+		}
+		if errors.Is(mediaCtx.Err(), context.DeadlineExceeded) {
+			return Result{Played: true, Outcome: OutcomeMissed, EndedBy: "timeout"}
+		}
+		if mediaErr == nil {
+			return Result{Played: true, Outcome: OutcomeStopped, EndedBy: "completed"}
+		}
+		e.logger.Warn("completion media failed; speaking fallback", "kind", req.Kind)
+		if restore := e.duck(ctx, req.Kind); restore != nil {
+			defer restore()
+		}
+		return e.speakFallback(ctx, parent, req, holder, settings)
+	}
 
 	// Duck music once for the whole Ring; restore on every exit path.
 	if restore := e.duck(ctx, req.Kind); restore != nil {

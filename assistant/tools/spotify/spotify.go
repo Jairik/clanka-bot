@@ -120,6 +120,10 @@ func RegisterTools(r *tool.Registry, svc *Service) error {
 // every six hours. It never blocks startup and does nothing while the Web API
 // is not configured; the cache then loads on the first playlist request.
 func (m *Module) Start(ctx context.Context) error {
+	// Completion monitoring shares the module lifetime and existing Web API client.
+	if m.service != nil && m.cfg.Enabled() {
+		go m.service.WatchCompletion(ctx)
+	}
 	if m.cache != nil && m.cfg.Enabled() {
 		m.cache.Start(ctx)
 	}

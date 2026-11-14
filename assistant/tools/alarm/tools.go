@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/parse"
+	"github.com/Jairik/clanka-bot/assistant/internal/ring"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 )
 
@@ -13,7 +14,7 @@ import (
 func NewSet(m *Manager) tool.Tool[SetIn, SetOut] {
 	return tool.Tool[SetIn, SetOut]{
 		Name:        SetName,
-		Description: "Set a clock-time alarm, optionally repeating on chosen days and with a per-alarm sound, volume or ramp.",
+		Description: "Set a clock-time alarm, optionally repeating on chosen days and with a per-alarm sound, volume or ramp. Completion audio replaces speech: use a song, Spotify link, playlist: name (shuffled), or YouTube video link; play it only at the alarm time.",
 		Permission:  tool.PermissionAct,
 		LocalOnly:   tool.LocalOnlyNo,
 		Handler: func(ctx context.Context, in SetIn) (SetOut, error) {
@@ -171,6 +172,7 @@ func Register(r *tool.Registry, m *Manager) error {
 // so a misrouted timer request cannot create an Alarm, and it refuses wording
 // that asks to change an existing Alarm.
 func extractSet(text string) (SetIn, bool) {
+	text, media := ring.SplitAudio(text)
 	lower := strings.ToLower(text)
 	if !strings.Contains(lower, "alarm") && !strings.Contains(lower, "wake") {
 		return SetIn{}, false
@@ -187,6 +189,7 @@ func extractSet(text string) (SetIn, bool) {
 	schedule, weekdays := parseScheduleText(text)
 	overrides := parseOverrides(text)
 	return SetIn{
+		Audio:       media,
 		Hour:        hour,
 		Minute:      minute,
 		Schedule:    string(schedule),

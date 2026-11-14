@@ -20,13 +20,19 @@ const ROUTES = [
 ];
 
 /**
- * The Dashboard holds one live SSE connection open, so the page never reaches
- * Playwright's "network idle". Load plus a short settle replaces it; the
- * route/response collectors in watch() still fail the test on a bad request.
+ * Open a route and wait until the shell's session view and the chat's activity
+ * view have answered. Those two requests happen on every route, so an
+ * assertion after this cannot race the first render; the live stream is held
+ * open, so Playwright's "network idle" is never reached. Errors are left to the
+ * route/response collector in watch(), which names the failing request instead
+ * of leaving a timeout.
  */
-async function settle(page: Page) {
-  await page.waitForLoadState("load");
-  await page.waitForTimeout(500);
+async function settle(page: Page, route: string) {
+  const answers = ["/api/ui/session", "/api/ui/activity"].map((path) =>
+    page.waitForResponse((res) => res.request().method() === "GET" && new URL(res.url()).pathname === path),
+  );
+  await page.goto(route);
+  await Promise.all(answers);
 }
 
 /** Records everything that would make a page broken for the user. */
@@ -47,9 +53,8 @@ test.describe("routes", () => {
   for (const route of ROUTES) {
     test(`${route} loads clean`, async ({ page }) => {
       const problems = watch(page);
-      await page.goto(route);
+      await settle(page, route);
       await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
-      await settle(page);
       expect(problems).toEqual([]);
     });
   }
@@ -206,12 +211,11 @@ test.describe("accessibility", () => {
       test(`${route} has no axe violations (${theme})`, async ({ page, isMobile }) => {
         test.skip(isMobile, "the desktop project scans both themes");
         await page.emulateMedia({ colorScheme: theme });
-        await page.goto(route);
+        await settle(page, route);
         // The pointer starts at (0,0), which is over the rail's logo; its
         // hover tooltip would be scanned as content outside a landmark. Park
         // it over the page body, where nothing opens on hover.
         await page.mouse.move(700, 600);
-        await settle(page);
         const results = await new AxeBuilder({ page }).analyze();
         expect(results.violations).toEqual([]);
       });

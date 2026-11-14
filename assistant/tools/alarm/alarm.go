@@ -62,6 +62,7 @@ const (
 // empty for the kind default; a nil Volume or RampSeconds keeps the kind
 // setting, so an explicit 0 volume or 0 ramp stays distinct from the default.
 type Alarm struct {
+	Audio       string    `json:"audio,omitempty"` // Audio replaces the completion speech.
 	ID          string    `json:"id"`
 	Label       string    `json:"label,omitempty"`
 	Hour        int       `json:"hour"`
@@ -80,6 +81,7 @@ type Alarm struct {
 // Sound is the spoken library sound for this Alarm; Volume and RampSeconds are
 // optional per-Alarm overrides. A nil pointer keeps the kind default.
 type SetIn struct {
+	Audio       string   `json:"audio,omitempty"` // Audio replaces the completion speech.
 	Hour        int      `json:"hour"`
 	Minute      int      `json:"minute,omitempty"`
 	Schedule    string   `json:"schedule,omitempty"`
@@ -108,15 +110,16 @@ type SetOut struct {
 // volume or ramp is distinct from a reset. This is also the Dashboard's typed
 // write path for the Scheduled alerts page (#58).
 type UpdateIn struct {
-	ID          string `json:"id,omitempty"`
-	Label       string `json:"label,omitempty"`
-	Time        string `json:"time,omitempty"`
-	Sound       string `json:"sound,omitempty"`
-	SoundReset  bool   `json:"sound_reset,omitempty"`
-	Volume      *int   `json:"volume,omitempty"`
-	VolumeReset bool   `json:"volume_reset,omitempty"`
-	RampSeconds *int   `json:"ramp_seconds,omitempty"`
-	RampReset   bool   `json:"ramp_reset,omitempty"`
+	Audio       *string `json:"audio,omitempty"` // A pointer permits clearing completion media.
+	ID          string  `json:"id,omitempty"`
+	Label       string  `json:"label,omitempty"`
+	Time        string  `json:"time,omitempty"`
+	Sound       string  `json:"sound,omitempty"`
+	SoundReset  bool    `json:"sound_reset,omitempty"`
+	Volume      *int    `json:"volume,omitempty"`
+	VolumeReset bool    `json:"volume_reset,omitempty"`
+	RampSeconds *int    `json:"ramp_seconds,omitempty"`
+	RampReset   bool    `json:"ramp_reset,omitempty"`
 }
 
 // UpdateOut reports the selected Alarm and what changed. Matched is 0 when no
@@ -312,6 +315,7 @@ func (m *Manager) Set(ctx context.Context, in SetIn) (SetOut, error) {
 	}
 	out := SetOut{}
 	alarm := Alarm{
+		Audio:       strings.TrimSpace(in.Audio),
 		Label:       cleanAlarmLabel(in.Label),
 		Hour:        in.Hour,
 		Minute:      in.Minute,
@@ -449,6 +453,10 @@ func (m *Manager) Update(ctx context.Context, in UpdateIn) (UpdateOut, error) {
 	updated := target
 	out := UpdateOut{Matched: 1}
 	var changed []string
+	if in.Audio != nil {
+		updated.Audio = strings.TrimSpace(*in.Audio)
+		changed = append(changed, "audio")
+	}
 	if in.SoundReset || strings.TrimSpace(in.Sound) != "" {
 		changed = append(changed, "sound")
 		if in.SoundReset {
@@ -543,7 +551,7 @@ func validateUpdate(in UpdateIn) error {
 
 // hasChanges reports whether the request names at least one override change.
 func (in UpdateIn) hasChanges() bool {
-	return in.SoundReset || strings.TrimSpace(in.Sound) != "" ||
+	return in.Audio != nil || in.SoundReset || strings.TrimSpace(in.Sound) != "" ||
 		in.VolumeReset || in.Volume != nil ||
 		in.RampReset || in.RampSeconds != nil
 }
@@ -898,6 +906,7 @@ func (m *Manager) fire(id string, snoozed bool) {
 			Label:        alarm.Label,
 			FiresAt:      state.occurrence,
 			FallbackText: fallbackText(alarm),
+			Audio:        alarm.Audio,
 			Sound:        alarm.Sound,
 			Volume:       cloneInt(alarm.Volume),
 			Ramp:         rampDuration(alarm.RampSeconds),
@@ -1129,8 +1138,8 @@ func (m *Manager) insert(ctx context.Context, alarm Alarm, days uint8, createdAt
 	defer cancel()
 	result, err := m.db.ExecContext(ctx,
 		`INSERT INTO alarms
-		 (label, hour, minute, schedule, weekdays, next_fires_at, created_at, sound, volume, ramp_ms)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		 (label, hour, minute, schedule, weekdays, next_fires_at, created_at, sound, volume, ramp_ms, audio)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		alarm.Label,
 		alarm.Hour,
 		alarm.Minute,
@@ -1140,7 +1149,7 @@ func (m *Manager) insert(ctx context.Context, alarm Alarm, days uint8, createdAt
 		createdAt.UnixMilli(),
 		alarm.Sound,
 		nullableInt(alarm.Volume),
-		nullableSeconds(alarm.RampSeconds))
+		nullableSeconds(alarm.RampSeconds), alarm.Audio)
 	if err != nil {
 		return "", fmt.Errorf("alarm: save alarm: %w", err)
 	}

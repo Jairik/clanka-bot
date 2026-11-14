@@ -253,3 +253,16 @@ func TestResetSetsFullVolume(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Receiver presence suppresses follow-ups even when playback started outside the Tools.
+func TestPulseStreamsPresence(t *testing.T) {
+	pacat, _ := fakePactl(t)
+	streams := music.NewPulseStreams(pacat, "spotify")
+	if present, err := streams.Present(t.Context()); err != nil || !present {
+		t.Fatalf("present=%v err=%v", present, err)
+	}
+	unrelated := music.NewPulseStreams(pacat, "unmatched receiver")
+	if present, err := unrelated.Present(t.Context()); err != nil || present {
+		t.Fatalf("present=%v err=%v", present, err)
+	}
+}

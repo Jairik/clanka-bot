@@ -76,3 +76,21 @@ func (p *PulseStreams) matches(in sinkInput) bool {
 	}
 	return false
 }
+
+// Present conservatively detects receiver streams, including playback started outside the Assistant.
+func (p *PulseStreams) Present(ctx context.Context) (bool, error) {
+	out, err := exec.CommandContext(ctx, p.pactl, "--format=json", "list", "sink-inputs").Output()
+	if err != nil {
+		return false, err
+	}
+	var inputs []sinkInput
+	if err := json.Unmarshal(out, &inputs); err != nil {
+		return false, err
+	}
+	for _, input := range inputs {
+		if p.matches(input) {
+			return true, nil
+		}
+	}
+	return false, nil
+}

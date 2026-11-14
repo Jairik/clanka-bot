@@ -4,7 +4,7 @@
 import { useRef, useState } from "react";
 import { Button } from "@heroui/react";
 import { Upload, X } from "lucide-react";
-import { cn } from "./ui";
+import { cn, Tip } from "./ui";
 
 const UNITS: Record<string, number> = { B: 1, KB: 1024, MB: 1024 ** 2, GB: 1024 ** 3 };
 
@@ -157,9 +157,11 @@ export function UploadRow({
                   <span className="block h-full bg-foreground" style={{ width: `${progress}%` }} />
                 </span>
                 <span className="w-9 text-right tabular-nums text-muted">{progress}%</span>
-                <Button isIconOnly size="sm" variant="ghost" aria-label="Cancel upload" onPress={() => xhr.current?.abort()}>
-                  <X className="size-4" />
-                </Button>
+                <Tip>
+                  <Button isIconOnly size="sm" variant="ghost" aria-label="Cancel upload" onPress={() => xhr.current?.abort()}>
+                    <X className="size-4" />
+                  </Button>
+                </Tip>
               </>
             ) : (
               <>

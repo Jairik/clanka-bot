@@ -6,7 +6,7 @@ import { Button } from "@heroui/react";
 import { Megaphone, MegaphoneOff } from "lucide-react";
 import { postForm } from "./api";
 import { useSession } from "./shell";
-import { cn } from "./ui";
+import { cn, Tip } from "./ui";
 
 export type SpeakState = {
   /** A speaker is wired; without one the toggle is hidden. */
@@ -57,16 +57,18 @@ export function SpeakToggle() {
   const Icon = on ? Megaphone : MegaphoneOff;
   return (
     <div className="flex items-center gap-1">
-      <Button
-        isIconOnly
-        variant="ghost"
-        onPress={toggle}
-        aria-label="Speak replies on the Pi"
-        aria-pressed={on}
-        aria-description={on ? "Answers are spoken on the Pi" : "Answers are shown only"}
-      >
-        <Icon className={cn("size-5", on ? "text-foreground" : "text-muted")} strokeWidth={1.5} />
-      </Button>
+      <Tip hint={on ? "On: answers also play on the Pi speaker." : "Off: answers are only shown here."}>
+        <Button
+          isIconOnly
+          variant="ghost"
+          onPress={toggle}
+          aria-label="Speak replies on the Pi"
+          aria-pressed={on}
+          aria-description={on ? "Answers are spoken on the Pi" : "Answers are shown only"}
+        >
+          <Icon className={cn("size-5", on ? "text-foreground" : "text-muted")} strokeWidth={1.5} />
+        </Button>
+      </Tip>
       {error && (
         <span role="status" className="max-w-40 truncate text-[11px] text-danger">
           {error}

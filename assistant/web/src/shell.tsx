@@ -10,7 +10,7 @@ import { APIVersionMismatch, getJSON, navigate, postForm, useLocation } from "./
 import { API_VERSION } from "./api-version";
 import { useLive } from "./events";
 import type { HealthView, Session, Volume as VolumeState } from "./types";
-import { Range, cn } from "./ui";
+import { Range, Tip, cn } from "./ui";
 import { SpeakToggle } from "./speak";
 import { prefetch } from "./routes";
 import { snapVolume, VOL_STEP } from "./volume";
@@ -125,31 +125,33 @@ export function Shell({ children }: { children: ReactNode }) {
         Skip to content
       </a>
       <aside className="hidden w-[70px] shrink-0 flex-col border-r md:flex">
-        <a href="/" onClick={link("/")} className="flex h-[70px] shrink-0 items-center justify-center border-b" aria-label="Home">
-          <Logo className="size-6" />
-        </a>
+        <Tip label="clanka" hint="Back to the chat" placement="right">
+          <a href="/" onClick={link("/")} className="flex h-[70px] shrink-0 items-center justify-center border-b" aria-label="Home">
+            <Logo className="size-6" />
+          </a>
+        </Tip>
         <nav className="flex flex-1 flex-col items-center gap-1 overflow-y-auto py-4" aria-label="Pages">
-          {PAGES.map(({ id, path: to, title, icon: I }) => (
-            // A plain link with a title: wrapping it in Tooltip.Trigger put a
-            // button role around a link, which is invalid nesting. Hover/focus
-            // warms that page's chunk so navigation is instant.
-            <a
-              key={id}
-              href={to}
-              onClick={link(to)}
-              onMouseEnter={() => prefetch(id)}
-              onFocus={() => prefetch(id)}
-              aria-label={title}
-              aria-current={page === id ? "page" : undefined}
-              title={title}
-              className={cn(
-                "relative flex size-10 items-center justify-center border border-transparent",
-                page === id ? "border-border bg-surface-secondary text-foreground" : "text-muted hover:text-foreground",
-              )}
-            >
-              <I className="size-[18px]" strokeWidth={1.5} />
-              {id === "health" && healthBad && <span className="absolute top-2 right-2 size-1.5 rounded-full bg-danger" />}
-            </a>
+          {PAGES.map(({ id, path: to, title, blurb, icon: I }) => (
+            // The link is the tooltip trigger itself (through Focusable), so
+            // no button role wraps it. Hover/focus also warms that page's
+            // chunk so navigation is instant.
+            <Tip key={id} label={title} hint={id === "health" && healthBad ? "A check is failing." : blurb || "Talk to clanka."} placement="right">
+              <a
+                href={to}
+                onClick={link(to)}
+                onMouseEnter={() => prefetch(id)}
+                onFocus={() => prefetch(id)}
+                aria-label={title}
+                aria-current={page === id ? "page" : undefined}
+                className={cn(
+                  "relative flex size-10 items-center justify-center border border-transparent",
+                  page === id ? "border-border bg-surface-secondary text-foreground" : "text-muted hover:text-foreground",
+                )}
+              >
+                <I className="size-[18px]" strokeWidth={1.5} />
+                {id === "health" && healthBad && <span className="absolute top-2 right-2 size-1.5 rounded-full bg-danger" />}
+              </a>
+            </Tip>
           ))}
         </nav>
         <Owner />
@@ -197,8 +199,12 @@ export const link = (to: string) => (e: React.MouseEvent) => {
 function Owner() {
   const { Owner: owner } = useSession();
   return (
-    <div className="flex h-[70px] shrink-0 items-center justify-center border-t" title={`Signed in as ${owner}`}>
-      <span className="flex size-9 items-center justify-center border text-[11px] uppercase">{owner.slice(0, 2)}</span>
+    <div className="flex h-[70px] shrink-0 items-center justify-center border-t">
+      <Tip label="Signed in" hint={owner} placement="right">
+        <span tabIndex={0} aria-label={`Signed in as ${owner}`} className="flex size-9 items-center justify-center border text-[11px] uppercase">
+          {owner.slice(0, 2)}
+        </span>
+      </Tip>
     </div>
   );
 }
@@ -336,10 +342,12 @@ export function VolumeControl() {
 
   return (
     <div className="flex items-center gap-1">
-      <Button isIconOnly variant="ghost" onPress={toggle} aria-label={muted ? "Unmute speaker" : "Mute speaker"} aria-pressed={muted}>
-        <Icon className={cn("size-5", muted && "text-danger")} strokeWidth={1.5} />
-      </Button>
-      <div className="hidden w-28 sm:block">
+      <Tip hint={muted ? `The Pi speaker is muted at ${level}%.` : `The Pi speaker is at ${level}%.`}>
+        <Button isIconOnly variant="ghost" onPress={toggle} aria-label={muted ? "Unmute speaker" : "Mute speaker"} aria-pressed={muted}>
+          <Icon className={cn("size-5", muted && "text-danger")} strokeWidth={1.5} />
+        </Button>
+      </Tip>
+      <div className="hidden w-28 px-1 sm:block">
         <Range label="Speaker volume" value={eff} onChange={setTo} step={VOL_STEP} />
       </div>
       <span className="hidden w-12 text-right font-mono text-xs tabular-nums text-muted sm:inline">{label}</span>
@@ -359,13 +367,17 @@ export function VolumeControl() {
               <span className="font-mono text-sm tabular-nums">{label}</span>
             </div>
             <div className="flex items-center gap-2">
-              <Button isIconOnly variant="outline" onPress={() => setTo(eff - VOL_STEP)} aria-label="Down 5%">
-                <Minus className="size-4" />
-              </Button>
+              <Tip>
+                <Button isIconOnly variant="outline" onPress={() => setTo(eff - VOL_STEP)} aria-label="Down 5%">
+                  <Minus className="size-4" />
+                </Button>
+              </Tip>
               <Range label="Speaker volume" value={eff} onChange={setTo} step={VOL_STEP} />
-              <Button isIconOnly variant="outline" onPress={() => setTo(eff + VOL_STEP)} aria-label="Up 5%">
-                <Plus className="size-4" />
-              </Button>
+              <Tip>
+                <Button isIconOnly variant="outline" onPress={() => setTo(eff + VOL_STEP)} aria-label="Up 5%">
+                  <Plus className="size-4" />
+                </Button>
+              </Tip>
             </div>
             <Button fullWidth variant={muted ? "primary" : "secondary"} className="mt-3" onPress={toggle}>
               {muted ? "Unmute" : "Mute"}

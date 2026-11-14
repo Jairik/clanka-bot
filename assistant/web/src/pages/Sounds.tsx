@@ -6,7 +6,7 @@ import { ResetButton, SelectField, SettingRow, useActions } from "../forms";
 import { PageFrame } from "../shell";
 import type { SoundsView } from "../types";
 import { UploadRow } from "../upload";
-import { Badge, Empty, Lede, Notice, Section, SourceBadge } from "../ui";
+import { Badge, Empty, Lede, Notice, Section, SourceBadge, Tip } from "../ui";
 
 export function SoundsPage() {
   const { data, error, set } = usePageData("sounds");
@@ -46,18 +46,22 @@ export function SoundsPage() {
                   const pi = `/sounds/preview/${encodeURIComponent(s.Name)}`;
                   return (
                     <li key={s.Name} className="flex min-h-14 items-center gap-3 px-3.5 py-2">
-                      <Button isIconOnly size="sm" variant={playing === s.Name ? "primary" : "secondary"} aria-label={`Preview ${s.Name}`} onPress={() => preview(s.Name, s.AudioURL)}>
-                        <Play className="size-3.5" />
-                      </Button>
+                      <Tip>
+                        <Button isIconOnly size="sm" variant={playing === s.Name ? "primary" : "secondary"} aria-label={`Preview ${s.Name}`} onPress={() => preview(s.Name, s.AudioURL)}>
+                          <Play className="size-3.5" />
+                        </Button>
+                      </Tip>
                       <div className="min-w-0 flex-1">
                         <div className="truncate font-mono text-sm">{s.Name}</div>
                         <div className="truncate text-[11px] text-muted">
                           {[s.Duration, s.Origin, s.Added && `added ${s.Added}`].filter(Boolean).join(" · ")}
                         </div>
                       </div>
-                      <Button size="sm" variant="ghost" isPending={actions.pending === pi} onPress={() => void actions.run(pi)} aria-label={`Play ${s.Name} on the Pi`}>
-                        <Speaker className="size-3.5" /> <span className="hidden sm:inline">On Pi</span>
-                      </Button>
+                      <Tip>
+                        <Button size="sm" variant="ghost" isPending={actions.pending === pi} onPress={() => void actions.run(pi)} aria-label={`Play ${s.Name} on the Pi`}>
+                          <Speaker className="size-3.5" /> <span className="hidden sm:inline">On Pi</span>
+                        </Button>
+                      </Tip>
                     </li>
                   );
                 })}

@@ -466,6 +466,7 @@ export type VoiceRow = {
   Active: boolean;
   Unvalidated: boolean;
   PreviewURL: string;
+  SpeakAction: string;
   SelectAction: string;
   NoteAction: string;
 };
@@ -563,6 +564,13 @@ export type VoicesView = {
   HasLibrary: boolean;
   CanUpload: boolean;
   CanPreview: boolean;
+  // CanPlayOnPi is true when a sample can also be sent to the Pi speaker:
+  // the preview synthesizer and the sound service's speaker sink are wired.
+  CanPlayOnPi: boolean;
+  // SampleText is the phrase spoken when the owner types nothing, and
+  // MaxSampleText the longest sample the server accepts, in characters.
+  SampleText: string;
+  MaxSampleText: number;
   MaxUpload: string;
   Revision: string;
   ActiveName: string;

@@ -351,6 +351,7 @@ func New(opts Options) (*Handler, error) {
 	h.Mutating("POST /voices/rate", h.voicesRate)
 	h.Mutating("POST /voices/rate/reset", h.voicesRateReset)
 	h.Mutating("POST /voices/note/{name}", h.voicesNote)
+	h.Mutating("POST /voices/speak/{name}", h.voicesSpeak)
 	// The Persona page creates, edits and selects one bundle. Selection writes
 	// voice, Filler, Unavailable wording and the active marker in one settings
 	// transaction; every write goes through Mutating for identity and origin.

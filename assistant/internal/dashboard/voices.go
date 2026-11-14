@@ -12,14 +12,19 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/audio"
+	"github.com/Jairik/clanka-bot/assistant/internal/sound"
 	"github.com/Jairik/clanka-bot/assistant/internal/voicelib"
+	"github.com/Jairik/clanka-bot/assistant/internal/voicesample"
 )
 
-// VoicePreview is the TTS boundary the Voice page uses for one bounded browser
-// sample. voicesample.Sampler is the production implementation; tests can use
-// a fake without opening the audio device.
+// VoicePreview is the TTS boundary the Voice page uses for one bounded sample.
+// It returns PCM rather than a file so the same synthesis can be served to the
+// browser as a WAV or queued for the Pi speaker. voicesample.Sampler is the
+// production implementation; tests can use a fake without opening the audio
+// device. An empty text means voicesample.Phrase.
 type VoicePreview interface {
-	Preview(ctx context.Context, voiceRef string, rate float64) ([]byte, error)
+	Synthesize(ctx context.Context, voiceRef, text string, rate float64) ([]byte, audio.Format, error)
 }
 
 // voicesView is the Voice page's data model. Readiness, status text and every
@@ -32,17 +37,24 @@ type voicesView struct {
 	HasLibrary bool
 	CanUpload  bool
 	CanPreview bool
-	MaxUpload  string
-	Revision   string
-	ActiveName string
-	Default    string
-	Rate       string
-	RateSource string
-	RateLabel  string
-	RateLower  string
-	RateEdit   string
-	HasRate    bool
-	Voices     []voiceRowView
+	// CanPlayOnPi is true when a sample can also be sent to the Pi speaker:
+	// the preview synthesizer and the sound service's speaker sink are wired.
+	CanPlayOnPi bool
+	// SampleText is the phrase spoken when the owner types nothing, and
+	// MaxSampleText the longest sample the server accepts, in characters.
+	SampleText    string
+	MaxSampleText int
+	MaxUpload     string
+	Revision      string
+	ActiveName    string
+	Default       string
+	Rate          string
+	RateSource    string
+	RateLabel     string
+	RateLower     string
+	RateEdit      string
+	HasRate       bool
+	Voices        []voiceRowView
 }
 
 // voiceRowView is one built-in or custom voice and its actions.
@@ -64,6 +76,7 @@ type voiceRowView struct {
 	Active       bool
 	Unvalidated  bool
 	PreviewURL   string
+	SpeakAction  string
 	SelectAction string
 	NoteAction   string
 }
@@ -227,10 +240,12 @@ func (h *Handler) voicesNote(w http.ResponseWriter, r *http.Request) {
 	h.voicesSuccess(w, r, flashVoiceNote)
 }
 
-// voicesAudio synthesizes a fixed short phrase in one library voice and serves
-// it as WAV for the browser's <audio> element. It is authenticated by
-// ServeHTTP, refuses stale/unvalidated states, and never writes voice.name or
-// plays through the Pi speaker.
+// voicesAudio synthesizes a short sample in one library voice and serves it as
+// WAV for the browser's <audio> element. The optional `text` query is the
+// owner's own sample (bounded by voicesample.MaxTextRunes); without it the
+// fixed phrase is spoken. It is authenticated by ServeHTTP, refuses
+// stale/unvalidated states, and never writes voice.name or plays through the
+// Pi speaker.
 func (h *Handler) voicesAudio(w http.ResponseWriter, r *http.Request) {
 	if !allowGet(w, r) {
 		return
@@ -239,29 +254,103 @@ func (h *Handler) voicesAudio(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	voice, ok := h.voices.Get(r.PathValue("name"))
-	if !ok {
-		http.NotFound(w, r)
+	voice, ref, status, message := h.previewVoice(r.PathValue("name"))
+	if status != 0 {
+		http.Error(w, message, status)
 		return
 	}
-	if !voice.Ready() {
-		http.Error(w, "voice is not ready for preview", http.StatusConflict)
-		return
-	}
-	ref, err := h.voices.SpeechRef(voice.Name)
+	text, err := voicesample.Text(r.URL.Query().Get("text"))
 	if err != nil {
-		http.Error(w, "voice is not ready for preview", http.StatusConflict)
+		http.Error(w, voiceSampleTextError(), http.StatusBadRequest)
 		return
 	}
-	data, err := h.voicePreview.Preview(r.Context(), ref, h.voices.Rate())
+	pcm, format, err := h.voicePreview.Synthesize(r.Context(), ref, text, h.voices.Rate())
 	if err != nil {
 		h.logger.Warn("voice preview failed", "voice", voice.Name, "error", err.Error())
 		http.Error(w, "voice preview unavailable", http.StatusBadGateway)
 		return
 	}
+	data := audio.EncodeWAV(pcm, format)
 	w.Header().Set("Content-Type", "audio/wav")
 	w.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": voice.Name + ".wav"}))
 	http.ServeContent(w, r, voice.Name+".wav", time.Time{}, bytes.NewReader(data))
+}
+
+// voicesSpeak synthesizes the same bounded sample and plays it on the Pi
+// speaker. Synthesis happens in the request, so a TTS failure is reported on
+// the page; playback then goes through the preview queue (between turns, like
+// a Sounds preview) or, on a setup without one, plays before answering. The
+// active voice is never changed.
+func (h *Handler) voicesSpeak(w http.ResponseWriter, r *http.Request) {
+	if !h.voicesReady(w, r) {
+		return
+	}
+	if !h.canPlayVoiceOnPi() {
+		h.voicesFail(w, r, http.StatusServiceUnavailable, "The Pi speaker is not wired in this deployment.", nil)
+		return
+	}
+	if err := limitForm(w, r); err != nil {
+		h.voicesFail(w, r, http.StatusBadRequest, "Could not read the form.", nil)
+		return
+	}
+	voice, ref, status, message := h.previewVoice(r.PathValue("name"))
+	if status != 0 {
+		h.voicesFail(w, r, status, message, nil)
+		return
+	}
+	text, err := voicesample.Text(r.FormValue("text"))
+	if err != nil {
+		h.voicesFail(w, r, http.StatusBadRequest, voiceSampleTextError(), nil)
+		return
+	}
+	pcm, format, err := h.voicePreview.Synthesize(r.Context(), ref, text, h.voices.Rate())
+	if err != nil {
+		h.logger.Warn("voice preview failed", "voice", voice.Name, "target", "pi", "error", err.Error())
+		h.voicesFail(w, r, http.StatusBadGateway, "The speech service could not synthesize the sample.", nil)
+		return
+	}
+	clip := sound.Clip{PCM: pcm, Format: format}
+	if h.previews != nil {
+		if !h.previews.EnqueuePlay(func(ctx context.Context) error { return h.sounds.PlayClip(ctx, clip) }) {
+			h.voicesFail(w, r, http.StatusServiceUnavailable, "The Pi preview queue is not available.", nil)
+			return
+		}
+		h.voicesSuccess(w, r, flashVoiceQueued)
+		return
+	}
+	if err := h.sounds.PlayClip(r.Context(), clip); err != nil {
+		h.voicesFail(w, r, http.StatusBadGateway, err.Error(), nil)
+		return
+	}
+	h.voicesSuccess(w, r, flashVoicePlayed)
+}
+
+// previewVoice resolves a library name to the reference TTS needs. A non-zero
+// status is the refusal to send: an unknown name is 404, a state that is not
+// ready (stale or unvalidated) is 409.
+func (h *Handler) previewVoice(name string) (voicelib.Voice, string, int, string) {
+	voice, ok := h.voices.Get(name)
+	if !ok {
+		return voice, "", http.StatusNotFound, "Unknown voice."
+	}
+	if !voice.Ready() {
+		return voice, "", http.StatusConflict, "voice is not ready for preview"
+	}
+	ref, err := h.voices.SpeechRef(voice.Name)
+	if err != nil {
+		return voice, "", http.StatusConflict, "voice is not ready for preview"
+	}
+	return voice, ref, 0, ""
+}
+
+// canPlayVoiceOnPi reports whether a voice sample can reach the Pi speaker:
+// it needs the synthesizer and the sound service, whose sink is the speaker.
+func (h *Handler) canPlayVoiceOnPi() bool {
+	return h.voicePreview != nil && h.sounds != nil
+}
+
+func voiceSampleTextError() string {
+	return fmt.Sprintf("The sample text is limited to %d characters.", voicesample.MaxTextRunes)
 }
 
 // voicesReady guards the page and every form route against an unwired service.
@@ -301,6 +390,9 @@ func (h *Handler) buildVoicesView(flash, errorText string, edit *editState) voic
 	view.HasLibrary = true
 	view.CanUpload = h.voiceProbe != nil
 	view.CanPreview = h.voicePreview != nil
+	view.CanPlayOnPi = h.canPlayVoiceOnPi()
+	view.SampleText = voicesample.Phrase
+	view.MaxSampleText = voicesample.MaxTextRunes
 	view.Revision = h.voices.Revision()
 	view.Default = h.voices.DefaultName()
 
@@ -335,6 +427,7 @@ func (h *Handler) buildVoicesView(flash, errorText string, edit *editState) voic
 			Note:         voice.Note,
 			LastError:    voice.LastError,
 			PreviewURL:   "/voices/audio/" + url.PathEscape(voice.Name),
+			SpeakAction:  "/voices/speak/" + url.PathEscape(voice.Name),
 			SelectAction: "/voices/active/" + url.PathEscape(voice.Name),
 			NoteAction:   "/voices/note/" + url.PathEscape(voice.Name),
 			Origin:       "Custom",
@@ -427,6 +520,10 @@ func voicesFlashMessage(flash string) string {
 		return "Saved. The rate applies to the next reply and the cached Agent Filler is re-synthesized in the background."
 	case flashVoiceNote:
 		return "Note saved. It is recorded only; nothing enforces or verifies it."
+	case flashVoiceQueued:
+		return "Queued. The sample plays on the Pi speaker between turns."
+	case flashVoicePlayed:
+		return "Played on the Pi speaker."
 	case flashReset:
 		return "Reset. The config.yaml or code-default value applies again."
 	default:
@@ -439,4 +536,6 @@ const (
 	flashVoiceSelected = "voice-selected"
 	flashVoiceRate     = "voice-rate"
 	flashVoiceNote     = "voice-note"
+	flashVoiceQueued   = "voice-queued"
+	flashVoicePlayed   = "voice-played"
 )

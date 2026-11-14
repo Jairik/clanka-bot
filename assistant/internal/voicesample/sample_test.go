@@ -70,7 +70,7 @@ func TestPreviewSynthesizesTheBoundedPhraseToWAV(t *testing.T) {
 		false,
 	)
 	sampler := voicesample.New(wyoming.NewClient(addr, wyoming.WithTimeout(2*time.Second)), 2*time.Second)
-	data, err := sampler.Preview(context.Background(), "/voices/jarvis.safetensors", 1.25)
+	data, err := sampler.Preview(context.Background(), "/voices/jarvis.safetensors", "", 1.25)
 	if err != nil {
 		t.Fatalf("Preview: %v", err)
 	}
@@ -86,7 +86,7 @@ func TestPreviewRejectsAnUnsupportedFormat(t *testing.T) {
 		false,
 	)
 	sampler := voicesample.New(wyoming.NewClient(addr, wyoming.WithTimeout(2*time.Second)), 2*time.Second)
-	if _, err := sampler.Preview(context.Background(), "alba", 1); err == nil || !strings.Contains(err.Error(), "format") {
+	if _, err := sampler.Preview(context.Background(), "alba", "", 1); err == nil || !strings.Contains(err.Error(), "format") {
 		t.Fatalf("Preview error = %v, want a format error", err)
 	}
 }
@@ -94,7 +94,7 @@ func TestPreviewRejectsAnUnsupportedFormat(t *testing.T) {
 func TestPreviewReportsAServiceError(t *testing.T) {
 	addr := startSampleServer(t, nil, nil, true)
 	sampler := voicesample.New(wyoming.NewClient(addr, wyoming.WithTimeout(2*time.Second)), 2*time.Second)
-	if _, err := sampler.Preview(context.Background(), "alba", 1); err == nil || !strings.Contains(err.Error(), "model failed") {
+	if _, err := sampler.Preview(context.Background(), "alba", "", 1); err == nil || !strings.Contains(err.Error(), "model failed") {
 		t.Fatalf("Preview error = %v, want the service error", err)
 	}
 }

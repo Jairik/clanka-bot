@@ -97,6 +97,15 @@ but leaves room for a real index. This is independent of the model decision.
    `spotify.pause` (0.45), `spotify.play` (0.48), `system.status` (0.50) and
    the three `reminder.*` Tools (~0.54). Adding natural paraphrase variants to
    those Tools' `Examples` raises recall without moving the threshold.
+
+   A tried counter-example: adding duration variants to `timer.set`
+   ("three minutes", "90 seconds", "a three minute timer") raised total recall
+   by three TPs (0.6697 → 0.6721) and was reverted. It also raised
+   `timer.remaining`'s similarity to the same phrases enough that
+   `TestTimerLabelAndRemainingThroughPipelineAgainstMiniLM` fell from a
+   0.2236 to 0.1599 margin on "set a pasta timer for 10 minutes". Shared
+   Examples are zero-sum between sibling Tools; a per-Tool margin or a lexical
+   "set a timer for …" prefix rule is the right fix, not more Examples.
 3. **Optional, owner decision:** lower `semantic.margin` to 0.14 and update the
    recorded baseline. That buys about nine recall points for four false
    positives (precision 0.9957); every Tool stays above 0.95. Do not do this

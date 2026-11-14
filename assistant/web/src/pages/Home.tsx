@@ -8,7 +8,7 @@ import { latestDelta, useLive, type LiveName } from "../events";
 import { Composer, Exchange, PendingExchange, fmtMS, isFailed, isTyped, parseMS, totalMS, useChat } from "../chat";
 import { useSession } from "../shell";
 import type { AlertsView, HealthView, SecretsView, SpotifyView } from "../types";
-import { Dot, cn } from "../ui";
+import { Dot, cn, Tip } from "../ui";
 
 const greeting = () => {
   const h = new Date().getHours();
@@ -84,9 +84,11 @@ export function Home() {
           placeholder="Ask clanka to…"
           onSent={() => setView("chat")}
           toolbar={
-            <Button isIconOnly size="sm" variant="ghost" aria-label={chat ? "Show overview" : "Show conversation"} onPress={() => setView(chat ? "overview" : "chat")}>
-              <History className="size-4" />
-            </Button>
+            <Tip>
+              <Button isIconOnly size="sm" variant="ghost" aria-label={chat ? "Show overview" : "Show conversation"} onPress={() => setView(chat ? "overview" : "chat")}>
+                <History className="size-4" />
+              </Button>
+            </Tip>
           }
         />
       </div>

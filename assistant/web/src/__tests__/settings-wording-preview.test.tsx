@@ -7,8 +7,11 @@ import { SettingsPage } from "../pages/Settings";
 import type { Setting, SettingsView } from "../types";
 import { json, stubFetch } from "./harness";
 
+/** A tiny WAV body. Built from bytes, not a Blob: Node 22's undici calls
+ * `Blob.stream()`, which jsdom's Blob does not have, so `res.blob()` throws
+ * there and the player never starts. */
 const wav = () =>
-  new Response(new Blob([new Uint8Array([82, 73, 70, 70])], { type: "audio/wav" }), {
+  new Response(new Uint8Array([82, 73, 70, 70]), {
     status: 200,
     headers: { "Content-Type": "audio/wav" },
   });

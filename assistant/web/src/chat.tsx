@@ -13,7 +13,7 @@ import { useSession } from "./shell";
 import { SpeakHint } from "./speak";
 import { Logo } from "./logo";
 import type { ActivityView, Request } from "./types";
-import { Badge, Fold, cn, foldOpen, type Tone } from "./ui";
+import { Badge, Fold, cn, foldOpen, type Tone, Tip } from "./ui";
 
 // ---------- store ----------
 
@@ -452,16 +452,18 @@ export function Composer({ placeholder = "Ask clanka…", onSent, toolbar, class
   }
 
   const micButton = (
-    <Button
-      isIconOnly
-      variant="ghost"
-      size="sm"
-      onPress={micPress}
-      isDisabled={!canMic || phase === "starting"}
-      aria-label={canMic ? "Talk" : session.Mic ? "The microphone needs HTTPS" : "Speech recognition is not configured"}
-    >
-      <AudioLines className="size-4" />
-    </Button>
+    <Tip>
+      <Button
+        isIconOnly
+        variant="ghost"
+        size="sm"
+        onPress={micPress}
+        isDisabled={!canMic || phase === "starting"}
+        aria-label={canMic ? "Talk" : session.Mic ? "The microphone needs HTTPS" : "Speech recognition is not configured"}
+      >
+        <AudioLines className="size-4" />
+      </Button>
+    </Tip>
   );
   const micControl = (
     <span className="contents" onPointerDownCapture={beginHold}>
@@ -476,9 +478,11 @@ export function Composer({ placeholder = "Ask clanka…", onSent, toolbar, class
         <span role="status" className="sr-only">
           Recording started. Release or press stop to send.
         </span>
-          <Button isIconOnly variant="ghost" onPress={cancel} aria-label="Cancel recording">
-            <X className="size-5" />
-          </Button>
+          <Tip>
+            <Button isIconOnly variant="ghost" onPress={cancel} aria-label="Cancel recording">
+              <X className="size-5" />
+            </Button>
+          </Tip>
           {/* Red is reserved for "recording". */}
           <span className="relative flex size-2.5 shrink-0">
             <span className="absolute inset-0 animate-ping rounded-full bg-danger opacity-60" />
@@ -492,9 +496,11 @@ export function Composer({ placeholder = "Ask clanka…", onSent, toolbar, class
           <span className="w-12 text-right font-mono text-xs tabular-nums text-muted" role="timer" aria-label={`Recording ${elapsed} of ${MIC_MAX_SECONDS} seconds`}>
             {elapsed}s / {MIC_MAX_SECONDS}s
           </span>
-          <Button isIconOnly variant="danger" onPress={stop} aria-label="Stop and send">
-            <Square className="size-4 fill-current" />
-          </Button>
+          <Tip>
+            <Button isIconOnly variant="danger" onPress={stop} aria-label="Stop and send">
+              <Square className="size-4 fill-current" />
+            </Button>
+          </Tip>
         </div>
       ) : (
         <form
@@ -541,9 +547,11 @@ export function Composer({ placeholder = "Ask clanka…", onSent, toolbar, class
                 <Tooltip.Content>{session.Mic ? "The microphone needs HTTPS (open the dashboard through tailscale serve)." : "Speech recognition is not configured."}</Tooltip.Content>
               </Tooltip>
             )}
-            <Button isIconOnly type="submit" size="sm" isDisabled={!text.trim()} aria-label="Send">
-              <ArrowUp className="size-4" />
-            </Button>
+            <Tip>
+              <Button isIconOnly type="submit" size="sm" isDisabled={!text.trim()} aria-label="Send">
+                <ArrowUp className="size-4" />
+              </Button>
+            </Tip>
           </div>
         </form>
       )}

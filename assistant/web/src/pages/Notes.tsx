@@ -5,7 +5,7 @@ import { usePageData } from "../api";
 import { Field, TextField, useActions, type Actions } from "../forms";
 import { PageFrame } from "../shell";
 import type { NoteItem, NoteRow, NotesList, NotesView } from "../types";
-import { Empty, Lede, Notice, Section, cn } from "../ui";
+import { Empty, Lede, Notice, Section, cn, Tip } from "../ui";
 
 export function NotesPage() {
   const { data, error, set } = usePageData("notes");
@@ -91,25 +91,29 @@ function ListItem({ item, actions }: { item: NoteItem; actions: Actions<NotesVie
           </Checkbox.Content>
         </Checkbox>
         <span className={cn("min-w-0 flex-1 break-words text-sm", item.Done && "line-through")}>{item.Text}</span>
-        <Button
-          isIconOnly
-          size="sm"
-          variant="ghost"
-          aria-label={`Edit ${item.Text}`}
-          onPress={() => setEditing((v) => !v)}
-        >
-          <Pencil className="size-3.5" />
-        </Button>
-        <Button
-          isIconOnly
-          size="sm"
-          variant="danger-soft"
-          aria-label={`Remove ${item.Text}`}
-          isPending={actions.pending === item.RemoveAction}
-          onPress={() => void actions.run(item.RemoveAction)}
-        >
-          <X className="size-3.5" />
-        </Button>
+        <Tip>
+          <Button
+            isIconOnly
+            size="sm"
+            variant="ghost"
+            aria-label={`Edit ${item.Text}`}
+            onPress={() => setEditing((v) => !v)}
+          >
+            <Pencil className="size-3.5" />
+          </Button>
+        </Tip>
+        <Tip>
+          <Button
+            isIconOnly
+            size="sm"
+            variant="danger-soft"
+            aria-label={`Remove ${item.Text}`}
+            isPending={actions.pending === item.RemoveAction}
+            onPress={() => void actions.run(item.RemoveAction)}
+          >
+            <X className="size-3.5" />
+          </Button>
+        </Tip>
       </div>
       {editing && (
         <form
@@ -188,19 +192,23 @@ function NoteItemRow({ note, actions }: { note: NoteRow; actions: Actions<NotesV
             Updated {note.Updated}
           </time>
         </div>
-        <Button isIconOnly size="sm" variant="ghost" aria-label={`Edit note ${note.Text}`} onPress={() => setEditing((v) => !v)}>
-          <Pencil className="size-3.5" />
-        </Button>
-        <Button
-          isIconOnly
-          size="sm"
-          variant="danger-soft"
-          aria-label={`Delete note ${note.Text}`}
-          isPending={actions.pending === note.DeleteAction}
-          onPress={() => void actions.run(note.DeleteAction)}
-        >
-          <Trash2 className="size-3.5" />
-        </Button>
+        <Tip>
+          <Button isIconOnly size="sm" variant="ghost" aria-label={`Edit note ${note.Text}`} onPress={() => setEditing((v) => !v)}>
+            <Pencil className="size-3.5" />
+          </Button>
+        </Tip>
+        <Tip>
+          <Button
+            isIconOnly
+            size="sm"
+            variant="danger-soft"
+            aria-label={`Delete note ${note.Text}`}
+            isPending={actions.pending === note.DeleteAction}
+            onPress={() => void actions.run(note.DeleteAction)}
+          >
+            <Trash2 className="size-3.5" />
+          </Button>
+        </Tip>
       </div>
       {editing && (
         <form

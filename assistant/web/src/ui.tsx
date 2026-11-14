@@ -1,11 +1,45 @@
 // Thin helpers over HeroUI v3 (React Aria underneath). Anything that is just a
 // HeroUI component is imported from @heroui/react at the call site; these exist
 // only where the dashboard repeats the same composition.
-import { Chip, Disclosure, Slider } from "@heroui/react";
+import { Chip, Disclosure, Focusable, Slider, Tooltip } from "@heroui/react";
 import { ChevronRight } from "lucide-react";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
-import type { ReactNode } from "react";
+import type { DOMAttributes, ReactElement, ReactNode } from "react";
+
+type FocusableElement = Element;
+
+type TipPlacement = "top" | "bottom" | "left" | "right" | "bottom end" | "bottom start";
+
+/**
+ * A short hover/focus label for a control. The child is the trigger itself, so
+ * no wrapper element (and no stray button role) is added: a React Aria
+ * component such as a HeroUI Button takes the trigger props directly, and a
+ * plain element (a link, a span with tabIndex) is passed through Focusable.
+ * Without `label`, the child's aria-label is shown, so an icon button's name
+ * and its tooltip cannot drift apart.
+ */
+export function Tip({ label, hint, children, placement = "bottom" }: {
+  label?: ReactNode;
+  /** A second, muted line under the label. */
+  hint?: ReactNode;
+  children: ReactElement<{ "aria-label"?: string }>;
+  placement?: TipPlacement;
+}) {
+  const text = label ?? children.props["aria-label"];
+  if (!text) return children;
+  const trigger =
+    typeof children.type === "string" ? <Focusable>{children as ReactElement<DOMAttributes<FocusableElement>, string>}</Focusable> : children;
+  return (
+    <Tooltip delay={350} closeDelay={0}>
+      {trigger}
+      <Tooltip.Content placement={placement} className="px-2.5 py-1.5">
+        <span className="block">{text}</span>
+        {hint && <span className="mt-0.5 block max-w-56 text-muted">{hint}</span>}
+      </Tooltip.Content>
+    </Tooltip>
+  );
+}
 
 /** Status color. Everything else in the UI is grayscale. */
 export type Tone = "ok" | "warn" | "bad" | "neutral";

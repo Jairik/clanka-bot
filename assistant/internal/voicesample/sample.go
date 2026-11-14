@@ -1,9 +1,9 @@
-// Package voicesample synthesizes one short preview for the Dashboard's
-// browser player: normally the fixed phrase, or the wording the user is
-// editing when the Settings page previews a text setting. It asks the same
-// Wyoming TTS service a reply uses, but it never touches the speaker, the
-// active voice setting or the audio sink: the PCM is collected in memory and
-// returned as a canonical WAV.
+// Package voicesample synthesizes one short preview for the Dashboard: the
+// Voice page's sample, which may be the owner's own text, and the wording the
+// Settings page previews. It asks the same Wyoming TTS service a reply uses,
+// but it never touches the speaker, the active voice setting or the audio sink:
+// the PCM is collected in memory and returned either as PCM, for the Pi
+// speaker, or as a canonical WAV, for the browser.
 package voicesample
 
 import (
@@ -20,22 +20,25 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/wyoming"
 )
 
-// Phrase is deliberately short and fixed: a preview is a sample, not a reply,
-// and every call has the same bounded cost. It is what Preview synthesizes;
-// the Settings wording preview passes the user's own text instead, bounded by
-// MaxPreviewRunes.
+// Phrase is the sample spoken when the owner has not typed one, and what
+// Preview synthesizes. It is deliberately short and fixed: a preview is a
+// sample, not a reply, and every such call has the same bounded cost.
 const Phrase = "This is a short sample of my voice."
 
-// MaxPreviewRunes bounds the user wording a wording preview may synthesize.
-// It is a rune count, so a multi-byte script is not cut short.
+// MaxTextRunes bounds owner-typed text on the Voice page: a sample is not a
+// reply, so every call keeps a small, bounded cost.
+const MaxTextRunes = 200
+
+// MaxPreviewRunes bounds the wording the Settings page previews. It is a rune
+// count, so a multi-byte script is not cut short.
 const MaxPreviewRunes = 240
 
 // MaxPCMBytes bounds one synthesized preview. At the TTS service's 24 kHz mono
-// PCM16 that is over 80 seconds; the fixed phrase is a few seconds and a
-// wording preview is at most MaxPreviewRunes characters.
+// PCM16 that is over 80 seconds; the fixed phrase is a few seconds and the
+// longest accepted text is MaxPreviewRunes characters.
 const MaxPCMBytes = 4 << 20
 
-// Errors returned by Preview and PreviewText.
+// Errors returned by Text, Preview, PreviewText and Synthesize.
 var (
 	ErrTooLong     = errors.New("voice sample: synthesized audio is over the preview limit")
 	ErrEmptyAudio  = errors.New("voice sample: the speech service returned no audio")
@@ -46,6 +49,20 @@ var (
 
 // ErrNotConfigured is returned when the sampler has no TTS client.
 var ErrNotConfigured = errors.New("voice sample: speech service is not configured")
+
+// Text normalizes owner-typed sample text: surrounding space is trimmed, an
+// empty value falls back to Phrase, and anything over MaxTextRunes is refused
+// rather than cut mid-word.
+func Text(text string) (string, error) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return Phrase, nil
+	}
+	if utf8.RuneCountInString(text) > MaxTextRunes {
+		return "", ErrTextTooLong
+	}
+	return text, nil
+}
 
 // Sampler is the production preview boundary. A nil client or an unwired
 // Dashboard option disables previews rather than falling back to the speaker.
@@ -73,7 +90,11 @@ func New(client *wyoming.Client, timeout time.Duration) *Sampler {
 // voices mount; resolving it is the caller's job. The active voice setting is
 // not read or written here.
 func (s *Sampler) Preview(ctx context.Context, voiceRef string, rate float64) ([]byte, error) {
-	return s.synthesize(ctx, voiceRef, rate, Phrase)
+	pcm, format, err := s.Synthesize(ctx, voiceRef, Phrase, rate)
+	if err != nil {
+		return nil, err
+	}
+	return audio.EncodeWAV(pcm, format), nil
 }
 
 // PreviewText synthesizes text in voiceRef at rate and returns a complete
@@ -88,22 +109,39 @@ func (s *Sampler) PreviewText(ctx context.Context, voiceRef string, rate float64
 	if utf8.RuneCountInString(text) > MaxPreviewRunes {
 		return nil, ErrTextTooLong
 	}
-	return s.synthesize(ctx, voiceRef, rate, text)
+	pcm, format, err := s.synthesizePCM(ctx, voiceRef, rate, text)
+	if err != nil {
+		return nil, err
+	}
+	return audio.EncodeWAV(pcm, format), nil
 }
 
-// synthesize is the one Wyoming path both previews use: same format
-// validation, same PCM bound and same WAV encoding. The size-one gate
-// serialises previews against each other, so only one preview request is in
-// flight at a time.
-func (s *Sampler) synthesize(ctx context.Context, voiceRef string, rate float64, text string) ([]byte, error) {
+// Synthesize returns text (Phrase when empty) in voiceRef at rate as mono
+// PCM16 and its format. It is the one path that can also feed the Pi speaker,
+// so the browser and the Pi play the same audio. voiceRef is a built-in name or
+// a path inside the TTS voices mount; resolving it is the caller's job. The
+// active voice setting is not read or written here.
+func (s *Sampler) Synthesize(ctx context.Context, voiceRef, text string, rate float64) ([]byte, audio.Format, error) {
+	text, err := Text(text)
+	if err != nil {
+		return nil, audio.Format{}, err
+	}
+	return s.synthesizePCM(ctx, voiceRef, rate, text)
+}
+
+// synthesizePCM is the one Wyoming path every preview uses: same call, format
+// validation and PCM bound. The size-one gate serialises previews against each
+// other, so only one preview request is in flight at a time. The caller has
+// already validated text.
+func (s *Sampler) synthesizePCM(ctx context.Context, voiceRef string, rate float64, text string) ([]byte, audio.Format, error) {
 	if s == nil || s.Client == nil {
-		return nil, ErrNotConfigured
+		return nil, audio.Format{}, ErrNotConfigured
 	}
 	gate := s.previewGate()
 	select {
 	case gate <- struct{}{}:
 	case <-ctx.Done():
-		return nil, ctx.Err()
+		return nil, audio.Format{}, ctx.Err()
 	}
 	defer func() { <-gate }()
 
@@ -114,13 +152,13 @@ func (s *Sampler) synthesize(ctx context.Context, voiceRef string, rate float64,
 	}
 	stream, err := s.Client.Synthesize(ctx, text, wyoming.Voice{Name: voiceRef}, wyoming.WithRate(rate))
 	if err != nil {
-		return nil, fmt.Errorf("voice sample: %w", err)
+		return nil, audio.Format{}, fmt.Errorf("voice sample: %w", err)
 	}
 	defer stream.Close()
 
 	format := audio.Format{Rate: stream.Format.Rate, Width: stream.Format.Width, Channels: stream.Format.Channels}
 	if format.Rate < 8000 || format.Rate > 96000 || format.Width != 2 || format.Channels != 1 {
-		return nil, fmt.Errorf("%w: %d Hz, width %d, channels %d", ErrFormat, format.Rate, format.Width, format.Channels)
+		return nil, audio.Format{}, fmt.Errorf("%w: %d Hz, width %d, channels %d", ErrFormat, format.Rate, format.Width, format.Channels)
 	}
 
 	pcm := make([]byte, 0, 64<<10)
@@ -130,20 +168,20 @@ func (s *Sampler) synthesize(ctx context.Context, voiceRef string, rate float64,
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("voice sample: %w", err)
+			return nil, audio.Format{}, fmt.Errorf("voice sample: %w", err)
 		}
 		if len(chunk) == 0 {
 			continue
 		}
 		if len(pcm)+len(chunk) > MaxPCMBytes {
-			return nil, ErrTooLong
+			return nil, audio.Format{}, ErrTooLong
 		}
 		pcm = append(pcm, chunk...)
 	}
 	if len(pcm) == 0 {
-		return nil, ErrEmptyAudio
+		return nil, audio.Format{}, ErrEmptyAudio
 	}
-	return audio.EncodeWAV(pcm, format), nil
+	return pcm, format, nil
 }
 
 // previewGate lazily builds the size-one synthesis gate, so a Sampler created

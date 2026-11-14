@@ -4,13 +4,15 @@ import (
 	"context"
 	"net/http"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/audio"
 )
 
-// volumeTimeout bounds one pactl round trip so a wedged Pulse server cannot
-// hang the top bar.
+// volumeTimeout bounds one pactl read so a wedged Pulse server cannot hang the
+// top bar. Reads now cover two concurrent queries, so this is the budget for
+// the whole read rather than half of it.
 const volumeTimeout = 3 * time.Second
 
 // VolumeControl is the Pi speaker's level and mute. main passes the same
@@ -21,10 +23,36 @@ type VolumeControl interface {
 	SetMute(ctx context.Context, muted bool) error
 }
 
-// volumeView is the top bar's speaker state. Available is false when no sink
-// is wired or the read failed, and the control hides itself.
+// volumeCache remembers the last successful read. A Bluetooth sink can take
+// seconds to wake, so a failed read serves the last level the user can still
+// drag instead of taking the control off the screen; a stale slider beats no
+// slider. The zero value is ready to use and each Handler owns its own.
+type volumeCache struct {
+	mu     sync.Mutex
+	state  audio.VolumeState
+	loaded bool
+}
+
+func (c *volumeCache) get() (audio.VolumeState, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.state, c.loaded
+}
+
+func (c *volumeCache) put(state audio.VolumeState) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.state = state
+	c.loaded = true
+}
+
+// volumeView is the top bar's speaker state. Available is false only when no
+// sink is wired or a read failed with nothing cached; the control hides then.
+// Stale marks a level we could not confirm on this read: it is the last known
+// good value, and the client shows its own note instead of an error sentence.
 type volumeView struct {
 	Available bool
+	Stale     bool
 	Percent   int
 	Muted     bool
 	Error     string
@@ -51,33 +79,59 @@ func (h *Handler) volumeSet(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), volumeTimeout)
 	defer cancel()
+	// The writes below succeed without the sink answering them, so after one
+	// lands we know its part of the state even if the read that answers this
+	// request times out. Track it and seed the cache with it (see the end).
+	var (
+		percent   int
+		havePct   bool
+		muted     bool
+		haveMuted bool
+	)
 	if raw := r.FormValue("percent"); raw != "" {
-		percent, err := strconv.Atoi(raw)
-		if err != nil || percent < 0 || percent > 100 {
+		level, err := strconv.Atoi(raw)
+		if err != nil || level < 0 || level > 100 {
 			h.writeJSON(w, http.StatusBadRequest, h.readVolume(r.Context(), "Volume must be a whole percent from 0 to 100."))
 			return
 		}
-		if err := h.volume.SetVolume(ctx, percent); err != nil {
+		if err := h.volume.SetVolume(ctx, level); err != nil {
 			h.volumeFail(w, r, err)
 			return
 		}
-		if percent > 0 && !r.Form.Has("muted") {
+		percent, havePct = level, true
+		if level > 0 && !r.Form.Has("muted") {
 			if err := h.volume.SetMute(ctx, false); err != nil {
 				h.volumeFail(w, r, err)
 				return
 			}
+			muted, haveMuted = false, true
 		}
 	}
 	if raw := r.FormValue("muted"); raw != "" {
-		muted, err := strconv.ParseBool(raw)
+		flag, err := strconv.ParseBool(raw)
 		if err != nil {
 			h.writeJSON(w, http.StatusBadRequest, h.readVolume(r.Context(), "Muted must be true or false."))
 			return
 		}
-		if err := h.volume.SetMute(ctx, muted); err != nil {
+		if err := h.volume.SetMute(ctx, flag); err != nil {
 			h.volumeFail(w, r, err)
 			return
 		}
+		muted, haveMuted = flag, true
+	}
+	// Everything above landed, so the sink is in the state we asked for even if
+	// it will not report it. Seed the cache before confirming, otherwise a read
+	// that times out answers with the level from *before* the write and the top
+	// bar snaps back to it. A partial write (level only, nothing cached and no
+	// unmute) does not describe the whole state, so it seeds nothing.
+	if prior, ok := h.volumeCache.get(); ok || (havePct && haveMuted) {
+		if havePct {
+			prior.Percent = percent
+		}
+		if haveMuted {
+			prior.Muted = muted
+		}
+		h.volumeCache.put(prior)
 	}
 	h.writeJSON(w, http.StatusOK, h.readVolume(r.Context(), ""))
 }
@@ -96,7 +150,14 @@ func (h *Handler) readVolume(ctx context.Context, errorText string) volumeView {
 	state, err := h.volume.Volume(ctx)
 	if err != nil {
 		h.logger.Warn("dashboard volume read", "error", err.Error())
+		if cached, ok := h.volumeCache.get(); ok {
+			// The sink did not answer, but the last level still works. Keep the
+			// control on screen and let the client mark it stale. errorText is
+			// a write's refusal and is still the client's message to show.
+			return volumeView{Available: true, Stale: true, Percent: cached.Percent, Muted: cached.Muted, Error: errorText}
+		}
 		return volumeView{Error: "The speaker volume is unavailable."}
 	}
+	h.volumeCache.put(state)
 	return volumeView{Available: true, Percent: state.Percent, Muted: state.Muted, Error: errorText}
 }

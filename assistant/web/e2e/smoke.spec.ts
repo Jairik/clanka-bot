@@ -213,6 +213,10 @@ test.describe("accessibility", () => {
         test.skip(isMobile, "the desktop project scans both themes");
         await page.emulateMedia({ colorScheme: theme });
         await settle(page, route);
+        // The pointer starts at (0,0), which is over the rail's logo; its
+        // hover tooltip would be scanned as content outside a landmark. Park
+        // it over the page body, where nothing opens on hover.
+        await page.mouse.move(700, 600);
         const results = await new AxeBuilder({ page }).analyze();
         expect(results.violations).toEqual([]);
       });

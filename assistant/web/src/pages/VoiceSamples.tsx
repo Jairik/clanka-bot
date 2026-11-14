@@ -12,7 +12,7 @@ import { PageFrame } from "../shell";
 import { SampleBatch } from "./SampleBatch";
 import { trainingClip } from "../wake-sample";
 import type { VoiceSampleBundle, VoiceSamplePhrase, VoiceSampleTake, VoiceSamplesView } from "../types";
-import { Badge, Empty, Lede, Notice, Section } from "../ui";
+import { Badge, Empty, Lede, Notice, Section, Tip } from "../ui";
 
 type Kind = "positive" | "negative";
 
@@ -457,20 +457,22 @@ function Recorder({
       <div className="border-t px-3.5 py-4">
         {rec ? (
           <div className="flex min-h-14 items-center gap-3">
-            <Button
-              isIconOnly
-              variant="ghost"
-              onPress={() => {
-                clearTimeout(autoStop.current);
-                recorder.current?.cancel();
-                recorder.current = null;
-                setRec(null);
-                setLevels(Array(28).fill(0.06));
-              }}
-              aria-label="Cancel recording"
-            >
-              <X className="size-5" />
-            </Button>
+            <Tip>
+              <Button
+                isIconOnly
+                variant="ghost"
+                onPress={() => {
+                  clearTimeout(autoStop.current);
+                  recorder.current?.cancel();
+                  recorder.current = null;
+                  setRec(null);
+                  setLevels(Array(28).fill(0.06));
+                }}
+                aria-label="Cancel recording"
+              >
+                <X className="size-5" />
+              </Button>
+            </Tip>
             <span className="relative flex size-2.5 shrink-0">
               <span className="absolute inset-0 animate-ping rounded-full bg-danger opacity-60" />
               <span className="relative size-2.5 rounded-full bg-danger" />
@@ -552,16 +554,20 @@ function TakeList({
         <ul className="divide-y divide-separator">
           {takes.map((take) => (
             <li key={take.ID} className="flex min-h-12 items-center gap-2 px-3.5 py-1.5">
-              <Button isIconOnly size="sm" variant={playing === take.ID ? "primary" : "secondary"} onPress={() => play(take)} aria-label={`Play ${take.ID}`}>
-                <Play className="size-3.5" />
-              </Button>
+              <Tip>
+                <Button isIconOnly size="sm" variant={playing === take.ID ? "primary" : "secondary"} onPress={() => play(take)} aria-label={`Play ${take.ID}`}>
+                  <Play className="size-3.5" />
+                </Button>
+              </Tip>
               <span className="font-mono text-[11px] text-muted">{take.ID}</span>
               <span className="ml-auto font-mono text-[11px] tabular-nums text-subtle">
                 {take.Duration} · {take.Size} · {take.Added}
               </span>
-              <Button isIconOnly size="sm" variant="ghost" onPress={() => onDelete(take)} isPending={pending === take.DeleteAction} aria-label={`Delete ${take.ID}`}>
-                <Trash2 className="size-3.5" />
-              </Button>
+              <Tip>
+                <Button isIconOnly size="sm" variant="ghost" onPress={() => onDelete(take)} isPending={pending === take.DeleteAction} aria-label={`Delete ${take.ID}`}>
+                  <Trash2 className="size-3.5" />
+                </Button>
+              </Tip>
             </li>
           ))}
         </ul>
@@ -662,21 +668,23 @@ function CopyLine({ label, value }: { label: string; value: string }) {
     <div className="flex items-center gap-2 border bg-surface-secondary px-2 py-1.5">
       <span className="shrink-0 text-[10px] uppercase tracking-wide text-subtle">{label}</span>
       <code className="min-w-0 flex-1 overflow-x-auto whitespace-pre font-mono text-[11px]">{value}</code>
-      <Button
-        isIconOnly
-        size="sm"
-        variant="ghost"
-        aria-label={`Copy the ${label} command`}
-        onPress={() => {
-          if (!navigator.clipboard) return;
-          void navigator.clipboard.writeText(value).then(
-            () => setCopied(true),
-            () => setCopied(false),
-          );
-        }}
-      >
-        {copied ? <Check className="size-3.5" /> : <Clipboard className="size-3.5" />}
-      </Button>
+      <Tip>
+        <Button
+          isIconOnly
+          size="sm"
+          variant="ghost"
+          aria-label={`Copy the ${label} command`}
+          onPress={() => {
+            if (!navigator.clipboard) return;
+            void navigator.clipboard.writeText(value).then(
+              () => setCopied(true),
+              () => setCopied(false),
+            );
+          }}
+        >
+          {copied ? <Check className="size-3.5" /> : <Clipboard className="size-3.5" />}
+        </Button>
+      </Tip>
     </div>
   );
 }

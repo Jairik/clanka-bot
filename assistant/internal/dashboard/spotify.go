@@ -236,7 +236,9 @@ func (h *Handler) clearSpotifyCookie(w http.ResponseWriter) {
 func (h *Handler) buildSpotifyView(flash, errorText string) spotifyView {
 	view := spotifyView{Owner: h.owner, Page: "spotify", Flash: flash, Error: errorText, Scopes: append([]string(nil), spotify.Scopes...)}
 
-	pairing := spotify.PairingStatus{}
+	// Without a pairing reader the status is not merely unknown, it is not
+	// wired; say so instead of sending an empty label and detail.
+	pairing := spotify.PairingStatus{Label: "not configured", Detail: "Spotify Connect is not wired in this deployment."}
 	if h.spotifyPairing != nil {
 		pairing = h.spotifyPairing.Status()
 	}

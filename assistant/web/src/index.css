@@ -92,9 +92,67 @@ body {
 }
 /* In a layer so utilities like border-transparent / border-danger still win. */
 @layer base { *, ::before, ::after { border-color: var(--border); } }
-/* Square UI, but sliders and switches read better as pills. */
-.slider__track, .slider__fill, .slider__thumb, .slider__thumb::after,
+/* Square UI, but switches read better as pills. */
 .switch__control, .switch__thumb { border-radius: 9999px; }
+
+/* Slider: a thin rail with a round knob. HeroUI's default is a 20px pill whose
+   transparent side borders hold the thumb's overhang and turn accent-coloured
+   at the ends; with the pill radius that border drew as a separate blob left
+   of the fill. Here the side borders stay transparent (they still give React
+   Aria's percentages a track that ends at the knob's centre), the rail is a
+   pseudo-element that spans them, and the fill reaches back over the left one. */
+.slider[data-orientation="horizontal"] {
+  --rail: 4px;
+  --knob: 14px;
+  .slider__track {
+    height: 20px;
+    background: transparent;
+    border-inline-width: calc(var(--knob) / 2);
+    border-color: transparent !important;
+    border-radius: 0;
+    cursor: pointer;
+  }
+  .slider__track::before {
+    content: "";
+    position: absolute;
+    inset-inline: calc(var(--knob) / -2);
+    top: 50%;
+    height: var(--rail);
+    translate: 0 -50%;
+    border-radius: 9999px;
+    background: color-mix(in oklch, var(--foreground) 14%, transparent);
+  }
+  .slider__fill {
+    top: 50%;
+    height: var(--rail);
+    translate: 0 -50%;
+    box-sizing: content-box;
+    margin-inline-start: calc(var(--knob) / -2);
+    padding-inline-start: calc(var(--knob) / 2);
+    border-radius: 9999px;
+    background: var(--foreground);
+  }
+  .slider__thumb {
+    width: var(--knob);
+    height: var(--knob);
+    border-radius: 9999px;
+    background: var(--foreground);
+    box-shadow: 0 0 0 2px var(--background);
+  }
+  .slider__thumb::after { display: none; }
+  .slider__thumb[data-dragging="true"] { scale: 1.15; }
+  .slider__thumb[data-focus-visible="true"] { outline: 2px solid var(--foreground); outline-offset: 2px; }
+}
+.slider[data-disabled="true"] .slider__track { cursor: default; }
+
+/* Tooltips: square, hairline, and wrapped on words (HeroUI breaks anywhere). */
+.tooltip {
+  border: 1px solid var(--border);
+  border-radius: 0;
+  word-break: normal;
+  overflow-wrap: break-word;
+  line-height: 1.4;
+}
 /* iOS zooms into inputs below 16px; keep form text at 16px on touch devices. */
 @media (pointer: coarse) { input, textarea, select { font-size: 16px !important; } }
 .pb-safe { padding-bottom: env(safe-area-inset-bottom); }

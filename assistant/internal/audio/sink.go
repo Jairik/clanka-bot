@@ -151,20 +151,41 @@ type VolumeState struct {
 }
 
 // Volume reads the sink's level (the first channel's percent) and mute flag.
+// The two queries are independent, so they run concurrently: a Bluetooth sink
+// can take seconds to answer, and running them one after the other halved the
+// caller's one-read budget and let a slow wake kill the second pactl call.
 func (s *PulseSink) Volume(ctx context.Context) (VolumeState, error) {
-	out, err := s.runPactl(ctx, "get-sink-volume", s.target())
-	if err != nil {
-		return VolumeState{}, err
+	target := s.target()
+	var (
+		wg        sync.WaitGroup
+		volumeOut string
+		volumeErr error
+		muteOut   string
+		muteErr   error
+	)
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		volumeOut, volumeErr = s.runPactl(ctx, "get-sink-volume", target)
+	}()
+	go func() {
+		defer wg.Done()
+		muteOut, muteErr = s.runPactl(ctx, "get-sink-mute", target)
+	}()
+	wg.Wait()
+
+	// The level is the part that matters, so its error wins when both fail.
+	if volumeErr != nil {
+		return VolumeState{}, volumeErr
 	}
-	percent, ok := parsePactlPercent(out)
+	percent, ok := parsePactlPercent(volumeOut)
 	if !ok {
-		return VolumeState{}, fmt.Errorf("audio: pactl get-sink-volume: no percent in %q", truncate(out, 120))
+		return VolumeState{}, fmt.Errorf("audio: pactl get-sink-volume: no percent in %q", truncate(volumeOut, 120))
 	}
-	out, err = s.runPactl(ctx, "get-sink-mute", s.target())
-	if err != nil {
-		return VolumeState{}, err
+	if muteErr != nil {
+		return VolumeState{}, muteErr
 	}
-	return VolumeState{Percent: percent, Muted: strings.Contains(strings.ToLower(out), "yes")}, nil
+	return VolumeState{Percent: percent, Muted: strings.Contains(strings.ToLower(muteOut), "yes")}, nil
 }
 
 // SetMute mutes or unmutes the sink without touching its level.

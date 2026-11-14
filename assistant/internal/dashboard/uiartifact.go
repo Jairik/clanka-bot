@@ -36,10 +36,10 @@ const (
 
 // uiArtifact is the internal client for the standalone Dashboard build.
 type uiArtifact struct {
-	base    *url.URL
-	pin     string
-	client  *http.Client
-	logger  *slog.Logger
+	base   *url.URL
+	pin    string
+	client *http.Client
+	logger *slog.Logger
 
 	mu      sync.Mutex
 	healthy bool
@@ -85,10 +85,10 @@ func newUIArtifact(raw, version string, logger *slog.Logger) (*uiArtifact, error
 	}
 	parsed.Path = strings.TrimSuffix(parsed.Path, "/")
 	return &uiArtifact{
-		base:    parsed,
-		pin:     version,
-		logger:  logger,
-		client:  &http.Client{Timeout: uiArtifactTimeout},
+		base:   parsed,
+		pin:    version,
+		logger: logger,
+		client: &http.Client{Timeout: uiArtifactTimeout},
 	}, nil
 }
 

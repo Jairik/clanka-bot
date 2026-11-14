@@ -5,7 +5,7 @@ import { usePageData } from "../api";
 import { Field, SelectField, TextField, useActions, type Actions } from "../forms";
 import { PageFrame } from "../shell";
 import type { AlarmEditor, AlertsView } from "../types";
-import { Badge, Empty, Fold, Lede, Meta, Notice, Section, cn, foldOpen } from "../ui";
+import { Badge, Empty, Fold, Lede, Meta, Notice, Section, cn, foldOpen, Tip } from "../ui";
 
 const KIND_ICON: Record<string, typeof AlarmClock> = { timer: Hourglass, alarm: AlarmClock, reminder: StickyNote };
 
@@ -43,16 +43,18 @@ export function AlertsPage() {
                       <time dateTime={a.NextISO} className="shrink-0 text-right text-xs tabular-nums">
                         {a.Next}
                       </time>
-                      <Button
-                        isIconOnly
-                        size="sm"
-                        variant="danger-soft"
-                        aria-label={a.CancelLabel || `Cancel ${a.Label}`}
-                        isPending={actions.pending === a.CancelAction}
-                        onPress={() => void actions.run(a.CancelAction)}
-                      >
-                        <X className="size-3.5" />
-                      </Button>
+                      <Tip>
+                        <Button
+                          isIconOnly
+                          size="sm"
+                          variant="danger-soft"
+                          aria-label={a.CancelLabel || `Cancel ${a.Label}`}
+                          isPending={actions.pending === a.CancelAction}
+                          onPress={() => void actions.run(a.CancelAction)}
+                        >
+                          <X className="size-3.5" />
+                        </Button>
+                      </Tip>
                     </li>
                   );
                 })}

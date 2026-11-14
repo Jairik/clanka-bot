@@ -61,6 +61,22 @@ it("sends the colour picked in the colour input", async () => {
   await waitFor(() => expect(gets).toBe(2));
 });
 
+it("shows a refused write and still reloads the view", async () => {
+  stubFetch({
+    "/api/ui/monster": async (init) => {
+      if (init?.method === "POST") return new Response("Monster rejected the email or password.", { status: 502 });
+      gets++;
+      return json(configured());
+    },
+  });
+  render(<MonsterPage />);
+  await screen.findByText("Lounge bar");
+
+  await userEvent.click(screen.getByRole("button", { name: "Lounge bar on" }));
+  await screen.findByText("Monster rejected the email or password.");
+  await waitFor(() => expect(gets).toBe(2));
+});
+
 it("shows a configured account's cloud error instead of an empty account", async () => {
   stubFetch({
     "/api/ui/monster": () =>

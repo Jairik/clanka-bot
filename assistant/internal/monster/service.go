@@ -38,10 +38,10 @@ type Service struct {
 }
 
 type healthSnapshot struct {
-	at         time.Time
-	configured bool
-	ok         bool
-	detail     string
+	at     time.Time
+	key    string
+	ok     bool
+	detail string
 }
 
 // healthTTL keeps the Dashboard's health poll from turning into a cloud poll.
@@ -223,10 +223,11 @@ func (s *Service) Health(ctx context.Context) (configured, ok bool, detail strin
 	if !has {
 		return false, false, "Add MONSTER_EMAIL and MONSTER_PASSWORD on the Secrets page."
 	}
+	key := credentialKey(email, password)
 	s.mu.Lock()
 	cache := s.health
 	s.mu.Unlock()
-	if cache.configured && s.now().Sub(cache.at) < healthTTL {
+	if cache.key == key && s.now().Sub(cache.at) < healthTTL {
 		return true, cache.ok, cache.detail
 	}
 	devices, err := s.api.Devices(ctx, email, password)
@@ -237,7 +238,7 @@ func (s *Service) Health(ctx context.Context) (configured, ok bool, detail strin
 		detail = fmt.Sprintf("%d %s", len(devices), plural(len(devices), "light", "lights"))
 	}
 	s.mu.Lock()
-	s.health = healthSnapshot{at: s.now(), configured: true, ok: ok, detail: detail}
+	s.health = healthSnapshot{at: s.now(), key: key, ok: ok, detail: detail}
 	s.mu.Unlock()
 	return true, ok, detail
 }
@@ -276,10 +277,17 @@ func (s *Service) credentials() (string, string, bool) {
 func deviceView(d DeviceView, props map[string]any) DeviceView {
 	d.On = intProp(props, "power") != 0
 	d.Mode = stringProp(props, "mode")
-	if n, ok := intPropOK(props, "color_bright"); ok {
-		d.Brightness = clamp(n, 0, 100)
-	} else if n, ok := intPropOK(props, "brightness"); ok {
-		d.Brightness = clamp(n, 0, 100)
+	// Show the dimmer the next brightness write would use: white mode drives
+	// the white level, every other mode drives the colour level.
+	brightness := "color_bright"
+	if d.Mode == "white" {
+		brightness = "brightness"
+	}
+	for _, name := range []string{brightness, "color_bright", "brightness"} {
+		if n, ok := intPropOK(props, name); ok {
+			d.Brightness = clamp(n, 0, 100)
+			break
+		}
 	}
 	if packed, ok := intPropOK(props, "color_select"); ok {
 		d.Color = fmt.Sprintf("#%02x%02x%02x", (packed>>16)&0xff, (packed>>8)&0xff, packed&0xff)

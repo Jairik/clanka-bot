@@ -183,7 +183,7 @@ function MonsterCard({
             <input
               type="color"
               aria-label={`${device.name} colour`}
-              value={device.color}
+              defaultValue={device.color}
               disabled={busy}
               className="h-8 w-10 cursor-pointer border border-border bg-transparent disabled:cursor-not-allowed disabled:opacity-50"
               onChange={(event) => void onAct("color", device.dsn, event.target.value)}

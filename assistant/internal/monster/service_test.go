@@ -94,7 +94,7 @@ func TestViewMapsTheDeviceState(t *testing.T) {
 		t.Fatalf("view = %+v", v)
 	}
 	d := v.Devices[0]
-	if !d.On || d.Mode != "white" || d.Brightness != 35 || d.Color != "#ff0000" {
+	if !d.On || d.Mode != "white" || d.Brightness != 40 || d.Color != "#ff0000" {
 		t.Fatalf("device = %+v", d)
 	}
 	if d.Kelvin != 4600 { // 2700 + 50% of the 2700..6500 span
@@ -249,6 +249,23 @@ func TestHealthCachesTheCloudLookup(t *testing.T) {
 	svc.Health(context.Background())
 	if got := api.deviceCalls(); got != 2 {
 		t.Fatalf("device calls = %d, want a refresh after the TTL", got)
+	}
+}
+
+func TestHealthRefreshesWhenCredentialsChange(t *testing.T) {
+	api := &fakeAPI{devices: []Device{{DSN: "DSN1"}}}
+	now := time.Unix(0, 0)
+	email := "one@example.com"
+	svc := NewService(Options{
+		API:         api,
+		Credentials: func() (string, string, bool) { return email, "secret", true },
+		Now:         func() time.Time { return now },
+	})
+	svc.Health(context.Background())
+	email = "two@example.com"
+	svc.Health(context.Background())
+	if got := api.deviceCalls(); got != 2 {
+		t.Fatalf("device calls = %d, want a fresh lookup for the new account", got)
 	}
 }
 

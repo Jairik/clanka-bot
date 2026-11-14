@@ -1,6 +1,7 @@
 package monster
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -224,6 +225,61 @@ func TestBadPasswordIsACredentialError(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "wrong") {
 		t.Fatalf("error leaked the password: %v", err)
+	}
+}
+
+func TestControlPathsEscapeTheDSN(t *testing.T) {
+	var got string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v4/auth/login":
+			_ = json.NewEncoder(w).Encode(map[string]string{"accessToken": "copilot"})
+		case "/v2/partner/" + partnerID + "/acquire_ticket":
+			_ = json.NewEncoder(w).Encode(map[string]string{"partnerTicket": "ticket"})
+		case "/api/v1/token_sign_in":
+			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "ayla", "expires_in": 3600})
+		default:
+			got = r.RequestURI
+			_ = json.NewEncoder(w).Encode([]any{})
+		}
+	}))
+	defer server.Close()
+	c := &Client{
+		URLs:     URLs{Copilot: server.URL, Sphere: server.URL, AylaUser: server.URL, AylaAds: server.URL},
+		HTTP:     server.Client(),
+		Now:      time.Now,
+		deviceID: "test-device",
+	}
+	if err := c.Set(context.Background(), "owner@example.com", "secret", "A/B %", "power", 1); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "/apiv1/dsns/A%2FB%20%25/properties/power/datapoints.json") {
+		t.Fatalf("request path = %q", got)
+	}
+}
+
+func TestOversizedResponseIsRejected(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v4/auth/login":
+			_ = json.NewEncoder(w).Encode(map[string]string{"accessToken": "copilot"})
+		case "/v2/partner/" + partnerID + "/acquire_ticket":
+			_ = json.NewEncoder(w).Encode(map[string]string{"partnerTicket": "ticket"})
+		case "/api/v1/token_sign_in":
+			_ = json.NewEncoder(w).Encode(map[string]any{"access_token": "ayla", "expires_in": 3600})
+		default:
+			_, _ = w.Write(bytes.Repeat([]byte("a"), maxBody+1))
+		}
+	}))
+	defer server.Close()
+	c := &Client{
+		URLs:     URLs{Copilot: server.URL, Sphere: server.URL, AylaUser: server.URL, AylaAds: server.URL},
+		HTTP:     server.Client(),
+		Now:      time.Now,
+		deviceID: "test-device",
+	}
+	if _, err := c.Properties(context.Background(), "owner@example.com", "secret", "DSN1"); !errors.Is(err, ErrUpstream) {
+		t.Fatalf("err = %v", err)
 	}
 }
 

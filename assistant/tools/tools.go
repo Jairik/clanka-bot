@@ -15,6 +15,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/tools/github"
 	"github.com/Jairik/clanka-bot/assistant/tools/lights"
 	"github.com/Jairik/clanka-bot/assistant/tools/list"
+	"github.com/Jairik/clanka-bot/assistant/tools/monster"
 	"github.com/Jairik/clanka-bot/assistant/tools/note"
 	"github.com/Jairik/clanka-bot/assistant/tools/notify"
 	"github.com/Jairik/clanka-bot/assistant/tools/persona"
@@ -60,6 +61,7 @@ func NewSet() *Set {
 		note.NewModule(),
 		list.NewModule(),
 		lights.NewModule(),
+		monster.NewModule(),
 	}}
 }
 

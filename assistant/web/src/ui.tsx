@@ -120,15 +120,24 @@ export function Fold({ trigger, children, className, triggerClassName, bodyClass
 export const foldOpen = "transition-transform group-data-[expanded=true]/f:rotate-180";
 
 /** HeroUI slider, single value, track-only (labels are rendered by the caller). */
-export function Range({ value, onChange, step = 5, className, label }: {
+export function Range({ value, onChange, step = 5, className, label, isDisabled }: {
   value: number;
   onChange: (v: number) => void;
   step?: number;
   className?: string;
   label: string;
+  isDisabled?: boolean;
 }) {
   return (
-    <Slider aria-label={label} value={value} onChange={(v) => onChange(v as number)} step={step} maxValue={100} className={cn("w-full", className)}>
+    <Slider
+      aria-label={label}
+      value={value}
+      onChange={(v) => onChange(v as number)}
+      step={step}
+      maxValue={100}
+      isDisabled={isDisabled}
+      className={cn("w-full", className)}
+    >
       <Slider.Track>
         <Slider.Fill />
         <Slider.Thumb />

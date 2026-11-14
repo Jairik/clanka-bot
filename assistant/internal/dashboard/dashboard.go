@@ -337,6 +337,10 @@ func New(opts Options) (*Handler, error) {
 	// BLE routes share existing identity and same-origin mutation checks.
 	h.Handle("GET /api/ui/lights", h.lightsAPI)
 	h.Mutating("POST /api/ui/lights", h.lightsAPI)
+	// Monster Smart Lighting is a cloud account, not a BLE controller: the
+	// page reads the account and writes one property group per action.
+	h.Handle("GET /api/ui/monster", h.monsterAPI)
+	h.Mutating("POST /api/ui/monster", h.monsterAPI)
 	h.Handle("GET /api/ui/equalizer", h.equalizerGet)
 	h.Mutating("POST /api/ui/equalizer", h.equalizerSet)
 	h.Handle("GET /api/ui/volume", h.volumeGet)

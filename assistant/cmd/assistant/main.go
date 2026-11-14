@@ -337,8 +337,10 @@ func run() error {
 	// Without the Web API app there is no music to duck, so the Ducker stays
 	// nil (a no-op that never spawns pactl).
 	var musicDucker *music.Ducker
+	var musicStreams *music.PulseStreams
 	if cfg.Spotify.Enabled() {
-		musicDucker = music.NewDucker(music.NewPulseStreams(cfg.Playback.Binary, cfg.Spotify.StreamMatch), music.DefaultDuckPercent, logger)
+		musicStreams = music.NewPulseStreams(cfg.Playback.Binary, cfg.Spotify.StreamMatch)
+		musicDucker = music.NewDucker(musicStreams, music.DefaultDuckPercent, logger)
 		// A crash while ducked, or Pulse's stream-restore remembering the
 		// ducked level, must not leave the music quiet. Best effort: the
 		// receiver may not be running yet.
@@ -367,7 +369,24 @@ func run() error {
 	// the current reply or music, in that fixed order. It is shared by the
 	// pipeline (routing), the reply session (the current reply) and the Tool
 	// modules that can hold Focus.
+	deferred := &pipeline.DeferredQueue{}
+	readyActions := make(chan struct{}, 1)
+	dispatchEvent := func(event string) {
+		deferred.Trigger(event)
+		select {
+		case readyActions <- struct{}{}:
+		default:
+		}
+	}
 	focusRegistry := focus.New()
+	focusRegistry.OnReleased = func(priority focus.Priority) {
+		if priority == focus.Music {
+			dispatchEvent("music")
+		}
+		if priority == focus.Reply {
+			dispatchEvent("reply")
+		}
+	}
 
 	// One Announcement queue owns unprompted speech and Dashboard previews: it
 	// waits for the current reply, a pending Confirmation and a ringing alert,
@@ -404,6 +423,11 @@ func run() error {
 	// below, and a startup-time Ring before that falls back to code defaults.
 	var settingsSvc *settings.Service
 	ringDeps := ring.Deps{
+		Completed: func(kind ring.Kind) {
+			if kind == ring.Timer {
+				dispatchEvent("timer")
+			}
+		},
 		Focus:    focusRegistry,
 		Music:    musicDucker,
 		Boundary: speechGate,
@@ -560,6 +584,14 @@ func run() error {
 	// The Dashboard's opt-in to speak its chat replies on the Pi. Live, so the
 	// top-bar toggle applies to the next request without a restart.
 	defs = append(defs, dashboard.SpeakRepliesDefinition())
+	// Conversation settings reuse the Dashboard's generic live HeroUI setting rows.
+	defs = append(defs, settings.Bool("conversation.chains", true), settings.Int("conversation.follow_up_seconds", 5, settings.WithValidator(func(value any) error {
+		n := value.(int)
+		if n < 0 || n > 15 {
+			return fmt.Errorf("follow-up window must be 0–15 seconds")
+		}
+		return nil
+	})))
 	defs = append(defs, equalizer.Definitions()...)
 	settingsSvc, err = settings.New(ctx, st, defs...)
 	if err != nil {
@@ -713,6 +745,8 @@ func run() error {
 	mountAPI("/settings", settingsHandler)
 	mountAPI("/tools", settingsHandler)
 	mountAPI("/secrets", secretsHandler)
+	// Queue operations inherit the API authentication and origin checks.
+	mountAPI("/deferred", deferred)
 
 	agentPath, err := agent.New(agent.Settings{
 		BaseURL:   provider.BaseURL,
@@ -826,16 +860,38 @@ func run() error {
 	// A speaking reply holds Focus, so a shared "stop" cancels its model stream
 	// and playback rather than the stop request itself.
 	sessionOpts = append(sessionOpts, reply.WithFocus(focusRegistry))
+	p.BindDeferred(deferred)
+	p.BindChains(func() bool { return settingsSvc.Bool("conversation.chains") })
 	// A Ring waits for the current reply sentence, then the reply's next
 	// sentence waits for the Ring. With no Ring the gate is a fast no-op.
 	sessionOpts = append(sessionOpts, reply.WithSpeechGate(speechGate))
 	session := reply.New(p, speaker, playSink, filler, sessionOpts...)
+	// One dispatcher executes triggered requests sequentially through the ordinary permission path.
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-readyActions:
+				for {
+					action, ok := deferred.NextReady()
+					if !ok {
+						break
+					}
+					if ctx.Err() != nil {
+						return
+					}
+					_, _ = session.Ask(ctx, tool.Request{ID: tool.NewRequestID(), Device: tool.DevicePi}, action.Text)
+				}
+			}
+		}
+	}()
 
 	// The Dashboard typed box uses the same pipeline and reply Session code
 	// with no speaker: it shows the reply in the page and never starts Pi
 	// audio. Turn gating still applies, so unprompted speech does not talk
 	// into a typed turn.
-	typedOpts := []reply.Option{reply.WithLogger(logger)}
+	typedOpts := []reply.Option{reply.WithLogger(logger), reply.WithTextCompletion(func() { dispatchEvent("reply") })}
 	if announcements != nil {
 		typedOpts = append(typedOpts, reply.WithAnnouncements(announcements))
 	}
@@ -915,6 +971,24 @@ func run() error {
 			)
 		}
 		loop, err := newVoiceLoop(cfg, session, p, sink, announcements, wakeCue, activityStore.Observe, musicDucker, wakeCommands, logger)
+		if loop != nil {
+			// With music holding Focus, require a wake word instead of trusting unverified AEC.
+			loop.BindFollowUp(func() time.Duration {
+				if focusRegistry.Held(focus.Music) {
+					return 0
+				}
+				// An externally started receiver can play without owning Focus.
+				if musicStreams != nil {
+					probeCtx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+					present, err := musicStreams.Present(probeCtx)
+					cancel()
+					if err != nil || present {
+						return 0
+					}
+				}
+				return time.Duration(settingsSvc.Int("conversation.follow_up_seconds")) * time.Second
+			})
+		}
 		if err != nil {
 			return err
 		}

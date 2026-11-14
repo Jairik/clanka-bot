@@ -286,6 +286,36 @@ func TestVolumeRefusedWriteKeepsItsMessageWhenTheReadTimesOut(t *testing.T) {
 	}
 }
 
+// A write lands but the read that answers it times out: the view must describe
+// what the speaker took, not the level from before the write, or the slider
+// snaps back and the mute icon lies (#160).
+func TestVolumeWriteAnswersWithTheStateItTookWhenTheReadTimesOut(t *testing.T) {
+	speaker := &fakeVolume{percent: 42, muted: true}
+	handler := newHandler(t, dashboard.Options{Volume: speaker})
+	var v volumeResp
+	getJSON(t, handler, "/api/ui/volume", &v)
+
+	speaker.fail(errors.New("audio: pactl get-sink-volume: signal: killed"))
+	rec := postVolume(handler, url.Values{"percent": {"55"}}, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	decodeJSON(t, rec, &v)
+	if !v.Available || !v.Stale || v.Percent != 55 || v.Muted || v.Error != "" {
+		t.Errorf("view = %+v, want the stale 55%% unmuted the write asked for", v)
+	}
+	if percent, muted, _ := speaker.state(); percent != 55 || muted {
+		t.Errorf("speaker = %d%% muted=%v, want 55%% unmuted", percent, muted)
+	}
+
+	// A mute-only write answers with the level it kept and the flag it took.
+	rec = postVolume(handler, url.Values{"muted": {"true"}}, nil)
+	decodeJSON(t, rec, &v)
+	if !v.Available || !v.Stale || v.Percent != 55 || !v.Muted {
+		t.Errorf("view = %+v, want the stale 55%% muted", v)
+	}
+}
+
 func TestVolumeSuccessfulReadClearsStale(t *testing.T) {
 	speaker := &fakeVolume{percent: 30}
 	handler := newHandler(t, dashboard.Options{Volume: speaker})

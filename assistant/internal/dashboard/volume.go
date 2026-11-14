@@ -79,33 +79,59 @@ func (h *Handler) volumeSet(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), volumeTimeout)
 	defer cancel()
+	// The writes below succeed without the sink answering them, so after one
+	// lands we know its part of the state even if the read that answers this
+	// request times out. Track it and seed the cache with it (see the end).
+	var (
+		percent   int
+		havePct   bool
+		muted     bool
+		haveMuted bool
+	)
 	if raw := r.FormValue("percent"); raw != "" {
-		percent, err := strconv.Atoi(raw)
-		if err != nil || percent < 0 || percent > 100 {
+		level, err := strconv.Atoi(raw)
+		if err != nil || level < 0 || level > 100 {
 			h.writeJSON(w, http.StatusBadRequest, h.readVolume(r.Context(), "Volume must be a whole percent from 0 to 100."))
 			return
 		}
-		if err := h.volume.SetVolume(ctx, percent); err != nil {
+		if err := h.volume.SetVolume(ctx, level); err != nil {
 			h.volumeFail(w, r, err)
 			return
 		}
-		if percent > 0 && !r.Form.Has("muted") {
+		percent, havePct = level, true
+		if level > 0 && !r.Form.Has("muted") {
 			if err := h.volume.SetMute(ctx, false); err != nil {
 				h.volumeFail(w, r, err)
 				return
 			}
+			muted, haveMuted = false, true
 		}
 	}
 	if raw := r.FormValue("muted"); raw != "" {
-		muted, err := strconv.ParseBool(raw)
+		flag, err := strconv.ParseBool(raw)
 		if err != nil {
 			h.writeJSON(w, http.StatusBadRequest, h.readVolume(r.Context(), "Muted must be true or false."))
 			return
 		}
-		if err := h.volume.SetMute(ctx, muted); err != nil {
+		if err := h.volume.SetMute(ctx, flag); err != nil {
 			h.volumeFail(w, r, err)
 			return
 		}
+		muted, haveMuted = flag, true
+	}
+	// Everything above landed, so the sink is in the state we asked for even if
+	// it will not report it. Seed the cache before confirming, otherwise a read
+	// that times out answers with the level from *before* the write and the top
+	// bar snaps back to it. A partial write (level only, nothing cached and no
+	// unmute) does not describe the whole state, so it seeds nothing.
+	if prior, ok := h.volumeCache.get(); ok || (havePct && haveMuted) {
+		if havePct {
+			prior.Percent = percent
+		}
+		if haveMuted {
+			prior.Muted = muted
+		}
+		h.volumeCache.put(prior)
 	}
 	h.writeJSON(w, http.StatusOK, h.readVolume(r.Context(), ""))
 }

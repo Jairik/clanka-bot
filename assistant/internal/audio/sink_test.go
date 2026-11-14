@@ -239,17 +239,18 @@ esac
 }
 
 // TestPulseSinkVolumeReadsConcurrently proves the level and mute queries overlap
-// instead of running back to back. Each verb sleeps 400 ms and the read gets
-// 700 ms: concurrent calls finish with ~300 ms to spare, while serialised calls
-// need ~800 ms and the second one is killed. Do not "round" these margins — they
-// are the whole point of the test, and the total cost stays under a second.
+// instead of running back to back. Each verb sleeps 900 ms and the read gets
+// 1.6 s: concurrent calls finish with ~700 ms to spare on a loaded runner, while
+// serialised calls always need at least 1.8 s (sleep never returns early) and the
+// second one is killed. That is the whole point of the test, so do not "round"
+// these numbers; it costs about a second.
 func TestPulseSinkVolumeReadsConcurrently(t *testing.T) {
 	dir := t.TempDir()
 	pactl := filepath.Join(dir, "pactl")
 	script := `#!/bin/sh
 case "$1" in
-get-sink-volume) sleep 0.4; echo "Volume: front-left: 42598 /  65% / -11.23 dB" ;;
-get-sink-mute) sleep 0.4; echo "Mute: no" ;;
+get-sink-volume) sleep 0.9; echo "Volume: front-left: 42598 /  65% / -11.23 dB" ;;
+get-sink-mute) sleep 0.9; echo "Mute: no" ;;
 esac
 `
 	if err := os.WriteFile(pactl, []byte(script), 0o755); err != nil {
@@ -257,7 +258,7 @@ esac
 	}
 	sink := audio.NewPulseSink(filepath.Join(dir, "pacat"), "")
 
-	ctx, cancel := context.WithTimeout(context.Background(), 700*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 1600*time.Millisecond)
 	defer cancel()
 	state, err := sink.Volume(ctx)
 	if err != nil {

@@ -85,3 +85,25 @@ func TestRecoverMaster(t *testing.T) {
 		t.Fatal(calls)
 	}
 }
+
+// A host without the CAPS library says only "No such entity"; Health must name
+// the package instead of leaving the operator with the raw pactl error.
+func TestMissingPluginHint(t *testing.T) {
+	c := New("bluez_output")
+	c.run = func(_ context.Context, args ...string) (string, error) {
+		switch strings.Join(args, " ") {
+		case "list short modules", "--format=json list sinks", "--format=json list sink-inputs":
+			return `[]`, nil
+		case "get-default-sink":
+			return "bluez_output", nil
+		}
+		if args[0] == "load-module" {
+			return "", errors.New("pactl load-module: exit status 1: Failure: No such entity")
+		}
+		return "", nil
+	}
+	c.sync(context.Background(), Encode(Profile{Preset: "Flat"}))
+	if c.err == nil || !strings.Contains(c.err.Error(), "install the caps package") || !strings.Contains(c.err.Error(), `sink "bluez_output" exists`) || !strings.Contains(c.err.Error(), "No such entity") {
+		t.Fatal(c.err)
+	}
+}

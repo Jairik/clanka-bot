@@ -78,6 +78,18 @@ func New(master string) *Controller {
 	}}
 }
 
+// loadHint names the fixes for a failed filter load. PulseAudio and
+// PipeWire-Pulse answer both a missing LADSPA plugin and a missing master sink
+// with "No such entity", which never says what an operator has to change.
+func (c *Controller) loadHint(err error) error {
+	for _, marker := range []string{"No such entity", "No such file", "not found"} {
+		if strings.Contains(err.Error(), marker) {
+			return fmt.Errorf("%w (install the caps package on the audio host and confirm sink %q exists)", err, c.master)
+		}
+	}
+	return err
+}
+
 // Target lets newly opened speech and Cue streams enter the current filter immediately.
 func (c *Controller) Target() string {
 	c.mu.Lock()
@@ -179,7 +191,7 @@ func (c *Controller) sync(parent context.Context, raw string) {
 		}
 		id, err := c.run(ctx, "load-module", "module-ladspa-sink", "sink_name="+name, "sink_master="+c.master, "plugin=caps", "label=Eq10X2", "channels=2", "rate=48000", "control="+strings.Join(controls, ","))
 		if err != nil {
-			c.err = fmt.Errorf("EQ unavailable; flat audio fallback: %w", err)
+			c.err = fmt.Errorf("EQ unavailable; flat audio fallback: %w", c.loadHint(err))
 			c.fallback(ctx)
 			return
 		}

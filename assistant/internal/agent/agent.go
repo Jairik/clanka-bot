@@ -153,6 +153,16 @@ func New(settings Settings, registry *tool.Registry, logger *slog.Logger) (*Agen
 // History is the rolling history shared with the Fast path.
 func (a *Agent) History() *History { return a.history }
 
+// Complete runs one short bounded completion with the same provider, key and
+// privacy fields as a conversational turn. The Dashboard uses it to fill a
+// Persona phrase book. It does not touch history or call Tools.
+func (a *Agent) Complete(ctx context.Context, system, user string) (string, error) {
+	if a == nil || a.provider == nil {
+		return "", errors.New("agent: provider is not configured")
+	}
+	return a.provider.complete(ctx, system, user)
+}
+
 // Run answers one utterance. onDelta, when set, receives content deltas as
 // they stream; #21 uses it for sentence-by-sentence TTS.
 func (a *Agent) Run(ctx context.Context, req tool.Request, utterance string, onDelta func(string)) Result {

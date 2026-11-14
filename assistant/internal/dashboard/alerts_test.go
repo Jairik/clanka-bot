@@ -304,11 +304,12 @@ func (f *alertsFixture) addSound(name string, d time.Duration) {
 // alertsResp decodes the parts of the Scheduled alerts view the tests assert
 // on (encoding/json default field names).
 type alertsResp struct {
-	Flash       string
-	Error       string
-	HasManagers bool
-	ZoneName    string
-	Alerts      []struct {
+	Flash         string
+	Error         string
+	HasManagers   bool
+	ZoneName      string
+	DesktopNotify bool
+	Alerts        []struct {
 		KindKey, Kind, Label, Next, NextISO, Detail, CancelAction string
 	}
 	Alarms []struct {
@@ -1076,5 +1077,27 @@ func TestDashboardCompletionAudio(t *testing.T) {
 	out, err := f.alarm.Update(t.Context(), alarm.UpdateIn{ID: alarms[0].ID, Audio: &empty})
 	if err != nil || out.Alarm.Audio != "" {
 		t.Fatalf("clear=%+v %v", out, err)
+	}
+}
+
+// TestAlertsDesktopNotifyFollowsTheServerGate checks that the view carries the
+// one server decision: the phone switch plus Quiet hours, never a client
+// preference of its own.
+func TestAlertsDesktopNotifyFollowsTheServerGate(t *testing.T) {
+	on := newHandler(t, dashboard.Options{DesktopNotify: func() bool { return true }})
+	var view alertsResp
+	getJSON(t, on, "/api/ui/alerts", &view)
+	if !view.DesktopNotify {
+		t.Fatal("DesktopNotify = false with an allowing gate")
+	}
+	off := newHandler(t, dashboard.Options{DesktopNotify: func() bool { return false }})
+	getJSON(t, off, "/api/ui/alerts", &view)
+	if view.DesktopNotify {
+		t.Fatal("DesktopNotify = true with a refusing gate")
+	}
+	none := newHandler(t, dashboard.Options{})
+	getJSON(t, none, "/api/ui/alerts", &view)
+	if view.DesktopNotify {
+		t.Fatal("DesktopNotify = true with no gate")
 	}
 }

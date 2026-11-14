@@ -184,6 +184,38 @@ func TestExecuteRoundTripsTypedValues(t *testing.T) {
 	}
 }
 
+func TestSpeakerHookReplacesSpeakAndKeepsPassthrough(t *testing.T) {
+	reg := tool.NewRegistry(time.Second)
+	if err := tool.Add(reg, echoTool()); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	calls := 0
+	reg.SetSpeaker(func(name, text string) string {
+		calls++
+		if name != "test.echo" {
+			return ""
+		}
+		return "Replaced."
+	})
+	spoken, ok := reg.Speak("test.echo", echoOut{Text: "original"})
+	if !ok || spoken != "Replaced." {
+		t.Fatalf("Speak = %q, %v; want Replaced., true", spoken, ok)
+	}
+	if calls != 1 {
+		t.Fatalf("hook calls = %d, want 1", calls)
+	}
+	// An empty return keeps the Tool's own text.
+	reg.SetSpeaker(func(string, string) string { return "" })
+	if spoken, ok := reg.Speak("test.echo", echoOut{Text: "original"}); !ok || spoken != "original" {
+		t.Fatalf("passthrough Speak = %q, %v; want original, true", spoken, ok)
+	}
+	// Clearing the hook restores the renderer.
+	reg.SetSpeaker(nil)
+	if spoken, ok := reg.Speak("test.echo", echoOut{Text: "original"}); !ok || spoken != "original" {
+		t.Fatalf("cleared Speak = %q, %v; want original, true", spoken, ok)
+	}
+}
+
 func TestExecuteRejectsUnknownToolAndBadArguments(t *testing.T) {
 	reg := tool.NewRegistry(time.Second)
 	if err := tool.Add(reg, echoTool()); err != nil {

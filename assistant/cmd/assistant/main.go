@@ -28,6 +28,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/embed"
 	"github.com/Jairik/clanka-bot/assistant/internal/equalizer"
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
+	"github.com/Jairik/clanka-bot/assistant/internal/integrations"
 	"github.com/Jairik/clanka-bot/assistant/internal/lastreply"
 	"github.com/Jairik/clanka-bot/assistant/internal/latency"
 	"github.com/Jairik/clanka-bot/assistant/internal/lights"
@@ -36,6 +37,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/namematch"
 	"github.com/Jairik/clanka-bot/assistant/internal/notify"
 	"github.com/Jairik/clanka-bot/assistant/internal/persona"
+	"github.com/Jairik/clanka-bot/assistant/internal/phrasebook"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	"github.com/Jairik/clanka-bot/assistant/internal/playback"
 	"github.com/Jairik/clanka-bot/assistant/internal/quiet"
@@ -593,6 +595,9 @@ func run() error {
 		return nil
 	})))
 	defs = append(defs, equalizer.Definitions()...)
+	// The Hermes page's per-account grants are ordinary live settings, so they
+	// appear on Settings too and a reset revokes access.
+	defs = append(defs, integrations.Definitions()...)
 	settingsSvc, err = settings.New(ctx, st, defs...)
 	if err != nil {
 		return fmt.Errorf("settings: %w", err)
@@ -632,6 +637,19 @@ func run() error {
 	// The Persona library now applies selections through the same live settings
 	// service, so a select and the wording/voice observers share one snapshot.
 	personaSvc.Bind(settingsSvc)
+	// The phrase book reads the active Persona per reply. Its defaults are the
+	// terse confirmations; a Persona may override any of them. The registry
+	// hook is installed before any request can run.
+	phraseSvc, err := phrasebook.New(ctx, st, func() string {
+		return settingsSvc.String(persona.ActiveKey)
+	}, logger)
+	if err != nil {
+		return fmt.Errorf("phrase book: %w", err)
+	}
+	registry.SetSpeaker(phraseSvc.Render)
+	// Account linking reuses the same write-only secrets the Tools resolve; the
+	// grants are the live settings declared above.
+	integrationSvc := integrations.New(secretsSvc, settingsSvc)
 	voiceCtx, cancelVoice := context.WithTimeout(ctx, 5*time.Minute)
 	var voiceProbe voicelib.Probe
 	var voicePreview dashboard.VoicePreview
@@ -1086,7 +1104,27 @@ func run() error {
 			ToolModules: toolSet,
 			Zone:        zone,
 			Personas:    personaSvc,
-			Spotify:     spotifyModule.Auth(),
+			// The desktop channel reuses the phone switch and the one
+			// Quiet-hours rule; it never adds a second preference.
+			DesktopNotify: func() bool {
+				allowed, _ := quietSvc.AllowDelivery()
+				return allowed && settingsSvc.Bool(notify.RemindersKey)
+			},
+			// The Phrase book page reads and edits the same service the registry
+			// hook uses; the slots are the overridable Tools built once here. The
+			// one Agent provider fills a set from the Persona's prompt.
+			Phrases:     phraseSvc,
+			PhraseSlots: phrasebook.Slots(registry),
+			PhraseGen:   agentPath,
+			PhraseGenReady: func() bool {
+				value, _ := secretsSvc.Get(provider.APIKeyEnv)
+				return strings.TrimSpace(value) != ""
+			},
+			// The Routes page reads live Tool metadata; the Hermes page reads the
+			// same registry and the account registry.
+			Registry:     registry,
+			Integrations: integrationSvc,
+			Spotify:      spotifyModule.Auth(),
 			SpotifyPairing: &spotify.PairingReader{
 				Path:       cfg.Spotify.PairingStatusFile,
 				StaleAfter: cfg.Spotify.StaleAfter.Duration(),

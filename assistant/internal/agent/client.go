@@ -229,6 +229,10 @@ func (p *provider) complete(ctx context.Context, system, user string) (string, e
 			openai.SystemMessage(system),
 			openai.UserMessage(user),
 		},
+		// A phrase book is a small JSON object. Bound the reply so a hostile or
+		// confused Persona prompt cannot turn this helper into a long, paid
+		// completion; the caller validates every value again.
+		MaxCompletionTokens: openai.Int(1200),
 	}
 	// ADR-0002: ZDR and data-collection denial are forced here too, so a
 	// generated phrase book leaves the device under the same rules as a turn.

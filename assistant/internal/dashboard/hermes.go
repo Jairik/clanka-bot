@@ -226,7 +226,7 @@ func (h *Handler) buildRoutesView(flash, problem string) routesView {
 			Name:           name,
 			Description:    info.Description,
 			Permission:     string(info.Permission),
-			FastPath:       info.HasSpeak || phrases > 0,
+			FastPath:       !info.AgentOnly && (info.HasSpeak || phrases > 0),
 			AgentOnly:      info.AgentOnly,
 			LocalOnly:      info.LocalOnly,
 			Confirm:        info.Permission == tool.PermissionConfirm,
@@ -277,6 +277,9 @@ func (h *Handler) buildHermesView(flash, problem string) hermesView {
 			}
 			if info.LocalOnly {
 				view.LocalOnlyCount++
+				continue
+			}
+			if !info.Enabled {
 				continue
 			}
 			if info.Permission == tool.PermissionConfirm {

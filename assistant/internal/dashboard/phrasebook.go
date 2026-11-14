@@ -77,6 +77,10 @@ func (h *Handler) phrasebookSave(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := r.PathValue("persona")
+	if _, ok := h.personaByName(name); !ok {
+		h.phrasebookFail(w, r, http.StatusNotFound, "That persona does not exist.", name)
+		return
+	}
 	toolName := strings.TrimSpace(r.FormValue("tool"))
 	if !phrasebook.Overridable(toolName) {
 		h.phrasebookFail(w, r, http.StatusBadRequest, "That Tool does not have an overridable reply.", name)
@@ -101,6 +105,10 @@ func (h *Handler) phrasebookReset(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	name := r.PathValue("persona")
+	if _, ok := h.personaByName(name); !ok {
+		h.phrasebookFail(w, r, http.StatusNotFound, "That persona does not exist.", name)
+		return
+	}
 	toolName := strings.TrimSpace(r.FormValue("tool"))
 	if err := h.phrases.Delete(r.Context(), name, toolName); err != nil {
 		h.logger.Warn("phrase book reset failed", "persona", name, "tool", toolName, "error", err.Error())

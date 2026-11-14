@@ -7,6 +7,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
 	"testing"
+	"time"
 )
 
 // TestKnownBytes pins the community protocol sequences independently of BLE.
@@ -48,8 +49,11 @@ func TestService(t *testing.T) {
 	calls := 0
 	s.Run = func(ctx context.Context, args ...string) ([]byte, error) {
 		calls++
-		if _, ok := ctx.Deadline(); !ok {
-			t.Fatal("missing deadline")
+		deadline, ok := ctx.Deadline()
+		// A cold controller needs more than a few seconds. Keep the budget
+		// above that so a later edit cannot shrink it back to a failed connect.
+		if !ok || time.Until(deadline) < 10*time.Second {
+			t.Fatal("write budget too short for a cold controller")
 		}
 		return nil, nil
 	}

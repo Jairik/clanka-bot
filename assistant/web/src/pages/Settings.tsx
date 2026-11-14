@@ -1,4 +1,3 @@
-import { LightsSection } from "./Lights";
 import { useEffect, useState } from "react";
 import { Button } from "@heroui/react";
 import { getJSON, postForm } from "../api";
@@ -26,7 +25,6 @@ export function SettingsPage() {
 
   return (
     <PageFrame id="settings">
-      <LightsSection />
       <Notice error={error || actions.error} flash={actions.flash} onDismiss={actions.clear} />
       {data && !data.HasSettings && (
         <Section title="Settings are not configured" defaultOpen>

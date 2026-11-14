@@ -8,6 +8,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // Module owns the same controller service used by the Dashboard.
@@ -37,7 +38,9 @@ func (m *Module) Register(r *tool.Registry, deps tool.Deps) error {
 	m.Service = core.New(deps.Settings)
 	for _, op := range []string{"power", "brightness", "color", "mode"} {
 		examples := map[string][]string{"power": {"turn the lights on", "switch the lights off", "power on the lights"}, "brightness": {"set lights brightness to 50 percent", "dim the lights to 20 percent", "lights brightness 80 percent"}, "color": {"set the lights color to red", "change lights color to blue", "lights color #00ff00"}, "mode": {"set the lights mode to rainbow", "lights pulse mode", "change lights mode to strobe"}}
-		t := tool.Tool[In, Out]{Name: "lights." + op, Description: fmt.Sprintf("Set a saved BLE light's %s. Value: %s. Device is its saved name or address; omit only with one saved light.", op, map[string]string{"power": "on/off", "brightness": "0–100 (HappyLighting sets grayscale RGB)", "color": "#RRGGBB", "mode": "rainbow/pulse/strobe"}[op]), Permission: tool.PermissionAct, LocalOnly: tool.LocalOnlyNo, Examples: examples[op], Speak: func(out Out) string { return out.Reply },
+		// Fifteen seconds sits just outside the BLE write budget. The two-second
+		// registry default cancels a cold connect before the controller answers.
+		t := tool.Tool[In, Out]{Name: "lights." + op, Description: fmt.Sprintf("Set a saved BLE light's %s. Value: %s. Device is its saved name or address; omit only with one saved light.", op, map[string]string{"power": "on/off", "brightness": "0–100 (HappyLighting sets grayscale RGB)", "color": "#RRGGBB", "mode": "rainbow/pulse/strobe"}[op]), Permission: tool.PermissionAct, LocalOnly: tool.LocalOnlyNo, Timeout: 15 * time.Second, Examples: examples[op], Speak: func(out Out) string { return out.Reply },
 			Extract: func(text string) (In, bool) {
 				text = strings.ToLower(text)
 				// Questions and combined requests must remain on the Agent path.

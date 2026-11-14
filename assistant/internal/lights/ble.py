@@ -6,9 +6,10 @@ from bleak import BleakClient, BleakScanner
 
 async def write(address, characteristic, payload, client_factory=BleakClient):
     # Reconnect once after a lost link; both attempts share the caller's deadline.
+    # Ten seconds matches a cold ELK-BLEDOM connect. Two seconds gave up first.
     for attempt in range(2):
         try:
-            async with client_factory(address, timeout=2) as client:
+            async with client_factory(address, timeout=10) as client:
                 await client.write_gatt_char(characteristic, bytes.fromhex(payload), response=False)
             return
         except Exception:
@@ -24,4 +25,5 @@ async def main():
         await write(*sys.argv[1:])
 
 if __name__ == '__main__':
-    asyncio.run(asyncio.wait_for(main(), timeout=6))
+    # Slightly inside the Go write budget so the helper can exit on its own.
+    asyncio.run(asyncio.wait_for(main(), timeout=12))

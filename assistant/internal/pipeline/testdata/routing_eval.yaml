@@ -12,6 +12,92 @@
 # Agent requests, questions that sound like a Tool but are not one, and
 # compound requests that ask for more than one thing.
 positives:
+  lights.power:
+    # Previously a negative before BLE lights existed; now explicitly supported.
+    - turn on the lights
+    - "turn the lights on"
+    - "switch the lights off"
+    - "power on the lights"
+    - "turn off the lights"
+    - "lights on"
+    - "please turn the lights on"
+    - "please switch the lights off"
+    - "please power on the lights"
+    - "please turn off the lights"
+    - "please lights on"
+    - "could you turn the lights on"
+    - "could you switch the lights off"
+    - "could you power on the lights"
+    - "could you turn off the lights"
+    - "could you lights on"
+    - "can you turn the lights on"
+    - "can you switch the lights off"
+    - "can you power on the lights"
+    - "can you turn off the lights"
+    - "can you lights on"
+  lights.brightness:
+    - "set lights brightness to 50 percent"
+    - "dim the lights to 20 percent"
+    - "lights brightness 80 percent"
+    - "set lights brightness to 0 percent"
+    - "lights brightness 100 percent"
+    - "please set lights brightness to 50 percent"
+    - "please dim the lights to 20 percent"
+    - "please lights brightness 80 percent"
+    - "please set lights brightness to 0 percent"
+    - "please lights brightness 100 percent"
+    - "could you set lights brightness to 50 percent"
+    - "could you dim the lights to 20 percent"
+    - "could you lights brightness 80 percent"
+    - "could you set lights brightness to 0 percent"
+    - "could you lights brightness 100 percent"
+    - "can you set lights brightness to 50 percent"
+    - "can you dim the lights to 20 percent"
+    - "can you lights brightness 80 percent"
+    - "can you set lights brightness to 0 percent"
+    - "can you lights brightness 100 percent"
+  lights.color:
+    - "set the lights color to red"
+    - "change lights color to blue"
+    - "lights color #00ff00"
+    - "set lights color to white"
+    - "lights color #123456"
+    - "please set the lights color to red"
+    - "please change lights color to blue"
+    - "please lights color #00ff00"
+    - "please set lights color to white"
+    - "please lights color #123456"
+    - "could you set the lights color to red"
+    - "could you change lights color to blue"
+    - "could you lights color #00ff00"
+    - "could you set lights color to white"
+    - "could you lights color #123456"
+    - "can you set the lights color to red"
+    - "can you change lights color to blue"
+    - "can you lights color #00ff00"
+    - "can you set lights color to white"
+    - "can you lights color #123456"
+  lights.mode:
+    - "set the lights mode to rainbow"
+    - "lights pulse mode"
+    - "change lights mode to strobe"
+    - "lights rainbow mode"
+    - "set lights mode to pulse"
+    - "please set the lights mode to rainbow"
+    - "please lights pulse mode"
+    - "please change lights mode to strobe"
+    - "please lights rainbow mode"
+    - "please set lights mode to pulse"
+    - "could you set the lights mode to rainbow"
+    - "could you lights pulse mode"
+    - "could you change lights mode to strobe"
+    - "could you lights rainbow mode"
+    - "could you set lights mode to pulse"
+    - "can you set the lights mode to rainbow"
+    - "can you lights pulse mode"
+    - "can you change lights mode to strobe"
+    - "can you lights rainbow mode"
+    - "can you set lights mode to pulse"
   time.now:
     - what time is it
     - what's the time
@@ -1253,6 +1339,10 @@ positives:
     - what have I noted about Sam
     - find my note about the batteries
 negatives:
+  - how do I turn the lights on
+  - why are my lights flickering
+  - explain Bluetooth light protocols
+  - what does rainbow light mode mean
   - what's a good running playlist for a marathon
   - recommend a playlist for studying
   - create a new playlist called road trip
@@ -1275,7 +1365,6 @@ negatives:
   - what's the stock price of Apple
   - write an email to my boss
   - remind me to call mom at noon
-  - turn on the lights
   - order a pizza
   - what's on my calendar
   - how old is the president
@@ -1514,6 +1603,7 @@ negatives:
 # Compound requests ask for more than one thing. They are kept separate so
 # the evaluation can report compound handling on its own.
 compounds:
+  - turn the lights on and tell me the weather
   - set a timer for 15 minutes and play Here Comes the Sun when it finishes
   - set an alarm for 7 and play my running playlist when it rings
   - what time is it and set a timer for five minutes

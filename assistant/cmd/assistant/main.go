@@ -30,6 +30,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/lastreply"
 	"github.com/Jairik/clanka-bot/assistant/internal/latency"
+	"github.com/Jairik/clanka-bot/assistant/internal/lights"
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
 	"github.com/Jairik/clanka-bot/assistant/internal/music"
 	"github.com/Jairik/clanka-bot/assistant/internal/namematch"
@@ -557,6 +558,7 @@ func run() error {
 	defs = append(defs, quiet.Definitions(baseCfg.Quiet)...)
 	// music.max_volume is a live Spotify setting, unset (no cap) by default.
 	defs = append(defs, spotify.Definitions()...)
+	defs = append(defs, lights.Definitions()...)
 	// Notify's URL and missed-alert switch are live settings; the topic and
 	// optional token remain write-only secrets.
 	defs = append(defs, notify.Definitions(baseCfg.Notify)...)

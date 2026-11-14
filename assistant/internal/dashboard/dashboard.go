@@ -331,6 +331,8 @@ func New(opts Options) (*Handler, error) {
 	h.Mutating("POST /activity/ask", h.activityAsk)
 	h.Mutating("POST /api/ui/ask/audio", h.activityAskAudio)
 	// The top bar's speaker volume and mute.
+	h.Handle("GET /api/ui/equalizer", h.equalizerGet)
+	h.Mutating("POST /api/ui/equalizer", h.equalizerSet)
 	h.Handle("GET /api/ui/volume", h.volumeGet)
 	h.Mutating("POST /api/ui/volume", h.volumeSet)
 	// The Sounds page owns uploads, role assignment, Ring settings and the two
@@ -366,6 +368,8 @@ func New(opts Options) (*Handler, error) {
 	// cancels one by its manager id, and edits the per-Alarm Ring overrides.
 	// Every write goes through Mutating for identity and same-origin.
 	h.Mutating("POST /alerts/{kind}/{id}/cancel", h.alertCancel)
+	h.Mutating("POST /alerts/{kind}/{id}/audio", h.alertAudio)
+	h.Mutating("POST /alerts/create", h.alertCreate)
 	h.Mutating("POST /alerts/alarms/{id}", h.alertAlarmUpdate)
 	h.Mutating("POST /alerts/alarms/{id}/reset", h.alertAlarmReset)
 	// The Notes page owns the two fixed Lists and every Note. Every write goes

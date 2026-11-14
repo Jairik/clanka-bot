@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { Button, ToggleButton, ToggleButtonGroup } from "@heroui/react";
 import { AlarmClock, CloudSun, Gauge, HeartPulse, History, KeyRound, Music, ScrollText, Timer, Volume2, Zap } from "lucide-react";
 import { getJSON, navigate, useQueryParam } from "../api";
-import { useLive, type LiveName } from "../events";
+import { latestDelta, useLive, type LiveName } from "../events";
 import { Composer, Exchange, PendingExchange, fmtMS, isFailed, isTyped, parseMS, totalMS, useChat } from "../chat";
 import { useSession } from "../shell";
 import type { AlertsView, HealthView, SecretsView, SpotifyView } from "../types";
@@ -149,8 +149,18 @@ function Card({
 
 function usePolled<T>(path: string, every = 60_000, name?: LiveName) {
   const [v, setV] = useState<T | null>(null);
-  const { live, generation, subscribe } = useLive();
-  const load = useCallback(() => getJSON<T>(path).then(setV, () => {}), [path]);
+  const { live, generation, subscribe, resync } = useLive();
+  const load = useCallback(
+    // Health and Alerts arrive as a whole view, so a delta that lands while the
+    // snapshot is in flight is the newer state (#149).
+    () =>
+      resync(
+        name ?? null,
+        () => getJSON<T>(path),
+        latestDelta,
+      ).then(setV, () => {}),
+    [path, name, resync],
+  );
   useEffect(() => {
     void load();
     // Health and Alerts change over the stream; the rest keep their poll.

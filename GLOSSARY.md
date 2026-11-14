@@ -212,6 +212,10 @@ _Avoid_: Wake-up, timer
 A per-Alarm choice of Ring sound, volume or ramp that replaces the kind defaults for that Alarm only. `alarm.set` accepts it, `alarm.update` changes it, and the Dashboard Scheduled alerts page writes the same row; an empty value falls back to `sounds.alarm_ring` and `ring.alarm.*`.
 _Avoid_: Custom alarm, alarm theme
 
+**Completion audio**:
+Media chosen for one Timer or Alarm: a Spotify song, album or shuffled playlist, or a YouTube video streamed to the local speaker. It replaces Ring speech, stops through Ring Focus, and is limited to ten minutes; a load failure uses the standard spoken alert.
+_Avoid_: Alarm music mode, notification soundtrack
+
 **Snooze**:
 The request to silence a ringing Alarm and ring it again after `ring.alarm.snooze` (default 9 minutes). On a Timer it acts as stop.
 _Avoid_: Nap, delay
@@ -282,3 +286,9 @@ _Avoid_: Always listening, continuous recording
 An expiring request queued for music, reply or Timer Ring completion, visible
 and cancellable until dispatched. At most eight wait, for at most one hour.
 _Avoid_: Scheduled alert, Timer, Hermes job
+
+**Equalizer**:
+The single ten-band output filter shared by music, speech and Cues. It precedes
+the echo-cancel sink so the reference includes the chosen tuning. Its active
+preset and saved Custom gains are durable Dashboard settings.
+_Avoid_: Per-stream profile, speaker effect

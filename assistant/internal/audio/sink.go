@@ -25,9 +25,13 @@ type Format struct {
 // PulseSink opens one pacat stream per reply and drives pactl for volume. It
 // is safe for concurrent use.
 type PulseSink struct {
-	binary string
-	pactl  string
-	device string
+	// Device resolves the live EQ destination; volume remains on the configured master.
+	Device func() string
+	// VolumeDevice resolves the original output when EQ changes the server default.
+	VolumeDevice func() string
+	binary       string
+	pactl        string
+	device       string
 
 	mu     sync.Mutex
 	active map[*processWriter]struct{}
@@ -77,8 +81,12 @@ func (s *PulseSink) Open(ctx context.Context, format Format) (io.WriteCloser, er
 		"--latency-msec=100",
 		"--raw",
 	}
-	if s.device != "" {
-		args = append(args, "--device="+s.device)
+	device := s.device
+	if s.Device != nil {
+		device = s.Device()
+	}
+	if device != "" {
+		args = append(args, "--device="+device)
 	}
 
 	// A child context lets Stop cancel only the streams this process opened.
@@ -170,10 +178,14 @@ func (s *PulseSink) SetMute(ctx context.Context, muted bool) error {
 }
 
 func (s *PulseSink) target() string {
-	if s.device == "" {
+	device := s.device
+	if s.VolumeDevice != nil {
+		device = s.VolumeDevice()
+	}
+	if device == "" {
 		return "@DEFAULT_SINK@"
 	}
-	return s.device
+	return device
 }
 
 func (s *PulseSink) runPactl(ctx context.Context, args ...string) (string, error) {
@@ -210,10 +222,7 @@ func truncate(s string, n int) string {
 }
 
 func (s *PulseSink) pactlVolume(ctx context.Context, amount string) error {
-	target := s.device
-	if target == "" {
-		target = "@DEFAULT_SINK@"
-	}
+	target := s.target()
 	cmd := exec.CommandContext(ctx, s.pactl, "set-sink-volume", target, amount)
 	out, err := cmd.CombinedOutput()
 	if err != nil {

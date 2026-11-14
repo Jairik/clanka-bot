@@ -21,10 +21,12 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/announce"
 	"github.com/Jairik/clanka-bot/assistant/internal/api"
 	"github.com/Jairik/clanka-bot/assistant/internal/audio"
+	"github.com/Jairik/clanka-bot/assistant/internal/completion"
 	"github.com/Jairik/clanka-bot/assistant/internal/config"
 	"github.com/Jairik/clanka-bot/assistant/internal/connections"
 	"github.com/Jairik/clanka-bot/assistant/internal/dashboard"
 	"github.com/Jairik/clanka-bot/assistant/internal/embed"
+	"github.com/Jairik/clanka-bot/assistant/internal/equalizer"
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/lastreply"
 	"github.com/Jairik/clanka-bot/assistant/internal/latency"
@@ -311,9 +313,11 @@ func run() error {
 	// One bounded health snapshot feeds both the Dashboard Health page and the
 	// system.status Tool, so the two can never use different service lists or
 	// check semantics.
+	eq := equalizer.New(cfg.Playback.Sink)
+	serviceChecks := append(dashboard.ComposeServiceChecks(cfg), status.ServiceCheck{Name: "Equalizer", Check: eq.Health})
 	systemStatus := status.New(status.Options{
 		Timeout:  cfg.Dashboard.HealthTimeout.Duration(),
-		Services: dashboard.ComposeServiceChecks(cfg),
+		Services: serviceChecks,
 		Modules:  toolSet,
 		Location: locSvc,
 	})
@@ -321,6 +325,8 @@ func run() error {
 	// One sink serves reply playback, the wake chime, timer alerts and the
 	// audio Tools, so audio.stop can cancel whatever the assistant is playing.
 	sink := audio.NewPulseSink(cfg.Playback.Binary, cfg.Playback.Sink)
+	sink.Device = eq.Target
+	sink.VolumeDevice = eq.Master
 	// One serial sink keeps reply audio, Fillers and timer alerts from
 	// overlapping on the single speaker. The wake chime uses the raw sink:
 	// it plays before any reply is chosen.
@@ -435,6 +441,12 @@ func run() error {
 	if speechSpeaker != nil {
 		ringDeps.Speaker = speechSpeaker
 	}
+	ringDeps.Media = func(ctx context.Context, text string) error {
+		if completion.IsYouTube(text) {
+			return completion.YouTube(ctx, text, cfg.Playback.Sink)
+		}
+		return spotifyModule.PlayCompletion(ctx, text)
+	}
 	ringEngine := ring.New(ringDeps)
 
 	// One module list owns Tool wiring; each module reads its tools.<name>
@@ -548,10 +560,12 @@ func run() error {
 	// The Dashboard's opt-in to speak its chat replies on the Pi. Live, so the
 	// top-bar toggle applies to the next request without a restart.
 	defs = append(defs, dashboard.SpeakRepliesDefinition())
+	defs = append(defs, equalizer.Definitions()...)
 	settingsSvc, err = settings.New(ctx, st, defs...)
 	if err != nil {
 		return fmt.Errorf("settings: %w", err)
 	}
+	go eq.Watch(ctx, settingsSvc)
 	// Bind after the service exists so the timezone is live overridable: the
 	// Dashboard's settings handler and any voice Tool write the same service.
 	zone.Bind(settingsSvc)

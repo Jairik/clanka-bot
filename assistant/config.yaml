@@ -364,7 +364,8 @@ stt:
 playback:
   # pacat from pulseaudio-utils. Only this container mounts the Pulse socket.
   binary: "pacat"
-  # Named Pulse sink, e.g. the Echo Dot once Bluetooth A2DP is set up.
+  # EQ uses this as its master. With echo cancellation, select aec_music_sink.
+  # Without AEC, use the real speaker sink (e.g. the Bluetooth A2DP output).
   # Empty uses the host's default sink.
   sink: ""
 

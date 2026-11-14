@@ -23,13 +23,14 @@ export function AlertsPage() {
       )}
       {data?.HasManagers && (
         <div className="space-y-2.5">
+          <CreateAlert actions={actions} />
           <Section title="Active" summary={`${data.Alerts?.length ?? 0} scheduled · ${data.ZoneName}`} defaultOpen flush>
             {data.Alerts?.length ? (
               <ul className="divide-y divide-separator">
                 {data.Alerts.map((a) => {
                   const I = KIND_ICON[a.KindKey] ?? BellRing;
                   return (
-                    <li key={a.CancelAction} className="flex min-h-14 items-center gap-3 px-3.5 py-2.5">
+                    <li key={a.CancelAction} className="flex min-h-14 flex-wrap items-center gap-3 px-3.5 py-2.5">
                       <I className="size-4 shrink-0 text-muted" strokeWidth={1.5} />
                       <div className="min-w-0 flex-1">
                         <div className="truncate text-sm">{a.Label || a.Kind}</div>
@@ -38,6 +39,7 @@ export function AlertsPage() {
                           {a.Detail && ` · ${a.Detail}`}
                         </div>
                       </div>
+                      {(a.KindKey === "timer" || a.KindKey === "alarm") && <CompletionAudio current={a.Audio ?? ""} action={a.CancelAction.replace(/cancel$/, "audio")} actions={actions} />}
                       <time dateTime={a.NextISO} className="shrink-0 text-right text-xs tabular-nums">
                         {a.Next}
                       </time>
@@ -192,5 +194,46 @@ function ResetBox({ label, checked, onChange }: { label: string; checked: boolea
         {label}
       </Checkbox.Content>
     </Checkbox>
+  );
+}
+
+// Completion media is edited through the same pending alert managers.
+function CompletionAudio({ current, action, actions }: { current: string; action: string; actions: Actions<AlertsView> }) {
+  const [audio, setAudio] = useState(current);
+  useEffect(() => setAudio(current), [current]);
+  return (
+    <form className="flex w-full flex-wrap items-end gap-2 sm:w-72" onSubmit={(e) => {
+      e.preventDefault();
+      void actions.run(action, { audio });
+    }}>
+      <Field label="Completion audio"><TextField label="Completion audio" value={audio} placeholder="Song, playlist: name, or link" onChange={setAudio} /></Field>
+      <Button type="submit" size="sm" isPending={actions.pending === action}>Save audio</Button>
+    </form>
+  );
+}
+
+// The form uses the Dashboard's existing monochrome fields and action feedback.
+function CreateAlert({ actions }: { actions: Actions<AlertsView> }) {
+  const [kind, setKind] = useState("timer");
+  const [label, setLabel] = useState("");
+  const [when, setWhen] = useState("900");
+  const [audio, setAudio] = useState("");
+  return (
+    <Section title="Schedule an alert" defaultOpen>
+      <form className="space-y-3" onSubmit={(e) => {
+        e.preventDefault();
+        void actions.run("/alerts/create", { kind, label, audio, [kind === "timer" ? "seconds" : "clock"]: when });
+      }}>
+        <SelectField label="Kind" value={kind} onChange={(v) => {
+          setKind(v);
+          setWhen(v === "timer" ? "900" : "07:00");
+        }} options={[{ value: "timer", label: "Timer" }, { value: "alarm", label: "Alarm" }]} />
+        <Field label="Label"><TextField label="Label" value={label} onChange={setLabel} /></Field>
+        <Field label={kind === "timer" ? "Duration (seconds)" : "Time (HH:MM)"}><TextField label={kind === "timer" ? "Duration (seconds)" : "Time (HH:MM)"} value={when} onChange={setWhen} /></Field>
+        <Field label="Completion audio"><TextField label="Completion audio" value={audio} onChange={setAudio} placeholder="Song, playlist: name, Spotify or YouTube link" /></Field>
+        <p className="text-xs text-muted">Audio replaces speech and stops after 10 minutes. Playlists shuffle. Blank uses the standard alert; unavailable media falls back to speech.</p>
+        <Button type="submit" size="sm" isPending={actions.pending === "/alerts/create"}>Schedule</Button>
+      </form>
+    </Section>
   );
 }

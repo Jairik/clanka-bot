@@ -252,3 +252,41 @@ func TestPulseSinkSetMuteKeepsTheLevel(t *testing.T) {
 		t.Fatalf("pactl args = %q", got)
 	}
 }
+
+// A live EQ changes playback routing without changing the speaker volume destination.
+func TestLiveEQDevice(t *testing.T) {
+	binary, argsPath, _ := fakePacat(t)
+	sink := audio.NewPulseSink(binary, "aec_music_sink")
+	sink.Device = func() string { return "clanka_eq_a" }
+	writer, err := sink.Open(context.Background(), audio.Format{Rate: 48000, Width: 2, Channels: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(args), "--device=clanka_eq_a") {
+		t.Fatal(string(args))
+	}
+}
+
+// Volume must address the original AEC/output even after EQ becomes the default.
+func TestEQVolumeMaster(t *testing.T) {
+	pactl, argsPath := fakePactl(t)
+	sink := audio.NewPulseSink(filepath.Join(filepath.Dir(pactl), "pacat"), "")
+	sink.VolumeDevice = func() string { return "aec_music_sink" }
+	if err := sink.SetVolume(context.Background(), 40); err != nil {
+		t.Fatal(err)
+	}
+	args, err := os.ReadFile(argsPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(args), "aec_music_sink") || strings.Contains(string(args), "@DEFAULT_SINK@") {
+		t.Fatal(string(args))
+	}
+}

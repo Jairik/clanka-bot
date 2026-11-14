@@ -2,7 +2,7 @@
 // the action URLs the server put in each view, and answer with the refreshed
 // view (Error set and a 4xx/5xx status when the write was refused).
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { isLiveName, useLive } from "./events";
+import { isLiveName, latestDelta, useLive } from "./events";
 import { API_VERSION } from "./api-version";
 import type { DataPage, PageViews, WriteResult } from "./types";
 
@@ -83,13 +83,19 @@ export function usePageData<P extends DataPage>(page: P, opts: { poll?: number; 
   const [loading, setLoading] = useState(true);
   const first = useRef(true);
   const query = opts.query;
-  const { live, generation, subscribe } = useLive();
+  const { live, generation, subscribe, resync } = useLive();
 
   const reload = useCallback(async () => {
     const q = first.current && query ? `?${query}` : "";
     first.current = false;
     try {
-      const v = await getJSON<PageViews[P]>(`/api/ui/${page}${q}`);
+      // Health and Alerts arrive as a whole view, so a delta that lands while
+      // the snapshot is in flight is the newer state (#149).
+      const v = await resync(
+        isLiveName(page) ? page : null,
+        () => getJSON<PageViews[P]>(`/api/ui/${page}${q}`),
+        latestDelta,
+      );
       setData(v);
       setError("");
     } catch (e) {
@@ -97,7 +103,7 @@ export function usePageData<P extends DataPage>(page: P, opts: { poll?: number; 
     } finally {
       setLoading(false);
     }
-  }, [page, query]);
+  }, [page, query, resync]);
 
   useEffect(() => {
     first.current = true;

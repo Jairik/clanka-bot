@@ -1604,6 +1604,8 @@ negatives:
 # the evaluation can report compound handling on its own.
 compounds:
   - turn the lights on and tell me the weather
+  - set a timer for 15 minutes and play Here Comes the Sun when it finishes
+  - set an alarm for 7 and play my running playlist when it rings
   - what time is it and set a timer for five minutes
   - set a timer for five minutes and tell me the weather
   # The semantic half is a Timer request, the other half is a shared Control

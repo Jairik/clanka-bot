@@ -1048,3 +1048,33 @@ func TestAlertsShowsMissedHistoryOnceFromTheSharedStore(t *testing.T) {
 		t.Fatalf("alarm list = %+v, want the repeating Alarm", remaining)
 	}
 }
+
+// Dashboard scheduling, editing and recovery all share the managers' audio field.
+func TestDashboardCompletionAudio(t *testing.T) {
+	f := newAlertsFixture(t)
+	rec := f.post("/alerts/create", url.Values{"kind": {"timer"}, "seconds": {"900"}, "audio": {"song"}})
+	if rec.Code != 200 {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body.String())
+	}
+	timers := f.timer.List()
+	if len(timers) != 1 || timers[0].Audio != "song" {
+		t.Fatalf("timers=%+v", timers)
+	}
+	rec = f.post("/alerts/timer/"+timers[0].ID+"/audio", url.Values{"audio": {"playlist: running"}})
+	if rec.Code != 200 || f.timer.List()[0].Audio != "playlist: running" {
+		t.Fatalf("edit: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = f.post("/alerts/create", url.Values{"kind": {"alarm"}, "clock": {"07:00"}, "audio": {"https://youtu.be/abc"}})
+	if rec.Code != 200 {
+		t.Fatalf("alarm create: %d %s", rec.Code, rec.Body.String())
+	}
+	alarms := f.alarm.List()
+	if len(alarms) != 1 || alarms[0].Audio != "https://youtu.be/abc" {
+		t.Fatalf("alarms=%+v", alarms)
+	}
+	empty := ""
+	out, err := f.alarm.Update(t.Context(), alarm.UpdateIn{ID: alarms[0].ID, Audio: &empty})
+	if err != nil || out.Alarm.Audio != "" {
+		t.Fatalf("clear=%+v %v", out, err)
+	}
+}

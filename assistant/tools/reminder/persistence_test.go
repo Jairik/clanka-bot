@@ -93,7 +93,7 @@ func TestRemindersAndEveryOtherTableShareOneDatabase(t *testing.T) {
 		// Activity history (#96). The ledger stays contiguous.
 		9:  "personas",
 		10: "notes_and_lists",
-		11: "activity_history",
+		11: "activity_history", 12: "completion_audio",
 	}
 	if len(applied) != len(want) {
 		t.Fatalf("fresh migrations = %v, want %v", applied, want)

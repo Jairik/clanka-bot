@@ -21,9 +21,13 @@ const (
 	// EventSource reconnects and resyncs, rather than growing a queue on the
 	// Pi.
 	liveBuffer = 16
-	// liveKeepalive is a comment every interval so an idle proxy does not drop
-	// the connection.
+	// liveKeepalive is a named ping every interval. An idle proxy must not drop
+	// the connection, and a named event (not a comment) reaches the page, so it
+	// can tell a quiet stream from a dead one (#149).
 	liveKeepalive = 15 * time.Second
+	// livePing is the ping frame. It carries a data line because EventSource
+	// dispatches nothing for an event without one.
+	livePing = "event: ping\ndata: {}\n\n"
 )
 
 // liveEvent is one already-encoded frame. data is JSON with escaped newlines,
@@ -62,6 +66,8 @@ type liveHub struct {
 	volumeEvery time.Duration
 	alertsEvery time.Duration
 	healthEvery time.Duration
+	// keepalive is the ping interval; an internal test shortens it.
+	keepalive time.Duration
 }
 
 func newLiveHub(handler *Handler) *liveHub {
@@ -72,6 +78,7 @@ func newLiveHub(handler *Handler) *liveHub {
 		volumeEvery: 5 * time.Second,
 		alertsEvery: 10 * time.Second,
 		healthEvery: 30 * time.Second,
+		keepalive:   liveKeepalive,
 	}
 }
 
@@ -205,9 +212,9 @@ func (hub *liveHub) sampleHealth(ctx context.Context) {
 	hub.diffAndPublishKey("health", key, view)
 }
 
-// events is the one live stream. It sends an event only for a delta; the
-// client reloads the current view on every open, so nothing missed while the
-// stream was down has to be replayed.
+// events is the one live stream. It sends an event only for a delta, plus a
+// named ping while idle; the client reloads the current view on every open, so
+// nothing missed while the stream was down has to be replayed.
 func (h *Handler) events(w http.ResponseWriter, r *http.Request) {
 	if !allowGet(w, r) {
 		return
@@ -233,7 +240,7 @@ func (h *Handler) events(w http.ResponseWriter, r *http.Request) {
 	_, _ = fmt.Fprint(w, "retry: 3000\n\n")
 	flusher.Flush()
 
-	keepalive := time.NewTicker(liveKeepalive)
+	keepalive := time.NewTicker(h.live.keepalive)
 	defer keepalive.Stop()
 	for {
 		select {
@@ -249,7 +256,7 @@ func (h *Handler) events(w http.ResponseWriter, r *http.Request) {
 			// and the client resyncs instead of silently losing the frame.
 			return
 		case <-keepalive.C:
-			_, _ = fmt.Fprint(w, ": keepalive\n\n")
+			_, _ = fmt.Fprint(w, livePing)
 			flusher.Flush()
 		}
 	}

@@ -87,7 +87,7 @@ func (m *Module) AuxHealth(context.Context) []tool.AuxHealth {
 		if detail == "" {
 			detail = "Enabled; physical state unverified"
 		}
-		if strings.Contains(detail, "failed") {
+		if m.Service.Failed() {
 			state = tool.StatusError
 		}
 	}

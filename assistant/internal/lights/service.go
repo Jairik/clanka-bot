@@ -8,6 +8,7 @@ import (
 	"errors"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 	"os/exec"
+	"strings"
 	"sync"
 	"time"
 )
@@ -61,6 +62,7 @@ type Service struct {
 	gate     chan struct{}
 	mu       sync.Mutex
 	last     string
+	failed   bool
 	Run      func(context.Context, ...string) ([]byte, error)
 }
 
@@ -78,6 +80,10 @@ func (s *Service) Devices() []Device {
 	return ds
 }
 func (s *Service) Last() string { s.mu.Lock(); defer s.mu.Unlock(); return s.last }
+
+// Failed reports whether the last transport attempt with an answer failed, so
+// Health does not have to parse the detail text.
+func (s *Service) Failed() bool { s.mu.Lock(); defer s.mu.Unlock(); return s.failed }
 
 // writeBudget is the shared limit for queueing plus one helper run.
 // A cold ELK-BLEDOM connect on the Pi took about eight seconds, so the old
@@ -101,7 +107,12 @@ func (s *Service) run(ctx context.Context, args ...string) ([]byte, error) {
 	if s.Run != nil {
 		return s.Run(ctx, args...)
 	}
-	return exec.CommandContext(ctx, "python3", append([]string{"-c", helper}, args...)...).Output()
+	out, err := exec.CommandContext(ctx, "python3", append([]string{"-c", helper}, args...)...).Output()
+	if err != nil && ctx.Err() != nil {
+		// The helper was killed by the shared budget; the deadline is the reason.
+		return nil, ctx.Err()
+	}
+	return out, err
 }
 func (s *Service) Scan(ctx context.Context) ([]Device, error) {
 	out, err := s.run(ctx, "scan")
@@ -115,6 +126,9 @@ func (s *Service) Scan(ctx context.Context) ([]Device, error) {
 
 // Apply resolves only saved devices; no arbitrary Bluetooth target can be reached by a Tool.
 func (s *Service) Apply(ctx context.Context, device, op, value string) error {
+	if !s.Enabled() {
+		return errors.New("lights are disabled on the Lights page")
+	}
 	ds := s.Devices()
 	var chosen *Device
 	for i := range ds {
@@ -134,12 +148,52 @@ func (s *Service) Apply(ctx context.Context, device, op, value string) error {
 		return err
 	}
 	_, err = s.run(ctx, chosen.Address, d.Characteristic(), hex.EncodeToString(payload))
+	if err != nil && errors.Is(err, context.Canceled) {
+		// The caller went away; that is not evidence about the controller.
+		return errors.New("light write cancelled")
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err != nil {
-		s.last = "Last write failed; controller unavailable"
-		return errors.New(s.last)
+		// Health and the Lights page carry the technical reason; the spoken and
+		// POSTed error stays speakable.
+		s.failed = true
+		s.last = chosen.Name + ": " + errText(err)
+		return errors.New("the light did not answer")
 	}
+	s.failed = false
 	s.last = "Last write accepted; physical state unverified"
 	return nil
+}
+
+// errText keeps one Health-sized line from a failed helper run. The helper's
+// traceback is the only place the transport says why, so a generic
+// "controller unavailable" would hide an unreachable or incompatible device.
+func errText(err error) string {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "no answer within " + writeBudget.String()
+	}
+	var exit *exec.ExitError
+	if errors.As(err, &exit) {
+		lines := strings.Split(strings.TrimSpace(string(exit.Stderr)), "\n")
+		for i := len(lines) - 1; i >= 0; i-- {
+			line := strings.TrimSpace(lines[i])
+			if line == "" {
+				continue
+			}
+			// "bleak.exc.BleakError: failed to discover services" keeps the reason.
+			if k := strings.Index(line, ": "); k > 0 && strings.HasSuffix(line[:k], "Error") {
+				line = line[k+2:]
+			}
+			return trimDetail(line, 140)
+		}
+	}
+	return trimDetail(err.Error(), 140)
+}
+
+func trimDetail(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return strings.TrimSpace(s[:n-1]) + "…"
 }

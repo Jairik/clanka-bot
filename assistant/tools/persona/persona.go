@@ -113,6 +113,23 @@ func (m *Module) newSwitch(deps tool.Deps) tool.Tool[SwitchIn, SwitchOut] {
 			"I want the glados persona",
 			"make yourself glados",
 			"go into the glados persona",
+			// A spoken Persona name is often not a dictionary word, so include
+			// the starter library's names. Without these the phrase scores in a
+			// dead heat with persona.list and the request falls to the Agent.
+			"switch to the scuzz persona",
+			"use the scuzz persona",
+			"be scuzz",
+			"switch to the sneer persona",
+			"use the sneer persona",
+			"be sneer",
+			"switch to the bark persona",
+			"activate bark",
+			"switch to the biff persona",
+			"use biff",
+			"switch to the blank persona",
+			"use the blank persona",
+			"change to the scuzz persona",
+			"become sneer",
 		},
 		Extract: extractSwitch,
 	}

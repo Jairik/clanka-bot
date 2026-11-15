@@ -18,12 +18,15 @@ import (
 
 	"github.com/Jairik/clanka-bot/assistant/internal/activity"
 	"github.com/Jairik/clanka-bot/assistant/internal/httpguard"
+	"github.com/Jairik/clanka-bot/assistant/internal/integrations"
 	"github.com/Jairik/clanka-bot/assistant/internal/persona"
+	"github.com/Jairik/clanka-bot/assistant/internal/phrasebook"
 	"github.com/Jairik/clanka-bot/assistant/internal/secrets"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 	"github.com/Jairik/clanka-bot/assistant/internal/sound"
 	"github.com/Jairik/clanka-bot/assistant/internal/spotify"
 	"github.com/Jairik/clanka-bot/assistant/internal/status"
+	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/internal/toolpolicy"
 	"github.com/Jairik/clanka-bot/assistant/internal/tz"
 	"github.com/Jairik/clanka-bot/assistant/internal/voicelib"
@@ -98,6 +101,28 @@ type Options struct {
 	// Personas backs the Persona page: the same library and atomic selection
 	// the persona Tools use. The page is read-only when it is nil.
 	Personas *persona.Service
+	// DesktopNotify reports whether a due Reminder may reach the Dashboard's
+	// browser notification now: the same notify.reminders switch and the same
+	// Quiet-hours rule the phone push uses. Nil means no desktop channel.
+	DesktopNotify func() bool
+	// Phrases backs the Phrase book page: the per-Persona overrides for the
+	// short Fast path confirmations. PhraseSlots is the overridable Tool list
+	// built once at wiring time; PhraseGen is the one-shot model seam the
+	// "generate from persona" action uses. Generation is hidden when nil.
+	Phrases     *phrasebook.Service
+	PhraseSlots []phrasebook.Slot
+	PhraseGen   phrasebook.Completer
+	// PhraseGenReady reports whether the provider key is configured. The page
+	// hides Generate when it is false; nil keeps the button visible for tests
+	// and for a deployment that resolves the key another way.
+	PhraseGenReady func() bool
+	// Registry is the one live Tool registry. The Routes and Hermes pages read
+	// its metadata to show what is deterministic, what only the Agent may call,
+	// and what stays on the Pi. Nil makes those pages explanatory.
+	Registry *tool.Registry
+	// Integrations backs the Hermes page's account linking and per-integration
+	// grants. Nil makes the page explanatory.
+	Integrations *integrations.Service
 	// Spotify is the one Web API auth seam shared with the future Spotify
 	// Tools. The page never renders a token; the pairing reader is separate
 	// because Connect pairing and Web API auth are different grants.
@@ -169,6 +194,13 @@ type Handler struct {
 	zone           *tz.Service
 	now            func() time.Time
 	personas       *persona.Service
+	desktopNotify  func() bool
+	phrases        *phrasebook.Service
+	phraseSlots    []phrasebook.Slot
+	phraseGen      phrasebook.Completer
+	phraseGenReady func() bool
+	registry       *tool.Registry
+	integrations   *integrations.Service
 	spotify        *spotify.Auth
 	spotifyPairing *spotify.PairingReader
 	activity       *activity.Store
@@ -270,6 +302,13 @@ func New(opts Options) (*Handler, error) {
 		zone:           opts.Zone,
 		now:            now,
 		personas:       opts.Personas,
+		desktopNotify:  opts.DesktopNotify,
+		phrases:        opts.Phrases,
+		phraseSlots:    opts.PhraseSlots,
+		phraseGen:      opts.PhraseGen,
+		phraseGenReady: opts.PhraseGenReady,
+		registry:       opts.Registry,
+		integrations:   opts.Integrations,
 		spotify:        opts.Spotify,
 		spotifyPairing: opts.SpotifyPairing,
 		activity:       opts.Activity,
@@ -371,6 +410,22 @@ func New(opts Options) (*Handler, error) {
 	h.Mutating("POST /personas/{name}", h.personasUpdate)
 	h.Mutating("POST /personas/{name}/select", h.personasSelect)
 	h.Mutating("POST /personas/active/reset", h.personasClear)
+	// The Phrase book page overrides the short Fast path confirmation per
+	// Persona. Generation uses the one Agent provider and replaces every
+	// override for that Persona; each write is same-origin.
+	h.Handle("GET /api/ui/phrasebook", h.phrasebookPage)
+	h.Mutating("POST /phrasebook/{persona}", h.phrasebookSave)
+	h.Mutating("POST /phrasebook/{persona}/reset", h.phrasebookReset)
+	h.Mutating("POST /phrasebook/{persona}/clear", h.phrasebookClear)
+	h.Mutating("POST /phrasebook/{persona}/generate", h.phrasebookGenerate)
+	// The Routes page is a read-only explanation of what routing may choose.
+	// The Hermes page reads the MCP surface and links the accounts Hermes may
+	// use; linking writes the same write-only secrets the Tools read.
+	h.Handle("GET /api/ui/routes", h.routesPage)
+	h.Handle("GET /api/ui/hermes", h.hermesPage)
+	h.Mutating("POST /hermes/integrations/{id}", h.hermesLink)
+	h.Mutating("POST /hermes/integrations/{id}/unlink", h.hermesUnlink)
+	h.Mutating("POST /hermes/integrations/{id}/grant", h.hermesGrant)
 	h.Mutating("POST /settings/tools/{name}", h.settingsToolSave)
 	h.Mutating("POST /settings/tools/{name}/reset", h.settingsToolReset)
 	h.Mutating("POST /settings/values/{key}", h.settingsValueSave)

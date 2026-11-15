@@ -138,6 +138,9 @@ type Registry struct {
 	mu     sync.RWMutex
 	tools  map[string]*entry
 	policy Policy
+	// speaker, when set, may replace a rendered Fast path reply. It is the
+	// Persona phrase book's hook; nil passes every reply through.
+	speaker func(name, text string) string
 
 	// pending is the one confirm call waiting for a spoken yes. Confirmation
 	// enforcement lives here so no caller, including the model, can run a
@@ -160,6 +163,15 @@ func NewRegistry(defaultTimeout time.Duration) *Registry {
 func (r *Registry) SetPolicy(p Policy) {
 	r.mu.Lock()
 	r.policy = p
+	r.mu.Unlock()
+}
+
+// SetSpeaker installs the reply hook consulted by Speak. A hook may replace
+// the rendered text; an empty return keeps the original. nil clears it. It is
+// safe to call while serving.
+func (r *Registry) SetSpeaker(f func(name, text string) string) {
+	r.mu.Lock()
+	r.speaker = f
 	r.mu.Unlock()
 }
 
@@ -375,11 +387,23 @@ func (r *Registry) run(ctx context.Context, e *entry, args json.RawMessage) (any
 func (r *Registry) Speak(name string, result any) (string, bool) {
 	r.mu.RLock()
 	e, ok := r.tools[name]
+	speaker := r.speaker
 	r.mu.RUnlock()
 	if !ok {
 		return "", false
 	}
-	return e.speak(result)
+	text, ok := e.speak(result)
+	if !ok {
+		return "", false
+	}
+	// The speaker runs after the Tool's own renderer, exactly once per call
+	// site, so history, repeat and the spoken reply all see the same text.
+	if speaker != nil {
+		if replaced := speaker(name, text); replaced != "" {
+			text = replaced
+		}
+	}
+	return text, true
 }
 
 // Extract fills a Tool's arguments from an utterance for the Fast path.

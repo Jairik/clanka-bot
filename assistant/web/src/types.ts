@@ -76,6 +76,9 @@ export type AlertsView = {
   Alarms: AlarmEditor[] | null;
   Missed: MissedAlert[] | null;
   MissedLimit: number;
+  // DesktopNotify is true when a due Reminder may show a browser
+  // notification now: notify.reminders is on and Quiet hours allow it.
+  DesktopNotify: boolean;
 };
 
 export type Call = {
@@ -111,6 +114,49 @@ export type HealthView = {
   // Spotify keeps Connect pairing and Web API auth separate; they are
   // different grants and one can be healthy while the other is not.
   Spotify: Check[] | null;
+};
+
+export type HermesTool = {
+  Name: string;
+  Description: string;
+  Permission: string;
+};
+
+export type HermesView = {
+  Owner: string;
+  Page: string;
+  Flash: string;
+  Error: string;
+  HasRegistry: boolean;
+  HasIntegrations: boolean;
+  Surface: HermesTool[] | null;
+  SurfaceCount: number;
+  LocalOnlyCount: number;
+  ConfirmCount: number;
+  Granted: number;
+  Rows: Integration[] | null;
+};
+
+export type Integration = {
+  ID: string;
+  Name: string;
+  Summary: string;
+  Docs: string;
+  Status: string;
+  StatusKey: string;
+  Hermes: boolean;
+  CanGrant: boolean;
+  Linkable: boolean;
+  Secrets: IntegrationSecret[] | null;
+  Tools: string[] | null;
+};
+
+export type IntegrationSecret = {
+  Name: string;
+  Set: boolean;
+  Source: string;
+  Last4: string;
+  Optional: boolean;
 };
 
 export type MissedAlert = {
@@ -209,6 +255,39 @@ export type PersonasView = {
   Rows: PersonaRow[] | null;
 };
 
+export type PhrasebookPersona = {
+  Name: string;
+  Active: boolean;
+  Count: number;
+};
+
+export type PhrasebookSlot = {
+  Tool: string;
+  Group: string;
+  Description: string;
+  Default: string;
+  Phrase: string;
+  Source: string;
+  Overridden: boolean;
+};
+
+export type PhrasebookView = {
+  Owner: string;
+  Page: string;
+  Flash: string;
+  Error: string;
+  HasService: boolean;
+  HasGenerator: boolean;
+  ActivePersona: string;
+  Selected: string;
+  Personas: PhrasebookPersona[] | null;
+  Slots: PhrasebookSlot[] | null;
+  Total: number;
+  Overridden: number;
+  Generated: number;
+  Manual: number;
+};
+
 export type Request = {
   ID: string;
   Time: string;
@@ -239,6 +318,42 @@ export type RingKind = {
   Kind: string;
   Label: string;
   Settings: Setting[] | null;
+};
+
+export type RouteRow = {
+  Name: string;
+  Description: string;
+  Permission: string;
+  FastPath: boolean;
+  AgentOnly: boolean;
+  LocalOnly: boolean;
+  Confirm: boolean;
+  Enabled: boolean;
+  Hermes: boolean;
+  ControlPhrases: number;
+  Examples: number;
+};
+
+export type RoutesTotals = {
+  Tools: number;
+  FastPath: number;
+  AgentOnly: number;
+  LocalOnly: number;
+  Confirm: number;
+  Hermes: number;
+};
+
+export type RoutesView = {
+  Owner: string;
+  Page: string;
+  Flash: string;
+  Error: string;
+  HasRegistry: boolean;
+  Prefixes: string[] | null;
+  Filler: string;
+  Unavailable: string;
+  Totals: RoutesTotals;
+  Rows: RouteRow[] | null;
 };
 
 export type ScheduledAlert = {

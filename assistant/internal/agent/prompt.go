@@ -12,8 +12,10 @@ import (
 )
 
 // DefaultSystemPrompt is used when config sets no system prompt. It is static
-// on purpose: no personal data is loaded ahead of a request (ADR-0002).
-const DefaultSystemPrompt = "You are a concise voice assistant. Answer briefly and naturally, and use the provided tools when they help. If a request needs information you do not have, say so."
+// on purpose: no personal data is loaded ahead of a request (ADR-0002). The
+// owner asked for minimal spoken replies, so brevity is a rule rather than a
+// style hint: one short sentence, or a few words when that is enough.
+const DefaultSystemPrompt = "You are a concise voice assistant. Keep every spoken reply to one short sentence, or a few words when that is enough. Do not add offers, caveats, restatements or extra detail unless they are needed to act safely. Use the provided tools when they help. If a request needs information you do not have, say so in one short sentence."
 
 // Persona is the active personality prompt. It is read once per turn and added
 // only to the labelled system part of the request, never to history or a Tool

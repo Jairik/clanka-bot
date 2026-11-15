@@ -675,6 +675,15 @@ high-priority Notification with the message, alongside the spoken reminder;
 Requests are bounded by a 10 s HTTP timeout, redirects are refused so the bearer
 token stays on the configured host, and response bodies are never logged.
 
+The Dashboard is the desktop surface for a due Reminder while it is open: the
+Alerts page schedules one browser Notification per active Reminder after the
+owner grants the browser permission. It does not add a second preference. The
+server puts the same decision in the view (`DesktopNotify`: `notify.reminders`
+on and Quiet hours allowing), and a cancelled Reminder clears its timer on the
+next view update. The notification text is never stored or sent anywhere else.
+A closed tab cannot receive one; Web Push is the transport to add if that
+becomes a requirement.
+
 #### Voice library and rate
 
 Voice is a persistent setting, not a per-request choice. The library is the
@@ -792,11 +801,40 @@ what differs instead of claiming the exact bundle. Clearing the active Persona
 removes only the `persona.active` marker; the applied voice and wording stay as
 they are.
 
+#### Phrase book
+
+Every Fast path Tool still renders its own full sentence. The **Phrase book**
+page at `/phrasebook` replaces the acknowledgements with the shortest useful
+line: `timer.set` → "Set.", `spotify.play` → "Playing.", and so on. A Persona
+can override any of them; **Generate from persona** asks the one Agent provider
+for a complete in-character set (1–4 words per Tool); it is applied immediately,
+and the page lets you edit or reset any row. Content-bearing replies
+(the time, the weather, a list, what is playing) are deliberately not
+overridable. The shipped defaults apply when no Persona is active, and the
+registry hook is installed once at startup, so no restart is needed after an
+edit. See [docs/phrasebook.md](docs/phrasebook.md).
+
+`personas/starter.json` holds the starter set (Scuzz, Sneer, Bark, Biff, Blank);
+load it with `python3 scripts/seed-personas.py --base http://127.0.0.1:8082`.
+
+#### Routes and Hermes
+
+The **Routes** page at `/routes` is the deterministic-surface audit: every Tool,
+whether the Fast path may choose it, whether only the Agent may call it, whether
+it stays on the Pi, whether it asks for a Confirmation, and how many live
+Control phrases and Examples it has. The **Hermes** page at `/hermes` shows the
+surface an MCP adapter would publish (read/act, not Local-only, not confirm)
+and links the accounts Hermes may use. Hermes itself is not installed in this
+build, and the page says so; a grant is stored intent until the adapter exists.
+See [docs/hermes.md](docs/hermes.md).
+
 Routing precision is measured against a labelled corpus with the real MiniLM
 model; the floor is 0.95 for every Tool, and ambiguous phrasing goes to the
 Agent path. See [docs/routing-eval.md](docs/routing-eval.md) to run the
 evaluation, tune threshold and margin, or promote a request-log misroute into
-the fixture.
+the fixture. The model comparison (MiniLM vs BGE, Arctic and the MiniLM
+variants) and the measured trade-offs are in
+[docs/embeddings.md](docs/embeddings.md).
 
 ### Settings and Tool overrides
 

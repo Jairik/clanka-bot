@@ -15,6 +15,10 @@ import (
 	"github.com/openai/openai-go/v3/option"
 )
 
+// ErrNoAPIKey means the provider has no key, so a bounded helper call must not
+// pretend to reach the model. The Dashboard maps it to a configuration error.
+var ErrNoAPIKey = errors.New("agent: no provider API key")
+
 var (
 	// errFirstTokenTimeout means the model produced nothing within the budget.
 	errFirstTokenTimeout = errors.New("agent: first token timeout")
@@ -212,6 +216,47 @@ func wrapProviderError(err error) error {
 		return &providerError{Status: apiErr.StatusCode, Err: err}
 	}
 	return &providerError{Err: err}
+}
+
+// complete runs one non-streaming request with the same provider, key, model
+// and forced privacy fields as the conversational path. It is for small
+// bounded jobs such as generating a Persona phrase book; it adds no Tools,
+// history or persona context of its own.
+func (p *provider) complete(ctx context.Context, system, user string) (string, error) {
+	model := strings.TrimSpace(p.model())
+	if model == "" {
+		model = p.fallbackModel
+	}
+	params := openai.ChatCompletionNewParams{
+		Model: model,
+		Messages: []openai.ChatCompletionMessageParamUnion{
+			openai.SystemMessage(system),
+			openai.UserMessage(user),
+		},
+		// A phrase book is a small JSON object. Bound the reply so a hostile or
+		// confused Persona prompt cannot turn this helper into a long, paid
+		// completion; the caller validates every value again.
+		MaxCompletionTokens: openai.Int(4000),
+	}
+	// ADR-0002: ZDR and data-collection denial are forced here too, so a
+	// generated phrase book leaves the device under the same rules as a turn.
+	params.SetExtraFields(map[string]any{"provider": providerFields(p.routing)})
+	var opts []option.RequestOption
+	key := strings.TrimSpace(p.apiKey())
+	if key == "" {
+		return "", ErrNoAPIKey
+	}
+	opts = append(opts, option.WithAPIKey(key))
+	runCtx, cancel := context.WithTimeout(ctx, p.requestTimeout)
+	defer cancel()
+	resp, err := p.client.Chat.Completions.New(runCtx, params, opts...)
+	if err != nil {
+		return "", wrapProviderError(err)
+	}
+	if len(resp.Choices) == 0 {
+		return "", errors.New("agent: provider returned no choices")
+	}
+	return strings.TrimSpace(resp.Choices[0].Message.Content), nil
 }
 
 // providerFields merges the configured routing and then forces the privacy

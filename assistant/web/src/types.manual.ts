@@ -4,8 +4,11 @@ import type {
   ActivityView,
   AlertsView,
   HealthView,
+  HermesView,
   NotesView,
   PersonasView,
+  PhrasebookView,
+  RoutesView,
   SecretsView,
   SettingsView,
   SoundsView,
@@ -30,6 +33,9 @@ export type PageViews = {
   sounds: SoundsView;
   voices: VoicesView;
   personas: PersonasView;
+  phrasebook: PhrasebookView;
+  routes: RoutesView;
+  hermes: HermesView;
   alerts: AlertsView;
   notes: NotesView;
   spotify: SpotifyView;

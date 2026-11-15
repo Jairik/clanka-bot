@@ -30,14 +30,19 @@ sudo bash scripts/install-deploy-watch.sh  # opt in to the auto-deploy timer (au
    except gitignored files such as `.env`).
 2. If HEAD is detached after an earlier rollback, returns to the tracked branch.
 3. Runs `git pull --ff-only`; diverged history fails the deploy.
-4. Runs `docker compose up -d --build --remove-orphans` with `GIT_SHA` set to
+4. Refuses to build when the tracked branch has commits that are not on its
+   upstream (for `main`, `origin/main`). A pull on a branch that is *ahead* of
+   its upstream says "Already up to date" without moving `HEAD`, so without
+   this check the script would build an unpushed local commit. Push or reset
+   first; a branch with no upstream is left to `git pull`'s own error.
+5. Runs `docker compose up -d --build --remove-orphans` with `GIT_SHA` set to
    `git rev-parse --short HEAD`, so every image is tagged
    `clanka/<service>:<sha>` and containers from a different service set are
    removed.
-5. Waits up to `DEPLOY_HEALTH_TIMEOUT` seconds (default 120) for every service
+6. Waits up to `DEPLOY_HEALTH_TIMEOUT` seconds (default 120) for every service
    in `docker-compose.yml` to be healthy. On failure it exits non-zero, prints
    `docker compose ps` and the logs of the failing service(s).
-6. Because the service list comes from Compose, the script keeps working as the
+7. Because the service list comes from Compose, the script keeps working as the
    stack grows from `assistant` alone to all eight services.
 
 **With a commit — rollback without rebuilding**
@@ -56,7 +61,9 @@ scripts/deploy.sh <sha>      # or: make rollback SHA=<sha>
    stack, and the health wait enumerates that commit's services only. Old images
    are pruned by hand (`docker image prune`).
 
-The next plain `make deploy` switches back to the tracked branch and pulls.
+The next plain `make deploy` switches back to the tracked branch and pulls;
+that branch must not have unpushed commits, or the deploy refuses to build
+them.
 
 Tuning and diagnostics:
 

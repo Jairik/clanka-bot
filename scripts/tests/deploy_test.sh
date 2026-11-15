@@ -278,6 +278,26 @@ test_deploys_current_branch() {
 	if [[ "$(git -C "$repo" rev-parse --abbrev-ref HEAD)" == "main" ]]; then pass; else fail "deploy leaves the tracked branch checked out"; fi
 }
 
+test_deploys_behind_upstream() {
+	local repo other remote sha
+	repo=$(new_repo)
+	remote=$(git -C "$repo" remote get-url origin)
+	other="$(mktemp -d "$TMP/other.XXXXXX")"
+	git clone -q "$remote" "$other"
+	git_config "$other"
+	echo remote >"$other/remote.txt"
+	git -C "$other" add -A
+	git -C "$other" commit -qm remote
+	git -C "$other" push -q origin main
+	sha=$(git -C "$other" rev-parse --short HEAD)
+	new_scenario
+	run_deploy "$repo"
+	assert_status 0 "behind branch deploys"
+	assert_out_contains "deploy fast-forwards the branch" "Fast-forward"
+	assert_env_contains "pulled images are tagged with the new SHA" "GIT_SHA=$sha"
+	if [[ "$(git -C "$repo" rev-parse HEAD)" == "$(git -C "$other" rev-parse HEAD)" ]]; then pass; else fail "deploy reaches the new upstream"; fi
+}
+
 test_waits_for_every_service() {
 	local repo
 	repo=$(new_repo)
@@ -408,13 +428,16 @@ test_rollback_refuses_dirty_worktree() {
 }
 
 test_default_deploy_recovers_from_detached_rollback() {
-	local repo first
+	local repo first tip
 	repo=$(new_repo)
 	first=$(git -C "$repo" rev-parse HEAD)
 	echo two >"$repo/second.txt"
 	git -C "$repo" add -A
 	git -C "$repo" commit -qm second
 	tip=$(git -C "$repo" rev-parse HEAD)
+	# deploy.sh refuses a branch ahead of its upstream; this case is about
+	# returning from detached HEAD, so keep main pushed.
+	git -C "$repo" push -q origin main
 	new_scenario
 	run_deploy "$repo" "$first" || true
 	run_deploy "$repo"
@@ -444,6 +467,33 @@ test_refuses_non_fast_forward_pull() {
 	assert_calls_not_contains "diverged pull never starts containers" "docker compose up"
 }
 
+test_refuses_unpushed_local_commit() {
+	local repo
+	repo=$(new_repo)
+	echo local >"$repo/local.txt"
+	git -C "$repo" add -A
+	git -C "$repo" commit -qm local
+	new_scenario
+	run_deploy "$repo"
+	assert_nonzero "unpushed local commit is refused"
+	assert_out_contains "refusal names the upstream" "not on origin/main"
+	assert_out_contains "refusal says what to do" "push or reset first"
+	assert_calls_not_contains "unpushed commit never builds" "docker compose up"
+}
+
+test_deploys_pushed_feature_branch() {
+	local repo sha
+	repo=$(new_repo)
+	git -C "$repo" checkout -q -b feature
+	git -C "$repo" push -q -u origin feature
+	sha=$(git -C "$repo" rev-parse --short HEAD)
+	new_scenario
+	run_deploy "$repo"
+	assert_status 0 "pushed feature branch deploys"
+	assert_calls_contains "feature branch builds the stack" "docker compose up -d --build --remove-orphans"
+	assert_env_contains "feature branch tags its own SHA" "GIT_SHA=$sha"
+}
+
 test_make_build_arm64() {
 	local repo sha
 	repo=$(new_repo)
@@ -465,6 +515,7 @@ run_test() {
 run_test test_help
 run_test test_refuses_dirty_worktree
 run_test test_deploys_current_branch
+run_test test_deploys_behind_upstream
 run_test test_waits_for_every_service
 run_test test_provisions_the_receiver_before_compose_up
 run_test test_rollback_removes_orphans_from_a_newer_service_set
@@ -476,6 +527,8 @@ run_test test_rollback_refuses_unknown_commit
 run_test test_rollback_refuses_dirty_worktree
 run_test test_default_deploy_recovers_from_detached_rollback
 run_test test_refuses_non_fast_forward_pull
+run_test test_refuses_unpushed_local_commit
+run_test test_deploys_pushed_feature_branch
 run_test test_make_build_arm64
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"

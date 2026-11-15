@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # One poll of main, shared by the systemd timer: if origin/main has moved past
 # HEAD, and CI is not still running or red, hand over to scripts/deploy.sh.
+# A checkout on another branch, or with local commits ahead of origin/main, is
+# left alone: deploy.sh builds the branch that is checked out.
 #
 #   scripts/deploy-watch.sh              deploy origin/main when it moves
 #   scripts/deploy-watch.sh --dry-run    report what would happen, change nothing
@@ -37,8 +39,10 @@ Usage: scripts/deploy-watch.sh [--dry-run] [--force]
 
 Poll origin/main once. When it is ahead of HEAD and its CI checks are green (or
 have not reported at all), run scripts/deploy.sh, which pulls, rebuilds and
-waits for health. Safe to run from a systemd timer: one run at a time, and it
-exits 0 whenever there is nothing to do.
+waits for health. A checkout on another branch, or one with local commits ahead
+of origin/main, is left alone without touching Docker. Safe to run from a
+systemd timer: one run at a time, and it exits 0 whenever there is nothing to
+do.
 
 Flags:
   --dry-run   do every check, log what would happen, never run deploy.sh
@@ -116,6 +120,7 @@ ci_state() {
 
 main() {
 	local dry_run=0 force=0 arg changes err target current target_short current_short status
+	local branch upstream built built_short
 
 	for arg in "$@"; do
 		case "$arg" in
@@ -158,6 +163,26 @@ main() {
 
 	target="$(git rev-parse origin/main)"
 	current="$(git rev-parse HEAD)"
+
+	# deploy.sh pulls and builds the checked-out branch, so only a branch that
+	# tracks origin/main is deployable here. A detached HEAD is the rollback
+	# path: deploy.sh's ensure_on_branch recovers it before building.
+	branch="$(git symbolic-ref --quiet --short HEAD || true)"
+	if [[ -n "$branch" ]]; then
+		upstream="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+		if [[ "$upstream" != "origin/main" ]]; then
+			log "checkout is on '$branch' (upstream ${upstream:-none}), not origin/main; leaving it alone"
+			exit 0
+		fi
+		# A local commit on main leaves HEAD ahead of, or diverged from,
+		# origin/main. Deploying would rebuild that same HEAD every tick, so
+		# leave it for a push (or an explicit rollback) instead.
+		if ! git merge-base --is-ancestor "$current" "$target"; then
+			log "checkout is not behind origin/main (local commits?); leaving it alone"
+			exit 0
+		fi
+	fi
+
 	if [[ "$target" == "$current" && "$force" -eq 0 ]]; then
 		log "already on $(git rev-parse --short "$current")"
 		exit 0
@@ -190,6 +215,13 @@ main() {
 	# Not `if ! status=$?`: the negation would report 0 and turn a failed
 	# deploy into a success. Keep the branch form so the real status survives.
 	if bash "$ROOT/scripts/deploy.sh"; then
+		# deploy.sh builds the local HEAD, so reporting the remote SHA without
+		# checking would claim a commit the host is not running.
+		built="$(git rev-parse HEAD)"
+		if [[ "$built" != "$target" ]]; then
+			built_short="$(git rev-parse --short "$built")"
+			die "deploy returned 0 but HEAD is $built_short, not $target_short; refusing to report success"
+		fi
 		log "deployed $target_short"
 	else
 		status=$?

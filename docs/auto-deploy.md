@@ -25,7 +25,10 @@ Each tick, in order:
    so a long rebuild never stacks up runs.
 2. Refuse to act on a dirty checkout (it would fail `deploy.sh` anyway) and
    report it rather than failing the unit.
-3. `git fetch origin main`. If `HEAD` already is `origin/main`, stop.
+3. `git fetch origin main`. A checkout on another branch (its upstream is not
+   `origin/main`, or it has none) is left alone without touching Docker. So is
+   a checkout whose `HEAD` is not an ancestor of `origin/main` — local commits
+   on `main`, or diverged history. If `HEAD` already is `origin/main`, stop.
 4. Ask GitHub for the commit's check runs. Still-running checks mean "try
    again next tick"; a failure, timeout or cancellation means "never deploy
    this commit" — the running stack stays as it is until a new commit lands.
@@ -34,16 +37,26 @@ Each tick, in order:
 5. Run `scripts/deploy.sh` unchanged: `git pull --ff-only`, build the
    SHA-tagged images, `docker compose up -d --build --remove-orphans`, then the
    bounded health wait.
+6. Re-read `HEAD` and report `deployed <sha>` only when it is the commit the
+   watcher asked for. A deploy that exits 0 but leaves `HEAD` elsewhere is an
+   error that names both SHAs, so the journal never claims a build the host is
+   not running.
 
 `deploy.sh` stays the only thing that builds or starts containers. The watcher
 decides *when*, never *how*, so a manual `make deploy`, a rollback and a timer
 tick produce the same result.
 
-The checkout must stay on `main`. The watcher compares `HEAD` with
-`origin/main`, but `deploy.sh` pulls the branch that is checked out, so a Pi
-left on a feature branch would compare against `main` and then pull something
-else. After a rollback, `deploy.sh` checks the old commit out detached and the
-next plain deploy returns to the tracked branch; leave it on `main` afterwards.
+For the timer, the checkout must stay on a branch that tracks `origin/main`
+(normally `main`). The watcher enforces this: a branch whose upstream is not
+`origin/main`, or a branch with local commits ahead of `origin/main`, is logged
+and left alone without touching Docker. A manual `make deploy` applies the same
+rule in `deploy.sh` after its pull: a branch with commits that are not on its
+upstream is refused, so only pushed commits are built. A feature branch that is
+pushed and tracks its own remote branch still deploys by hand. After a
+rollback, `deploy.sh` checks the old commit out detached and the next plain
+deploy returns to the tracked branch; leave it on `main` afterwards. If the
+checkout loses its upstream, restore it with
+`git branch --set-upstream-to=origin/main main`.
 
 ## Install on the Pi
 
@@ -93,11 +106,14 @@ Every line is prefixed `deploy-watch:` and the deploy it starts keeps its own
 | --- | --- |
 | `already on <sha>` | nothing new; the normal quiet case |
 | `working tree has local changes` | the checkout was edited by hand; commit, stash or move the file |
+| `checkout is on '<branch>' (upstream <upstream>), not origin/main; leaving it alone` | the checkout is on another branch (or has no upstream); the timer only tracks `main`; set the upstream with `git branch --set-upstream-to=origin/main <branch>` |
+| `checkout is not behind origin/main (local commits?); leaving it alone` | `HEAD` is ahead of or diverged from `origin/main`; push the commit or roll back |
 | `CI is still running for <sha>` | a check has not finished; the next tick retries |
 | `CI is red for <sha>` | the commit failed a check; it will not be deployed |
 | `no CI checks reported for <sha>; deploying anyway` | the commit has no check runs at all |
 | `CI status for <sha> is unknown; deploying anyway` | the API could not be reached or parsed; see "a network blip is not a CI failure" below |
 | `deploying <sha> (was <sha>)` | the deploy started |
+| `deploy returned 0 but HEAD is <sha>, not <sha>; refusing to report success` | `deploy.sh` succeeded but left the checkout on another commit; investigate before trusting the build |
 | `deploy of <sha> failed (exit <n>)` | the build or the health wait failed; see the `deploy:` lines and `docker compose ps` |
 
 A one-off check without deploying:
@@ -117,6 +133,11 @@ A one-off check without deploying:
   `docs/deploy.md`).
 - **Dirty checkout**: the timer keeps skipping every tick and logs why. This is
   the one steady-state fault worth an alert; the journal makes it obvious.
+- **Local commits or another branch**: the timer skips every tick with one
+  explanatory line and never rebuilds, because `deploy.sh` builds the local
+  `HEAD`. Push the commit, switch back to `main`, or push the branch and give
+  it its own upstream to deploy it by hand. `--force` does not override this
+  refusal; it only redeploys a checkout that already equals `origin/main`.
 - **Pi reboots**: `restart: unless-stopped` brings the last deployed images
   back, and the timer resumes 3 min after boot, so a reboot never silently
   pulls a new commit while audio is still initialising.

@@ -296,8 +296,18 @@ func (m *Manager) beginFire(r Reminder) (int64, error) {
 	return id, nil
 }
 
-// markRinging records that the alert now owns the speaker.
-func (m *Manager) markRinging(eventID int64) {
+// markRinging records that the alert now owns the speaker and, while it plays,
+// makes the Reminder visible to List with StateRinging. The history row is
+// closed separately by the fire path.
+func (m *Manager) markRinging(eventID int64, r Reminder) {
+	r.State = StateRinging
+	r.RemainingSeconds = 0
+	r.When = "now"
+	m.mu.Lock()
+	if !m.closed {
+		m.ringing[r.ID] = r
+	}
+	m.mu.Unlock()
 	if eventID <= 0 {
 		return
 	}

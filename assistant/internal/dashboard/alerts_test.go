@@ -864,6 +864,53 @@ func TestAlertsListsAndCancelsOneOffAlarmAndRingingTimer(t *testing.T) {
 	}
 }
 
+// TestAlertsRingingTimerKeepsTheRingingWording is the #197 Dashboard
+// regression: a sounding Timer is now in timers.List(), and the page must keep
+// the one row that says "Ringing now" rather than replacing it with the
+// scheduled row's "due now of 1 second" detail.
+func TestAlertsRingingTimerKeepsTheRingingWording(t *testing.T) {
+	f := newAlertsFixture(t)
+	f.setMaxRing(5 * time.Second)
+	f.player.onPlay = func(ctx context.Context) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	f.clock.Set(time.Date(2026, 11, 12, 6, 59, 59, 0, time.UTC))
+
+	started, err := f.timer.Start("pasta", time.Second)
+	if err != nil {
+		t.Fatalf("start Timer: %v", err)
+	}
+	f.player.waitStart(t)
+
+	// The Timer is sounding, so List now reports it alongside the pending ones;
+	// that is what used to dedupe its open history row away.
+	ringing := f.timer.List()
+	if len(ringing) != 1 || ringing[0].State != timer.StateRinging {
+		t.Fatalf("timers.List while ringing = %+v, want the ringing pasta Timer", ringing)
+	}
+
+	v := f.view()
+	if got := len(v.kindLabels("timer")); got != 1 {
+		t.Fatalf("timer rows = %d (%+v), want exactly the ringing row", got, v.Alerts)
+	}
+	row := v.Alerts[0]
+	if row.Label != "pasta" || row.Detail != "Ringing now" {
+		t.Fatalf("row = %+v, want the pasta Timer ringing now", row)
+	}
+	if !strings.Contains(row.Next, "07:00") {
+		t.Fatalf("row next = %q, want the 07:00 the Timer fired at", row.Next)
+	}
+
+	// Cancelling the ringing Timer clears the one row again.
+	if rec := f.post("/alerts/timer/"+url.PathEscape(started.ID)+"/cancel", nil); rec.Code != http.StatusOK {
+		t.Fatalf("cancel ringing Timer status = %d", rec.Code)
+	}
+	waitFor(t, 3*time.Second, "the cancelled Timer to leave the page", func() bool {
+		return !f.view().hasLabel("pasta")
+	})
+}
+
 func TestAlertsMutationsRequireIdentityAndSameOrigin(t *testing.T) {
 	f := newAlertsFixture(t)
 	f.clock.Set(time.Date(2026, 11, 12, 5, 0, 0, 0, time.UTC))

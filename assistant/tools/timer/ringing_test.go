@@ -240,6 +240,59 @@ func TestRingEngineReportsTheRingingTimer(t *testing.T) {
 	waitUntil(t, "the Ring's Timer to leave List", func() bool { return len(manager.List()) == 0 })
 }
 
+// TestQueuedTimerIsNotReportedAsRinging pins the other half of the marker: a
+// Timer that has fired but is still waiting behind another Ring is not claimed
+// as ringing until its own Ring takes the one speaker slot.
+func TestQueuedTimerIsNotReportedAsRinging(t *testing.T) {
+	st := openTimerStore(t, t.TempDir()+"/data/assistant.db")
+	t.Cleanup(func() { _ = st.Close() })
+	registry := focus.New()
+	player := newTestPlayer(true)
+	engine := testEngine(registry, player, ring.Settings{}, nil, nil)
+	manager := managerWithStore(t, st, registry, engine)
+
+	first, err := manager.Start("pasta", 2*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Start pasta: %v", err)
+	}
+	select {
+	case <-player.started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the first Ring never started")
+	}
+
+	// The second Timer fires while pasta owns the speaker, so it holds an open
+	// history row but no Ring of its own yet.
+	second, err := manager.Start("tea", 20*time.Millisecond)
+	if err != nil {
+		t.Fatalf("Start tea: %v", err)
+	}
+	waitUntil(t, "the queued Timer to fire", func() bool {
+		events, err := manager.History(10)
+		if err != nil {
+			return false
+		}
+		for _, event := range events {
+			if event.Kind == "timer" && event.SourceID == second.ID && event.State.Open() {
+				return true
+			}
+		}
+		return false
+	})
+	if list := manager.List(); len(list) != 1 || list[0].ID != first.ID || list[0].State != timer.StateRinging {
+		t.Fatalf("List while tea waits behind the Ring = %+v, want only the ringing pasta Timer", list)
+	}
+
+	// Ending pasta's Ring lets tea start, and only then does it ring.
+	manager.Cancel(first.ID)
+	waitUntil(t, "the queued Timer to become the ringing one", func() bool {
+		list := manager.List()
+		return len(list) == 1 && list[0].ID == second.ID && list[0].State == timer.StateRinging
+	})
+	manager.Cancel(second.ID)
+	waitUntil(t, "both Timers to leave List", func() bool { return len(manager.List()) == 0 })
+}
+
 // TestRingingTimerStaysOffTheAgentPath proves the privacy half of #197: the
 // ringing Timer's private label is visible to the Local-only read Tools on the
 // Pi, but the Agent path is neither offered those Tools nor given a Local-only

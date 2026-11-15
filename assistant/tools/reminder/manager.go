@@ -39,6 +39,14 @@ const overdueGrace = 2 * time.Minute
 // local, so a slow query means it is wedged, not busy.
 const storeTimeout = 5 * time.Second
 
+// Reminder states reported by List. A fired Reminder leaves the pending map
+// before its Cue and message play, so the read Tool needs this marker to tell
+// a scheduled Reminder from the one the user can hear now.
+const (
+	StatePending = "pending"
+	StateRinging = "ringing"
+)
+
 // Reminder is one scheduled message.
 type Reminder struct {
 	ID               string    `json:"id"`
@@ -50,6 +58,10 @@ type Reminder struct {
 	// When is the spoken form of the due time at the moment this value was
 	// read: "in 20 minutes", "at 5:00 pm" or "tomorrow at 7:00 am".
 	When string `json:"when"`
+	// State is StatePending for a scheduled Reminder and StateRinging while its
+	// Cue and message are playing. Read-only metadata: it never changes Focus
+	// or routing.
+	State string `json:"state,omitempty"`
 }
 
 // entry is one live Reminder and its callback.
@@ -126,6 +138,11 @@ type Manager struct {
 	// gone before playback, so a query cancel ("cancel the oven reminder") needs
 	// this metadata to match a message that is speaking or queued.
 	activeMessages map[string]string
+	// ringing keeps the fired Reminder while its Cue and message actually play,
+	// so List can answer about the alert the user hears instead of claiming
+	// nothing is set. It is written from the queue worker's item, so a Reminder
+	// still waiting behind another alert is not marked ringing early.
+	ringing map[string]Reminder
 }
 
 // NewManager builds an empty manager.
@@ -148,6 +165,7 @@ func NewManager(opts Options) *Manager {
 		entries:        make(map[string]*entry),
 		active:         make(map[string]context.CancelFunc),
 		activeMessages: make(map[string]string),
+		ringing:        make(map[string]Reminder),
 		cancelled:      make(map[string]bool),
 	}
 }
@@ -212,6 +230,7 @@ func (m *Manager) add(r Reminder, delay time.Duration) (Reminder, error) {
 		return Reminder{}, errors.New("reminder: manager is closed")
 	}
 	now := m.now()
+	r.State = StatePending
 	r.RemainingSeconds = remainingSeconds(r.FiresAt, now)
 	r.When = whenText(r, now, m.location())
 
@@ -314,6 +333,7 @@ func (m *Manager) fire(id string) {
 		delete(m.active, r.ID)
 		delete(m.cancelled, r.ID)
 		delete(m.activeMessages, r.ID)
+		delete(m.ringing, r.ID)
 		m.mu.Unlock()
 	}
 	play := func(queueCtx context.Context) error {
@@ -352,7 +372,7 @@ func (m *Manager) speakAlert(ctx context.Context, eventID int64, r Reminder) err
 		m.finishEvent(eventID, alertstore.StateStopped, "cancel")
 		return nil
 	}
-	m.markRinging(eventID)
+	m.markRinging(eventID, r)
 	if err := m.playCue(ctx); err != nil {
 		if ctx.Err() != nil {
 			m.finishInterrupted(eventID, r.ID)
@@ -432,17 +452,23 @@ func (m *Manager) speak(ctx context.Context, text string) error {
 	return m.speaker.SayText(ctx, text)
 }
 
-// List returns the active Reminders, soonest first.
+// List returns the active Reminders, soonest first. A Reminder whose Cue and
+// message are playing is included with StateRinging, so a reminder the user can
+// hear is never reported as nothing set.
 func (m *Manager) List() []Reminder {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := m.now()
 	loc := m.location()
-	out := make([]Reminder, 0, len(m.entries))
+	out := make([]Reminder, 0, len(m.entries)+len(m.ringing))
 	for _, e := range m.entries {
 		r := e.reminder
+		r.State = StatePending
 		r.RemainingSeconds = remainingSeconds(r.FiresAt, now)
 		r.When = whenText(r, now, loc)
+		out = append(out, r)
+	}
+	for _, r := range m.ringing {
 		out = append(out, r)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].FiresAt.Before(out[j].FiresAt) })

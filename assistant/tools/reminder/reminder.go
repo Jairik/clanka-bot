@@ -123,9 +123,17 @@ func NewList(m *Manager) tool.Tool[ListIn, ListOut] {
 			case 0:
 				return "No reminders are set."
 			case 1:
-				return "Your reminder to " + out.Reminders[0].Message + " is " + out.Reminders[0].When + "."
+				only := out.Reminders[0]
+				if only.State == StateRinging {
+					return "Your reminder to " + only.Message + " is ringing."
+				}
+				return "Your reminder to " + only.Message + " is " + only.When + "."
 			default:
 				next := out.Reminders[0]
+				if next.State == StateRinging {
+					return fmt.Sprintf("You have %d reminders. Your reminder to %s is ringing.",
+						len(out.Reminders), next.Message)
+				}
 				return fmt.Sprintf("You have %d reminders. The next is to %s %s.",
 					len(out.Reminders), next.Message, next.When)
 			}

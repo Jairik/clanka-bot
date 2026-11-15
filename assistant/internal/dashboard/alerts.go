@@ -427,15 +427,29 @@ func (h *Handler) buildAlertsView(flash, errorText string, edit *alertEditState)
 	events := h.alertHistory(deps)
 	pending := make(map[string]bool)
 	live := make(map[string]bool)
+	// sounding holds a Timer or Reminder the manager reports as ringing. Its
+	// open history row is the row the page shows ("Ringing now"), so the
+	// scheduled row is held back here and only used when the store has no
+	// history row for it, which is the in-memory manager case.
+	sounding := make(map[string]scheduledAlertView)
+	schedule := func(key string, ringing bool, row scheduledAlertView) {
+		if ringing {
+			row.Detail = "Ringing now"
+			sounding[key] = row
+			return
+		}
+		pending[key] = true
+		view.Alerts = append(view.Alerts, row)
+	}
 	if timers != nil {
 		for _, item := range timers.List() {
-			pending[alertKey("timer", item.ID)] = true
+			key := alertKey("timer", item.ID)
 			label := item.Label
 			if label == "" {
 				label = "—"
 			}
 			detail := fmt.Sprintf("%s of %s left", remainingLabel(item.RemainingSeconds), displayDuration(time.Duration(item.DurationSeconds)*time.Second))
-			view.Alerts = append(view.Alerts, scheduledAlertView{
+			schedule(key, item.State == timer.StateRinging, scheduledAlertView{
 				Audio:        item.Audio,
 				KindKey:      "timer",
 				Kind:         "Timer",
@@ -472,12 +486,12 @@ func (h *Handler) buildAlertsView(flash, errorText string, edit *alertEditState)
 	}
 	if reminders != nil {
 		for _, item := range reminders.List() {
-			pending[alertKey("reminder", item.ID)] = true
+			key := alertKey("reminder", item.ID)
 			detail := "Speaks once"
 			if item.When != "" {
 				detail += " · " + item.When
 			}
-			view.Alerts = append(view.Alerts, scheduledAlertView{
+			schedule(key, item.State == reminder.StateRinging, scheduledAlertView{
 				KindKey:      "reminder",
 				Kind:         "Reminder",
 				Label:        item.Message,
@@ -542,6 +556,13 @@ func (h *Handler) buildAlertsView(flash, errorText string, edit *alertEditState)
 			CancelLabel:  alertCancelLabel(event.Kind, event.Label, at, now, loc),
 			firesAt:      at,
 		})
+	}
+	// A sounding alert whose history row is missing (an in-memory manager, or a
+	// failed history read) still belongs on the page as the row the user hears.
+	for key, row := range sounding {
+		if !live[key] {
+			view.Alerts = append(view.Alerts, row)
+		}
 	}
 	sort.SliceStable(view.Alerts, func(i, j int) bool {
 		return view.Alerts[i].firesAt.Before(view.Alerts[j].firesAt)

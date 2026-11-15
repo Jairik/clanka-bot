@@ -875,9 +875,9 @@ decoded stays fatal and the error names the one SQLite row to delete. An
 invalid `config.yaml` value is always fatal.
 
 The `timezone` setting is a live IANA name for clock-time Alarms and Reminders,
-and for what `time.now` and `date.today` report; the container's `TZ` no longer
-decides those two answers. An empty value falls back to the container's `TZ`,
-then UTC, and UTC logs a startup warning. The same settings service the
+and for what `time.now` and `date.today` report. An empty value falls back to
+the container's `TZ`, then UTC, for every one of those uses, and UTC logs a
+startup warning. The same settings service the
 Dashboard writes through is the one the alert scheduler reads, so a change
 applies without a restart. No timezone is ever guessed from an IP address.
 

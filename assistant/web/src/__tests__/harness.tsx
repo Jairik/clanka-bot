@@ -38,6 +38,7 @@ export const emptyActivity = (requests: Request[] = []): ActivityView => ({
   Next: "",
   Filter: "all",
   Query: "",
+  SearchNotice: "",
 });
 
 export const req = (over: Partial<Request> & { ID: string }): Request => ({

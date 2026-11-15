@@ -24,6 +24,10 @@ export type ActivityView = {
   Next: string;
   Filter: string;
   Query: string;
+  // SearchNotice is set when the query could only read part of the retained
+  // history (a one or two character query, or a build without the index), so
+  // the page never implies that a partial answer is complete.
+  SearchNotice: string;
 };
 
 export type AlarmEditor = {

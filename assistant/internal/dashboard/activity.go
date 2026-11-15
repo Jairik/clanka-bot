@@ -60,6 +60,10 @@ type activityView struct {
 	Next       string
 	Filter     string
 	Query      string
+	// SearchNotice is set when the query could only read part of the retained
+	// history (a one or two character query, or a build without the index), so
+	// the page never implies that a partial answer is complete.
+	SearchNotice string
 }
 
 // activityQuery is one bounded Activity read. Limit is fixed by the handler;
@@ -273,8 +277,9 @@ func (h *Handler) buildActivityViewFor(ctx context.Context, q activityQuery, jus
 	if q.Limit <= 0 || q.Limit > activityDisplayLimit {
 		q.Limit = activityDisplayLimit
 	}
-	entries, next := h.activityEntries(ctx, q)
+	entries, next, window := h.activityEntries(ctx, q)
 	view.Next = next
+	view.SearchNotice = searchNotice(window)
 	for _, entry := range entries {
 		request := h.requestView(entry)
 		view.Requests = append(view.Requests, request)
@@ -290,10 +295,10 @@ func (h *Handler) buildActivityViewFor(ctx context.Context, q activityQuery, jus
 // missing history falls back to the ring, filtered by the same rules; a
 // history read error is logged and also falls back, so the page never goes
 // blank because of the durable layer.
-func (h *Handler) activityEntries(ctx context.Context, q activityQuery) ([]activity.Entry, string) {
+func (h *Handler) activityEntries(ctx context.Context, q activityQuery) ([]activity.Entry, string, activity.SearchWindow) {
 	history := h.activity.History()
 	if history == nil {
-		return h.ringEntries(q), ""
+		return h.ringEntries(q), "", activity.SearchWindowNone
 	}
 	page, err := history.QueryPage(ctx, activity.Query{
 		Filter: q.Filter,
@@ -303,7 +308,7 @@ func (h *Handler) activityEntries(ctx context.Context, q activityQuery) ([]activ
 	})
 	if err != nil {
 		h.logger.Warn("dashboard activity history", "error", err.Error())
-		return h.ringEntries(q), ""
+		return h.ringEntries(q), "", activity.SearchWindowNone
 	}
 	entries := page.Entries
 	if q.Before == "" {
@@ -346,7 +351,21 @@ func (h *Handler) activityEntries(ctx context.Context, q activityQuery) ([]activ
 			}
 		}
 	}
-	return entries, next
+	return entries, next, page.SearchWindow
+}
+
+// searchNotice turns the store's search-window reason into the one line the
+// page shows above the results. The empty state reads it too, so "no matches"
+// can never claim a completeness a windowed search did not have.
+func searchNotice(window activity.SearchWindow) string {
+	switch window {
+	case activity.SearchWindowShort:
+		return "Short searches cover only the newest 200 requests. Type at least three characters to search all stored history."
+	case activity.SearchWindowIndexUnavailable:
+		return "The search index is unavailable, so this search covered only the newest 200 requests."
+	default:
+		return ""
+	}
 }
 
 // ringEntries applies the page's filter and search to the in-memory ring.

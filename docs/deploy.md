@@ -620,6 +620,44 @@ only the app-code `COPY`; the same holds for `tts` (prefetch layer cached) and
 `web-search` wraps the pinned upstream SearXNG image and carries no weights
 layer of its own.
 
+## Container privileges and the system D-Bus grant
+
+Every service except `soloist` and `dashboard-web` runs with
+`no-new-privileges:true`, `cap_drop: [ALL]` and `pids_limit: 256`. None of them
+binds a privileged port, mounts a device, or needs a setuid helper, so Docker's
+default capability set buys nothing. `scripts/check-compose.sh` (run by
+`make check`) fails a listed service that loses one of those options, and fails
+any service that is in neither the hardened list nor the documented-exception
+list. `soloist` already sets `no-new-privileges` and keeps host networking for
+mDNS; `dashboard-web` only serves static files.
+
+`read_only: true` is deliberately not set. `tts` and `embed` may write a
+runtime model cache, `web-search` owns `/var/cache/searxng`, and a read-only
+root that breaks one of those is worse than the hardening. Adding it per
+service is a follow-up that needs a dev-box start check first.
+
+### The system D-Bus mount
+
+`assistant` bind-mounts the host's `/run/dbus/system_bus_socket` so the pinned
+Python Bleak helper can drive BlueZ through the host `bluetoothd`
+([ble-lights.md](ble-lights.md)). The mount is **not** scoped to Bluetooth, and
+`:ro` would not scope it either: a mounted AF_UNIX socket grants whatever the
+host D-Bus policy allows the container's UID. That covers BlueZ (adapter power
+and reset, agent registration) and can also cover systemd, logind,
+NetworkManager and other system services. The assistant is the one container
+that handles untrusted text, so this is its widest host interface. No path from
+model output or a fetched page to command execution was found; the helper's
+arguments (saved device address, protocol characteristic, hex payload) are
+validated. It stays because BLE control is a feature, not because the bus is a
+safe default: do not add another bus mount to a compute service.
+
+A narrower future option is an `xdg-dbus-proxy` or `dbus-broker` policy that
+exposes only `org.bluez`. That needs a Pi-verified change and is not applied
+here. Until then, keep the host bus policy as it is: do not loosen the whole
+system bus to fix a BLE permission error, and give the assistant UID only its
+Bluetooth group access. The final hardware check is a manual Lights write on
+the Pi; the dev box cannot reproduce the host's bus policy or adapter.
+
 ## arm64 builds on the dev box (optional)
 
 `make build-arm64` builds every image with

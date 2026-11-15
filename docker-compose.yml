@@ -5,6 +5,9 @@
 #   - a healthcheck that never calls the internet, so the stack does not flap
 #     when the network drops
 #   - ML services bake model weights before copying application code
+#   - least privilege: no-new-privileges, cap_drop ALL and a PID limit for
+#     every service that only computes or serves; soloist (host networking)
+#     and dashboard-web (static files) are the documented exceptions
 services:
   # MiniLM vectors for the semantic Fast path. Internal-only port.
   embed:
@@ -14,6 +17,11 @@ services:
         EMBED_MODEL: ${EMBED_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
     image: clanka/embed:${GIT_SHA:-dev}
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 256
     environment:
       EMBED_MODEL: ${EMBED_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
       EMBED_PORT: "8085"
@@ -29,6 +37,11 @@ services:
       context: ./assistant
     image: clanka/assistant:${GIT_SHA:-dev}
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 256
     # Run as the host user so the read-only Pulse socket and cookie are usable.
     user: "${ASSISTANT_UID:-1000}:${ASSISTANT_GID:-1000}"
     ports:
@@ -134,7 +147,10 @@ services:
       MONSTER_PASSWORD: ${MONSTER_PASSWORD:-}
       TZ: ${TZ:-UTC}
     volumes:
-      # BLE uses the host BlueZ daemon; do not run a second bluetoothd.
+      # BLE uses the host BlueZ daemon; do not run a second bluetoothd. This is
+      # the host's whole system bus, not a Bluetooth-scoped socket: it grants
+      # whatever the host D-Bus policy allows this UID. Read the trust boundary
+      # in docs/deploy.md before widening it.
       - /run/dbus/system_bus_socket:/run/dbus/system_bus_socket
       # The one SQLite database (ADR-0003). Only assistant mounts this volume;
       # restarting or rebuilding a service keeps it.
@@ -205,6 +221,11 @@ services:
       context: ./wakeword
     image: clanka/wakeword:${GIT_SHA:-dev}
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 256
     # The image bakes the locally trained "clanker" detector and serves it from
     # /usr/src/custom_models next to the upstream built-ins (okay_nabu,
     # hey_jarvis, ...), so WAKEWORD_MODELS can name either. The name must match
@@ -235,6 +256,11 @@ services:
         STT_MODELS: ${STT_MODELS:-small-streaming,tiny-streaming}
     image: clanka/stt:${GIT_SHA:-dev}
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 256
     environment:
       STT_HOST: "0.0.0.0"
       STT_PORT: "10300"
@@ -266,6 +292,11 @@ services:
         TTS_CATALOGUE: ${TTS_CATALOGUE:-all}
     image: clanka/tts:${GIT_SHA:-dev}
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 256
     environment:
       TTS_HOST: "0.0.0.0"
       TTS_PORT: "10200"
@@ -307,6 +338,11 @@ services:
       context: ./searxng
     image: clanka/web-search:${GIT_SHA:-dev}
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 256
     # Run as the image's searxng user (977). The config mount is read-only and
     # the image-owned /var/cache/searxng stays writable for engine metadata.
     user: "977:977"

@@ -6,6 +6,9 @@
 #   - every service has a health check, and no health check calls the internet
 #   - a locally built ML service downloads model weights before its first
 #     COPY of application code (so code edits do not bust the weights layer)
+#   - every service that only computes or serves content drops all Linux
+#     capabilities, refuses privilege gain and caps its PIDs; soloist (host
+#     networking) and dashboard-web (static files) are explicit exceptions
 #
 # The compose file is expected to keep the flat layout used here: top-level
 # `services:` with two-space service keys. The script only reads files; it does
@@ -15,6 +18,13 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 COMPOSE_FILE="${COMPOSE_FILE:-$ROOT/docker-compose.yml}"
 ML_SERVICES="wakeword stt tts embed"
+# Services that need no capability and no privilege gain. assistant handles
+# untrusted text but still needs none; it keeps its system D-Bus mount for BLE.
+HARDENED_SERVICES="assistant embed wakeword stt tts web-search"
+# Documented exceptions: soloist already sets no-new-privileges and needs host
+# networking for mDNS; dashboard-web is a static file server. Neither gains the
+# new options, and a new service must be added to one list on purpose.
+PRIVILEGE_EXEMPT_SERVICES="dashboard-web soloist"
 
 FAILURES=0
 WARNINGS=0
@@ -61,6 +71,33 @@ healthcheck_block() {
 		in_health && /^    [A-Za-z0-9_.-]+:[[:space:]]*$/ { in_health=0 }
 		in_health { print }
 	' <<<"$1"
+}
+
+# YAML block-list items under a service key, one per line:
+#   list_items security_opt "<service block>"
+list_items() {
+	local key=$1 block=$2
+	awk -v key="$key" '
+		$0 ~ "^    " key ":[[:space:]]*$" { inside=1; next }
+		inside && /^    [A-Za-z0-9_.-]+:[[:space:]]*$/ { inside=0 }
+		inside && /^[[:space:]]+-[[:space:]]*/ {
+			sub(/^[[:space:]]+-[[:space:]]*/, "")
+			print
+		}
+	' <<<"$block"
+}
+
+check_privileges() {
+	local svc=$1 block=$2
+	if ! list_items security_opt "$block" | grep -qxF 'no-new-privileges:true'; then
+		fail "$svc: security_opt must include no-new-privileges:true"
+	fi
+	if ! list_items cap_drop "$block" | grep -qxF 'ALL'; then
+		fail "$svc: cap_drop must include ALL"
+	fi
+	if ! grep -qE '^    pids_limit:[[:space:]]*[0-9]+[[:space:]]*$' <<<"$block"; then
+		fail "$svc: pids_limit is required (a positive integer)"
+	fi
 }
 
 build_context() {
@@ -163,6 +200,17 @@ check_service() {
 	if ! grep -qE '^    restart:[[:space:]]*unless-stopped[[:space:]]*$' <<<"$block"; then
 		fail "$svc: restart must be unless-stopped"
 	fi
+	case " $HARDENED_SERVICES " in
+	*" $svc "*)
+		check_privileges "$svc" "$block"
+		;;
+	*)
+		case " $PRIVILEGE_EXEMPT_SERVICES " in
+		*" $svc "*) ;;
+		*) fail "$svc: add it to HARDENED_SERVICES or PRIVILEGE_EXEMPT_SERVICES in scripts/check-compose.sh with a reason" ;;
+		esac
+		;;
+	esac
 	if ! grep -qE '^    healthcheck:[[:space:]]*$' <<<"$block"; then
 		fail "$svc: healthcheck is required"
 		return

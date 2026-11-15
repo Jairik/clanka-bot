@@ -4,7 +4,8 @@
 # Each fixture is a tiny repo-shaped directory (`docker-compose.yml` plus
 # optional service Dockerfiles) with the checker copied in, so the tests cover
 # the conventions other tickets must follow: image tags, restarts, local-only
-# health checks and the ML weights layer that must precede code COPYs.
+# health checks, the least-privilege block and the ML weights layer that must
+# precede code COPYs. One test runs the checker against the real compose file.
 set -uo pipefail
 
 TESTS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -48,6 +49,37 @@ services:
   assistant:
     build: ./assistant
     image: clanka/assistant:${GIT_SHA:-dev}
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+YAML
+}
+
+# The two services the privilege convention exempts on purpose.
+write_privilege_exception_services() {
+	mkdir -p "$FIXTURE/soloist" "$FIXTURE/dashboard"
+	printf 'FROM scratch\n' >"$FIXTURE/soloist/Dockerfile"
+	printf 'FROM scratch\n' >"$FIXTURE/dashboard/Dockerfile"
+	cat >>"$FIXTURE/docker-compose.yml" <<'YAML'
+  soloist:
+    build: ./soloist
+    image: clanka/soloist:${GIT_SHA:-dev}
+    restart: unless-stopped
+    network_mode: host
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/healthcheck.sh"]
+      interval: 10s
+  dashboard-web:
+    build: ./dashboard
+    image: clanka/dashboard-web:${GIT_SHA:-dev}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
@@ -122,6 +154,11 @@ write_tts_service() {
       context: ./tts
     image: clanka/tts:${GIT_SHA:-dev}
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 256
     healthcheck:
       test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 10200), 1)"]
 YAML
@@ -202,6 +239,11 @@ test_accepts_sentence_transformer_weights_layer() {
     build: ./embed
     image: clanka/embed:${GIT_SHA:-dev}
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 256
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8085/healthz')"]
 YAML
@@ -237,6 +279,11 @@ test_requires_build_context() {
   wakeword:
     image: clanka/wakeword:${GIT_SHA:-dev}
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 256
     healthcheck:
       test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 10400), 1)"]
 YAML
@@ -254,12 +301,79 @@ test_requires_dockerfile_in_build_context() {
     build: ./stt
     image: clanka/stt:${GIT_SHA:-dev}
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 256
     healthcheck:
       test: ["CMD", "python", "-c", "import socket; socket.create_connection(('127.0.0.1', 10300), 1)"]
 YAML
 	run_check
 	assert_status 1 "a build context without a Dockerfile fails"
 	assert_out_contains "missing Dockerfile is named" "has no Dockerfile"
+}
+
+test_requires_cap_drop() {
+	new_fixture
+	write_valid_assistant_compose
+	sed -i '/cap_drop:/,+1d' "$FIXTURE/docker-compose.yml"
+	run_check
+	assert_status 1 "missing cap_drop fails"
+	assert_out_contains "cap_drop failure is named" "cap_drop must include ALL"
+}
+
+test_requires_no_new_privileges() {
+	new_fixture
+	write_valid_assistant_compose
+	sed -i '/security_opt:/,+1d' "$FIXTURE/docker-compose.yml"
+	run_check
+	assert_status 1 "missing security_opt fails"
+	assert_out_contains "no-new-privileges failure is named" "no-new-privileges:true"
+}
+
+test_requires_pids_limit() {
+	new_fixture
+	write_valid_assistant_compose
+	sed -i '/pids_limit:/d' "$FIXTURE/docker-compose.yml"
+	run_check
+	assert_status 1 "missing pids_limit fails"
+	assert_out_contains "pids_limit failure is named" "pids_limit is required"
+}
+
+test_accepts_documented_privilege_exceptions() {
+	new_fixture
+	write_valid_assistant_compose
+	write_privilege_exception_services
+	run_check
+	assert_status 0 "soloist and dashboard-web need no privilege block"
+	assert_out_contains "checker reports success" "OK"
+}
+
+test_rejects_unclassified_service() {
+	new_fixture
+	write_valid_assistant_compose
+	mkdir -p "$FIXTURE/metrics"
+	printf 'FROM scratch\n' >"$FIXTURE/metrics/Dockerfile"
+	cat >>"$FIXTURE/docker-compose.yml" <<'YAML'
+  metrics:
+    build: ./metrics
+    image: clanka/metrics:${GIT_SHA:-dev}
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/healthz"]
+      interval: 10s
+YAML
+	run_check
+	assert_status 1 "an unclassified service fails"
+	assert_out_contains "classification failure names the lists" "HARDENED_SERVICES"
+}
+
+test_real_compose_file_passes() {
+	OUT="$TMP/output.real"
+	(cd "$REPO_ROOT" && bash scripts/check-compose.sh) >"$OUT" 2>&1
+	STATUS=$?
+	assert_status 0 "the checked-in compose file passes"
 }
 
 run_test() {
@@ -280,6 +394,12 @@ run_test test_accepts_sentence_transformer_weights_layer
 run_test test_warns_when_no_weights_layer_is_detected
 run_test test_requires_build_context
 run_test test_requires_dockerfile_in_build_context
+run_test test_requires_cap_drop
+run_test test_requires_no_new_privileges
+run_test test_requires_pids_limit
+run_test test_accepts_documented_privilege_exceptions
+run_test test_rejects_unclassified_service
+run_test test_real_compose_file_passes
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

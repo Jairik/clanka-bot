@@ -44,9 +44,12 @@ the vendor phone app still holds.
 
 Compose mounts only the host system bus socket. No bluetoothd, privileged mode,
 HCI reset, adapter power change, pairing removal or speaker configuration change
-is introduced. The host must already run BlueZ and allow the configured
-assistant UID to call org.bluez (host D-Bus policy may require its bluetooth
-group). Do not loosen the whole system bus policy to solve an access failure.
+is introduced. The mount itself is not Bluetooth-scoped: it exposes whatever the
+host bus policy allows the assistant UID, and its trust boundary is documented
+in [deploy.md](deploy.md#container-privileges-and-the-system-d-bus-grant). The
+host must already run BlueZ and allow the configured assistant UID to call
+org.bluez (host D-Bus policy may require its bluetooth group). Do not loosen the
+whole system bus policy to solve an access failure.
 
 ## Owner hardware checks before enabling permanently
 

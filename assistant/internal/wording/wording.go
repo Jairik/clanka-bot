@@ -161,7 +161,10 @@ func Build(reg *tool.Registry, cfg Config) (Setup, error) {
 	setup := Setup{ControlTools: []string{}, ExampleTools: []string{}}
 	for _, name := range names {
 		info := declared[name]
-		if info.HasSpeak && info.Permission != tool.PermissionConfirm {
+		// Control phrases are a Fast-path route, so an AgentOnly Tool never gets
+		// a live list: the setting must not exist and the Dashboard must not
+		// offer an editor for one.
+		if info.HasSpeak && !info.AgentOnly && info.Permission != tool.PermissionConfirm {
 			options := []settings.Option{
 				settings.WithDescription("Exact phrases that route to " + name + ". They apply on the next request."),
 				settings.WithValidator(controlPhraseValidator),
@@ -363,6 +366,12 @@ type Manager struct {
 	// instead of being installed.
 	changeMu sync.Mutex
 	version  uint64
+	// examplesDirty records an eligibility change (a Tool's enabled flag or its
+	// Permission) since the last successful swap. Such a change leaves every
+	// Examples list identical, so the version and the example snapshot alone
+	// cannot tell the worker to rebuild; the flag clears only after a swap that
+	// was not superseded.
+	examplesDirty bool
 
 	// startMu guards the lifecycle fields below.
 	startMu sync.Mutex
@@ -478,6 +487,9 @@ func (m *Manager) Changed(keys []string) {
 	}
 	m.changeMu.Lock()
 	m.version++
+	if eligibilityChanged(keys) {
+		m.examplesDirty = true
+	}
 	m.changeMu.Unlock()
 	select {
 	case m.wake <- struct{}{}:
@@ -498,9 +510,23 @@ func (m *Manager) relevant(keys []string) bool {
 			}
 		}
 		// A Tool's Examples feed the router, and its enabled/Permission state
-		// changes which Tools are eligible. Rebuilding on either is cheap and
-		// keeps the index fail-closed.
+		// changes which Tools are eligible. Both wake the worker; Changed also
+		// marks an eligibility change as a pending rebuild, because that leaves
+		// the Examples text identical.
 		if strings.HasPrefix(key, "tools.") {
+			return true
+		}
+	}
+	return false
+}
+
+// eligibilityChanged reports whether any key changes a Tool's Fast-path
+// eligibility rather than its Examples text. The registry reads both the
+// enabled flag and the Permission on every build, so the index must rebuild
+// even when no Example changed.
+func eligibilityChanged(keys []string) bool {
+	for _, key := range keys {
+		if strings.HasSuffix(key, ".enabled") || strings.HasSuffix(key, ".permission") {
 			return true
 		}
 	}
@@ -743,18 +769,24 @@ func (m *Manager) syncExamples(ctx context.Context) bool {
 	}
 	m.changeMu.Lock()
 	startVersion := m.version
+	// An eligibility change (enabled or Permission) rebuilds even when every
+	// Examples list is identical, because the registry decides which Tools may
+	// enter the index at build time.
+	eligibilityDirty := m.examplesDirty
 	m.changeMu.Unlock()
 
 	current := m.Examples()
 	m.builtMu.Lock()
 	built := cloneExamples(m.built)
 	m.builtMu.Unlock()
-	if equalExamples(current, built) {
+	if !eligibilityDirty && equalExamples(current, built) {
 		return false
 	}
 	set, err := m.router.BuildSet(ctx, current)
 	if err != nil {
 		m.logger.Warn("wording: examples rebuild failed, keeping old vectors", "error", err.Error())
+		// The flag stays set, so the bounded retry keeps trying until a rebuild
+		// succeeds.
 		return true
 	}
 	// Check and swap are atomic with respect to a change signal. A newer
@@ -770,6 +802,9 @@ func (m *Manager) syncExamples(ctx context.Context) bool {
 	m.builtMu.Lock()
 	m.built = current
 	m.builtMu.Unlock()
+	// The installed set already reflects this snapshot's eligibility, so the
+	// flag clears only here: after a swap that was not superseded.
+	m.examplesDirty = false
 	m.changeMu.Unlock()
 	m.logger.Info("wording: examples rebuilt", "tools", set.ToolCount())
 	return false

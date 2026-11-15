@@ -57,6 +57,19 @@ expiry, and is replaced once after a 401. Credentials and tokens are never
 logged; an upstream response body is never copied into an error, so a token
 echoed by a failure cannot reach the page or the log.
 
+A failed sign-in is remembered instead of retried on every read: a rejected
+password returns the same error for five minutes, and an upstream or network
+failure for thirty seconds, with no request to the cloud in between. Saving a
+different password clears that at once. This keeps a page load and a health poll
+from hammering a consumer login that rate-limits or locks accounts after
+repeated failures.
+
+The sign-in runs on its own deadline, not the caller's. A health poll that runs
+out of its shared budget returns its timeout while the three POSTs keep going
+and cache the token for the next poll, so a slow but working account is not
+stuck reporting "did not answer in time". The password is sent exactly as
+stored; only the email is trimmed.
+
 Endpoints, the sign-in chain and the property names follow the
 [MIT-licensed `Aareon/monster-rgbic-ha` integration](https://github.com/Aareon/monster-rgbic-ha),
 which reverse-engineered them from the Android app and verified them on
@@ -82,9 +95,10 @@ go test ./internal/monster ./tools/monster ./internal/dashboard
 ```
 
 The tests drive the full sign-in chain against local fake hosts, prove token
-caching and the one-401 retry, map the device properties, and pin the
-dashboard's validation and error states. A manual reachability check of the
-real endpoints is a 401 without an account:
+caching, the one-401 retry, the failure backoff, a sign-in that outlives its
+caller's deadline, and that a space-padded password is sent unchanged; they also
+map the device properties, and pin the dashboard's validation and error states.
+A manual reachability check of the real endpoints is a 401 without an account:
 
 ```sh
 curl -s -o /dev/null -w '%{http_code}\n' -X POST \

@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -22,6 +24,44 @@ type fakeCloud struct {
 	authFails  int
 	setBodies  []map[string]any
 	properties map[string]map[string]any
+	// loginDelay makes the login endpoint slow, so a test can expire the
+	// caller's deadline while the sign-in is still running.
+	loginDelay time.Duration
+	// loginStatus, when non-zero, makes the login endpoint answer with that
+	// HTTP status instead of signing in.
+	loginStatus int
+	attempts    []loginAttempt
+}
+
+// loginAttempt is one body the fake login endpoint received, so a test can
+// prove what reached the cloud.
+type loginAttempt struct {
+	email    string
+	password string
+}
+
+func (f *fakeCloud) loginCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.logins
+}
+
+func (f *fakeCloud) loginAttempts() []loginAttempt {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]loginAttempt(nil), f.attempts...)
+}
+
+func (f *fakeCloud) setLoginDelay(delay time.Duration) {
+	f.mu.Lock()
+	f.loginDelay = delay
+	f.mu.Unlock()
+}
+
+func (f *fakeCloud) setLoginStatus(status int) {
+	f.mu.Lock()
+	f.loginStatus = status
+	f.mu.Unlock()
 }
 
 func (f *fakeCloud) handler() http.Handler {
@@ -42,8 +82,21 @@ func (f *fakeCloud) handler() http.Handler {
 		}
 		f.mu.Lock()
 		f.logins++
-		fail := body.AuthenticationDetails.Password == "wrong"
+		f.attempts = append(f.attempts, loginAttempt{
+			email:    body.AuthenticationDetails.Email,
+			password: body.AuthenticationDetails.Password,
+		})
+		fail := strings.HasPrefix(body.AuthenticationDetails.Password, "wrong")
+		delay := f.loginDelay
+		status := f.loginStatus
 		f.mu.Unlock()
+		if delay > 0 {
+			time.Sleep(delay)
+		}
+		if status != 0 {
+			http.Error(w, "upstream is down", status)
+			return
+		}
 		if fail {
 			http.Error(w, `{"errorCode":401,"reason":"auth.unauthorized"}`, http.StatusUnauthorized)
 			return
@@ -130,17 +183,59 @@ func (f *fakeCloud) handler() http.Handler {
 	return mux
 }
 
+// newClientFor points a client at one fake server for all four hosts. A nil
+// clock uses the real one.
+func newClientFor(server *httptest.Server, now func() time.Time) *Client {
+	if now == nil {
+		now = time.Now
+	}
+	return &Client{
+		URLs:     URLs{Copilot: server.URL, Sphere: server.URL, AylaUser: server.URL, AylaAds: server.URL},
+		HTTP:     server.Client(),
+		Now:      now,
+		deviceID: "test-device",
+	}
+}
+
 func newTestClient(t *testing.T) (*Client, *fakeCloud) {
 	t.Helper()
 	fake := &fakeCloud{properties: map[string]map[string]any{}}
 	server := httptest.NewServer(fake.handler())
 	t.Cleanup(server.Close)
-	return &Client{
-		URLs:     URLs{Copilot: server.URL, Sphere: server.URL, AylaUser: server.URL, AylaAds: server.URL},
-		HTTP:     server.Client(),
-		Now:      time.Now,
-		deviceID: "test-device",
-	}, fake
+	return newClientFor(server, time.Now), fake
+}
+
+// newTLSTestClient points a client at a fake HTTPS cloud, matching the
+// production scheme, and lets a test supply the clock the backoff reads.
+func newTLSTestClient(t *testing.T, now func() time.Time) (*Client, *fakeCloud) {
+	t.Helper()
+	fake := &fakeCloud{properties: map[string]map[string]any{}}
+	server := httptest.NewTLSServer(fake.handler())
+	t.Cleanup(server.Close)
+	return newClientFor(server, now), fake
+}
+
+// fakeClock is a hand-wound clock for the backoff tests. The login goroutine
+// and the test read it at once, so it carries its own lock.
+type fakeClock struct {
+	mu sync.Mutex
+	at time.Time
+}
+
+func newFakeClock() *fakeClock {
+	return &fakeClock{at: time.Unix(1_700_000_000, 0)}
+}
+
+func (f *fakeClock) now() time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.at
+}
+
+func (f *fakeClock) advance(d time.Duration) {
+	f.mu.Lock()
+	f.at = f.at.Add(d)
+	f.mu.Unlock()
 }
 
 // TestDevicesFollowsTheSignInChain proves the three-step login, the device
@@ -163,8 +258,8 @@ func TestDevicesFollowsTheSignInChain(t *testing.T) {
 	if _, err := c.Devices(context.Background(), "owner@example.com", "secret"); err != nil {
 		t.Fatal(err)
 	}
-	if fake.logins != 1 {
-		t.Fatalf("logins = %d, want one cached token", fake.logins)
+	if got := fake.loginCount(); got != 1 {
+		t.Fatalf("logins = %d, want one cached token", got)
 	}
 }
 
@@ -212,8 +307,8 @@ func TestExpiredTokenSignsInAgain(t *testing.T) {
 	if len(devices) != 2 {
 		t.Fatalf("devices = %+v", devices)
 	}
-	if fake.logins != 2 {
-		t.Fatalf("logins = %d, want a second login after the 401", fake.logins)
+	if got := fake.loginCount(); got != 2 {
+		t.Fatalf("logins = %d, want a second login after the 401", got)
 	}
 }
 
@@ -280,6 +375,166 @@ func TestOversizedResponseIsRejected(t *testing.T) {
 	}
 	if _, err := c.Properties(context.Background(), "owner@example.com", "secret", "DSN1"); !errors.Is(err, ErrUpstream) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// TestFailedLoginBacksOff proves a rejected password is not retried on every
+// call: three reads inside the backoff window cause one login, a read after the
+// window causes a second, and replacing the password retries at once.
+func TestFailedLoginBacksOff(t *testing.T) {
+	clock := newFakeClock()
+	c, fake := newTLSTestClient(t, clock.now)
+
+	for i := 0; i < 3; i++ {
+		if _, err := c.Devices(context.Background(), "owner@example.com", "wrong-password"); !errors.Is(err, ErrCredentials) {
+			t.Fatalf("call %d err = %v", i, err)
+		}
+		// A page load and a Health poll both land inside the same window.
+		clock.advance(30 * time.Second)
+	}
+	if got := fake.loginCount(); got != 1 {
+		t.Fatalf("logins = %d, want one login inside the backoff", got)
+	}
+
+	// Past the credential backoff the next call tries the cloud again.
+	clock.advance(credentialBackoff)
+	if _, err := c.Devices(context.Background(), "owner@example.com", "wrong-password"); !errors.Is(err, ErrCredentials) {
+		t.Fatalf("post-backoff err = %v", err)
+	}
+	if got := fake.loginCount(); got != 2 {
+		t.Fatalf("logins = %d, want a retry after the backoff", got)
+	}
+
+	// A different password is a different credential: retry immediately
+	// instead of serving the previous password's memo.
+	if _, err := c.Devices(context.Background(), "owner@example.com", "wrong-other"); !errors.Is(err, ErrCredentials) {
+		t.Fatalf("changed-password err = %v", err)
+	}
+	if got := fake.loginCount(); got != 3 {
+		t.Fatalf("logins = %d, want an immediate retry after the password change", got)
+	}
+	if attempts := fake.loginAttempts(); attempts[2].password != "wrong-other" {
+		t.Fatalf("attempts = %+v", attempts)
+	}
+}
+
+// TestTransientFailureBacksOffBriefly proves an upstream failure waits seconds,
+// not minutes, before the next attempt.
+func TestTransientFailureBacksOffBriefly(t *testing.T) {
+	clock := newFakeClock()
+	c, fake := newTLSTestClient(t, clock.now)
+	fake.setLoginStatus(http.StatusServiceUnavailable)
+
+	if _, err := c.Devices(context.Background(), "owner@example.com", "secret"); !errors.Is(err, ErrUpstream) {
+		t.Fatalf("err = %v", err)
+	}
+	clock.advance(transientBackoff - time.Second)
+	if _, err := c.Devices(context.Background(), "owner@example.com", "secret"); !errors.Is(err, ErrUpstream) {
+		t.Fatalf("inside-backoff err = %v", err)
+	}
+	if got := fake.loginCount(); got != 1 {
+		t.Fatalf("logins = %d, want the transient failure memoised", got)
+	}
+
+	fake.setLoginStatus(0)
+	clock.advance(2 * time.Second)
+	if _, err := c.Devices(context.Background(), "owner@example.com", "secret"); err != nil {
+		t.Fatalf("post-backoff err = %v", err)
+	}
+	if got := fake.loginCount(); got != 2 {
+		t.Fatalf("logins = %d, want a retry after the transient backoff", got)
+	}
+}
+
+// TestLoginOutlivesTheCallersDeadline proves a caller that gives up does not
+// throw the sign-in away: Health sees its own deadline while the login finishes
+// and caches the token for the next call.
+func TestLoginOutlivesTheCallersDeadline(t *testing.T) {
+	c, fake := newTLSTestClient(t, nil)
+	fake.setLoginDelay(250 * time.Millisecond)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	if _, err := c.Devices(ctx, "owner@example.com", "secret"); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want the caller's own deadline", err)
+	}
+
+	devices, err := c.Devices(context.Background(), "owner@example.com", "secret")
+	if err != nil {
+		t.Fatalf("second call err = %v", err)
+	}
+	if len(devices) != 2 {
+		t.Fatalf("devices = %+v", devices)
+	}
+	if got := fake.loginCount(); got != 1 {
+		t.Fatalf("logins = %d, want the first sign-in's token reused", got)
+	}
+}
+
+// TestPasswordIsSentUnchanged proves the module no longer trims a password: a
+// value the app accepts with a leading or trailing space reaches the cloud.
+func TestPasswordIsSentUnchanged(t *testing.T) {
+	c, fake := newTLSTestClient(t, nil)
+	if _, err := c.Devices(context.Background(), "owner@example.com", " hunter2-space "); err != nil {
+		t.Fatal(err)
+	}
+	attempts := fake.loginAttempts()
+	if len(attempts) != 1 {
+		t.Fatalf("attempts = %+v", attempts)
+	}
+	if attempts[0].password != " hunter2-space " {
+		t.Fatalf("password = %q, want the stored value unchanged", attempts[0].password)
+	}
+	if attempts[0].email != "owner@example.com" {
+		t.Fatalf("email = %q", attempts[0].email)
+	}
+}
+
+// TestSignInNeverLogsSecrets drives a rejected and a working sign-in with the
+// standard logger captured, so a later log line that echoes the request or the
+// token fails here instead of reaching the service log.
+func TestSignInNeverLogsSecrets(t *testing.T) {
+	var logged bytes.Buffer
+	log.SetOutput(&logged)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+
+	c, _ := newTLSTestClient(t, nil)
+	const rejected = "wrong-hunter2-secret"
+	if _, err := c.Devices(context.Background(), "owner@example.com", rejected); !errors.Is(err, ErrCredentials) {
+		t.Fatalf("err = %v", err)
+	}
+	const accepted = "hunter2-secret"
+	if _, err := c.Devices(context.Background(), "owner@example.com", accepted); err != nil {
+		t.Fatalf("err = %v", err)
+	}
+
+	output := logged.String()
+	for _, secret := range []string{rejected, accepted, "owner@example.com", "ayla-token", "copilot-token", "partner-ticket"} {
+		if strings.Contains(output, secret) {
+			t.Fatalf("log line leaked %q: %q", secret, output)
+		}
+	}
+}
+
+// TestConcurrentCallsShareOneLogin proves the in-flight sign-in is shared, so a
+// Dashboard page and a Health poll cannot run two logins at once.
+func TestConcurrentCallsShareOneLogin(t *testing.T) {
+	c, fake := newTLSTestClient(t, nil)
+	fake.setLoginDelay(100 * time.Millisecond)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 6; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := c.Devices(context.Background(), "owner@example.com", "secret"); err != nil {
+				t.Errorf("err = %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	if got := fake.loginCount(); got != 1 {
+		t.Fatalf("logins = %d, want one shared sign-in", got)
 	}
 }
 

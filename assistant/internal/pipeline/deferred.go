@@ -117,17 +117,21 @@ func (q *DeferredQueue) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // BindDeferred shares orchestration state with the Dashboard and completion dispatcher.
 func (p *Pipeline) BindDeferred(q *DeferredQueue) { p.deferred = q }
 
-// deferredRequest recognises explicit orchestration syntax before semantic routing.
-func (p *Pipeline) deferredRequest(ctx context.Context, req tool.Request, text string, phrases map[string]string) (Reply, bool) {
+// deferredRequest recognises explicit orchestration syntax before semantic
+// routing. It returns the decision, and reports agentFallback when the action
+// is neither a safe leaf nor a chain: the caller then owns the Agent call, so
+// the model request happens after routing is marked and the request's real
+// streaming events reach the reply session.
+func (p *Pipeline) deferredRequest(ctx context.Context, req tool.Request, text string, phrases map[string]string) (Reply, bool, string) {
 	if p.deferred == nil {
-		return Reply{}, false
+		return Reply{}, false, ""
 	}
 	reply := Reply{Path: tool.PathControlPhrase, RequestID: req.ID}
 	normalized := NormalizePhrase(text)
 	if normalized == "cancel queued actions" || normalized == "cancel queued commands" {
 		p.deferred.Cancel(0)
 		reply.Text = "Cancelled all queued actions."
-		return reply, true
+		return reply, true, ""
 	}
 	// Commas are optional because STT punctuation varies.
 	for prefix, event := range map[string]string{"when the music stops": "music", "after the timer": "timer", "when the reply ends": "reply", "after this reply": "reply"} {
@@ -151,18 +155,16 @@ func (p *Pipeline) deferredRequest(ctx context.Context, req tool.Request, text s
 			}
 		}
 		if len(plan) == 0 {
-			reply.Path = tool.PathAgent
-			p.callAgent(ctx, req, text, Events{}, &reply)
-			return reply, true
+			return reply, true, text
 		}
 		if p.deferred.Add(event, action) {
 			reply.Text = "Queued for the end of " + event + ". Say cancel queued actions to cancel. It expires in one hour."
 		} else {
 			reply.Text = "The action queue is full. Cancel a queued action first."
 		}
-		return reply, true
+		return reply, true, ""
 	}
-	return Reply{}, false
+	return Reply{}, false, ""
 }
 
 // Trigger marks matching requests ready while preserving their cancellation handles.

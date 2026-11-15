@@ -18,6 +18,11 @@ import (
 type focusHolder struct {
 	name    string
 	intents []focus.Intent
+	// delay simulates a holder that does real work, such as pausing Spotify.
+	delay time.Duration
+	// decline makes the holder take the intent and then report that it could
+	// not act, as a holder that finished between the claim and the intent does.
+	decline bool
 
 	mu    sync.Mutex
 	calls []focus.Intent
@@ -29,6 +34,12 @@ func (h *focusHolder) HandleIntent(_ context.Context, intent focus.Intent) (stri
 	h.mu.Lock()
 	h.calls = append(h.calls, intent)
 	h.mu.Unlock()
+	if h.delay > 0 {
+		time.Sleep(h.delay)
+	}
+	if h.decline {
+		return "", false
+	}
 	for _, declared := range h.intents {
 		if declared == intent {
 			return h.name + " " + string(intent) + ".", true

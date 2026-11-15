@@ -342,7 +342,12 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 	routingStarted := time.Now()
 	// Routing ends when the path is chosen. Marking is first-wins, so the
 	// fall-through branches reach it once and only once per request.
-	markRouting := func() { latency.SetStage(ctx, latency.StageRouting, time.Since(routingStarted)) }
+	// routingWork accumulates spans already attributed to another stage, such
+	// as a Focus holder's action, so they are never counted as routing.
+	var routingWork time.Duration
+	markRouting := func() {
+		latency.SetStage(ctx, latency.StageRouting, time.Since(routingStarted)-routingWork)
+	}
 
 	reply := Reply{Path: tool.PathFallthrough, RequestID: req.ID, Text: PlaceholderReply}
 	normalized := NormalizePhrase(transcript)
@@ -371,9 +376,18 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 	}
 
 	// Explicit deferred requests and cancellation precede ordinary Tool routing.
-	if reply, handled := p.deferredRequest(ctx, req, transcript, phrases); handled {
+	// Deferring is the routing decision; an action that has no safe leaf or
+	// chain falls back to the Agent path, and that model call is work, not
+	// routing, so it runs after the stage is marked and with the request's real
+	// streaming events.
+	deferredReply, handled, agentFallback := p.deferredRequest(ctx, req, transcript, phrases)
+	if handled {
 		markRouting()
-		return reply
+		record.reason = ""
+		if agentFallback != "" {
+			p.callAgent(ctx, req, agentFallback, events, &deferredReply)
+		}
+		return deferredReply
 	}
 	// Validate the whole chain before executing any of its Tools.
 	if p.chainEnabled != nil && p.chainEnabled() {
@@ -391,7 +405,12 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 	if target, ok := intentPhrases[normalized]; ok {
 		intent, valid := focus.ParseIntent(target)
 		if valid {
-			if text, handled := p.focusIntent(ctx, intent); handled {
+			// Offering the intent is not routing: a "stop" that pauses music or
+			// silences an alarm is an action the user waits for, so its time is
+			// tool_execute and is taken out of routing_ms.
+			text, intentHandled, intentTook := p.focusIntent(ctx, intent)
+			routingWork += intentTook
+			if intentHandled {
 				markRouting()
 				record.reason = ""
 				reply.Path = tool.PathFocusIntent
@@ -460,12 +479,19 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 }
 
 // focusIntent offers one shared intent to whatever holds Focus. It reports
-// false when the seam is absent or no holder handles the intent.
-func (p *Pipeline) focusIntent(ctx context.Context, intent focus.Intent) (string, bool) {
+// false when the seam is absent or no holder handles the intent, and how long
+// the offer took so the caller can keep that action out of routing. The offer
+// is recorded as tool_execute because the user waits on it exactly like a Tool
+// call, even though a Focus holder is not one.
+func (p *Pipeline) focusIntent(ctx context.Context, intent focus.Intent) (string, bool, time.Duration) {
 	if p.focus == nil {
-		return "", false
+		return "", false, 0
 	}
-	return p.focus.HandleIntent(ctx, intent)
+	intentStarted := time.Now()
+	text, handled := p.focus.HandleIntent(ctx, intent)
+	took := time.Since(intentStarted)
+	latency.AddStage(ctx, latency.StageToolExecute, took)
+	return text, handled, took
 }
 
 func (p *Pipeline) callAgent(ctx context.Context, req tool.Request, transcript string, events Events, reply *Reply) {
@@ -625,7 +651,11 @@ func (p *Pipeline) finish(ctx context.Context, started time.Time, req tool.Reque
 		latency.SetAttr(ctx, "top_tools", record.top)
 		latency.SetAttr(ctx, "margin", record.margin)
 		latency.SetAttr(ctx, "extract", record.extraction)
-		latency.SetAttr(ctx, "fallthrough_reason", record.reason)
+		// A handled path has no fall-through reason: it is absent, not an
+		// empty string that reads like a stage something forgot to set.
+		if record.reason != "" {
+			latency.SetAttr(ctx, "fallthrough_reason", record.reason)
+		}
 		if record.embedErr != nil {
 			latency.SetAttr(ctx, "embed_error", record.embedErr.Error())
 		}
@@ -645,7 +675,11 @@ func (p *Pipeline) finish(ctx context.Context, started time.Time, req tool.Reque
 		"top_tools", record.top,
 		"margin", record.margin,
 		"extract", record.extraction,
-		"fallthrough_reason", record.reason,
+	}
+	// An empty reason is omitted rather than logged as "", for the same reason
+	// a missing stage is absent: nothing fell through on a handled path.
+	if record.reason != "" {
+		attrs = append(attrs, "fallthrough_reason", record.reason)
 	}
 	if record.embedErr != nil {
 		attrs = append(attrs, "embed_error", record.embedErr.Error())

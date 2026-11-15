@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -33,8 +34,8 @@ type DetectStream struct {
 	format      Format
 
 	writeMu sync.Mutex
-	closed  bool
-	closeMu sync.Mutex
+	// closed is atomic so Close can unblock a concurrent Write without racing it.
+	closed atomic.Bool
 }
 
 // DetectOption adjusts one detect request.
@@ -101,7 +102,7 @@ func (s *DetectStream) Write(pcm []byte) error {
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	if s.closed {
+	if s.closed.Load() {
 		return errors.New("wyoming: detect stream is closed")
 	}
 	// Wyoming audio chunks repeat the stream format; the services decode each
@@ -112,14 +113,16 @@ func (s *DetectStream) Write(pcm []byte) error {
 func (s *DetectStream) write(typ string, data map[string]any) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	if s.closed {
+	if s.closed.Load() {
 		return errors.New("wyoming: detect stream is closed")
 	}
 	return writeEvent(s.conn, s.timeout, typ, data, nil)
 }
 
 // Next waits for a detection or for the service to say the stream ended without
-// one. The bool is true for a detection.
+// one. The bool is true for a detection. There is deliberately no read
+// deadline: a wake stream is legitimately silent for minutes, so a timeout here
+// would reopen a healthy stream (see #201).
 func (s *DetectStream) Next() (Detection, bool, error) {
 	for {
 		ev, err := readEvent(s.reader, 0)
@@ -139,14 +142,13 @@ func (s *DetectStream) Next() (Detection, bool, error) {
 	}
 }
 
-// Close ends the detection stream and releases the connection.
+// Close ends the detection stream and releases the connection. The atomic swap
+// makes it idempotent without holding writeMu, so Close can still unblock a
+// concurrent Write or a pending Next.
 func (s *DetectStream) Close() error {
-	s.closeMu.Lock()
-	defer s.closeMu.Unlock()
-	if s.closed {
+	if s.closed.Swap(true) {
 		return nil
 	}
-	s.closed = true
 	if s.stopContext != nil {
 		s.stopContext()
 	}
@@ -176,11 +178,14 @@ type TranscriptStream struct {
 	ctx         context.Context
 	stopContext func() bool
 	timeout     time.Duration
+	readTimeout time.Duration
 	format      Format
 
-	writeMu  sync.Mutex
-	closed   bool
-	closeMu  sync.Mutex
+	writeMu sync.Mutex
+	// closed is atomic so Close can unblock a concurrent Write or Finish
+	// without racing it.
+	closed atomic.Bool
+	// partials is only touched by Finish, which runs on one goroutine.
 	partials []string
 }
 
@@ -191,11 +196,12 @@ func (c *Client) Transcribe(ctx context.Context, opts TranscribeOptions, format 
 		return nil, err
 	}
 	s := &TranscriptStream{
-		conn:    conn,
-		reader:  bufio.NewReaderSize(conn, 64<<10),
-		ctx:     ctx,
-		timeout: c.timeout,
-		format:  format,
+		conn:        conn,
+		reader:      bufio.NewReaderSize(conn, 64<<10),
+		ctx:         ctx,
+		timeout:     c.timeout,
+		readTimeout: c.readTimeout,
+		format:      format,
 	}
 	s.stopContext = context.AfterFunc(ctx, func() { _ = conn.Close() })
 
@@ -224,7 +230,7 @@ func (s *TranscriptStream) Write(pcm []byte) error {
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	if s.closed {
+	if s.closed.Load() {
 		return errors.New("wyoming: transcript stream is closed")
 	}
 	return writeEvent(s.conn, s.timeout, "audio-chunk", AudioStartData(s.format.Rate, s.format.Width, s.format.Channels), pcm)
@@ -232,9 +238,11 @@ func (s *TranscriptStream) Write(pcm []byte) error {
 
 // Finish marks the end of speech and returns the final transcript. Partial
 // transcript-chunk events are recorded but the service's final transcript wins.
+// Each read gets the client's read-idle timeout: a silent service is bounded,
+// while a long finalisation that keeps sending partials is not capped (#201).
 func (s *TranscriptStream) Finish() (string, error) {
 	s.writeMu.Lock()
-	if s.closed {
+	if s.closed.Load() {
 		s.writeMu.Unlock()
 		return "", errors.New("wyoming: transcript stream is closed")
 	}
@@ -246,7 +254,7 @@ func (s *TranscriptStream) Finish() (string, error) {
 
 	text := ""
 	for {
-		ev, err := readEvent(s.reader, 0)
+		ev, err := s.readEvent()
 		if err != nil {
 			return "", s.mapError(err)
 		}
@@ -270,14 +278,13 @@ func (s *TranscriptStream) Finish() (string, error) {
 	}
 }
 
-// Close ends the transcription stream and releases the connection.
+// Close ends the transcription stream and releases the connection. The atomic
+// swap makes it idempotent without holding writeMu, so Close can still unblock
+// a concurrent Write or a pending Finish.
 func (s *TranscriptStream) Close() error {
-	s.closeMu.Lock()
-	defer s.closeMu.Unlock()
-	if s.closed {
+	if s.closed.Swap(true) {
 		return nil
 	}
-	s.closed = true
 	if s.stopContext != nil {
 		s.stopContext()
 	}
@@ -287,15 +294,26 @@ func (s *TranscriptStream) Close() error {
 func (s *TranscriptStream) write(typ string, data map[string]any) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	if s.closed {
+	if s.closed.Load() {
 		return errors.New("wyoming: transcript stream is closed")
 	}
 	return writeEvent(s.conn, s.timeout, typ, data, nil)
 }
 
+// readEvent applies the read-idle deadline, then decodes one event.
+func (s *TranscriptStream) readEvent() (event, error) {
+	if s.readTimeout > 0 {
+		_ = s.conn.SetReadDeadline(time.Now().Add(s.readTimeout))
+	}
+	return readEvent(s.reader, 0)
+}
+
 func (s *TranscriptStream) mapError(err error) error {
 	if ctxErr := s.ctx.Err(); ctxErr != nil {
 		return ctxErr
+	}
+	if isTimeout(err) && s.readTimeout > 0 {
+		return fmt.Errorf("wyoming: transcribe: no final transcript within %s: %w", s.readTimeout, err)
 	}
 	if isClosed(err) {
 		return fmt.Errorf("wyoming: transcript stream closed: %w", err)

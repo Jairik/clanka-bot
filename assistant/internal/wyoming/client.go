@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"time"
 )
 
@@ -164,4 +165,10 @@ func errorEvent(ev event) error {
 // isClosed reports whether an error is just a closed or cancelled connection.
 func isClosed(err error) bool {
 	return errors.Is(err, net.ErrClosed) || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+}
+
+// isTimeout reports whether an error is an expired read or write deadline.
+func isTimeout(err error) bool {
+	var netErr net.Error
+	return errors.Is(err, os.ErrDeadlineExceeded) || (errors.As(err, &netErr) && netErr.Timeout())
 }

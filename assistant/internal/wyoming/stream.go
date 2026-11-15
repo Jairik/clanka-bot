@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -155,8 +156,8 @@ type Stream struct {
 
 	writeMu sync.Mutex
 	queue   [][]byte
-	closed  bool
-	closeMu sync.Mutex
+	// closed is atomic so Close can unblock a concurrent write without racing it.
+	closed atomic.Bool
 }
 
 // Synthesize sends one piece of text and returns the audio stream. It waits for
@@ -252,7 +253,7 @@ func (s *Stream) EndText() error {
 func (s *Stream) write(typ string, data map[string]any) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	if s.closed {
+	if s.closed.Load() {
 		return errors.New("wyoming: stream is closed")
 	}
 	return writeEvent(s.conn, s.timeout, typ, data, nil)
@@ -328,14 +329,13 @@ func (s *Stream) readEvent() (event, error) {
 	return readEvent(s.reader, 0)
 }
 
-// Close ends the stream and releases the connection.
+// Close ends the stream and releases the connection. The atomic swap makes it
+// idempotent without holding writeMu, so Close can still unblock a concurrent
+// write or a pending Next.
 func (s *Stream) Close() error {
-	s.closeMu.Lock()
-	defer s.closeMu.Unlock()
-	if s.closed {
+	if s.closed.Swap(true) {
 		return nil
 	}
-	s.closed = true
 	if s.stopContext != nil {
 		s.stopContext()
 	}

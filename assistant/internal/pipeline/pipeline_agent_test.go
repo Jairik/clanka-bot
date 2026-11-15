@@ -22,6 +22,11 @@ type fakeRunner struct {
 	utterances []string
 	history    *agent.History
 	result     agent.Result
+	// delay simulates the model's time to the first token.
+	delay time.Duration
+	// nilDelta records a call that was given no onDelta callback: the reply
+	// session would then hear the answer only after the whole model call.
+	nilDelta bool
 }
 
 func newFakeRunner() *fakeRunner {
@@ -32,9 +37,16 @@ func (f *fakeRunner) Run(_ context.Context, _ tool.Request, utterance string, on
 	f.mu.Lock()
 	f.utterances = append(f.utterances, utterance)
 	f.mu.Unlock()
-	if onDelta != nil {
-		onDelta("partial")
+	if f.delay > 0 {
+		time.Sleep(f.delay)
 	}
+	if onDelta == nil {
+		f.mu.Lock()
+		f.nilDelta = true
+		f.mu.Unlock()
+		return f.result
+	}
+	onDelta("partial")
 	return f.result
 }
 

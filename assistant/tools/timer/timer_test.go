@@ -2,6 +2,7 @@ package timer_test
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -140,6 +141,26 @@ func TestSetToolExtractFailsWithoutADuration(t *testing.T) {
 	reg := newRegistry(t, newManager(nil))
 	if _, ok := reg.Extract(timer.SetName, "set a timer"); ok {
 		t.Fatal("Extract succeeded, want failure so the request falls through")
+	}
+}
+
+// TestSetToolExtractsDecimalDuration keeps the spoken decimal intact: the
+// fraction digits are not a second whole number of hours.
+func TestSetToolExtractsDecimalDuration(t *testing.T) {
+	reg := newRegistry(t, newManager(nil))
+	raw, ok := reg.Extract(timer.SetName, "set a timer for 1.5 hours")
+	if !ok {
+		t.Fatal("Extract failed")
+	}
+	var in timer.SetIn
+	if err := json.Unmarshal(raw, &in); err != nil {
+		t.Fatalf("decode Extract result: %v", err)
+	}
+	if in.DurationSeconds != 5400 {
+		t.Fatalf("DurationSeconds = %d, want 5400", in.DurationSeconds)
+	}
+	if in.Label != "" {
+		t.Fatalf("Label = %q, want no label", in.Label)
 	}
 }
 

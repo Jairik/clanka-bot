@@ -30,11 +30,24 @@ var (
 	digitLetter = regexp.MustCompile(`([0-9])([a-z])`)
 	letterDigit = regexp.MustCompile(`([a-z])([0-9])`)
 	clockColon  = regexp.MustCompile(`([0-9]{1,2}):([0-9]{2})`)
-	nonAlnum    = regexp.MustCompile(`[^a-z0-9]+`)
+	// decimalUnit detaches a unit glued to a decimal before the digit/letter
+	// pass, so "1.75h" becomes "1.75 h" rather than "1.7 5 h".
+	decimalUnit = regexp.MustCompile(`([0-9]*\.[0-9]+)([a-z])`)
+	// decimalOrWord keeps a decimal one token; every other rune is a break.
+	decimalOrWord = regexp.MustCompile(`[0-9]*\.[0-9]+|[a-z0-9]+`)
 )
 
-// Duration returns the first duration-like span in text. A bare number at the
-// end of the utterance uses defaultUnit; zero disables that fallback.
+// maxDuration bounds one parsed duration so an absurd spoken number falls
+// through to the Agent path instead of wrapping into a smaller duration.
+const maxDuration = time.Duration(1<<63 - 1)
+
+// scaleDivisor is the divisor for one or two fractional digits.
+var scaleDivisor = [3]time.Duration{0, 10, 100}
+
+// Duration returns the first duration-like span in text. A written decimal
+// ("1.5") and the spoken point form ("one point five") read as that number. A
+// bare number at the end of the utterance uses defaultUnit; zero disables that
+// fallback.
 func Duration(text string, defaultUnit time.Duration) (time.Duration, bool) {
 	tokens := tokenize(text)
 	// Prefer a span with an explicit unit so filler words ("a timer") are ignored.
@@ -43,9 +56,11 @@ func Duration(text string, defaultUnit time.Duration) (time.Duration, bool) {
 			return d, true
 		}
 	}
-	// A bare number is a duration only when it ends the utterance.
+	// A bare number is a duration only when it ends the utterance. The scan
+	// runs forward so the earliest number run wins, keeping "one point five"
+	// from being read as the trailing "five".
 	if defaultUnit > 0 {
-		for i := len(tokens) - 1; i >= 0; i-- {
+		for i := range tokens {
 			if d, end, ok := parseAt(tokens, i, defaultUnit); ok && end == len(tokens) && end > i {
 				return d, true
 			}
@@ -54,15 +69,16 @@ func Duration(text string, defaultUnit time.Duration) (time.Duration, bool) {
 	return 0, false
 }
 
-// Number returns the first number-like span in text.
+// Number returns the first number-like span in text. A decimal keeps its
+// whole part ("40.5" reads as 40), matching the volume-style callers.
 func Number(text string) (int, bool) {
 	tokens := tokenize(text)
 	for i := 0; i < len(tokens); i++ {
 		if tokens[i] == "a" || tokens[i] == "an" {
 			continue
 		}
-		if n, _, ok := numberAt(tokens, i); ok {
-			return n, true
+		if whole, _, _, _, ok := valueAt(tokens, i); ok {
+			return whole, true
 		}
 	}
 	return 0, false
@@ -98,11 +114,12 @@ func plural(n int, unit string) string {
 }
 
 // tokenize lowercases text, splits clock notation ("1:30") and glued units
-// ("1h30m"), then splits on everything that is not a letter or digit.
+// ("1h30m"), then keeps decimals ("1.5") whole and drops everything else.
 func tokenize(text string) []string {
 	s := strings.ToLower(strings.TrimSpace(text))
 	s = clockColon.ReplaceAllString(s, "$1 h $2 m")
 	s = strings.ReplaceAll(s, "-", " ")
+	s = decimalUnit.ReplaceAllString(s, "$1 $2")
 	for {
 		next := digitLetter.ReplaceAllString(s, "$1 $2")
 		next = letterDigit.ReplaceAllString(next, "$1 $2")
@@ -111,7 +128,7 @@ func tokenize(text string) []string {
 		}
 		s = next
 	}
-	return nonAlnum.Split(s, -1)
+	return decimalOrWord.FindAllString(s, -1)
 }
 
 // parseAt parses one duration starting at tokens[start]. It returns the
@@ -142,7 +159,9 @@ func parseAt(tokens []string, start int, defaultUnit time.Duration) (time.Durati
 			}
 			if j < len(tokens) {
 				if u, ok := units[tokens[j]]; ok {
-					total += u / time.Duration(divisor)
+					if !addPiece(&total, u/time.Duration(divisor)) {
+						return 0, i, false
+					}
 					lastUnit = u
 					explicitUnit = true
 					i = j + 1
@@ -151,7 +170,9 @@ func parseAt(tokens []string, start int, defaultUnit time.Duration) (time.Durati
 				}
 			}
 			if lastUnit != 0 {
-				total += lastUnit / time.Duration(divisor)
+				if !addPiece(&total, lastUnit/time.Duration(divisor)) {
+					return 0, i, false
+				}
 				i++
 				pieces++
 				continue
@@ -169,19 +190,21 @@ func parseAt(tokens []string, start int, defaultUnit time.Duration) (time.Durati
 			if tokens[i+1] == "quarter" {
 				divisor = 4
 			}
-			total += lastUnit / time.Duration(divisor)
+			if !addPiece(&total, lastUnit/time.Duration(divisor)) {
+				return 0, i, false
+			}
 			i += 2
 			pieces++
 			continue
 		}
 
-		n, next, ok := numberAt(tokens, i)
+		whole, frac, fracDigits, next, ok := valueAt(tokens, i)
 		if !ok {
 			break
 		}
 
 		// "one and a half hours" carries its unit after the fraction.
-		if next+2 < len(tokens) && tokens[next] == "and" && (tokens[next+1] == "a" || tokens[next+1] == "an") && tokens[next+2] == "half" {
+		if fracDigits == 0 && next+2 < len(tokens) && tokens[next] == "and" && (tokens[next+1] == "a" || tokens[next+1] == "an") && tokens[next+2] == "half" {
 			u := lastUnit
 			end := next + 3
 			if end < len(tokens) {
@@ -193,7 +216,10 @@ func parseAt(tokens []string, start int, defaultUnit time.Duration) (time.Durati
 			if u == 0 {
 				return 0, i, false
 			}
-			total += time.Duration(n)*u + u/2
+			piece, ok := unitPiece(whole, 0, 0, u)
+			if !ok || !addPiece(&total, piece) || !addPiece(&total, u/2) {
+				return 0, i, false
+			}
 			lastUnit = u
 			explicitUnit = true
 			i = end
@@ -203,7 +229,10 @@ func parseAt(tokens []string, start int, defaultUnit time.Duration) (time.Durati
 
 		if next < len(tokens) {
 			if u, ok := units[tokens[next]]; ok {
-				total += time.Duration(n) * u
+				piece, ok := unitPiece(whole, frac, fracDigits, u)
+				if !ok || !addPiece(&total, piece) {
+					return 0, i, false
+				}
 				lastUnit = u
 				explicitUnit = true
 				i = next + 1
@@ -215,7 +244,10 @@ func parseAt(tokens []string, start int, defaultUnit time.Duration) (time.Durati
 		// "1 h 30": a trailing number after a unit uses the next smaller unit.
 		if lastUnit != 0 {
 			u := smallerUnit(lastUnit)
-			total += time.Duration(n) * u
+			piece, ok := unitPiece(whole, frac, fracDigits, u)
+			if !ok || !addPiece(&total, piece) {
+				return 0, i, false
+			}
 			lastUnit = u
 			i = next
 			pieces++
@@ -224,7 +256,10 @@ func parseAt(tokens []string, start int, defaultUnit time.Duration) (time.Durati
 
 		// A bare number is valid only at the end of the utterance.
 		if defaultUnit > 0 && next == len(tokens) {
-			total += time.Duration(n) * defaultUnit
+			piece, ok := unitPiece(whole, frac, fracDigits, defaultUnit)
+			if !ok || !addPiece(&total, piece) {
+				return 0, i, false
+			}
 			lastUnit = defaultUnit
 			i = next
 			pieces++
@@ -239,6 +274,110 @@ func parseAt(tokens []string, start int, defaultUnit time.Duration) (time.Durati
 		return 0, i, false
 	}
 	return total, i, true
+}
+
+// valueAt reads one number: a digit run, a decimal ("1.5", ".5"), a number
+// word run, or a number word followed by a spoken "point" fraction. It returns
+// the whole part, the fraction, the fraction's digit count and the index just
+// past the number.
+func valueAt(tokens []string, i int) (whole, frac, fracDigits, next int, ok bool) {
+	if i >= len(tokens) {
+		return 0, 0, 0, i, false
+	}
+	if strings.IndexByte(tokens[i], '.') >= 0 {
+		whole, frac, fracDigits, ok = parseDecimal(tokens[i])
+		if !ok {
+			return 0, 0, 0, i, false
+		}
+		return whole, frac, fracDigits, i + 1, true
+	}
+	whole, next, ok = numberAt(tokens, i)
+	if !ok {
+		return 0, 0, 0, i, false
+	}
+	if next < len(tokens) && tokens[next] == "point" {
+		frac, after, fine := fractionAt(tokens, next+1)
+		if !fine {
+			return 0, 0, 0, i, false
+		}
+		return whole, frac, decimalDigits(frac), after, true
+	}
+	return whole, 0, 0, next, true
+}
+
+// parseDecimal splits a written decimal such as "1.5" or ".5". One or two
+// fraction digits are supported; a longer fraction is rejected rather than
+// rounded or truncated to a different number.
+func parseDecimal(token string) (whole, frac, digits int, ok bool) {
+	dot := strings.IndexByte(token, '.')
+	if dot < 0 {
+		return 0, 0, 0, false
+	}
+	wholeText, fracText := token[:dot], token[dot+1:]
+	if len(fracText) > 2 || !isDigits(fracText) {
+		return 0, 0, 0, false
+	}
+	if wholeText == "" {
+		wholeText = "0"
+	}
+	if !isDigits(wholeText) {
+		return 0, 0, 0, false
+	}
+	whole, err := strconv.Atoi(wholeText)
+	if err != nil {
+		return 0, 0, 0, false
+	}
+	frac, err = strconv.Atoi(fracText)
+	if err != nil {
+		return 0, 0, 0, false
+	}
+	return whole, frac, len(fracText), true
+}
+
+// fractionAt reads the number after a spoken "point". The article forms are
+// refused so "one point a" is not read as one and a tenth.
+func fractionAt(tokens []string, i int) (int, int, bool) {
+	if i >= len(tokens) || tokens[i] == "a" || tokens[i] == "an" {
+		return 0, i, false
+	}
+	return numberAt(tokens, i)
+}
+
+// decimalDigits counts the fraction digits a spoken value stands for, so a
+// "five" is five tenths and a "twenty five" is twenty-five hundredths.
+func decimalDigits(fraction int) int {
+	if fraction == 0 {
+		return 1
+	}
+	return len(strconv.Itoa(fraction))
+}
+
+// unitPiece converts a whole count plus an optional fractional count of unit
+// into a duration. The arithmetic is exact, so "1.5 hours" is 90 minutes and
+// never a rounded count of whole units.
+func unitPiece(whole, frac, fracDigits int, unit time.Duration) (time.Duration, bool) {
+	if unit <= 0 || whole < 0 || frac < 0 || fracDigits < 0 || fracDigits > 2 {
+		return 0, false
+	}
+	if int64(whole) > int64(maxDuration/unit) {
+		return 0, false
+	}
+	piece := time.Duration(whole) * unit
+	if fracDigits > 0 {
+		// A fraction of a supported unit is exact: a tenth of an hour is six
+		// minutes, and frac stays below a hundred.
+		piece += time.Duration(frac) * unit / scaleDivisor[fracDigits]
+	}
+	return piece, true
+}
+
+// addPiece adds one scaled piece to the running total, rejecting overflow.
+func addPiece(total *time.Duration, piece time.Duration) bool {
+	if piece < 0 || piece > maxDuration-*total {
+		return false
+	}
+	*total += piece
+	return true
 }
 
 func smallerUnit(unit time.Duration) time.Duration {
@@ -268,14 +407,20 @@ func numberAt(tokens []string, i int) (int, int, bool) {
 	if tok == "a" || tok == "an" {
 		return 1, i + 1, true
 	}
-	if _, ok := smallNumbers[tok]; !ok && tok != "hundred" {
+	if !isNumberWord(tok) {
 		return 0, i, false
 	}
 	j := i
 	var words []string
 	for j < len(tokens) {
-		if _, ok := smallNumbers[tokens[j]]; ok || tokens[j] == "hundred" {
+		if isNumberWord(tokens[j]) {
 			words = append(words, tokens[j])
+			j++
+			continue
+		}
+		// "one hundred and twenty" is one number, but "one and a half" is not:
+		// the conjunction belongs to the number only when a number word follows.
+		if tokens[j] == "and" && j+1 < len(tokens) && isNumberWord(tokens[j+1]) {
 			j++
 			continue
 		}
@@ -286,6 +431,14 @@ func numberAt(tokens []string, i int) (int, int, bool) {
 		return 0, i, false
 	}
 	return n, j, true
+}
+
+// isNumberWord reports whether one token names a whole number part.
+func isNumberWord(token string) bool {
+	if _, ok := smallNumbers[token]; ok {
+		return true
+	}
+	return token == "hundred"
 }
 
 func wordsToNumber(words []string) (int, bool) {

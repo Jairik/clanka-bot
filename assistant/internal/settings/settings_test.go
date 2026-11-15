@@ -2,6 +2,7 @@ package settings_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"path/filepath"
 	"reflect"
@@ -10,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/config"
+	"github.com/Jairik/clanka-bot/assistant/internal/connections"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
 )
@@ -32,6 +35,38 @@ func openSettings(t *testing.T, defs ...settings.Definition) (*settings.Service,
 		t.Fatalf("settings.New: %v", err)
 	}
 	return svc, st, path
+}
+
+// openSeeded opens a fresh store, writes raw rows before New reads them, and
+// returns the service plus New's error so a fatal case can assert the policy.
+func openSeeded(t *testing.T, rows map[string]string, defs ...settings.Definition) (*settings.Service, *store.Store, error) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "data", "assistant.db")
+	st, err := store.Open(context.Background(), path)
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	})
+	seedRows(t, st.DB(), rows)
+	svc, err := settings.New(context.Background(), st, defs...)
+	return svc, st, err
+}
+
+// seedRows inserts stored overrides exactly as an earlier build wrote them,
+// bypassing the current validator.
+func seedRows(t *testing.T, db *sql.DB, rows map[string]string) {
+	t.Helper()
+	for key, raw := range rows {
+		if _, err := db.Exec(
+			`INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)`,
+			key, raw, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			t.Fatalf("seed %s: %v", key, err)
+		}
+	}
 }
 
 func TestEffectiveValueResolvesOverrideThenConfigThenDefault(t *testing.T) {
@@ -221,9 +256,90 @@ func TestNewRejectsAnInvalidConfigLayer(t *testing.T) {
 		t.Fatalf("store.Open: %v", err)
 	}
 	defer st.Close()
-	if _, err := settings.New(context.Background(), st, settings.String("x", "default",
-		settings.WithConfig(42))); err == nil {
-		t.Fatal("New accepted a config value of the wrong type")
+	nonBlank := settings.WithValidator(func(value any) error {
+		if value == "" {
+			return errTestInvalid
+		}
+		return nil
+	})
+	tests := []struct {
+		name string
+		def  settings.Definition
+	}{
+		{"wrong type", settings.String("x", "default", settings.WithConfig(42))},
+		{"validator", settings.String("y", "default", settings.WithConfig(""), nonBlank)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if _, err := settings.New(context.Background(), st, tt.def); err == nil {
+				t.Fatal("New accepted an invalid config value; the config layer must stay fatal")
+			}
+		})
+	}
+}
+
+// TestNewSkipsAStoredOverrideThatNoLongerValidates covers the reachable path
+// in #170: a fresh install stored an empty dashboard.addr while the Dashboard
+// was off, and the owner later enabled it.
+func TestNewSkipsAStoredOverrideThatNoLongerValidates(t *testing.T) {
+	cfg := config.Default()
+	cfg.Dashboard.Owner = "owner@example.com"
+	cfg.Dashboard.Addr = "127.0.0.1:8082"
+	svc, _, err := openSeeded(t, map[string]string{connections.DashboardAddrKey: `""`},
+		connections.Definitions(config.Default(), cfg)...)
+	if err != nil {
+		t.Fatalf("New failed on a stale stored override: %v", err)
+	}
+	value, ok := svc.Get(connections.DashboardAddrKey)
+	if !ok {
+		t.Fatal("dashboard.addr is not defined")
+	}
+	if value.Value != cfg.Dashboard.Addr || value.Source != settings.SourceConfig {
+		t.Fatalf("dashboard.addr = %+v, want the config layer", value)
+	}
+	ignored := svc.Ignored()
+	if len(ignored) != 1 || ignored[0].Key != connections.DashboardAddrKey {
+		t.Fatalf("Ignored() = %+v, want the skipped dashboard.addr", ignored)
+	}
+	if !strings.Contains(ignored[0].Reason, "required") {
+		t.Errorf("reason = %q, want the validator's explanation", ignored[0].Reason)
+	}
+
+	// A valid write replaces the ignored row; it no longer needs a warning.
+	if _, err := svc.Set(context.Background(), connections.DashboardAddrKey, "127.0.0.1:9090"); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if got := svc.Ignored(); len(got) != 0 {
+		t.Fatalf("Ignored() after a valid write = %+v, want none", got)
+	}
+	// Reset drops back to the config layer and keeps the warning clear.
+	if _, err := svc.Reset(context.Background(), connections.DashboardAddrKey); err != nil {
+		t.Fatalf("Reset: %v", err)
+	}
+	value, _ = svc.Get(connections.DashboardAddrKey)
+	if value.Value != cfg.Dashboard.Addr || value.Source != settings.SourceConfig {
+		t.Fatalf("after Reset = %+v, want the config layer", value)
+	}
+	if got := svc.Ignored(); len(got) != 0 {
+		t.Fatalf("Ignored() after Reset = %+v, want none", got)
+	}
+}
+
+// TestNewKeepsADecodeFailureFatal pins the documented policy: a row that cannot
+// be decoded is corrupt data, and skipping tools.<name>.enabled would fall back
+// to the code default true and silently re-enable a Tool. The error names the
+// SQLite row because the Settings page cannot start to reset it.
+func TestNewKeepsADecodeFailureFatal(t *testing.T) {
+	key := "tools.clock.enabled"
+	_, _, err := openSeeded(t, map[string]string{key: `"yes"`}, settings.Bool(key, true))
+	if err == nil {
+		t.Fatal("New accepted a stored override of the wrong type")
+	}
+	if !strings.Contains(err.Error(), key) {
+		t.Errorf("error does not name the row: %v", err)
+	}
+	if !strings.Contains(err.Error(), "DELETE FROM settings") {
+		t.Errorf("error does not name the recovery step: %v", err)
 	}
 }
 

@@ -2,6 +2,8 @@ package dashboard_test
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -35,12 +37,22 @@ type settingsFixture struct {
 
 func newSettingsFixture(t *testing.T) *settingsFixture {
 	t.Helper()
+	return newSettingsFixtureSeeded(t, nil)
+}
+
+// newSettingsFixtureSeeded writes stored rows before settings.New, so a test
+// can reproduce a row an earlier build accepted under a different rule.
+func newSettingsFixtureSeeded(t *testing.T, seed func(*sql.DB)) *settingsFixture {
+	t.Helper()
 	ctx := context.Background()
 	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "dashboard.db"))
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
+	if seed != nil {
+		seed(st.DB())
+	}
 
 	registry := tool.NewRegistry(time.Second)
 	add := func(name string, permission tool.Permission, localOnly tool.LocalOnly, examples []string) {
@@ -90,7 +102,15 @@ func newSettingsFixture(t *testing.T) *settingsFixture {
 		namematch.Definition(0.62),
 		settings.String("http.addr", "127.0.0.1:8080",
 			settings.WithKind(settings.RestartRequired),
-			settings.WithConfig("127.0.0.1:8080")),
+			settings.WithConfig("127.0.0.1:8080"),
+			// The real connection definition refuses an empty address.
+			settings.WithValidator(func(value any) error {
+				text, ok := value.(string)
+				if !ok || text == "" {
+					return fmt.Errorf("must not be empty")
+				}
+				return nil
+			})),
 	)
 	// The per-kind Ring settings are ordinary live settings; #48's page must
 	// expose them dynamically, including the Timer/Alarm split.
@@ -156,6 +176,7 @@ type settingsResp struct {
 			Selected     bool
 		}
 	}
+	Ignored     []struct{ Key, Label, Reason, ResetAction string }
 	Agent       []settingRow
 	ToolWording []struct {
 		Name              string
@@ -666,6 +687,56 @@ func TestSettingsReadWithoutServicesIsEmptyAndReadOnly(t *testing.T) {
 	req.Header.Set("Sec-Fetch-Site", "same-origin")
 	if rec := serve(handler, req); rec.Code != http.StatusNotFound {
 		t.Errorf("write without the services = %d, want 404", rec.Code)
+	}
+}
+
+// TestSettingsViewReportsAnIgnoredOverrideAndResetsIt covers the recovery UI:
+// a stale stored row never blocks startup, the page names it, and the Reset
+// action removes it without touching the config layer.
+func TestSettingsViewReportsAnIgnoredOverrideAndResetsIt(t *testing.T) {
+	f := newSettingsFixtureSeeded(t, func(db *sql.DB) {
+		if _, err := db.Exec(
+			`INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)`,
+			"http.addr", `""`, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			t.Fatalf("seed http.addr: %v", err)
+		}
+	})
+
+	v, _ := f.view()
+	if len(v.Ignored) != 1 {
+		t.Fatalf("Ignored = %+v, want one stale http.addr", v.Ignored)
+	}
+	row := v.Ignored[0]
+	if row.Key != "http.addr" || row.Label != "HTTP address" {
+		t.Errorf("ignored row = %+v, want the readable HTTP address label", row)
+	}
+	if !strings.Contains(row.Reason, "empty") {
+		t.Errorf("ignored reason = %q, want the validator's explanation", row.Reason)
+	}
+	if row.ResetAction != "/settings/values/http.addr/reset" {
+		t.Errorf("reset action = %q", row.ResetAction)
+	}
+	// The normal row still reports the layer that actually applies.
+	effective := v.mustSetting(t, "http.addr")
+	if effective.Value != "127.0.0.1:8080" || effective.Source != "config" {
+		t.Errorf("effective http.addr = %+v, want the config layer", effective)
+	}
+
+	rec := f.post(row.ResetAction, url.Values{})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("reset status = %d; body = %s", rec.Code, rec.Body.String())
+	}
+	var after settingsResp
+	decodeJSON(t, rec, &after)
+	if len(after.Ignored) != 0 {
+		t.Errorf("Ignored after Reset = %+v, want none", after.Ignored)
+	}
+	reloaded, _ := f.view()
+	if len(reloaded.Ignored) != 0 {
+		t.Errorf("Ignored after a reload = %+v, want the row removed", reloaded.Ignored)
+	}
+	if got := reloaded.mustSetting(t, "http.addr"); got.Value != "127.0.0.1:8080" || got.Source != "config" {
+		t.Errorf("after Reset = %+v, want the config layer", got)
 	}
 }
 

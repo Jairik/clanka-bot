@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -61,6 +62,13 @@ func addTools(t *testing.T, reg *tool.Registry) {
 // wire builds the registry, settings service and live policy over one temp DB.
 func wire(t *testing.T, config toolpolicy.Config) (*tool.Registry, *settings.Service, *toolpolicy.Policy, *store.Store) {
 	t.Helper()
+	return wireSeeded(t, config, nil)
+}
+
+// wireSeeded also writes stored rows before settings.New, standing in for a row
+// an earlier build wrote under a different rule.
+func wireSeeded(t *testing.T, config toolpolicy.Config, rows map[string]string) (*tool.Registry, *settings.Service, *toolpolicy.Policy, *store.Store) {
+	t.Helper()
 	st, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "data", "assistant.db"))
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
@@ -75,6 +83,13 @@ func wire(t *testing.T, config toolpolicy.Config) (*tool.Registry, *settings.Ser
 	defs, err := toolpolicy.Definitions(reg, config)
 	if err != nil {
 		t.Fatalf("Definitions: %v", err)
+	}
+	for key, raw := range rows {
+		if _, err := st.DB().Exec(
+			`INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)`,
+			key, raw, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+			t.Fatalf("seed %s: %v", key, err)
+		}
 	}
 	svc, err := settings.New(context.Background(), st, defs...)
 	if err != nil {
@@ -161,6 +176,54 @@ func TestPermissionCanOnlyTighten(t *testing.T) {
 	}
 	if got := policy.State("test.act").Permission; got != tool.PermissionAct {
 		t.Errorf("test.act permission = %q after a rejected loosen, want act", got)
+	}
+}
+
+// TestStoredPermissionsThatFailTheirValidatorStayClosed covers the case where
+// a later build changes the rule under an already-stored value: the row is
+// skipped, and both the effective state and the registry fall back to the code
+// declaration rather than the looser stored level.
+func TestStoredPermissionsThatFailTheirValidatorStayClosed(t *testing.T) {
+	reg, svc, policy, _ := wireSeeded(t, toolpolicy.Config{}, map[string]string{
+		// A valid level that would loosen test.confirm's declared level.
+		toolpolicy.PermissionKey("test.confirm"): `"read"`,
+		// A value that is not a Permission at all.
+		toolpolicy.PermissionKey("test.act"): `"admin"`,
+	})
+
+	ignored := svc.Ignored()
+	reasons := make(map[string]string, len(ignored))
+	for _, entry := range ignored {
+		reasons[entry.Key] = entry.Reason
+	}
+	for _, name := range []string{"test.confirm", "test.act"} {
+		key := toolpolicy.PermissionKey(name)
+		if _, ok := reasons[key]; !ok {
+			t.Errorf("%s is not reported as ignored: %+v", key, ignored)
+		}
+	}
+	if !strings.Contains(reasons[toolpolicy.PermissionKey("test.confirm")], "loosen") {
+		t.Errorf("loosening reason = %q", reasons[toolpolicy.PermissionKey("test.confirm")])
+	}
+
+	state := policy.State("test.confirm")
+	if state.Permission != tool.PermissionConfirm || state.PermissionSource != settings.SourceDefault {
+		t.Fatalf("test.confirm = %+v, want the declared confirm level", state)
+	}
+	effective := policy.Effective("test.confirm", tool.PermissionConfirm)
+	if effective.Permission != tool.PermissionConfirm {
+		t.Fatalf("Effective(test.confirm) = %+v, want confirm", effective)
+	}
+	if err := execute(reg, "test.confirm"); !errors.Is(err, tool.ErrConfirmationRequired) {
+		t.Fatalf("Execute(test.confirm) = %v, want ErrConfirmationRequired", err)
+	}
+
+	state = policy.State("test.act")
+	if state.Permission != tool.PermissionAct || state.PermissionSource != settings.SourceDefault {
+		t.Fatalf("test.act = %+v, want the declared act level", state)
+	}
+	if err := execute(reg, "test.act"); err != nil {
+		t.Fatalf("Execute(test.act) = %v, want the declared act level allowed", err)
 	}
 }
 

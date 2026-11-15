@@ -137,6 +137,13 @@ export type HermesView = {
   Rows: Integration[] | null;
 };
 
+export type IgnoredSetting = {
+  Key: string;
+  Label: string;
+  Reason: string;
+  ResetAction: string;
+};
+
 export type Integration = {
   ID: string;
   Name: string;
@@ -464,6 +471,10 @@ export type SettingsView = {
   Error: string;
   HasSettings: boolean;
   Tools: SettingTool[] | null;
+  // Ignored lists stored overrides skipped at load because a later build's
+  // validator rejects them. The normal row below reports the layer that
+  // actually applies; these rows offer the Reset that removes the row.
+  Ignored: IgnoredSetting[] | null;
   Agent: Setting[] | null;
   ToolWording: ToolWording[] | null;
   Quiet: Setting[] | null;

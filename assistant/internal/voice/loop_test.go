@@ -168,6 +168,8 @@ func (s *fakeWakeStream) Close() error {
 // fakeSTT records the frames it receives so tests can inspect endpointing.
 type fakeSTT struct {
 	text string
+	// err, when set, makes Finish fail like a client read-idle timeout.
+	err error
 
 	mu      sync.Mutex
 	frames  [][]byte
@@ -214,7 +216,7 @@ func (s *fakeSTTStream) Finish() (string, error) {
 	s.owner.mu.Lock()
 	defer s.owner.mu.Unlock()
 	s.owner.finish++
-	return s.owner.text, nil
+	return s.owner.text, s.owner.err
 }
 
 func (s *fakeSTTStream) Close() error { return nil }
@@ -497,6 +499,44 @@ func TestLoopSkipsTheReplyWhenNothingWasSaid(t *testing.T) {
 	}
 	if stt.finishCount() == 0 {
 		t.Fatal("STT never finalised the empty request")
+	}
+}
+
+// TestLoopRecoversAfterSTTFinalisationTimesOut is #201's loop seam: a Finish
+// that returns an idle-timeout error is a failed turn, logged and retried, not
+// a wedged session that leaves the assistant deaf.
+func TestLoopRecoversAfterSTTFinalisationTimesOut(t *testing.T) {
+	source := &scriptSource{frames: append(repeat(loudFrame(), 8), repeat(silentFrame(), 400)...)}
+	wake := &fakeWake{afterWords: 5, maxFires: 1}
+	stt := &fakeSTT{err: errors.New("wyoming: transcribe: no final transcript within 20s: i/o timeout")}
+	responder := &fakeResponder{calls: make(chan string, 1)}
+	logs := &lockedBuffer{}
+
+	loop := newLoop(t, voice.Config{FrameBytes: frameBytes, Endpoint: endpointConfig(300 * time.Millisecond)},
+		voice.Deps{
+			Source: source, Wake: wake, STT: stt, Responder: responder,
+			Logger: slog.New(slog.NewTextHandler(logs, nil)),
+		})
+	runLoop(t, loop)
+
+	// A failed session sleeps 500ms and then opens a fresh wake stream.
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if streams, _, _ := wake.snapshot(); stt.finishCount() > 0 && streams >= 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if streams, _, _ := wake.snapshot(); streams < 2 {
+		t.Fatalf("loop did not return to listening after the STT timeout:\n%s", logs.String())
+	}
+	if got := logs.String(); !strings.Contains(got, "voice: session") || !strings.Contains(got, "transcribe") {
+		t.Fatalf("STT timeout was not logged as a failed session:\n%s", got)
+	}
+	select {
+	case got := <-responder.calls:
+		t.Fatalf("responded %q after a failed finalisation", got)
+	default:
 	}
 }
 

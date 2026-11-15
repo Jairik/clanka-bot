@@ -212,6 +212,15 @@ type Manager struct {
 	history *alertstore.Store
 	engine  *ring.Engine
 	missed  func(MissedAlert)
+	// fireTx is the durable half of one fire: it advances the pending row and
+	// opens the history row in one transaction. Production always uses
+	// beginFire; a test replaces it to inject a store error (#173). The context
+	// carries the bounded pre-Ring budget.
+	fireTx func(ctx context.Context, id string, snoozed bool) (fireState, bool, error)
+	// advanceFire is the best-effort row advance in front of a degraded Ring.
+	// Production uses advanceFailedFire; a test replaces it to fail one write
+	// of the degraded path (#173).
+	advanceFire func(ctx context.Context, alarm Alarm, next *time.Time) error
 
 	closed bool
 	// ctx is cancelled by Close so an active Ring and queued callbacks stop.
@@ -241,7 +250,7 @@ func NewManager(opts Options) *Manager {
 		logger = slog.Default()
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &Manager{
+	manager := &Manager{
 		now:           now,
 		say:           opts.Say,
 		logger:        logger,
@@ -257,6 +266,9 @@ func NewManager(opts Options) *Manager {
 		cancelled:     make(map[string]bool),
 		active:        make(map[string]context.CancelFunc),
 	}
+	manager.fireTx = manager.beginFire
+	manager.advanceFire = manager.advanceFailedFire
+	return manager
 }
 
 // SetRingEngine attaches the shared #52 Ring engine. It must be called before
@@ -855,12 +867,8 @@ func (m *Manager) fire(id string, snoozed bool) {
 			state.next = &next
 		}
 	} else {
-		var err error
-		state, ok, err = m.beginFire(id, snoozed)
-		if err != nil {
-			m.logger.Error("alarm fire history", "alarm_id", id, "error", err.Error())
-			return
-		}
+		var ok bool
+		state, ok = m.preRingState(captured, capturedOccurrence, snoozed)
 		if !ok {
 			// Cancelled or already fired; the row is authoritative.
 			return
@@ -876,13 +884,13 @@ func (m *Manager) fire(id string, snoozed bool) {
 	if m.closed {
 		m.mu.Unlock()
 		ringCancel()
-		m.finishEvent(state.eventID, alertstore.StateInterrupted, "shutdown")
+		m.closeEvent(state, alertstore.StateInterrupted, "shutdown")
 		return
 	}
 	if m.cancelled[id] {
 		m.mu.Unlock()
 		ringCancel()
-		m.finishEvent(state.eventID, alertstore.StateStopped, "cancel")
+		m.closeEvent(state, alertstore.StateStopped, "cancel")
 		// The row was deleted by alarm.cancel; scheduling the next occurrence
 		// here would resurrect a cancelled Alarm.
 		return
@@ -968,7 +976,7 @@ func (m *Manager) finishRing(id string, state fireState, result ring.Result) {
 	if !result.Played && recorded == alertstore.StateStopped {
 		endedBy = "unavailable"
 	}
-	m.finishEvent(state.eventID, recorded, endedBy)
+	m.closeEvent(state, recorded, endedBy)
 	if recorded == alertstore.StateMissed {
 		m.notifyMissed(state.alarm, state.occurrence, "max_ring")
 	}
@@ -1044,6 +1052,17 @@ func (m *Manager) markRinging(eventID int64) {
 	if err := m.history.MarkRinging(ctx, eventID, m.now()); err != nil {
 		m.logger.Error("alarm history ringing", "event_id", eventID, "error", err.Error())
 	}
+}
+
+// closeEvent records one occurrence's outcome. When its fire transaction never
+// opened the history row, the row is written late instead, so a Ring that
+// happened is never missing from the history (#173).
+func (m *Manager) closeEvent(state fireState, recorded alertstore.State, endedBy string) {
+	if state.unrecorded {
+		m.recordLateFire(state, recorded, endedBy)
+		return
+	}
+	m.finishEvent(state.eventID, recorded, endedBy)
 }
 
 // finishEvent closes one open history row.
@@ -1219,6 +1238,12 @@ type fireState struct {
 	alarm      Alarm
 	occurrence time.Time
 	next       *time.Time
+	// unrecorded marks an occurrence whose fire transaction failed twice. The
+	// Ring still runs from the captured entry and its history row is written
+	// once a later write succeeds (#173).
+	unrecorded bool
+	// firedAt is when the Ring started, used by the late history row.
+	firedAt time.Time
 }
 
 // errNotStored is returned when AttachStore is called twice.

@@ -1,7 +1,8 @@
 // Package tz resolves the one timezone the assistant uses to turn a spoken
-// clock time into an instant. The `timezone` setting is live: a Dashboard or
-// voice write through the shared settings service applies on the next Alarm or
-// Reminder without a restart. When the setting is unset, TZ is used; when that
+// clock time into an instant and to say what time and date it is. The
+// `timezone` setting is live: a Dashboard or voice write through the shared
+// settings service applies on the next Alarm, Reminder, time.now or date.today
+// without a restart. When the setting is unset, TZ is used; when that
 // is unset too, UTC is the safe fallback and the caller logs the startup
 // warning. Nothing here guesses a timezone from an IP address.
 package tz
@@ -35,7 +36,7 @@ func Definition(configValue string) settings.Definition {
 	opts := []settings.Option{
 		settings.WithKind(settings.Live),
 		settings.WithValidator(validateSetting),
-		settings.WithDescription("IANA timezone for clock-time Alarms and Reminders; empty uses TZ, then UTC."),
+		settings.WithDescription("IANA timezone for clock-time Alarms, Reminders, time.now and date.today; empty uses TZ, then UTC."),
 	}
 	// An empty config value means "unset", so it must not shadow the default
 	// layer with an empty source=config value.

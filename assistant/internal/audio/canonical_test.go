@@ -200,6 +200,7 @@ func TestCanonicalizeRejectsSilentRecordingsWithoutLeavingOutput(t *testing.T) {
 	cases := map[string][]byte{
 		"all zeros":      make([]byte, 32000),
 		"about -60 dBFS": sinePCM(16000, 1, 1.0, 0.001),
+		"about -70 dBFS": sinePCM(16000, 1, 1.0, 0.0003),
 	}
 	for name, pcm := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -225,6 +226,22 @@ func TestCanonicalizeRejectsSilentRecordingsWithoutLeavingOutput(t *testing.T) {
 				t.Fatalf("directory after a silent rejection = %v, want only quiet.wav", entries)
 			}
 		})
+	}
+}
+
+// A quiet recording the gain lifts above the published floor must stay
+// accepted: the raw-peak gate refused a peak just under the floor even though
+// the gain publishes it around -32 dBFS.
+func TestCanonicalizeAcceptsAVeryQuietRecordingTheGainLifts(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "very-quiet.wav")
+	writeTestWAV(t, source, 16000, 1, 16, sinePCM(16000, 1, 1.0, 0.0025))
+	output := filepath.Join(dir, "out.wav")
+	if _, err := audio.Canonicalize(context.Background(), source, output, audio.Format{Rate: 16000, Width: 2, Channels: 1}); err != nil {
+		t.Fatalf("Canonicalize refused a quiet recording the gain can lift: %v", err)
+	}
+	if _, err := os.Stat(output); err != nil {
+		t.Fatalf("output missing after a quiet upload: %v", err)
 	}
 }
 

@@ -30,9 +30,10 @@ const (
 	// noise; maxGain bounds how far a quiet recording is lifted.
 	silenceRMS = 0.001
 	maxGain    = 8.0
-	// silencePeak is the quietest peak amplitude (about -50 dBFS) an upload may
-	// have. A quieter clip is treated as silent and refused, because publishing
-	// it would let a Ring or error Cue be assigned a sound nobody can hear.
+	// silencePeak is the quietest peak amplitude (about -50 dBFS) a published
+	// sound may have, measured after the normalisation gain. A quieter clip is
+	// refused, because a Ring or error Cue must not be assigned a sound nobody
+	// can hear; a quiet recording that the gain lifts above the floor stays.
 	silencePeak = 0.00316
 )
 
@@ -86,12 +87,15 @@ func Canonicalize(ctx context.Context, source, output string, target Format) (ti
 	if levels.frames == 0 {
 		return 0, fmt.Errorf("audio: %s contains no audio frames", filepath.Base(source))
 	}
-	if levels.peak < silencePeak {
-		return 0, fmt.Errorf("audio: %s is silent (peak %.6f is below %.5f)", filepath.Base(source), levels.peak, silencePeak)
-	}
 	duration := time.Duration(levels.frames) * time.Second / time.Duration(target.Rate)
 
 	gain := levels.gain()
+	// Judge the peak as it will be published: maxGain can lift a quiet clip, so
+	// the raw peak alone would refuse a recording the previous releases made
+	// audible.
+	if published := levels.peak * gain; published < silencePeak {
+		return 0, fmt.Errorf("audio: %s is silent (peak %.6f is below %.5f)", filepath.Base(source), published, silencePeak)
+	}
 	if err := spool.Sync(); err != nil {
 		return 0, fmt.Errorf("audio: sync pcm spool: %w", err)
 	}

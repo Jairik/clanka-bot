@@ -26,6 +26,10 @@ const PlaceholderReply = "I don't know how to do that yet."
 // it fell through to the semantic Fast path.
 const reasonNoFocus = "no_focus"
 
+// reasonAgentOnlyTool reports a live Control phrase that named an AgentOnly
+// Tool, which the Fast path must never execute.
+const reasonAgentOnlyTool = "agent_only_tool"
+
 // AgentRunner is the Agent path as the pipeline sees it. The method set is
 // kept small so routing work (#19) can swap in a stub.
 type AgentRunner interface {
@@ -402,21 +406,30 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 			record.reason = reasonNoFocus
 		}
 	} else if name, ok := phrases[normalized]; ok {
-		markRouting()
-		record.reason = ""
-		reply.Path = tool.PathControlPhrase
-		reply.Tool = name
-		// A phrase such as "quieter" names the Tool exactly but still needs
-		// its direction extracted; without Extract the call has no arguments,
-		// which keeps "louder" as the one-step default it always was.
-		var args json.RawMessage
-		if info, found := p.registry.Info(name); found && info.HasExtract {
-			if extracted, extractedOK := p.registry.Extract(name, transcript); extractedOK {
-				args = extracted
+		// A live phrase table can name an AgentOnly Tool even though New
+		// rejects that shape for the code table. A Control phrase is a Fast-path
+		// route, so fall through to the semantic/Agent path instead of executing
+		// it; the same holds for any table a caller supplies.
+		info, found := p.registry.Info(name)
+		if found && info.AgentOnly {
+			record.reason = reasonAgentOnlyTool
+		} else {
+			markRouting()
+			record.reason = ""
+			reply.Path = tool.PathControlPhrase
+			reply.Tool = name
+			// A phrase such as "quieter" names the Tool exactly but still needs
+			// its direction extracted; without Extract the call has no arguments,
+			// which keeps "louder" as the one-step default it always was.
+			var args json.RawMessage
+			if found && info.HasExtract {
+				if extracted, extractedOK := p.registry.Extract(name, transcript); extractedOK {
+					args = extracted
+				}
 			}
+			reply.Text, record.failure, reply.Pending, reply.LocalOnly = p.callTool(ctx, req, transcript, name, tool.PathControlPhrase, args)
+			return reply
 		}
-		reply.Text, record.failure, reply.Pending, reply.LocalOnly = p.callTool(ctx, req, transcript, name, tool.PathControlPhrase, args)
-		return reply
 	}
 
 	// 4. Semantic match, then extraction, then the Fast path.

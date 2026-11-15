@@ -178,7 +178,8 @@ func (m *Module) Configure(section *yaml.Node) error {
 
 // Register builds the configured Provider and the SSRF-guarded fetcher, then
 // adds web.search and web.fetch. The keep-alive clients are created once here
-// and reused for every request.
+// and reused for every request. Both Tools share one Provenance cache, so a
+// URL a search returned can be read in a later turn (#172).
 func (m *Module) Register(r *tool.Registry, deps tool.Deps) error {
 	m.logger = deps.Logger
 	if m.logger == nil {
@@ -192,10 +193,11 @@ func (m *Module) Register(r *tool.Registry, deps tool.Deps) error {
 	// Build the guarded reader once and share its keep-alive client.
 	// Registration itself never opens a connection.
 	fetcher := newFetcher(m.cfg.Fetch)
-	if err := tool.Add(r, New(m.cfg, provider, m.logger)); err != nil {
+	provenance := NewProvenance()
+	if err := tool.Add(r, New(m.cfg, provider, provenance, m.logger)); err != nil {
 		return err
 	}
-	return tool.Add(r, NewFetch(m.cfg.Fetch, fetcher, m.logger))
+	return tool.Add(r, NewFetch(m.cfg.Fetch, fetcher, provenance, m.logger))
 }
 
 // Health probes the configured backend's local /healthz. It shares the same
@@ -223,9 +225,14 @@ type Out struct {
 
 // New builds web.search for one configured Provider. It declares AgentOnly and
 // therefore no Speak, Examples or Extract: the semantic router never sees it.
-func New(cfg Config, provider Provider, logger *slog.Logger) tool.Tool[In, Out] {
+// Every returned URL is recorded in the shared Provenance cache so web.fetch can
+// tell a result link from one an untrusted page invented.
+func New(cfg Config, provider Provider, provenance *Provenance, logger *slog.Logger) tool.Tool[In, Out] {
 	if logger == nil {
 		logger = slog.Default()
+	}
+	if provenance == nil {
+		provenance = NewProvenance()
 	}
 	// A caller that builds the Tool without Configure still gets usable
 	// bounds; the module path has already validated and normalized values.
@@ -272,9 +279,19 @@ func New(cfg Config, provider Provider, logger *slog.Logger) tool.Tool[In, Out] 
 				// not a failure the Agent should describe as unreachable.
 				results = []Result{}
 			}
+			provenance.Record(resultURLs(results))
 			return Out{Results: results}, nil
 		},
 	}
+}
+
+// resultURLs is the provenance record for one search page.
+func resultURLs(results []Result) []string {
+	urls := make([]string, 0, len(results))
+	for _, result := range results {
+		urls = append(urls, result.URL)
+	}
+	return urls
 }
 
 // NewProvider selects the backend through the config switch. It is exported so

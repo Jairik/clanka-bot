@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -37,7 +40,7 @@ func (f *fixtureFetcher) Fetch(_ context.Context, rawURL string) (web.Page, erro
 func fetchRegistry(t *testing.T, fetcher web.Fetcher) *tool.Registry {
 	t.Helper()
 	reg := newRegistry(t)
-	addTool(t, reg, web.NewFetch(web.DefaultFetchConfig(), fetcher,
+	addTool(t, reg, web.NewFetch(web.DefaultFetchConfig(), fetcher, web.NewProvenance(),
 		slog.New(slog.NewTextHandler(io.Discard, nil))))
 	return reg
 }
@@ -61,7 +64,7 @@ func TestAgentReadsAnArticleWithWebFetch(t *testing.T) {
 
 	a := newTestAgent(t, testSettings(server.URL), fetchRegistry(t, fetcher), nil)
 	result := a.Run(context.Background(), tool.Request{ID: "req-web-fetch", Device: tool.DevicePi},
-		"read me that article about the match", nil)
+		"read me that article about the match at https://news.example.test/report", nil)
 
 	if fetcher.got != "https://news.example.test/report" {
 		t.Fatalf("fetcher URL = %q", fetcher.got)
@@ -107,6 +110,64 @@ func TestAgentReadsAnArticleWithWebFetch(t *testing.T) {
 	}
 }
 
+// TestAgentReadsASearchResultInALaterTurn is #172's legitimate follow-up: a URL
+// the first turn's web.search returned is still fetchable in a second turn even
+// though the second utterance does not repeat it, while the same provenance
+// cache is what refuses an invented address.
+func TestAgentReadsASearchResultInALaterTurn(t *testing.T) {
+	search := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"results":[
+			{"title":"Match report","url":"https://news.example.test/report","content":"A stoppage-time winner settled it."}
+		]}`)
+	}))
+	defer search.Close()
+
+	cfg := web.DefaultConfig()
+	cfg.BaseURL = search.URL
+	provider, err := web.NewProvider(cfg)
+	if err != nil {
+		t.Fatalf("web.NewProvider: %v", err)
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	provenance := web.NewProvenance()
+	fetcher := &fixtureFetcher{page: web.Page{
+		URL:   "https://news.example.test/report",
+		Title: "City beat United 2-1",
+		Text:  "City beat United 2-1 with a stoppage-time winner.",
+	}}
+	registry := newRegistry(t)
+	addTool(t, registry, web.New(cfg, provider, provenance, logger))
+	addTool(t, registry, web.NewFetch(web.DefaultFetchConfig(), fetcher, provenance, logger))
+
+	fake := newFakeProvider(t,
+		toolCallReply("", fakeCall{ID: "call-search", Name: "web__search", Args: `{"query":"who won the match last night"}`}),
+		textReply("City beat United 2-1 last night."),
+		toolCallReply("", fakeCall{ID: "call-fetch", Name: "web__fetch", Args: `{"url":"https://news.example.test/report"}`}),
+		textReply("The report says City won 2-1."),
+	)
+	server := fake.start()
+	a := newTestAgent(t, testSettings(server.URL), registry, nil)
+
+	first := a.Run(context.Background(), tool.Request{ID: "req-search-1", Device: tool.DevicePi},
+		"who won the match last night", nil)
+	if first.Text != "City beat United 2-1 last night." {
+		t.Fatalf("first reply = %q", first.Text)
+	}
+
+	second := a.Run(context.Background(), tool.Request{ID: "req-fetch-2", Device: tool.DevicePi},
+		"read me the top result", nil)
+	if second.Text != "The report says City won 2-1." {
+		t.Fatalf("second reply = %q", second.Text)
+	}
+	if len(second.Calls) != 1 || second.Calls[0].Name != web.FetchName {
+		t.Fatalf("second turn calls = %+v, want one web.fetch call", second.Calls)
+	}
+	if got := fetcher.got; got != "https://news.example.test/report" {
+		t.Fatalf("fetcher URL = %q", got)
+	}
+}
+
 // TestAgentSaysItCouldNotReadThePage proves a fetch failure is a clean Tool
 // failure the model can relay, not a fabricated answer or a leaked address.
 func TestAgentSaysItCouldNotReadThePage(t *testing.T) {
@@ -120,7 +181,7 @@ func TestAgentSaysItCouldNotReadThePage(t *testing.T) {
 
 	a := newTestAgent(t, testSettings(server.URL), fetchRegistry(t, fetcher), nil)
 	result := a.Run(context.Background(), tool.Request{ID: "req-web-fetch-down", Device: tool.DevicePi},
-		"read me the page at that address", nil)
+		"read me the page at http://127.0.0.1/secret", nil)
 
 	if result.Text != "I couldn't read that page right now." {
 		t.Fatalf("reply = %q", result.Text)

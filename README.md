@@ -114,8 +114,14 @@ dial policy. Responses must be HTML, the decompressed body is bounded
 (`tools.web.fetch.max_bytes`, 2 MiB) and the readable article text is
 truncated to `tools.web.fetch.max_chars` (4000 runes) with a `truncated` flag.
 Non-HTML, oversize, timeout and unreadable pages fail with a fixed line; the
-source URL and page text are untrusted facts in the Agent prompt. The
-extraction uses the maintained Readability.js port
+source URL and page text are untrusted facts in the Agent prompt. A URL is only
+opened when the user named it in that turn or a `web.search` returned it in the
+last 30 minutes, so a page cannot talk the model into fetching an address it
+invented; `tools.web.fetch.require_provenance` (default true) restores the old
+open reader for an owner who wants it. That provenance check does not cover a
+page that convinces the model to put the same text into a `web.search` query,
+which SearXNG still forwards; a turn-level taint on untrusted page text is a
+follow-up. The extraction uses the maintained Readability.js port
 `codeberg.org/readeck/go-readability/v2`. It is Agent-only and never routes on
 the Fast path.
 

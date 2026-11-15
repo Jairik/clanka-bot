@@ -527,7 +527,10 @@ without the other.
       a transparent proxy in front of the container; that would bypass the
       dial-time address policy. The Tool reads at most
       `tools.web.fetch.max_bytes` (2 MiB) and returns at most
-      `tools.web.fetch.max_chars` (4000) runes of readable text.
+      `tools.web.fetch.max_chars` (4000) runes of readable text. It also
+      opens only a URL the user named or a `web.search` returned in the last
+      30 minutes (`tools.web.fetch.require_provenance`, default true); leave
+      that switch on so a prompt-injected page cannot invent an egress address.
 - [ ] The separate `assistant-voices` volume holds custom voice states at
       `/app/data/voices` in `assistant`; `tts` mounts only that volume,
       read-only, at `/voices`. Only the voices subtree is exposed, never the

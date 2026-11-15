@@ -66,12 +66,128 @@ func TestRepeatRepeatsTheLastPipelineReply(t *testing.T) {
 	if repeated.Text != first.Text {
 		t.Fatalf("repeat text = %q, want %q", repeated.Text, first.Text)
 	}
-	if !repeated.LocalOnly {
-		t.Error("repeat reply is not marked Local-only")
+	// The repeat Tool is Local-only for the Agent path, but the text it
+	// repeats came from a public Tool, so the reply's provenance stays public
+	// (#186). Otherwise "send that to my phone" would refuse a public answer.
+	if repeated.LocalOnly {
+		t.Error("repeat of a public reply is marked Local-only")
 	}
 	after, _ := store.Last()
-	if after.Text != first.Text || after.Tool != assistant.RepeatName || !after.LocalOnly {
-		t.Fatalf("store after repeat = %+v, want the repeat with provenance", after)
+	if after.Text != first.Text || after.Tool != assistant.RepeatName || after.LocalOnly {
+		t.Fatalf("store after repeat = %+v, want the public repeat with provenance", after)
+	}
+}
+
+// TestRepeatOfALocalOnlyReplyStaysLocalOnly is the other half of #186: the
+// repeat follows the repeated text, so a private answer is still refused.
+func TestRepeatOfALocalOnlyReplyStaysLocalOnly(t *testing.T) {
+	reg := tool.NewRegistry(time.Second)
+	store := lastreply.New()
+	if err := assistant.NewModule().Register(reg, tool.Deps{LastReply: store}); err != nil {
+		t.Fatalf("register assistant: %v", err)
+	}
+	addStringTool(t, reg, "test.private", "Your private list.", tool.PermissionRead, tool.LocalOnlyYes)
+	p, _ := newComposedPipeline(t, reg, map[string]string{
+		"read the private one": "test.private",
+		"say that again":       assistant.RepeatName,
+	}, pipeline.WithLastReply(store))
+
+	first := p.Handle(context.Background(), request(), "read the private one")
+	if !first.LocalOnly {
+		t.Fatalf("private reply = %+v, want Local-only", first)
+	}
+	repeated := p.Handle(context.Background(), request(), "say that again")
+	if repeated.Text != first.Text || repeated.Tool != assistant.RepeatName || !repeated.LocalOnly {
+		t.Fatalf("repeat reply = %+v, want the Local-only private text", repeated)
+	}
+	after, ok := store.Last()
+	if !ok || !after.LocalOnly || after.Tool != assistant.RepeatName {
+		t.Fatalf("store after repeat = %+v/%v, want the Local-only repeat", after, ok)
+	}
+}
+
+// TestRepeatTurnReachesTheAgentHistoryOnlyWhenPublic checks the history side of
+// #186: a public repeat is an ordinary turn the Agent may see, while a repeat
+// of a Local-only reply keeps the turn and its utterance off the model request.
+func TestRepeatTurnReachesTheAgentHistoryOnlyWhenPublic(t *testing.T) {
+	reg := tool.NewRegistry(time.Second)
+	fixed := time.Date(2026, 11, 11, 15, 4, 0, 0, time.UTC)
+	if err := clock.Register(reg, func() time.Time { return fixed }); err != nil {
+		t.Fatalf("register clock: %v", err)
+	}
+	store := lastreply.New()
+	if err := assistant.NewModule().Register(reg, tool.Deps{LastReply: store}); err != nil {
+		t.Fatalf("register assistant: %v", err)
+	}
+	addStringTool(t, reg, "test.private", "Your private list.", tool.PermissionRead, tool.LocalOnlyYes)
+	runner := newFakeRunner()
+	p, _ := newComposedPipeline(t, reg, map[string]string{
+		"what time is it":      clock.Name,
+		"read the private one": "test.private",
+		"say that again":       assistant.RepeatName,
+	}, pipeline.WithAgent(runner, nil), pipeline.WithLastReply(store))
+
+	p.Handle(context.Background(), request(), "what time is it")
+	p.Handle(context.Background(), request(), "say that again")
+	p.Handle(context.Background(), request(), "read the private one")
+	p.Handle(context.Background(), request(), "say that again")
+
+	turns := runner.History().Recent()
+	if len(turns) != 4 {
+		t.Fatalf("history has %d turns, want 4", len(turns))
+	}
+	if len(turns[1].Calls) != 1 || turns[1].Calls[0].LocalOnly {
+		t.Errorf("public repeat turn = %+v, want one non-Local-only call", turns[1])
+	}
+	if len(turns[3].Calls) != 1 || !turns[3].Calls[0].LocalOnly {
+		t.Errorf("private repeat turn = %+v, want one Local-only call", turns[3])
+	}
+
+	// The prompt builder is the only egress, so the public repeat must appear
+	// there exactly once and the private text must not appear at all.
+	messages := agent.NewPromptBuilder("").Messages("anything else", turns)
+	encoded, err := json.Marshal(messages)
+	if err != nil {
+		t.Fatalf("marshal prompt: %v", err)
+	}
+	if got := strings.Count(string(encoded), "say that again"); got != 1 {
+		t.Errorf("prompt has %d public repeat utterances, want 1: %s", got, encoded)
+	}
+	if strings.Contains(string(encoded), "Your private list.") {
+		t.Errorf("prompt carries a Local-only result: %s", encoded)
+	}
+}
+
+// TestChainOfRepeatedPublicReplyStaysPublic covers the chain path: a repeat
+// followed by another confident step must not inherit the repeat Tool's static
+// Local-only flag (#186).
+func TestChainOfRepeatedPublicReplyStaysPublic(t *testing.T) {
+	store := lastreply.New()
+	store.Record(lastreply.Reply{Text: "It's 3:04 PM.", Tool: clock.Name})
+	reg := tool.NewRegistry(time.Second)
+	if err := clock.Register(reg, func() time.Time {
+		return time.Date(2026, 11, 11, 15, 4, 0, 0, time.UTC)
+	}); err != nil {
+		t.Fatalf("register clock: %v", err)
+	}
+	if err := assistant.NewModule().Register(reg, tool.Deps{LastReply: store}); err != nil {
+		t.Fatalf("register assistant: %v", err)
+	}
+	p, _ := newComposedPipeline(t, reg, map[string]string{
+		"say that again":  assistant.RepeatName,
+		"what time is it": clock.Name,
+	}, pipeline.WithLastReply(store))
+	p.BindChains(func() bool { return true })
+
+	reply := p.Handle(context.Background(), request(), "say that again and what time is it")
+	if reply.Path != tool.PathFast || reply.Text != "It's 3:04 PM. It's 3:04 PM." {
+		t.Fatalf("chain reply = %+v", reply)
+	}
+	if reply.LocalOnly {
+		t.Error("chain reply with a public repeat is marked Local-only")
+	}
+	if got, _ := store.Last(); got.LocalOnly {
+		t.Errorf("store after chain = %+v, want a public reply", got)
 	}
 }
 

@@ -71,8 +71,8 @@ func (p *Pipeline) runChain(ctx context.Context, req tool.Request, steps []chain
 		if ctx.Err() != nil {
 			break
 		}
-		text, failure, pending := p.callTool(ctx, req, step.text, step.name, tool.PathFast, step.args)
-		reply.LocalOnly = reply.LocalOnly || p.localOnlyTool(step.name)
+		text, failure, pending, localOnly := p.callTool(ctx, req, step.text, step.name, tool.PathFast, step.args)
+		reply.LocalOnly = reply.LocalOnly || localOnly
 		reply.Tool = step.name
 		if failure != "" || pending != nil {
 			record.failure = failure

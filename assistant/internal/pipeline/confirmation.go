@@ -108,7 +108,8 @@ func (c *Confirmation) DropPending() (tool.PendingConfirmation, bool) {
 func confirmedCall(reg *tool.Registry, pending tool.PendingConfirmation, result any) *agent.ToolCall {
 	call := &agent.ToolCall{Name: pending.Tool, Args: pending.Args}
 	if info, ok := reg.Info(pending.Tool); ok {
-		call.LocalOnly = info.LocalOnly
+		// A confirmed result keeps its own provenance, exactly like the Fast path.
+		call.LocalOnly = resultLocalOnly(info.LocalOnly, result)
 	}
 	if payload, err := json.Marshal(result); err == nil {
 		call.Result = payload

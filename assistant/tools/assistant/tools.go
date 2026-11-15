@@ -22,6 +22,11 @@ type RepeatOut struct {
 	At        time.Time `json:"at,omitempty"`
 }
 
+// LocalOnlyProvenance reports that the repeated text keeps the flag it had when
+// it was spoken. The repeat Tool stays Local-only so the Agent path never sees
+// it; only the provenance of this one result follows the text it repeats.
+func (o RepeatOut) LocalOnlyProvenance() (bool, bool) { return o.LocalOnly, true }
+
 // HelpIn has no fields.
 type HelpIn struct{}
 

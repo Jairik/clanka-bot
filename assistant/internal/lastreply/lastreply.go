@@ -22,8 +22,9 @@ type Reply struct {
 	// Path is the routing path that produced the reply, for debugging and
 	// provenance. It is the string form of tool.Path.
 	Path string
-	// LocalOnly is true when the reply text came from a Local-only Tool. Such
-	// text must never be sent off the Pi, including by a follow-up Tool.
+	// LocalOnly is true when the reply text is Local-only and must not be sent
+	// off the Pi, including by a follow-up Tool. It follows the text's own
+	// provenance rather than only the Tool that produced the final call.
 	LocalOnly bool
 	// At is when the reply was recorded.
 	At time.Time

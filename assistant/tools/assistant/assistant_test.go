@@ -82,6 +82,9 @@ func TestRepeatKeepsTheLocalOnlyProvenance(t *testing.T) {
 	if !out.LocalOnly {
 		t.Fatal("RepeatOut.LocalOnly = false, want the recorded Local-only provenance")
 	}
+	if localOnly, known := out.LocalOnlyProvenance(); !known || !localOnly {
+		t.Fatalf("LocalOnlyProvenance() = %v/%v, want the recorded Local-only flag", localOnly, known)
+	}
 
 	info, _ := reg.Info(assistant.RepeatName)
 	if !info.LocalOnly {
@@ -89,6 +92,26 @@ func TestRepeatKeepsTheLocalOnlyProvenance(t *testing.T) {
 	}
 	if info.Permission != tool.PermissionRead {
 		t.Errorf("Permission = %q, want read", info.Permission)
+	}
+}
+
+// TestRepeatReportsTheRepeatedTextsProvenance is the #186 unit seam: a repeat
+// of a public reply reports public provenance even though the repeat Tool
+// itself stays Local-only for the Agent path.
+func TestRepeatReportsTheRepeatedTextsProvenance(t *testing.T) {
+	store := lastreply.New()
+	store.Record(lastreply.Reply{Text: "It's 3:04 PM.", Tool: "time.now"})
+	reg := newRegistry(t)
+	if err := tool.Add(reg, assistant.NewRepeat(store)); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	out := execute(t, reg, assistant.RepeatName).(assistant.RepeatOut)
+	if localOnly, known := out.LocalOnlyProvenance(); !known || localOnly {
+		t.Fatalf("LocalOnlyProvenance() = %v/%v, want public provenance", localOnly, known)
+	}
+	info, _ := reg.Info(assistant.RepeatName)
+	if !info.LocalOnly {
+		t.Fatal("assistant.repeat is not Local-only; the Agent path could see a Local-only reply as Tool output")
 	}
 }
 

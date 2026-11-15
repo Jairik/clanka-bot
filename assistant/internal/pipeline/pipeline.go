@@ -79,9 +79,9 @@ type Reply struct {
 	Path      tool.Path
 	RequestID string
 	Pending   *agent.PendingConfirm
-	// LocalOnly reports that the reply text came from a Local-only Tool. A
-	// follow-up that would send the reply off the Pi (notify.phone) must
-	// refuse it, and the last-reply store keeps the flag as provenance.
+	// LocalOnly reports that the reply text is Local-only and must not leave
+	// the Pi. It follows the result's own provenance, so a repeat of a public
+	// reply is public while a repeat of a private one stays Local-only.
 	LocalOnly bool
 	// Unavailable marks an Agent-path failure whose Text is the configured
 	// Unavailable message. The reply session plays the error Cue before it.
@@ -415,8 +415,7 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 				args = extracted
 			}
 		}
-		reply.Text, record.failure, reply.Pending = p.callTool(ctx, req, transcript, name, tool.PathControlPhrase, args)
-		reply.LocalOnly = p.localOnlyTool(name)
+		reply.Text, record.failure, reply.Pending, reply.LocalOnly = p.callTool(ctx, req, transcript, name, tool.PathControlPhrase, args)
 		return reply
 	}
 
@@ -439,8 +438,7 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 				record.reason = ""
 				reply.Path = tool.PathFast
 				reply.Tool = match.Tool
-				reply.Text, record.failure, reply.Pending = p.callTool(ctx, req, transcript, match.Tool, tool.PathFast, match.Args)
-				reply.LocalOnly = p.localOnlyTool(match.Tool)
+				reply.Text, record.failure, reply.Pending, reply.LocalOnly = p.callTool(ctx, req, transcript, match.Tool, tool.PathFast, match.Args)
 				return reply
 			}
 		}
@@ -518,7 +516,7 @@ func (p *Pipeline) callAgent(ctx context.Context, req tool.Request, transcript s
 	reply.Tool = strings.Join(names, ",")
 }
 
-func (p *Pipeline) callTool(ctx context.Context, req tool.Request, transcript, name string, path tool.Path, args json.RawMessage) (string, string, *tool.PendingConfirmation) {
+func (p *Pipeline) callTool(ctx context.Context, req tool.Request, transcript, name string, path tool.Path, args json.RawMessage) (string, string, *tool.PendingConfirmation, bool) {
 	toolStarted := time.Now()
 	defer func() { latency.AddStage(ctx, latency.StageToolExecute, time.Since(toolStarted)) }()
 
@@ -539,7 +537,7 @@ func (p *Pipeline) callTool(ctx context.Context, req tool.Request, transcript, n
 					LocalOnly: info.LocalOnly,
 					Result:    "Confirmation required.",
 				})
-				return pending.Summary, "", &pending
+				return pending.Summary, "", &pending, info.LocalOnly
 			}
 			err = proposeErr
 		}
@@ -549,39 +547,61 @@ func (p *Pipeline) callTool(ctx context.Context, req tool.Request, transcript, n
 			LocalOnly: info.LocalOnly,
 			Result:    message,
 		})
-		return message, err.Error(), nil
+		return message, err.Error(), nil, info.LocalOnly
 	}
+	// One result can carry different provenance from its Tool's static flag:
+	// assistant.repeat is Local-only so the Agent never sees it, yet the text
+	// it repeats keeps the flag that text had when it was spoken.
+	localOnly := resultLocalOnly(info.LocalOnly, result)
 	spoken, ok := p.registry.Speak(name, result)
 	if !ok {
 		err := fmt.Errorf("tool %q has no Speak renderer", name)
 		latency.AddToolCall(ctx, latency.ToolCallDetail{
 			Name:      name,
-			LocalOnly: info.LocalOnly,
+			LocalOnly: localOnly,
 			Result:    tool.DefaultFailureMessage,
 		})
-		return tool.DefaultFailureMessage, err.Error(), nil
+		return tool.DefaultFailureMessage, err.Error(), nil, localOnly
 	}
 	latency.AddToolCall(ctx, latency.ToolCallDetail{
 		Name:      name,
-		LocalOnly: info.LocalOnly,
+		LocalOnly: localOnly,
 		Result:    spoken,
 	})
-	p.recordToolTurn(transcript, spoken, name, result)
-	return spoken, "", nil
+	p.recordToolTurn(transcript, spoken, name, result, localOnly)
+	return spoken, "", nil, localOnly
+}
+
+// resultProvenance is implemented by a Tool result that reports the Local-only
+// provenance of its own text. The Tool's static LocalOnly declaration still
+// decides Agent-path visibility and registration; this hook only overrides the
+// provenance of the text one call produced.
+type resultProvenance interface {
+	LocalOnlyProvenance() (localOnly bool, ok bool)
+}
+
+// resultLocalOnly resolves one result's Local-only flag, falling back to the
+// Tool's static declaration when the result reports no provenance of its own.
+func resultLocalOnly(static bool, result any) bool {
+	if provenance, ok := result.(resultProvenance); ok {
+		if localOnly, known := provenance.LocalOnlyProvenance(); known {
+			return localOnly
+		}
+	}
+	return static
 }
 
 // recordToolTurn keeps a successful Fast path turn in the shared history,
 // including the compact Tool call and its result.
-func (p *Pipeline) recordToolTurn(transcript, spoken, name string, result any) {
+func (p *Pipeline) recordToolTurn(transcript, spoken, name string, result any, localOnly bool) {
 	payload, err := json.Marshal(result)
 	if err != nil {
 		payload = nil
 	}
-	info, _ := p.registry.Info(name)
 	p.recordTurn(transcript, spoken, []agent.ToolCall{{
 		Name:      name,
 		Result:    payload,
-		LocalOnly: info.LocalOnly,
+		LocalOnly: localOnly,
 	}})
 }
 
@@ -590,14 +610,6 @@ func (p *Pipeline) recordTurn(transcript, spoken string, calls []agent.ToolCall)
 		return
 	}
 	p.history.Add(agent.Turn{Utterance: transcript, Reply: spoken, Calls: calls})
-}
-
-// localOnlyTool reports whether name is a registered Local-only Tool. Only the
-// Fast/Control/Confirmation paths can execute one; the Agent path never sees
-// them, so an Agent answer is never marked Local-only.
-func (p *Pipeline) localOnlyTool(name string) bool {
-	info, ok := p.registry.Info(name)
-	return ok && info.LocalOnly
 }
 
 // finish writes the single structured request log line. A request timeline

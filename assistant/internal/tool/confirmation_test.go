@@ -126,6 +126,34 @@ func TestProposeThenExecutePendingRunsTheStoredCallOnce(t *testing.T) {
 	}
 }
 
+// TestReproposeRefreshesThePendingTTL ages the replacement from its own question.
+func TestReproposeRefreshesThePendingTTL(t *testing.T) {
+	clock := newFakeClock()
+	reg := tool.NewRegistry(time.Second, tool.WithClock(clock.Now))
+	runs := 0
+	if err := tool.Add(reg, sendTool(&runs)); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := reg.Propose("mail.send", json.RawMessage(`{"to":"first"}`)); err != nil {
+		t.Fatalf("first Propose: %v", err)
+	}
+	clock.Advance(tool.PendingTTL - time.Second)
+	if _, err := reg.Propose("mail.send", json.RawMessage(`{"to":"second"}`)); err != nil {
+		t.Fatalf("replacement Propose: %v", err)
+	}
+	clock.Advance(2 * time.Second)
+	if pending, ok := reg.Pending(); !ok || string(pending.Args) != `{"to":"second"}` {
+		t.Fatalf("replacement pending = %+v, present=%v", pending, ok)
+	}
+	clock.Advance(tool.PendingTTL - 2*time.Second)
+	if _, ok := reg.Pending(); ok {
+		t.Fatal("replacement survived its own TTL")
+	}
+	if runs != 0 {
+		t.Fatalf("handler ran %d times without a yes", runs)
+	}
+}
+
 func TestPendingReportsAnExpiredConfirmationAsAbsent(t *testing.T) {
 	clock := newFakeClock()
 	reg := tool.NewRegistry(time.Second, tool.WithClock(clock.Now))

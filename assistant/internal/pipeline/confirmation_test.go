@@ -166,6 +166,34 @@ func TestConfirmToolAsksThenClearYesRunsIt(t *testing.T) {
 	}
 }
 
+// TestYesAtTheExpiryBoundaryRoutesNormally covers expiry between the two registry reads.
+func TestYesAtTheExpiryBoundaryRoutesNormally(t *testing.T) {
+	var mu sync.Mutex
+	calls := 0
+	start := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
+	reg := tool.NewRegistry(time.Second, tool.WithClock(func() time.Time {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		if calls <= 2 {
+			return start
+		}
+		return start.Add(tool.PendingTTL)
+	}))
+	runs := 0
+	addSendTool(t, reg, &runs)
+	runner := newConfirmingRunner(reg)
+	p := newConfirmingPipeline(t, reg, runner, nil)
+	askForConfirmation(t, p, runner, &runs)
+	reply := p.Handle(context.Background(), request(), "yes")
+	if runs != 0 || reply.Path != tool.PathAgent || reply.Text != "I can answer that." {
+		t.Fatalf("expired yes: runs=%d reply=%+v, want ordinary routing without a Tool failure", runs, reply)
+	}
+	if seen := runner.seen(); len(seen) != 2 || seen[1] != "yes" {
+		t.Fatalf("agent saw %v, want the expired yes routed normally", seen)
+	}
+}
+
 func TestLateYesAfterExpiryRoutesWithoutRunningTheOldCall(t *testing.T) {
 	clock := newConfirmationTestClock()
 	reg := tool.NewRegistry(time.Second, tool.WithClock(clock.Now))

@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/agent"
@@ -62,6 +63,12 @@ func (c *Confirmation) Resolve(ctx context.Context, req tool.Request, transcript
 	if isClearYes(transcript) {
 		req.Path = tool.PathConfirmation
 		result, done, err := c.registry.ExecutePending(tool.WithRequest(ctx, req))
+		if errors.Is(err, tool.ErrNoPending) {
+			// The call expired between the Pending read and the Execute, so this
+			// yes answers nothing: route the utterance as an ordinary request.
+			c.logger.Info("confirmation expired", "request_id", req.ID)
+			return ConfirmationResult{}
+		}
 		if err != nil {
 			c.logger.Error("confirmation failed",
 				"request_id", req.ID, "tool", done.Tool, "error", err.Error())

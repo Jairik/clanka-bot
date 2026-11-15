@@ -38,7 +38,7 @@
 // internal/store owns the tables, but a build without FTS5 must not fail the
 // whole store at startup. When the index cannot be created, a search falls
 // back to a bounded window of the newest rows and says so on the page (see
-// shortSearchWindow and SearchWindow).
+// ShortSearchWindow and SearchWindow).
 package activity
 
 import (
@@ -58,12 +58,13 @@ const (
 	// indexes three-character sequences, so a one or two character query has no
 	// index entry to look up and takes the bounded window fallback below.
 	minTrigramRunes = 3
-	// shortSearchWindow bounds that fallback, and any search when the index is
-	// unavailable. It is wider than the in-memory ring (DefaultLimit) plus a
-	// full page, so a short query still matches what the first page shows, and
-	// it keeps one such request to a bounded read rather than the whole
-	// retained window.
-	shortSearchWindow = 200
+	// ShortSearchWindow bounds the fallback for a one or two character query,
+	// and any search when the index is unavailable. It is wider than the
+	// in-memory ring (DefaultLimit) plus a full page, so a short query still
+	// matches what the first page shows, and it keeps one such request to a
+	// bounded read rather than the whole retained window. The page states this
+	// bound, so the copy and the code share one number.
+	ShortSearchWindow = 200
 	// searchBackfillBatch bounds one rebuild step. A fresh process may have to
 	// index a whole retained window (20,000 rows), so it does it in batches of
 	// this many rows, one transaction each, resuming from a persisted cursor:
@@ -122,7 +123,7 @@ const (
 	// SearchWindowNone is a complete answer over every retained row.
 	SearchWindowNone SearchWindow = ""
 	// SearchWindowShort is a one or two character query: a trigram index has no
-	// entry to look up, so only the newest shortSearchWindow rows were read.
+	// entry to look up, so only the newest ShortSearchWindow rows were read.
 	SearchWindowShort SearchWindow = "short"
 	// SearchWindowIndexUnavailable means the index could not be created in this
 	// build, so the same bounded window answered every query.
@@ -787,11 +788,11 @@ func windowedSearchSQL(conditions []string) string {
 		ORDER BY at DESC, id DESC LIMIT ?`
 }
 
-// pageByWindow answers a search from the newest shortSearchWindow rows only.
+// pageByWindow answers a search from the newest ShortSearchWindow rows only.
 func (h *History) pageByWindow(ctx context.Context, conditions []string, args []any, needle string, limit int) (Page, error) {
 	windowArgs := make([]any, 0, len(args)+3)
 	windowArgs = append(windowArgs, args...)
-	windowArgs = append(windowArgs, shortSearchWindow, needle, limit+1)
+	windowArgs = append(windowArgs, ShortSearchWindow, needle, limit+1)
 
 	rows, err := h.db.QueryContext(ctx, windowedSearchSQL(conditions), windowArgs...)
 	if err != nil {

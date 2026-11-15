@@ -352,9 +352,9 @@ func (h *Handler) activityEntries(ctx context.Context, q activityQuery) ([]activ
 func searchNotice(window activity.SearchWindow) string {
 	switch window {
 	case activity.SearchWindowShort:
-		return "Short searches cover only the newest 200 requests. Type at least three characters to search all stored history."
+		return fmt.Sprintf("Short searches cover only the newest %d requests. Type at least three characters to search all stored history.", activity.ShortSearchWindow)
 	case activity.SearchWindowIndexUnavailable:
-		return "The search index is unavailable, so this search covered only the newest 200 requests."
+		return fmt.Sprintf("The search index is unavailable, so this search covered only the newest %d requests.", activity.ShortSearchWindow)
 	default:
 		return ""
 	}

@@ -284,7 +284,7 @@ func (h *History) QueryPage(ctx context.Context, q Query) (Page, error) {
 	if needle := normalizeQuery(q.Text); needle != "" {
 		// The trigram index answers a three-character or longer query; a shorter
 		// one, or a build without the index, reads only the newest
-		// shortSearchWindow rows. Neither walks the retained window, and both
+		// ShortSearchWindow rows. Neither walks the retained window, and both
 		// say so on the page rather than returning a silent partial answer.
 		switch {
 		case len([]rune(needle)) < minTrigramRunes:

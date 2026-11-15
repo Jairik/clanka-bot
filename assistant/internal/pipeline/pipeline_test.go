@@ -76,6 +76,37 @@ func TestControlPhraseReachesTimeNow(t *testing.T) {
 	}
 }
 
+// TestControlPhraseIgnoresTrailingPunctuation is issue #191: the stored phrase
+// never carries the mark STT or a phone keyboard adds, so "stop," and
+// "i'm awake…" must still reach it.
+func TestControlPhraseIgnoresTrailingPunctuation(t *testing.T) {
+	reg := tool.NewRegistry(time.Second)
+	fixed := time.Date(2026, 11, 11, 15, 4, 0, 0, time.UTC)
+	if err := clock.Register(reg, func() time.Time { return fixed }); err != nil {
+		t.Fatalf("register clock: %v", err)
+	}
+	logger, _ := testLogger()
+	p := newPipeline(t, reg, map[string]string{"what's the time": clock.Name}, logger)
+
+	transcripts := []string{
+		"what's the time",
+		"What's the time?",
+		"what's the time,",
+		"what’s the time",
+		"what’s the time…",
+	}
+	for _, transcript := range transcripts {
+		reply := p.Handle(context.Background(), request(), transcript)
+		if reply.Path != tool.PathControlPhrase || reply.Tool != clock.Name {
+			t.Errorf("%q: path/tool = %q/%q, want %q/%q",
+				transcript, reply.Path, reply.Tool, tool.PathControlPhrase, clock.Name)
+		}
+		if want := "It's 3:04 PM."; reply.Text != want {
+			t.Errorf("%q: reply = %q, want %q", transcript, reply.Text, want)
+		}
+	}
+}
+
 func TestUnknownTranscriptFallsThrough(t *testing.T) {
 	logger, _ := testLogger()
 	p := newPipeline(t, tool.NewRegistry(time.Second), nil, logger)

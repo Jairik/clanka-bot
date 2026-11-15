@@ -224,6 +224,40 @@ func TestLateYesAfterExpiryRoutesWithoutRunningTheOldCall(t *testing.T) {
 	}
 }
 
+// TestClearYesWithInternalPunctuationRunsThePendingTool is issue #191: an
+// agreement carrying the comma a phone keyboard or STT adds must run the
+// pending confirm Tool instead of dropping the call and saying "Cancelled.".
+func TestClearYesWithInternalPunctuationRunsThePendingTool(t *testing.T) {
+	for _, yes := range []string{"yes, please", "Yes, please.", "yes,please", "YES, PLEASE!"} {
+		t.Run(yes, func(t *testing.T) {
+			reg := tool.NewRegistry(time.Second)
+			runs := 0
+			addSendTool(t, reg, &runs)
+			runner := newConfirmingRunner(reg)
+			p := newConfirmingPipeline(t, reg, runner, nil)
+
+			askForConfirmation(t, p, runner, &runs)
+
+			reply := p.Handle(context.Background(), request(), yes)
+			if runs != 1 {
+				t.Fatalf("confirm handler ran %d times, want 1 after %q", runs, yes)
+			}
+			if reply.Text != "Email sent." {
+				t.Errorf("reply = %q, want the confirmed Tool's Speak rendering", reply.Text)
+			}
+			if reply.Path != tool.PathConfirmation {
+				t.Errorf("path = %q, want confirmation", reply.Path)
+			}
+			if _, ok := reg.Pending(); ok {
+				t.Error("pending survived the clear yes")
+			}
+			if calls := runner.seen(); len(calls) != 1 {
+				t.Errorf("agent saw %v, want the yes to stay out of the Agent path", calls)
+			}
+		})
+	}
+}
+
 func TestNoCancelsAndRoutesTheUtteranceNormally(t *testing.T) {
 	reg := tool.NewRegistry(time.Second)
 	runs := 0

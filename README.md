@@ -1059,27 +1059,32 @@ semantic or Agent path instead of choosing an owner at random.
 
 #### Name matching
 
-Sounds, voices and Spotify playlists resolve spoken names through one shared
-matcher (`internal/namematch`). Exact and normalised names win first and make
-no embed request. Normalisation lowercases, drops punctuation and a leading
-`the`/`a`/`an`/`my` and a trailing `sound`/`voice`/`playlist`, so
-`The Lo-Fi Beats Playlist` is the same name as `lo fi beats`. Anything else is
-compared with MiniLM embedding similarity. Candidate vectors are cached by the
-normalised text that was embedded, because an embedding is a pure function of
-the text: a repeated lookup embeds only the query, and an added or renamed
-entry is embedded once. The cache is bounded at 2048 vectors (about 3 MB at 384
-dimensions) and is cleared when a fill would overflow or when the embed model's
-dimension changes, so a redeployed model never mixes vector lengths. A model
-change that keeps the same dimension is not detected. `Matcher.Warm` fills the
-cache for a library off the request path, and the playlist cache calls it after
-each successful background refresh, so the next spoken lookup embeds only the
-query instead of paying a cold batch that can exceed the two-second lookup
-budget. A refresh a request drives itself does not warm: the caller's lookup
-follows at once and already fills the cache. The best name at or above the
-threshold wins, and everything else is no match. A name is never forced: empty
-input, an embed failure, malformed vectors, a score below the threshold, two
-names that normalise to the same words and an exact score tie all return no
-match. A caller then keeps its existing value and, where the Tool promises it,
+Sounds, voices, Spotify playlists, list items and personas resolve spoken
+names through one shared matcher (`internal/namematch`). Exact and normalised
+names win first and make no embed request. Normalisation lowercases, drops
+punctuation and a leading `the`/`a`/`an`/`my` and a trailing
+`sound`/`voice`/`playlist`, so `The Lo-Fi Beats Playlist` is the same name as
+`lo fi beats`. Anything else is compared with MiniLM embedding similarity.
+Candidate vectors are cached by the library that owns them and the normalised
+text that was embedded, because an embedding is a pure function of the text: a
+repeated lookup embeds only the query, and an added or renamed entry is
+embedded once. The cache holds at most 2048 vectors in total, about 3 MB at 384
+dimensions, and gives way least recently used first, starting with the library
+that holds the most vectors: a warm or a busy library can only evict itself
+once it is the largest holder, so a mixed workload keeps each library's warm,
+and a library larger than the whole budget keeps its most recently used
+vectors instead of clearing or oscillating. A change in the embed model's
+dimension empties the whole cache, so a redeployed model never mixes vector
+lengths. A model change that keeps the same dimension is not detected.
+`Matcher.Warm` fills the cache for one library off the request path, and the
+playlist cache calls it after each successful background refresh, so the next
+spoken lookup embeds only the query instead of paying a cold batch that can
+exceed the two-second lookup budget. A refresh a request drives itself does
+not warm: the caller's lookup follows at once and already fills the cache. The
+best name at or above the threshold wins, and everything else is no match. A
+name is never forced: empty input, an embed failure, malformed vectors, a score
+below the threshold, two names that normalise to the same words and an exact
+score tie all return no match. A caller then keeps its existing value and, where the Tool promises it,
 says aloud that the name did not match.
 
 `name_match.threshold` is the live similarity floor, default `0.60`, with the

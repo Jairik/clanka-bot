@@ -193,7 +193,7 @@ func TestPlaylistRefreshWarmsTheMatcherOnceAndOnlyWithNewNames(t *testing.T) {
 	}
 
 	// The cache is warm, so a near-miss lookup embeds only what it says.
-	result := matcher.Match(context.Background(), "my running tunes", cache.Names())
+	result := matcher.Match(context.Background(), namematch.SourcePlaylists, "my running tunes", cache.Names())
 	if !result.Matched() || result.Name != "Running" {
 		t.Fatalf("Match after the warm = %+v, want Running", result)
 	}
@@ -327,7 +327,7 @@ func TestWarmFailureDoesNotFailTheRefresh(t *testing.T) {
 	// And a lookup still works: with nothing cached the query embeds alongside
 	// the candidates, which is the pre-warm path and never an error.
 	embedder.setFail(false)
-	result := matcher.Match(context.Background(), "late night", cache.Names())
+	result := matcher.Match(context.Background(), namematch.SourcePlaylists, "late night", cache.Names())
 	if !result.Matched() || result.Name != "Late Night" {
 		t.Fatalf("Match after a failed warm = %+v, want Late Night", result)
 	}

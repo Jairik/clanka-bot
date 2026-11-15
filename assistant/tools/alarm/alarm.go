@@ -619,7 +619,7 @@ func (m *Manager) resolveSound(ctx context.Context, spoken string) (string, bool
 	if len(candidates) == 0 {
 		return "", true, nil
 	}
-	result := m.names.Match(ctx, spoken, candidates)
+	result := m.names.Match(ctx, namematch.SourceSounds, spoken, candidates)
 	if !result.Matched() {
 		m.logger.Info("alarm sound not matched; using the kind default",
 			"spoken", spoken, "reason", result.Reason, "score", result.Score, "error", result.Err)

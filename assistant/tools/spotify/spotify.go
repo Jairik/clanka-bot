@@ -94,7 +94,7 @@ func (m *Module) registerPlayback(r *tool.Registry, deps tool.Deps) error {
 // so exact names keep working.
 func warmNameMatcher(names *namematch.Matcher) func(context.Context, []string) {
 	return func(ctx context.Context, candidates []string) {
-		_ = names.Warm(ctx, candidates)
+		_ = names.Warm(ctx, namematch.SourcePlaylists, candidates)
 	}
 }
 

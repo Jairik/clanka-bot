@@ -11,6 +11,7 @@ import (
 	"math"
 	"strings"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/namematch"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/internal/voicelib"
 	"gopkg.in/yaml.v3"
@@ -358,7 +359,7 @@ func resolveVoiceName(ctx context.Context, deps tool.Deps, spoken string) (strin
 	}
 	candidates := service.Candidates()
 	if deps.Names != nil {
-		result := deps.Names.Match(ctx, spoken, candidates)
+		result := deps.Names.Match(ctx, namematch.SourceVoices, spoken, candidates)
 		return result.Name, result.Matched()
 	}
 	// Conformance and tests may omit the embedder; exact spelling is still a

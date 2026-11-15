@@ -69,7 +69,7 @@ func TestExactAndNormalisedMatchesSkipTheEmbedder(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.spoken, func(t *testing.T) {
-			result := matcher.Match(context.Background(), tc.spoken, candidates)
+			result := matcher.Match(context.Background(), namematch.SourceSounds, tc.spoken, candidates)
 			if !result.Matched() || result.Name != tc.want {
 				t.Fatalf("Match(%q) = %+v, want %q", tc.spoken, result, tc.want)
 			}
@@ -93,7 +93,7 @@ func TestSimilarityPicksTheBestCandidateAboveTheThreshold(t *testing.T) {
 	})}
 	matcher := namematch.New(embedder, namematch.Config{Threshold: fixedThreshold(0.70)})
 
-	result := matcher.Match(context.Background(), "the bird sound", []string{"rain", "birds", "jazz mix"})
+	result := matcher.Match(context.Background(), namematch.SourceSounds, "the bird sound", []string{"rain", "birds", "jazz mix"})
 	if !result.Matched() || result.Name != "birds" {
 		t.Fatalf("Match = %+v, want birds", result)
 	}
@@ -120,7 +120,7 @@ func TestBelowThresholdReturnsNoMatch(t *testing.T) {
 	})}
 	matcher := namematch.New(embedder, namematch.Config{Threshold: fixedThreshold(0.70)})
 
-	result := matcher.Match(context.Background(), "the bird sound", []string{"birds", "rain"})
+	result := matcher.Match(context.Background(), namematch.SourceSounds, "the bird sound", []string{"birds", "rain"})
 	if result.Matched() {
 		t.Fatalf("Match = %+v, want no match below the threshold", result)
 	}
@@ -141,11 +141,11 @@ func TestThresholdIsReadOnEveryMatch(t *testing.T) {
 	matcher := namematch.New(embedder, namematch.Config{Threshold: func() float64 { return limit }})
 	candidates := []string{"birds"}
 
-	if result := matcher.Match(context.Background(), "bird", candidates); result.Name != "birds" {
+	if result := matcher.Match(context.Background(), namematch.SourceSounds, "bird", candidates); result.Name != "birds" {
 		t.Fatalf("at 0.70 Match = %+v, want birds", result)
 	}
 	limit = 0.90
-	if result := matcher.Match(context.Background(), "bird", candidates); result.Matched() {
+	if result := matcher.Match(context.Background(), namematch.SourceSounds, "bird", candidates); result.Matched() {
 		t.Fatalf("at 0.90 Match = %+v, want no match", result)
 	}
 	if embedder.calls != 2 {
@@ -158,13 +158,13 @@ func TestEmptyInputsReturnNoMatchWithoutAnEmbedCall(t *testing.T) {
 	matcher := namematch.New(embedder, namematch.Config{Threshold: fixedThreshold(0.60)})
 	ctx := context.Background()
 
-	if result := matcher.Match(ctx, "birds", nil); result.Matched() || result.Reason != namematch.ReasonNoCandidates {
+	if result := matcher.Match(ctx, namematch.SourceSounds, "birds", nil); result.Matched() || result.Reason != namematch.ReasonNoCandidates {
 		t.Fatalf("no candidates = %+v, want no_candidates", result)
 	}
-	if result := matcher.Match(ctx, "  ...  ", []string{"birds"}); result.Matched() || result.Reason != namematch.ReasonEmptyName {
+	if result := matcher.Match(ctx, namematch.SourceSounds, "  ...  ", []string{"birds"}); result.Matched() || result.Reason != namematch.ReasonEmptyName {
 		t.Fatalf("punctuation-only speech = %+v, want empty_name", result)
 	}
-	if result := matcher.Match(ctx, "birds", []string{"", "   ", "!!!"}); result.Matched() || result.Reason != namematch.ReasonNoCandidates {
+	if result := matcher.Match(ctx, namematch.SourceSounds, "birds", []string{"", "   ", "!!!"}); result.Matched() || result.Reason != namematch.ReasonNoCandidates {
 		t.Fatalf("unspellable candidates = %+v, want no_candidates", result)
 	}
 	if embedder.calls != 0 {
@@ -178,7 +178,7 @@ func TestDuplicateNamesAreDeterministic(t *testing.T) {
 	ctx := context.Background()
 
 	// The same name twice is still one library entry, so it resolves.
-	result := matcher.Match(ctx, "birds", []string{"birds", "birds", " rain "})
+	result := matcher.Match(ctx, namematch.SourceSounds, "birds", []string{"birds", "birds", " rain "})
 	if result.Name != "birds" || !result.Exact {
 		t.Fatalf("exact duplicate = %+v, want birds", result)
 	}
@@ -186,13 +186,13 @@ func TestDuplicateNamesAreDeterministic(t *testing.T) {
 	// Different names that normalise to the same words cannot be told apart
 	// by speech, so the matcher refuses to guess.
 	ambiguous := []string{"Lo-Fi Beats", "Lo Fi-Beats"}
-	result = matcher.Match(ctx, "lo fi beats", ambiguous)
+	result = matcher.Match(ctx, namematch.SourceSounds, "lo fi beats", ambiguous)
 	if result.Matched() || result.Reason != namematch.ReasonAmbiguous {
 		t.Fatalf("duplicate normalised names = %+v, want ambiguous", result)
 	}
 
 	// Case-only duplicates are equally indistinguishable to speech.
-	result = matcher.Match(ctx, "BIRDS", []string{"Birds", "birds"})
+	result = matcher.Match(ctx, namematch.SourceSounds, "BIRDS", []string{"Birds", "birds"})
 	if result.Matched() || result.Reason != namematch.ReasonAmbiguous {
 		t.Fatalf("case-only duplicates = %+v, want ambiguous", result)
 	}
@@ -205,10 +205,10 @@ func TestUnavailableEmbedderKeepsExactNamesWorking(t *testing.T) {
 	matcher := namematch.New(nil, namematch.Config{Threshold: fixedThreshold(0.60)})
 	ctx := context.Background()
 
-	if result := matcher.Match(ctx, "the birds sound", []string{"birds"}); result.Name != "birds" {
+	if result := matcher.Match(ctx, namematch.SourceSounds, "the birds sound", []string{"birds"}); result.Name != "birds" {
 		t.Fatalf("exact match without an embedder = %+v, want birds", result)
 	}
-	result := matcher.Match(ctx, "the bird sound", []string{"birds"})
+	result := matcher.Match(ctx, namematch.SourceSounds, "the bird sound", []string{"birds"})
 	if result.Matched() || result.Reason != namematch.ReasonEmbedFailed || result.Err == nil {
 		t.Fatalf("similarity without an embedder = %+v, want embed_failed with an error", result)
 	}
@@ -220,7 +220,7 @@ func TestEmbedFailureReturnsNoMatch(t *testing.T) {
 	}}
 	matcher := namematch.New(embedder, namematch.Config{Threshold: fixedThreshold(0.60)})
 
-	result := matcher.Match(context.Background(), "the bird sound", []string{"birds"})
+	result := matcher.Match(context.Background(), namematch.SourceSounds, "the bird sound", []string{"birds"})
 	if result.Matched() || result.Reason != namematch.ReasonEmbedFailed {
 		t.Fatalf("result = %+v, want embed_failed", result)
 	}
@@ -253,7 +253,7 @@ func TestMalformedVectorsReturnNoMatch(t *testing.T) {
 	for name, reply := range cases {
 		t.Run(name, func(t *testing.T) {
 			matcher := namematch.New(&fakeEmbedder{reply: reply}, namematch.Config{Threshold: fixedThreshold(0.60)})
-			result := matcher.Match(context.Background(), "the bird sound", []string{"birds"})
+			result := matcher.Match(context.Background(), namematch.SourceSounds, "the bird sound", []string{"birds"})
 			if result.Matched() || result.Reason != namematch.ReasonInvalidVectors {
 				t.Fatalf("result = %+v, want invalid_vectors", result)
 			}
@@ -272,7 +272,7 @@ func TestCanceledContextReturnsNoMatch(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	result := matcher.Match(ctx, "the bird sound", []string{"birds"})
+	result := matcher.Match(ctx, namematch.SourceSounds, "the bird sound", []string{"birds"})
 	if result.Matched() || result.Reason != namematch.ReasonEmbedFailed {
 		t.Fatalf("result = %+v, want embed_failed", result)
 	}
@@ -282,7 +282,7 @@ func TestCanceledContextReturnsNoMatch(t *testing.T) {
 
 	// Exact matches need no embed call, so a canceled request can still resolve
 	// one; that costs nothing and avoids a second lookup.
-	if exact := matcher.Match(ctx, "birds", []string{"birds"}); exact.Name != "birds" {
+	if exact := matcher.Match(ctx, namematch.SourceSounds, "birds", []string{"birds"}); exact.Name != "birds" {
 		t.Fatalf("exact match with a canceled context = %+v, want birds", exact)
 	}
 }
@@ -296,7 +296,7 @@ func TestMatchTimeoutBoundsOneLookup(t *testing.T) {
 		Threshold: fixedThreshold(0.60),
 		Timeout:   time.Millisecond,
 	})
-	result := matcher.Match(context.Background(), "the bird sound", []string{"birds"})
+	result := matcher.Match(context.Background(), namematch.SourceSounds, "the bird sound", []string{"birds"})
 	if result.Matched() || result.Reason != namematch.ReasonEmbedFailed {
 		t.Fatalf("result = %+v, want embed_failed", result)
 	}
@@ -332,14 +332,14 @@ func TestInvalidThresholdFallsBackToTheDefault(t *testing.T) {
 	})}
 	for _, limit := range []float64{0, -0.5, 1.01, 2} {
 		matcher := namematch.New(embedder, namematch.Config{Threshold: fixedThreshold(limit)})
-		result := matcher.Match(context.Background(), "bird", []string{"birds"})
+		result := matcher.Match(context.Background(), namematch.SourceSounds, "bird", []string{"birds"})
 		if result.Name != "birds" {
 			t.Fatalf("threshold %v: Match = %+v, want the default 0.60 to apply", limit, result)
 		}
 	}
 	// A nil threshold has the same fallback.
 	matcher := namematch.New(embedder, namematch.Config{})
-	if result := matcher.Match(context.Background(), "bird", []string{"birds"}); result.Name != "birds" {
+	if result := matcher.Match(context.Background(), namematch.SourceSounds, "bird", []string{"birds"}); result.Name != "birds" {
 		t.Fatalf("nil threshold: Match = %+v, want the default", result)
 	}
 }
@@ -352,7 +352,7 @@ func TestEqualTopScoresAreAmbiguous(t *testing.T) {
 	})}
 	matcher := namematch.New(embedder, namematch.Config{Threshold: fixedThreshold(0.60)})
 
-	result := matcher.Match(context.Background(), "dusk", []string{"birds", "rain"})
+	result := matcher.Match(context.Background(), namematch.SourceSounds, "dusk", []string{"birds", "rain"})
 	if result.Matched() || result.Reason != namematch.ReasonAmbiguous {
 		t.Fatalf("equal scores = %+v, want ambiguous rather than a coin flip", result)
 	}
@@ -421,7 +421,7 @@ func TestRepeatedMatchReusesCachedCandidateVectors(t *testing.T) {
 	matcher := namematch.New(recorder, namematch.Config{Threshold: fixedThreshold(0.70)})
 	candidates := []string{"jazz mix", "birds"}
 
-	first := matcher.Match(context.Background(), "the bird sound", candidates)
+	first := matcher.Match(context.Background(), namematch.SourceSounds, "the bird sound", candidates)
 	if !first.Matched() || first.Name != "birds" {
 		t.Fatalf("first Match = %+v, want birds", first)
 	}
@@ -432,7 +432,7 @@ func TestRepeatedMatchReusesCachedCandidateVectors(t *testing.T) {
 		t.Fatalf("first batch = %v, want the two candidates and the query", got)
 	}
 
-	second := matcher.Match(context.Background(), "the bird sound", candidates)
+	second := matcher.Match(context.Background(), namematch.SourceSounds, "the bird sound", candidates)
 	if !second.Matched() || second.Name != "birds" || second.Score != first.Score {
 		t.Fatalf("second Match = %+v, want the same result as %+v", second, first)
 	}
@@ -454,10 +454,10 @@ func TestAddingOneCandidateEmbedsOnlyTheNewCandidateAndTheQuery(t *testing.T) {
 	matcher := namematch.New(recorder, namematch.Config{Threshold: fixedThreshold(0.70)})
 	ctx := context.Background()
 
-	if result := matcher.Match(ctx, "the bird sound", []string{"birds", "rain"}); result.Name != "birds" {
+	if result := matcher.Match(ctx, namematch.SourceSounds, "the bird sound", []string{"birds", "rain"}); result.Name != "birds" {
 		t.Fatalf("first Match = %+v, want birds", result)
 	}
-	if result := matcher.Match(ctx, "the bird sound", []string{"birds", "rain", "storm"}); !result.Matched() {
+	if result := matcher.Match(ctx, namematch.SourceSounds, "the bird sound", []string{"birds", "rain", "storm"}); !result.Matched() {
 		t.Fatalf("second Match = %+v, want a match", result)
 	}
 	if recorder.calls() != 2 {
@@ -467,7 +467,7 @@ func TestAddingOneCandidateEmbedsOnlyTheNewCandidateAndTheQuery(t *testing.T) {
 		t.Fatalf("second batch = %v, want the new candidate and the query only", got)
 	}
 	// The cache is now complete, so a repeat lookup embeds only the query.
-	if result := matcher.Match(ctx, "the bird sound", []string{"birds", "rain", "storm"}); result.Name != "birds" {
+	if result := matcher.Match(ctx, namematch.SourceSounds, "the bird sound", []string{"birds", "rain", "storm"}); result.Name != "birds" {
 		t.Fatalf("third Match = %+v, want birds", result)
 	}
 	if got := recorder.batch(2); !sameTexts(got, []string{"bird"}) {
@@ -485,7 +485,7 @@ func TestWarmFillsTheCacheSoTheNextMatchEmbedsOnlyTheQuery(t *testing.T) {
 	ctx := context.Background()
 	candidates := []string{"Jazz Mix", "birds"}
 
-	if err := matcher.Warm(ctx, candidates); err != nil {
+	if err := matcher.Warm(ctx, namematch.SourceSounds, candidates); err != nil {
 		t.Fatalf("Warm: %v", err)
 	}
 	if recorder.calls() != 1 {
@@ -495,7 +495,7 @@ func TestWarmFillsTheCacheSoTheNextMatchEmbedsOnlyTheQuery(t *testing.T) {
 		t.Fatalf("warm batch = %v, want both normalised candidates", got)
 	}
 
-	result := matcher.Match(ctx, "the bird sound", candidates)
+	result := matcher.Match(ctx, namematch.SourceSounds, "the bird sound", candidates)
 	if !result.Matched() || result.Name != "birds" {
 		t.Fatalf("Match after Warm = %+v, want birds", result)
 	}
@@ -516,10 +516,10 @@ func TestWarmMakesNoEmbedRequestWhenEverythingIsCached(t *testing.T) {
 	ctx := context.Background()
 	candidates := []string{"birds", "rain"}
 
-	if err := matcher.Warm(ctx, candidates); err != nil {
+	if err := matcher.Warm(ctx, namematch.SourceSounds, candidates); err != nil {
 		t.Fatalf("first Warm: %v", err)
 	}
-	if err := matcher.Warm(ctx, candidates); err != nil {
+	if err := matcher.Warm(ctx, namematch.SourceSounds, candidates); err != nil {
 		t.Fatalf("second Warm: %v", err)
 	}
 	if recorder.calls() != 1 {
@@ -532,7 +532,7 @@ func TestWarmMakesNoEmbedRequestWhenEverythingIsCached(t *testing.T) {
 
 func TestWarmWithNoEmbedderIsANoOp(t *testing.T) {
 	matcher := namematch.New(nil, namematch.Config{Threshold: fixedThreshold(0.70)})
-	if err := matcher.Warm(context.Background(), []string{"birds"}); err != nil {
+	if err := matcher.Warm(context.Background(), namematch.SourceSounds, []string{"birds"}); err != nil {
 		t.Fatalf("Warm without an embedder = %v, want nil", err)
 	}
 }
@@ -550,7 +550,7 @@ func TestFirstLookupResolvesWithoutAWarm(t *testing.T) {
 	ctx := context.Background()
 	candidates := []string{"Jazz Mix", "birds"}
 
-	result := matcher.Match(ctx, "the bird sound", candidates)
+	result := matcher.Match(ctx, namematch.SourceSounds, "the bird sound", candidates)
 	if !result.Matched() || result.Name != "birds" || result.Reason != namematch.ReasonSimilarity {
 		t.Fatalf("cold first Match = %+v, want birds by similarity", result)
 	}
@@ -563,7 +563,7 @@ func TestFirstLookupResolvesWithoutAWarm(t *testing.T) {
 
 	// The lookup already filled the cache, so the warm that a refresh would
 	// now trigger has nothing to embed.
-	if err := matcher.Warm(ctx, candidates); err != nil {
+	if err := matcher.Warm(ctx, namematch.SourceSounds, candidates); err != nil {
 		t.Fatalf("Warm after the cold lookup: %v", err)
 	}
 	if recorder.calls() != 1 {
@@ -582,7 +582,7 @@ func TestModelDimensionChangeDiscardsAndReembedsCachedVectors(t *testing.T) {
 	candidates := []string{"birds", "rain"}
 
 	// Fill the cache against the two-dimension model. "birds" wins at 0.8.
-	if result := matcher.Match(ctx, "the bird sound", candidates); result.Name != "birds" {
+	if result := matcher.Match(ctx, namematch.SourceSounds, "the bird sound", candidates); result.Name != "birds" {
 		t.Fatalf("two-dimension Match = %+v, want birds", result)
 	}
 
@@ -594,7 +594,7 @@ func TestModelDimensionChangeDiscardsAndReembedsCachedVectors(t *testing.T) {
 		"rain":  {1, 0, 0},
 		"bird":  {1, 0, 0},
 	})
-	result := matcher.Match(ctx, "the bird sound", candidates)
+	result := matcher.Match(ctx, namematch.SourceSounds, "the bird sound", candidates)
 	if !result.Matched() || result.Name != "rain" {
 		t.Fatalf("three-dimension Match = %+v, want rain", result)
 	}
@@ -610,7 +610,7 @@ func TestModelDimensionChangeDiscardsAndReembedsCachedVectors(t *testing.T) {
 
 	// The refilled cache now holds three-dimension vectors, so a repeat lookup
 	// embeds only the query.
-	if result := matcher.Match(ctx, "the bird sound", candidates); result.Name != "rain" {
+	if result := matcher.Match(ctx, namematch.SourceSounds, "the bird sound", candidates); result.Name != "rain" {
 		t.Fatalf("repeat Match = %+v, want rain", result)
 	}
 	if got := recorder.batch(3); !sameTexts(got, []string{"bird"}) {
@@ -634,7 +634,7 @@ func TestConcurrentMatchesAndWarmShareTheCacheSafely(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			for j := 0; j < 20; j++ {
-				if result := matcher.Match(context.Background(), "the bird sound", candidates); result.Name != "birds" {
+				if result := matcher.Match(context.Background(), namematch.SourceSounds, "the bird sound", candidates); result.Name != "birds" {
 					t.Errorf("concurrent Match = %+v, want birds", result)
 					return
 				}
@@ -645,7 +645,7 @@ func TestConcurrentMatchesAndWarmShareTheCacheSafely(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		for j := 0; j < 20; j++ {
-			if err := matcher.Warm(context.Background(), candidates); err != nil {
+			if err := matcher.Warm(context.Background(), namematch.SourceSounds, candidates); err != nil {
 				t.Errorf("concurrent Warm: %v", err)
 				return
 			}

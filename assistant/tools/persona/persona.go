@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/namematch"
 	personacore "github.com/Jairik/clanka-bot/assistant/internal/persona"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 )
@@ -319,7 +320,7 @@ func speakCurrent(out CurrentOut) string {
 func resolvePersonaName(ctx context.Context, deps tool.Deps, service *personacore.Service, spoken string) (string, bool) {
 	candidates := service.Names()
 	if deps.Names != nil {
-		result := deps.Names.Match(ctx, spoken, candidates)
+		result := deps.Names.Match(ctx, namematch.SourcePersonas, spoken, candidates)
 		return result.Name, result.Matched()
 	}
 	for _, candidate := range candidates {

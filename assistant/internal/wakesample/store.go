@@ -779,14 +779,12 @@ func (s *Service) decorate(bundle *Bundle) {
 	}
 }
 
-// shellPath quotes a local path for a one-line copy command. The bundle name
-// is already restricted to [a-z0-9-] and the configured directories are the
-// owner's; quoting still keeps a path with a space usable.
+// shellPath quotes a local path for a one-line POSIX shell command. The path is
+// always single-quoted, and an embedded single quote becomes '\'' so a pasted
+// command names the literal path instead of expanding $, backticks or a second
+// command after ;.
 func shellPath(path string) string {
-	if strings.ContainsAny(path, " \t'\"$`\\") {
-		return strconv.Quote(path)
-	}
-	return path
+	return "'" + strings.ReplaceAll(path, "'", `'\''`) + "'"
 }
 
 // DownloadURL is the authenticated route for one bundle.

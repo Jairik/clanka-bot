@@ -268,7 +268,7 @@ func TestVoiceSamplesSubmitWritesABundleAndServesTheDownload(t *testing.T) {
 	if bundle.Positives != wakesample.MinTakes || bundle.Negatives != 1 {
 		t.Errorf("bundle counts = %d/%d", bundle.Positives, bundle.Negatives)
 	}
-	if !strings.HasPrefix(bundle.SCP, "scp rbpi@pi:/home/rbpi/clanka-bot/exports/") || !strings.Contains(bundle.Taildrop, "desktop:") {
+	if !strings.HasPrefix(bundle.SCP, "scp rbpi@pi:'/home/rbpi/clanka-bot/exports/") || !strings.Contains(bundle.Taildrop, "' desktop:") {
 		t.Errorf("commands = %q / %q", bundle.SCP, bundle.Taildrop)
 	}
 	if bundle.DownloadURL == "" {

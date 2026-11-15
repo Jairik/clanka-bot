@@ -335,16 +335,30 @@ func (h *Handler) voiceSamplesRemovePhrase(w http.ResponseWriter, r *http.Reques
 	}
 }
 
-// wakeModelCache keeps the wakeword service's advertised models briefly. The
-// batch recorder refreshes the view after every take, and an unreachable
-// service would otherwise add its timeout to each one. It caches the same
-// describe answer Health reads; it is not a second list of models.
-type wakeModelCache struct {
-	mu      sync.Mutex
-	at      time.Time
-	models  map[string]bool
-	err     error
-	checked bool
+// WakeModelCache keeps the wakeword service's advertised models briefly. One
+// cache is shared by the Compose wakeword row, the Health page and the Voice
+// samples page, so one render describes the service once instead of once per
+// reader; an unreachable service would otherwise add its timeout to each. It
+// caches the same describe answer Health reads; it is not a second list of
+// models.
+type WakeModelCache struct {
+	addr string
+	now  func() time.Time
+
+	mu         sync.Mutex
+	at         time.Time
+	advertised map[string]bool
+	err        error
+	checked    bool
+}
+
+// NewWakeModelCache keeps one wakeword address's advertised models. A nil clock
+// uses time.Now.
+func NewWakeModelCache(addr string, now func() time.Time) *WakeModelCache {
+	if now == nil {
+		now = time.Now
+	}
+	return &WakeModelCache{addr: strings.TrimSpace(addr), now: now}
 }
 
 const (
@@ -352,28 +366,44 @@ const (
 	wakeModelCacheFailTTL = 10 * time.Second
 )
 
+// models returns the advertised models, describing the service at most once per
+// TTL. The mutex is held across the describe, so concurrent readers share one
+// call instead of each paying it.
+func (c *WakeModelCache) models(ctx context.Context) (map[string]bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	ttl := wakeModelCacheTTL
+	if c.err != nil {
+		ttl = wakeModelCacheFailTTL
+	}
+	now := c.now()
+	if !c.checked || now.Sub(c.at) >= ttl {
+		c.advertised, c.err = describeWakeModels(ctx, c.addr)
+		c.at, c.checked = now, true
+	}
+	return c.advertised, c.err
+}
+
+// HealthCheck is the Compose wakeword row: whether the service answered, read
+// from the same cached describe the model rows use.
+func (c *WakeModelCache) HealthCheck(name string) ServiceCheck {
+	return ServiceCheck{Name: name, Check: func(ctx context.Context) error {
+		_, err := c.models(ctx)
+		return err
+	}}
+}
+
 // wakeModelsForStatus returns the advertised models, whether they are known,
 // and a one-line note on where the answer came from.
 func (h *Handler) wakeModelsForStatus(ctx context.Context) (map[string]bool, bool, string) {
-	if strings.TrimSpace(h.wakeword.Addr) == "" {
+	if strings.TrimSpace(h.wakeword.Addr) == "" || h.wakeModels == nil {
 		return nil, false, "The wakeword service is not configured, so trained models cannot be checked."
 	}
-	cache := &h.wakeModels
-	cache.mu.Lock()
-	defer cache.mu.Unlock()
-	now := h.now()
-	ttl := wakeModelCacheTTL
-	if cache.err != nil {
-		ttl = wakeModelCacheFailTTL
-	}
-	if !cache.checked || now.Sub(cache.at) >= ttl {
-		cache.models, cache.err = h.advertisedWakeModels(ctx)
-		cache.at, cache.checked = now, true
-	}
-	if cache.err != nil {
+	models, err := h.wakeModels.models(ctx)
+	if err != nil {
 		return nil, false, "The wakeword service did not answer, so trained models are unknown."
 	}
-	return cache.models, true, "A phrase has a trained model when the wakeword service advertises it, e.g. volume-up as volume_up."
+	return models, true, "A phrase has a trained model when the wakeword service advertises it, e.g. volume-up as volume_up."
 }
 
 // voiceSamplesReady guards the write and audio routes against an unwired

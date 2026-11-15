@@ -23,13 +23,22 @@ const wyomingHealthTimeout = 2 * time.Second
 // stack. The checks are endpoint checks, not Docker's health field: the page
 // answers whether the assistant can actually reach what it needs. The Soloist
 // receiver has no HTTP endpoint, so its check reads the heartbeat it writes to
-// the shared status directory.
-func ComposeServiceChecks(cfg config.Config) []ServiceCheck {
+// the shared status directory. The wakeword row reads the same cached describe
+// as the Health page's model rows; pass the cache New and main share, or nil
+// for a private one.
+func ComposeServiceChecks(cfg config.Config, wakeModels *WakeModelCache) []ServiceCheck {
 	webCfg := web.FromConfig(cfg)
+	wakeword := ServiceCheck{Name: "wakeword"}
+	if strings.TrimSpace(cfg.Wakeword.Addr) != "" {
+		if wakeModels == nil {
+			wakeModels = NewWakeModelCache(cfg.Wakeword.Addr, nil)
+		}
+		wakeword = wakeModels.HealthCheck("wakeword")
+	}
 	return []ServiceCheck{
 		HTTPService("embed", strings.TrimRight(cfg.Embed.URL, "/")+"/healthz"),
 		SelfService("assistant"),
-		WyomingService("wakeword", cfg.Wakeword.Addr),
+		wakeword,
 		WyomingService("stt", cfg.STT.Addr),
 		WyomingService("tts", cfg.TTS.Addr),
 		HTTPService("web-search", strings.TrimRight(webCfg.BaseURL, "/")+"/healthz"),

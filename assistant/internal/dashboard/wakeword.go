@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -117,7 +118,13 @@ func (h *Handler) wakewordChecks(ctx context.Context) []checkView {
 		}}
 	}
 
-	advertised, probeErr := h.advertisedWakeModels(ctx)
+	var advertised map[string]bool
+	var probeErr error
+	if h.wakeModels == nil {
+		probeErr = errors.New("the wakeword model cache is not wired")
+	} else {
+		advertised, probeErr = h.wakeModels.models(ctx)
+	}
 
 	views := make([]checkView, 0, len(h.wakeword.Models))
 	for _, model := range h.wakeword.Models {
@@ -154,12 +161,14 @@ func (h *Handler) wakewordChecks(ctx context.Context) []checkView {
 	return views
 }
 
-// advertisedWakeModels asks the wakeword service which models it serves. It is
+// describeWakeModels asks the wakeword service which models it serves. It is
 // the one runtime signal for "this phrase has a trained model": the detector
 // image bakes in wakeword/models/*.tflite and advertises each by name, so a
-// model that is not listed is not one the Assistant can listen for.
-func (h *Handler) advertisedWakeModels(ctx context.Context) (map[string]bool, error) {
-	client := wyoming.NewClient(h.wakeword.Addr, wyoming.WithTimeout(wyomingHealthTimeout))
+// model that is not listed is not one the Assistant can listen for. One
+// WakeModelCache shares the answer between the Compose row, Health and the
+// Voice samples page, so a render describes the service once.
+func describeWakeModels(ctx context.Context, addr string) (map[string]bool, error) {
+	client := wyoming.NewClient(addr, wyoming.WithTimeout(wyomingHealthTimeout))
 	describe, err := client.Describe(ctx)
 	if err != nil {
 		return nil, err

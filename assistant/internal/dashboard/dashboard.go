@@ -58,6 +58,10 @@ type Options struct {
 	// Status optionally supplies the shared bounded snapshot main also gives
 	// the system.status Tool. When nil, New builds one from the fields above.
 	Status *status.Source
+	// WakeModels optionally shares the wakeword service's cached describe with
+	// the Compose wakeword check in Services, so a Health render describes the
+	// service once. When nil, New creates a private cache for this handler.
+	WakeModels *WakeModelCache
 	// API is an optional unauthenticated handler mounted under /api/ behind
 	// the Dashboard identity and same-origin checks. #40's settings handler is
 	// mounted here; secrets and uploads can use the same seam.
@@ -217,9 +221,10 @@ type Handler struct {
 	// live fans out the SSE stream: activity deltas plus sampled volume, alert
 	// and health changes.
 	live *liveHub
-	// wakeModels caches the wakeword service's advertised models for the
-	// voice-samples status marks (see voicesamples.go).
-	wakeModels wakeModelCache
+	// wakeModels caches the wakeword service's advertised models for the Health
+	// page and the voice-samples status marks (see voicesamples.go). main shares
+	// it with the Compose wakeword check so a render describes the service once.
+	wakeModels *WakeModelCache
 	// askLock serialises every typed request with a one-slot semaphore. The
 	// voice loop is already single-turn; this gives the Dashboard the same
 	// one-request-at-a-time behaviour and one pending Confirmation at a time.
@@ -284,6 +289,12 @@ func New(opts Options) (*Handler, error) {
 			Now:      now,
 		})
 	}
+	// One wake model cache serves this handler's Health and Voice samples
+	// pages; main also gives it to the Compose wakeword check.
+	wakeModels := opts.WakeModels
+	if wakeModels == nil {
+		wakeModels = NewWakeModelCache(opts.Wakeword.Addr, now)
+	}
 	h := &Handler{
 		owner:          owner,
 		logger:         logger,
@@ -317,6 +328,7 @@ func New(opts Options) (*Handler, error) {
 		transcriber:    opts.Transcriber,
 		volume:         opts.Volume,
 		wakeword:       opts.Wakeword,
+		wakeModels:     wakeModels,
 		askLock:        make(chan struct{}, 1),
 		micLock:        make(chan struct{}, 1),
 		hosts:          hosts,

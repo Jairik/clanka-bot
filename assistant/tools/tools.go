@@ -156,18 +156,67 @@ func (s *Set) StartAll(ctx context.Context) error {
 	return nil
 }
 
-// Health runs every module's optional health check, in module order.
+// Health runs every module's optional health check. Each module runs in its own
+// goroutine with its own slot, so one slow or wedged module (a cold cloud login,
+// a provider chain) cannot spend the shared snapshot deadline for the rest. The
+// output keeps module order; a module still running when ctx ends is reported
+// individually as TimedOut instead of turning every row red.
 func (s *Set) Health(ctx context.Context) []Health {
-	results := make([]Health, 0, len(s.modules))
-	for _, module := range s.modules {
-		if checker, ok := module.(tool.HealthChecker); ok {
-			results = append(results, Health{Module: module.Name(), Err: checker.Health(ctx)})
+	type moduleResult struct {
+		index int
+		items []Health
+	}
+	results := make(chan moduleResult, len(s.modules))
+	for i, module := range s.modules {
+		go func(i int, module tool.Module) {
+			results <- moduleResult{index: i, items: moduleHealth(ctx, module)}
+		}(i, module)
+	}
+
+	items := make([][]Health, len(s.modules))
+	done := make([]bool, len(s.modules))
+	pending := len(s.modules)
+	for pending > 0 {
+		select {
+		case result := <-results:
+			items[result.index] = result.items
+			done[result.index] = true
+			pending--
+		case <-ctx.Done():
+			// Abandon checks that ignore the deadline so the snapshot never
+			// waits on a wedged module.
+			pending = 0
 		}
-		if aux, ok := module.(tool.AuxHealthChecker); ok {
-			for _, item := range aux.AuxHealth(ctx) {
-				check := tool.StatusCheck{Name: item.Name, State: item.State, Detail: item.Detail}
-				results = append(results, Health{Module: item.Name, Check: &check})
-			}
+	}
+
+	out := make([]Health, 0, len(s.modules))
+	for i, module := range s.modules {
+		if !done[i] {
+			out = append(out, Health{Module: module.Name(), TimedOut: true})
+			continue
+		}
+		out = append(out, items[i]...)
+	}
+	return out
+}
+
+// moduleHealth runs one module's own check and its extra capability rows in
+// module order. A module's checks stay together so its rows remain adjacent. A
+// panicking check becomes that module's error row instead of taking the whole
+// assistant down from its goroutine.
+func moduleHealth(ctx context.Context, module tool.Module) (results []Health) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			results = []Health{{Module: module.Name(), Err: fmt.Errorf("health check panicked: %v", recovered)}}
+		}
+	}()
+	if checker, ok := module.(tool.HealthChecker); ok {
+		results = append(results, Health{Module: module.Name(), Err: checker.Health(ctx)})
+	}
+	if aux, ok := module.(tool.AuxHealthChecker); ok {
+		for _, item := range aux.AuxHealth(ctx) {
+			check := tool.StatusCheck{Name: item.Name, State: item.State, Detail: item.Detail}
+			results = append(results, Health{Module: item.Name, Check: &check})
 		}
 	}
 	return results
@@ -175,8 +224,11 @@ func (s *Set) Health(ctx context.Context) []Health {
 
 // Health is one module's health-check result. Check, when set, is a separately
 // named result (an optional capability) that carries its own state; Err is nil.
+// TimedOut marks the one module the snapshot deadline caught, so callers report
+// its row alone as timed out.
 type Health struct {
-	Module string
-	Err    error
-	Check  *tool.StatusCheck
+	Module   string
+	Err      error
+	Check    *tool.StatusCheck
+	TimedOut bool
 }

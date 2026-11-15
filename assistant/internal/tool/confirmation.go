@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 // Confirmation errors. ErrConfirmationRequired is returned by Execute for a
@@ -14,6 +15,11 @@ var (
 	ErrConfirmationRequired = errors.New("tool: confirmation required")
 	ErrNoPending            = errors.New("tool: no pending confirmation")
 )
+
+// PendingTTL bounds how long an unanswered Confirmation waits for its yes. It
+// is long enough to cover the question's turn plus the user's thinking time,
+// and short enough that walking away stops holding Announcements.
+const PendingTTL = 60 * time.Second
 
 // PendingConfirmation is the single confirm Tool call waiting for a spoken
 // yes. It lasts one turn and never queues across turns.
@@ -62,26 +68,32 @@ func (r *Registry) Propose(name string, args json.RawMessage) (PendingConfirmati
 	}
 	r.pendingMu.Lock()
 	r.pending = &pending
+	r.pendingAt = r.nowTime()
 	r.pendingMu.Unlock()
 	return pending, nil
 }
 
-// Pending returns the waiting call, if any.
+// Pending returns the waiting call, if any. A call older than PendingTTL is
+// absent and is cleared here, so an abandoned question stops blocking
+// Announcements without another request.
 func (r *Registry) Pending() (PendingConfirmation, bool) {
 	r.pendingMu.Lock()
 	defer r.pendingMu.Unlock()
-	if r.pending == nil {
+	if r.pending == nil || r.expireLocked() {
 		return PendingConfirmation{}, false
 	}
 	return *r.pending, true
 }
 
 // ExecutePending runs and consumes the stored call. The pending call is
-// cleared before the handler runs, so it can run at most once.
+// cleared before the handler runs, so it can run at most once. An expired call
+// is absent: a late yes cannot run the old outward-facing call.
 func (r *Registry) ExecutePending(ctx context.Context) (any, PendingConfirmation, error) {
 	r.pendingMu.Lock()
+	r.expireLocked()
 	pending := r.pending
 	r.pending = nil
+	r.pendingAt = time.Time{}
 	r.pendingMu.Unlock()
 	if pending == nil {
 		return nil, PendingConfirmation{}, ErrNoPending
@@ -103,16 +115,36 @@ func (r *Registry) ExecutePending(ctx context.Context) (any, PendingConfirmation
 }
 
 // DropPending discards the waiting call. Cancellation and Barge-in (#25) use
-// it so a stale yes cannot run later.
+// it so a stale yes cannot run later. An expired call is already absent.
 func (r *Registry) DropPending() (PendingConfirmation, bool) {
 	r.pendingMu.Lock()
 	defer r.pendingMu.Unlock()
-	if r.pending == nil {
+	if r.pending == nil || r.expireLocked() {
 		return PendingConfirmation{}, false
 	}
 	dropped := *r.pending
 	r.pending = nil
+	r.pendingAt = time.Time{}
 	return dropped, true
+}
+
+// expireLocked clears the stored call once it is older than PendingTTL. The
+// caller holds r.pendingMu. It reports whether a call was expired.
+func (r *Registry) expireLocked() bool {
+	if r.pending == nil || r.nowTime().Sub(r.pendingAt) < PendingTTL {
+		return false
+	}
+	r.pending = nil
+	r.pendingAt = time.Time{}
+	return true
+}
+
+// nowTime reads the injected clock, defaulting to time.Now for a zero Registry.
+func (r *Registry) nowTime() time.Time {
+	if r.now == nil {
+		return time.Now()
+	}
+	return r.now()
 }
 
 // defaultSummary derives one spoken question from a Tool description.

@@ -14,6 +14,28 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/tools/clock"
 )
 
+// confirmationTestClock is a manually advanced clock for the Confirmation TTL.
+type confirmationTestClock struct {
+	mu sync.Mutex
+	at time.Time
+}
+
+func newConfirmationTestClock() *confirmationTestClock {
+	return &confirmationTestClock{at: time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)}
+}
+
+func (c *confirmationTestClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.at
+}
+
+func (c *confirmationTestClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.at = c.at.Add(d)
+}
+
 // confirmingRunner stands in for the Agent path: a model tool call arrives as
 // a registry Propose, exactly as the real loop does.
 type confirmingRunner struct {
@@ -141,6 +163,36 @@ func TestConfirmToolAsksThenClearYesRunsIt(t *testing.T) {
 	turns := runner.History().Recent()
 	if len(turns) != 1 || len(turns[0].Calls) != 1 || turns[0].Calls[0].Name != "mail.send" {
 		t.Fatalf("history = %+v, want the confirmed call recorded", turns)
+	}
+}
+
+func TestLateYesAfterExpiryRoutesWithoutRunningTheOldCall(t *testing.T) {
+	clock := newConfirmationTestClock()
+	reg := tool.NewRegistry(time.Second, tool.WithClock(clock.Now))
+	runs := 0
+	addSendTool(t, reg, &runs)
+	runner := newConfirmingRunner(reg)
+	p := newConfirmingPipeline(t, reg, runner, nil)
+
+	askForConfirmation(t, p, runner, &runs)
+	clock.Advance(tool.PendingTTL)
+
+	reply := p.Handle(context.Background(), request(), "yes")
+	if runs != 0 {
+		t.Fatalf("a late yes ran the expired outward-facing call %d times", runs)
+	}
+	if _, ok := reg.Pending(); ok {
+		t.Error("an expired pending call was still armed")
+	}
+	if reply.Path == tool.PathConfirmation {
+		t.Errorf("late yes path = %q, want it routed as an ordinary request", reply.Path)
+	}
+	if strings.HasPrefix(reply.Text, "Cancelled.") {
+		t.Errorf("reply = %q, want no Cancelled prefix for an already expired call", reply.Text)
+	}
+	calls := runner.seen()
+	if len(calls) != 2 || calls[1] != "yes" {
+		t.Fatalf("agent saw %v, want the late yes routed normally", calls)
 	}
 }
 

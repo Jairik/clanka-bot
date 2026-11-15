@@ -5,11 +5,34 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 )
+
+// fakeClock is a manually advanced clock for pending-Confirmation TTL tests.
+type fakeClock struct {
+	mu sync.Mutex
+	at time.Time
+}
+
+func newFakeClock() *fakeClock {
+	return &fakeClock{at: time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)}
+}
+
+func (c *fakeClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.at
+}
+
+func (c *fakeClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.at = c.at.Add(d)
+}
 
 type sendIn struct {
 	To string `json:"to"`
@@ -100,6 +123,57 @@ func TestProposeThenExecutePendingRunsTheStoredCallOnce(t *testing.T) {
 	}
 	if runs != 1 {
 		t.Fatalf("confirm handler ran %d times, want one turn to run it once", runs)
+	}
+}
+
+func TestPendingReportsAnExpiredConfirmationAsAbsent(t *testing.T) {
+	clock := newFakeClock()
+	reg := tool.NewRegistry(time.Second, tool.WithClock(clock.Now))
+	runs := 0
+	if err := tool.Add(reg, sendTool(&runs)); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := reg.Propose("mail.send", json.RawMessage(`{"to":"doctor"}`)); err != nil {
+		t.Fatalf("Propose: %v", err)
+	}
+
+	clock.Advance(tool.PendingTTL - time.Second)
+	if _, ok := reg.Pending(); !ok {
+		t.Fatal("pending expired before its TTL")
+	}
+
+	clock.Advance(2 * time.Second)
+	if _, ok := reg.Pending(); ok {
+		t.Error("Pending reported a call older than PendingTTL")
+	}
+	if dropped, ok := reg.DropPending(); ok {
+		t.Errorf("DropPending = %+v, want an expired call to be absent", dropped)
+	}
+	if runs != 0 {
+		t.Fatalf("confirm handler ran %d times, want 0 after expiry", runs)
+	}
+}
+
+func TestExecutePendingRefusesAnExpiredConfirmation(t *testing.T) {
+	clock := newFakeClock()
+	reg := tool.NewRegistry(time.Second, tool.WithClock(clock.Now))
+	runs := 0
+	if err := tool.Add(reg, sendTool(&runs)); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if _, err := reg.Propose("mail.send", json.RawMessage(`{"to":"doctor"}`)); err != nil {
+		t.Fatalf("Propose: %v", err)
+	}
+
+	clock.Advance(tool.PendingTTL)
+	if _, _, err := reg.ExecutePending(context.Background()); !errors.Is(err, tool.ErrNoPending) {
+		t.Fatalf("ExecutePending error = %v, want ErrNoPending", err)
+	}
+	if runs != 0 {
+		t.Fatalf("confirm handler ran %d times, want 0 after expiry", runs)
+	}
+	if _, ok := reg.Pending(); ok {
+		t.Error("an expired pending Call survived ExecutePending")
 	}
 }
 

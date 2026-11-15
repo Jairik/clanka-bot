@@ -29,6 +29,37 @@ func TestDuration(t *testing.T) {
 		{"five", time.Minute, 5 * time.Minute, true},
 		{"no duration here", time.Minute, 0, false},
 		{"cancel the timer", time.Minute, 0, false},
+		// A written decimal is the number the user said, in exact units.
+		{"1.5 hours", time.Minute, 90 * time.Minute, true},
+		{"0.5 hours", time.Minute, 30 * time.Minute, true},
+		{"2.25 minutes", time.Minute, 2*time.Minute + 15*time.Second, true},
+		{"1.75h", time.Minute, 105 * time.Minute, true},
+		{".5 hours", time.Minute, 30 * time.Minute, true},
+		{"set a timer for 0.5 hours", time.Minute, 30 * time.Minute, true},
+		{"2 hours 15.5 minutes", time.Minute, 2*time.Hour + 15*time.Minute + 30*time.Second, true},
+		{"1 h 1.5", time.Minute, time.Hour + 90*time.Second, true},
+		{"1.5", time.Minute, 90 * time.Second, true},
+		{"quiet for 0.5 hours", time.Hour, 30 * time.Minute, true},
+		// The spoken point form reads the fraction, including a two-word
+		// fraction such as "twenty five".
+		{"one point five hours", time.Minute, 90 * time.Minute, true},
+		{"one point twenty five hours", time.Minute, 75 * time.Minute, true},
+		{"zero point five hours", time.Minute, 30 * time.Minute, true},
+		{"one point five", time.Minute, 90 * time.Second, true},
+		{"one point five minutes", time.Minute, 90 * time.Second, true},
+		// A conjunction inside a compound number keeps the hundreds.
+		{"one hundred and twenty minutes", time.Minute, 120 * time.Minute, true},
+		{"one hundred twenty minutes", time.Minute, 120 * time.Minute, true},
+		{"one hundred and five minutes", time.Minute, 105 * time.Minute, true},
+		{"one hundred and twenty five minutes", time.Minute, 125 * time.Minute, true},
+		// Hyphenated number words still read as one number.
+		{"twenty-five minutes", time.Minute, 25 * time.Minute, true},
+		// A fraction finer than a hundredth is refused, never rounded.
+		{"1.234 hours", time.Minute, 0, false},
+		{"0 minutes", time.Minute, 0, false},
+		{"0.0 hours", time.Minute, 0, false},
+		{"100000000 hours", time.Minute, 0, false},
+		{"999999999999999999999 hours", time.Minute, 0, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.text, func(t *testing.T) {
@@ -50,6 +81,9 @@ func TestNumber(t *testing.T) {
 		{"forty percent", 40, true},
 		{"set the volume to twenty five percent", 25, true},
 		{"one hundred", 100, true},
+		{"one hundred and twenty", 120, true},
+		{"40.5", 40, true},
+		{"turn the volume to 40.5", 40, true},
 		{"turn the volume to zero", 0, true},
 		{"louder", 0, false},
 	}

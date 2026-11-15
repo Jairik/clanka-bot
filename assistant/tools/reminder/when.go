@@ -244,6 +244,11 @@ func durationSpan(text string, d time.Duration) (int, int, bool) {
 			if !durationStart(first) || !durationEnd(last) {
 				continue
 			}
+			// A span must not start inside a compound number: in "one hundred
+			// and twenty minutes" the "hundred" is not the phrase's first word.
+			if strings.EqualFold(first, "hundred") && i > 0 && durationNumberWord(text[locs[i-1][0]:locs[i-1][1]]) {
+				continue
+			}
 			start, end := locs[i][0], locs[i+size-1][1]
 			if got, ok := parse.Duration(text[start:end], 0); ok && got == d {
 				return start, end, true
@@ -256,7 +261,13 @@ func durationSpan(text string, d time.Duration) (int, int, bool) {
 // durationStart reports whether one token can begin a duration phrase.
 func durationStart(word string) bool {
 	lower := strings.ToLower(word)
-	if lower == "a" || lower == "an" || lower == "half" || lower == "quarter" {
+	return lower == "half" || lower == "quarter" || durationNumberWord(lower)
+}
+
+// durationNumberWord reports whether one token is part of a spoken number.
+func durationNumberWord(word string) bool {
+	lower := strings.ToLower(word)
+	if lower == "a" || lower == "an" {
 		return true
 	}
 	if _, err := strconv.Atoi(lower); err == nil {

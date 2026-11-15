@@ -26,6 +26,9 @@ func TestParseSetInputReadsNaturalDurationPhrases(t *testing.T) {
 		{"please remind me in 2 hours to water the plants", "water the plants", 2 * time.Hour},
 		{"remind me to check the oven in 20 minutes.", "check the oven", 20 * time.Minute},
 		{"remind me in 20 minutes to meet at 5", "meet at 5", 20 * time.Minute},
+		{"remind me in 1.5 hours to stretch", "stretch", 90 * time.Minute},
+		{"remind me in one point five hours to stretch", "stretch", 90 * time.Minute},
+		{"remind me in one hundred and twenty minutes to stretch", "stretch", 120 * time.Minute},
 	}
 	for _, tc := range cases {
 		in, ok := parseSetInput(tc.text)

@@ -210,10 +210,14 @@ func TestExtractOffDNDAwake(t *testing.T) {
 
 	dnd := quiet.NewDND(f.service)
 	for utterance, want := range map[string]int{
-		"do not disturb for two hours": 7200,
-		"dnd for 45 minutes":           2700,
-		"mute everything for an hour":  3600,
-		"quiet down for the next hour": 3600,
+		"do not disturb for two hours":   7200,
+		"dnd for 45 minutes":             2700,
+		"mute everything for an hour":    3600,
+		"quiet down for the next hour":   3600,
+		"do not disturb for 0.5 hours":   1800,
+		"do not disturb for 1.5 hours":   5400,
+		"pause notifications for 0.25 h": 900,
+		"dnd for one point five minutes": 90,
 	} {
 		in, ok := dnd.Extract(utterance)
 		if !ok || in.DurationSeconds != want {

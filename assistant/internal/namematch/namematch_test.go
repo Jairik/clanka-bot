@@ -537,6 +537,40 @@ func TestWarmWithNoEmbedderIsANoOp(t *testing.T) {
 	}
 }
 
+// A cold start (no refresh has happened yet, so Warm never ran) must keep
+// working: the first lookup embeds the candidates and the query once, as it
+// always did, and leaves the cache complete for the warm that follows.
+func TestFirstLookupResolvesWithoutAWarm(t *testing.T) {
+	recorder := &batchRecorder{table: map[string][]float32{
+		"birds":    {1, 0},
+		"jazz mix": {0, 1},
+		"bird":     {0.8, 0.6},
+	}}
+	matcher := namematch.New(recorder, namematch.Config{Threshold: fixedThreshold(0.70)})
+	ctx := context.Background()
+	candidates := []string{"Jazz Mix", "birds"}
+
+	result := matcher.Match(ctx, "the bird sound", candidates)
+	if !result.Matched() || result.Name != "birds" || result.Reason != namematch.ReasonSimilarity {
+		t.Fatalf("cold first Match = %+v, want birds by similarity", result)
+	}
+	if recorder.calls() != 1 {
+		t.Fatalf("cold first Match made %d embed calls, want 1", recorder.calls())
+	}
+	if got := recorder.batch(0); !sameTexts(got, []string{"jazz mix", "birds", "bird"}) {
+		t.Fatalf("cold first batch = %v, want every candidate plus the query", got)
+	}
+
+	// The lookup already filled the cache, so the warm that a refresh would
+	// now trigger has nothing to embed.
+	if err := matcher.Warm(ctx, candidates); err != nil {
+		t.Fatalf("Warm after the cold lookup: %v", err)
+	}
+	if recorder.calls() != 1 {
+		t.Fatalf("embed calls after a post-lookup Warm = %d, want 1", recorder.calls())
+	}
+}
+
 func TestModelDimensionChangeDiscardsAndReembedsCachedVectors(t *testing.T) {
 	recorder := &batchRecorder{table: map[string][]float32{
 		"birds": {1, 0},

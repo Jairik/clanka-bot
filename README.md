@@ -282,14 +282,18 @@ playlist or album, or off), `spotify.previous`, `spotify.queue_add` and
 /me/playlists`, at most 20 pages of 50), loaded in the background at startup
 and refreshed every 6 hours; startup never waits for it, a failed refresh keeps
 the old list and logs only the HTTP status, and shutdown cancels and joins the
-refresh. A spoken name resolves through the shared name matcher (same threshold
-as sounds and voices; a name that matches nothing, or two playlists equally
-well, is "I couldn't find a playlist called ...", never a guess). A playlist
-created in the last 6 hours is not visible until the next refresh. "my <name>
-playlist" is `play_playlist`; "the playlist <name>" still searches Spotify
-publicly through `spotify.play`. Plain "play" does not touch the shuffle state;
-only an explicit "on shuffle" turns it on. `spotify.like` saves the account's
-current track and says so rather than guess when nothing is playing.
+refresh. A successful refresh then hands the loaded names to the shared name
+matcher in that same background goroutine, which embeds any name it has not
+cached yet, so the next spoken lookup embeds only the query; a warm that fails
+is not logged or spoken and simply leaves the old cold path. A spoken name
+resolves through the shared name matcher (same threshold as sounds and voices;
+a name that matches nothing, or two playlists equally well, is "I couldn't find
+a playlist called ...", never a guess). A playlist created in the last 6 hours
+is not visible until the next refresh. "my <name> playlist" is `play_playlist`;
+"the playlist <name>" still searches Spotify publicly through `spotify.play`.
+Plain "play" does not touch the shuffle state; only an explicit "on shuffle"
+turns it on. `spotify.like` saves the account's current track and says so
+rather than guess when nothing is playing.
 "previous" is a plain Tool and not a shared Focus intent: the intent vocabulary
 is fixed by the spec (stop, pause, resume, next, cancel, snooze) and "previous"
 means nothing to a Ring or a reply.
@@ -1067,14 +1071,16 @@ entry is embedded once. The cache is bounded at 2048 vectors (about 3 MB at 384
 dimensions) and is cleared when a fill would overflow or when the embed model's
 dimension changes, so a redeployed model never mixes vector lengths. A model
 change that keeps the same dimension is not detected. `Matcher.Warm` fills the
-cache for a library off the request path, so a refresh can warm it before the
-next spoken lookup instead of paying a cold batch that can exceed the two-second
-lookup budget. The best name at or above the threshold wins, and everything
-else is no match. A name is never forced: empty input, an embed failure,
-malformed vectors, a score below the threshold, two names that normalise to the
-same words and an exact score tie all return no match. A caller then keeps its
-existing value and, where the Tool promises it, says aloud that the name did
-not match.
+cache for a library off the request path, and the playlist cache calls it after
+each successful background refresh, so the next spoken lookup embeds only the
+query instead of paying a cold batch that can exceed the two-second lookup
+budget. A refresh a request drives itself does not warm: the caller's lookup
+follows at once and already fills the cache. The best name at or above the
+threshold wins, and everything else is no match. A name is never forced: empty
+input, an embed failure, malformed vectors, a score below the threshold, two
+names that normalise to the same words and an exact score tie all return no
+match. A caller then keeps its existing value and, where the Tool promises it,
+says aloud that the name did not match.
 
 `name_match.threshold` is the live similarity floor, default `0.60`, with the
 same override → `config.yaml` → code default layers as every other setting. It

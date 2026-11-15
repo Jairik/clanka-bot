@@ -142,6 +142,11 @@ tools:
       max_chars: 4000
       # Redirect chain bound; every hop is revalidated.
       max_redirects: 5
+      # Only a link the user named or a recent web.search result may be read,
+      # so an injected page cannot invent an address and exfiltrate Notes or
+      # Lists through its query string. Set false only to restore the old open
+      # reader.
+      require_provenance: true
   github:
     # Agent-path GitHub Tools. The token is a write-only secret, never here.
     # issue_create and pr_list use the fine-grained GITHUB_TOKEN; notifications

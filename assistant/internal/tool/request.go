@@ -34,6 +34,10 @@ type Request struct {
 	// WakeWord names the wake model that started this turn. Empty for typed
 	// requests. Later work (#81) uses it to act on which word fired.
 	WakeWord string
+	// UserText is the turn's utterance. A Tool uses it as provenance for an
+	// argument the user named themselves (web.fetch, #172). It is not
+	// model-visible text and never enters the prompt from here.
+	UserText string
 }
 
 type requestKey struct{}

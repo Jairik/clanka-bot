@@ -168,6 +168,10 @@ func (a *Agent) Complete(ctx context.Context, system, user string) (string, erro
 func (a *Agent) Run(ctx context.Context, req tool.Request, utterance string, onDelta func(string)) Result {
 	started := time.Now()
 	req.Path = tool.PathAgent
+	// The turn's own words are the provenance a Tool can check against an
+	// argument the model chose (#172). They are metadata for the handler, not
+	// part of the prompt this function builds.
+	req.UserText = utterance
 
 	history := a.history.Recent()
 	messages := a.prompt.Messages(utterance, history)
@@ -345,7 +349,9 @@ func (a *Agent) execute(ctx context.Context, req tool.Request, calls []CallRef) 
 }
 
 func (a *Agent) runOne(ctx context.Context, req tool.Request, call CallRef, info tool.Info) outcome {
-	callCtx := tool.WithRequest(ctx, tool.Request{ID: req.ID, Path: tool.PathAgent, Device: req.Device})
+	callCtx := tool.WithRequest(ctx, tool.Request{
+		ID: req.ID, Path: tool.PathAgent, Device: req.Device, UserText: req.UserText,
+	})
 	result, err := a.registry.Execute(callCtx, info.Name, call.Args)
 	if err != nil {
 		// The model only ever sees the user-facing message; details stay local.

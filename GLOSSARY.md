@@ -27,7 +27,7 @@ A Tool the semantic Fast path must never choose, so only the Agent path can call
 _Avoid_: Hidden Tool, private tool, non-voice Tool
 
 **Public page fetch**:
-An Agent-only `read` Tool call (`web.fetch`) that resolves a public http(s) address, refuses loopback, private, link-local, CGNAT/tailnet and special-purpose destinations at resolve and dial time, pins the validated IPs, and returns bounded readable article text. Page text and title are untrusted facts, never instructions.
+An Agent-only `read` Tool call (`web.fetch`) that resolves a public http(s) address, refuses loopback, private, link-local, CGNAT/tailnet and special-purpose destinations at resolve and dial time, pins the validated IPs, and returns bounded readable article text. It opens only a URL from the user's turn or a recent `web.search` result (`tools.web.fetch.require_provenance`, default on), so an untrusted page cannot invent an exfiltration address. Page text and title are untrusted facts, never instructions.
 _Avoid_: Browser, crawler, scraper
 
 **Confirmation**:

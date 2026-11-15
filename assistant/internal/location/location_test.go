@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -202,5 +203,261 @@ func TestLocationHealthReportsWhetherAPlaceIsKnown(t *testing.T) {
 	unknown := location.NewService(nil, location.Location{}, 24*time.Hour, discardLogger())
 	if err := unknown.Health(context.Background()); err == nil {
 		t.Fatal("Health with no place = nil, want an error")
+	}
+}
+
+// fakeClock is a manual Clock: After records the requested delay and returns a
+// channel that Advance fires. It lets a retry schedule be asserted step by
+// step without sleeping.
+type fakeClock struct {
+	mu        sync.Mutex
+	now       time.Time
+	waits     []*fakeWait
+	requested chan time.Duration
+}
+
+type fakeWait struct {
+	at time.Time
+	ch chan time.Time
+}
+
+func newFakeClock() *fakeClock {
+	return &fakeClock{
+		now:       time.Date(2026, 11, 15, 8, 0, 0, 0, time.UTC),
+		requested: make(chan time.Duration, 32),
+	}
+}
+
+func (c *fakeClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *fakeClock) After(d time.Duration) <-chan time.Time {
+	ch := make(chan time.Time, 1)
+	c.mu.Lock()
+	c.waits = append(c.waits, &fakeWait{at: c.now.Add(d), ch: ch})
+	c.mu.Unlock()
+	c.requested <- d
+	return ch
+}
+
+func (c *fakeClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	c.now = c.now.Add(d)
+	now := c.now
+	due := make([]*fakeWait, 0, len(c.waits))
+	pending := c.waits[:0]
+	for _, w := range c.waits {
+		if w.at.After(now) {
+			pending = append(pending, w)
+			continue
+		}
+		due = append(due, w)
+	}
+	c.waits = pending
+	c.mu.Unlock()
+	for _, w := range due {
+		w.ch <- now
+	}
+}
+
+// next returns the delay of the last timer Watch scheduled, waiting for it to
+// appear.
+func (c *fakeClock) next(t *testing.T) time.Duration {
+	t.Helper()
+	select {
+	case d := <-c.requested:
+		return d
+	case <-time.After(2 * time.Second):
+		t.Fatal("Watch did not schedule another lookup")
+		return 0
+	}
+}
+
+// waitCalls blocks until the provider has been called at least want times.
+func waitCalls(t *testing.T, provider *scriptedProvider, want int32) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for provider.calls.Load() < want && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := provider.calls.Load(); got < want {
+		t.Fatalf("lookups = %d, want at least %d", got, want)
+	}
+}
+
+func failingLookups() []error {
+	errs := make([]error, 10)
+	for i := range errs {
+		errs[i] = errors.New("network is down")
+	}
+	return errs
+}
+
+// TestWatchRetriesAFailedBootLookupUntilItSucceeds is issue #187's acceptance
+// test: a boot lookup that fails twice is retried on the backoff schedule, then
+// the service returns to the full refresh interval.
+func TestWatchRetriesAFailedBootLookupUntilItSucceeds(t *testing.T) {
+	provider := &scriptedProvider{
+		locs: []location.Location{{}, {}, london},
+		errs: []error{errors.New("dns not ready"), errors.New("dns not ready"), nil},
+	}
+	clock := newFakeClock()
+	service := location.NewService(provider, location.Location{}, 24*time.Hour, discardLogger(), location.WithClock(clock))
+
+	// The boot lookup in main.go fails before Wi-Fi is up.
+	service.Refresh(context.Background())
+	waitCalls(t, provider, 1)
+	if _, ok := service.Current(); ok {
+		t.Fatal("Current after a failed boot lookup = a place, want none")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go service.Watch(ctx)
+
+	if got := clock.next(t); got != 30*time.Second {
+		t.Fatalf("first retry delay = %s, want 30s", got)
+	}
+	if err := service.Health(ctx); err == nil || !strings.Contains(err.Error(), "retrying in 30s") {
+		t.Fatalf("Health during backoff = %v, want a 30s retry countdown", err)
+	}
+
+	clock.Advance(30 * time.Second)
+	waitCalls(t, provider, 2)
+	if got := clock.next(t); got != time.Minute {
+		t.Fatalf("second retry delay = %s, want 1m", got)
+	}
+
+	// The third lookup succeeds, so the schedule returns to the interval.
+	clock.Advance(time.Minute)
+	waitCalls(t, provider, 3)
+	if got := clock.next(t); got != 24*time.Hour {
+		t.Fatalf("delay after recovery = %s, want the 24h refresh", got)
+	}
+	if place, ok := service.Current(); !ok || place != london {
+		t.Fatalf("Current after recovery = %+v/%v, want London", place, ok)
+	}
+	if err := service.Health(ctx); err != nil {
+		t.Fatalf("Health after recovery = %v, want nil", err)
+	}
+
+	// The next lookup waits the whole interval instead of retrying early.
+	clock.Advance(24 * time.Hour)
+	waitCalls(t, provider, 4)
+}
+
+// TestWatchRetriesAFailedHTTPLookupWithoutARestart runs the real ipwho.is
+// adapter against a fake HTTP endpoint that is down at boot and recovers, so
+// the wiring is exercised end to end rather than through a fake provider.
+func TestWatchRetriesAFailedHTTPLookupWithoutARestart(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) <= 2 {
+			http.Error(w, "service unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"success":true,"city":"London","region":"England",
+			"timezone":{"id":"Europe/London"}}`)
+	}))
+	defer server.Close()
+
+	clock := newFakeClock()
+	service := location.NewService(
+		location.NewIPWhoIs(server.Client(), server.URL),
+		location.Location{},
+		24*time.Hour,
+		discardLogger(),
+		location.WithClock(clock),
+	)
+	service.Refresh(context.Background())
+	if _, ok := service.Current(); ok {
+		t.Fatal("Current after a failed boot lookup = a place, want none")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go service.Watch(ctx)
+
+	if got := clock.next(t); got != 30*time.Second {
+		t.Fatalf("first retry delay = %s, want 30s", got)
+	}
+	clock.Advance(30 * time.Second)
+	if got := clock.next(t); got != time.Minute {
+		t.Fatalf("second retry delay = %s, want 1m", got)
+	}
+	clock.Advance(time.Minute)
+	if got := clock.next(t); got != 24*time.Hour {
+		t.Fatalf("delay after recovery = %s, want the 24h refresh", got)
+	}
+	if place, ok := service.Current(); !ok || place != london {
+		t.Fatalf("Current after HTTP recovery = %+v/%v, want London", place, ok)
+	}
+	if got := calls.Load(); got != 3 {
+		t.Fatalf("HTTP lookups = %d, want 3", got)
+	}
+}
+
+// TestWatchUsesAGentleRetryAfterASuccess proves a single failure after a known
+// place does not drop back to the fast boot backoff.
+func TestWatchUsesAGentleRetryAfterASuccess(t *testing.T) {
+	provider := &scriptedProvider{
+		locs: []location.Location{london},
+		errs: []error{nil, errors.New("provider blip")},
+	}
+	clock := newFakeClock()
+	service := location.NewService(provider, location.Location{}, 24*time.Hour, discardLogger(), location.WithClock(clock))
+	service.Refresh(context.Background())
+	waitCalls(t, provider, 1)
+	if _, ok := service.Current(); !ok {
+		t.Fatal("Current after a successful boot lookup = no place")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go service.Watch(ctx)
+
+	if got := clock.next(t); got != 24*time.Hour {
+		t.Fatalf("first delay after a success = %s, want the 24h refresh", got)
+	}
+	clock.Advance(24 * time.Hour)
+	waitCalls(t, provider, 2)
+	if got := clock.next(t); got != time.Hour {
+		t.Fatalf("retry after a later failure = %s, want a gentle 1h, not the 30s backoff", got)
+	}
+	if place, ok := service.Current(); !ok || place != london {
+		t.Fatalf("Current after a later failure = %+v/%v, want the known London", place, ok)
+	}
+}
+
+// TestWatchBackoffIsBounded proves the boot retry schedule stops doubling at
+// the cap instead of growing without limit.
+func TestWatchBackoffIsBounded(t *testing.T) {
+	provider := &scriptedProvider{errs: failingLookups()}
+	clock := newFakeClock()
+	service := location.NewService(provider, location.Location{}, 24*time.Hour, discardLogger(), location.WithClock(clock))
+	service.Refresh(context.Background())
+	waitCalls(t, provider, 1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go service.Watch(ctx)
+
+	for i, want := range []time.Duration{
+		30 * time.Second,
+		time.Minute,
+		2 * time.Minute,
+		4 * time.Minute,
+		8 * time.Minute,
+		15 * time.Minute,
+		15 * time.Minute,
+	} {
+		if got := clock.next(t); got != want {
+			t.Fatalf("backoff step %d = %s, want %s", i, got, want)
+		}
+		clock.Advance(want)
 	}
 }

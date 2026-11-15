@@ -15,6 +15,11 @@
 // Spotify's own cap, but because the sink also carries music this handler uses
 // it as a ceiling on an up step while music holds Focus; a down step is never
 // blocked, and an up step above the cap is a no-op rather than a drop.
+//
+// Handle runs on the voice loop's reading goroutine, so it never waits for the
+// sink: the in-memory gate (Focus, cooldown, one command in flight) decides
+// there, and a slow pactl runs on the command's own goroutine while the wake
+// stream keeps being read (#209).
 package voicecmd
 
 import (
@@ -64,14 +69,16 @@ type Deps struct {
 	// MaxVolume is the live music.max_volume cap, 0 when unset. It is applied
 	// while music holds Focus, because the sink is shared by music and speech.
 	MaxVolume func() int
-	// Cue acknowledges an accepted command. It must not block: the voice loop
-	// calls Handle on its reading goroutine. A silent Cue (nil) is valid.
+	// Cue acknowledges an accepted command. It runs on the command's own
+	// goroutine, never on the voice loop's reading goroutine, so it may take
+	// as long as a sound needs; it still should not block indefinitely.
 	Cue func(ctx context.Context)
 	// Now is the clock; tests advance it. Nil uses time.Now.
 	Now func() time.Time
-	// SinkTimeout bounds each Volume/SetVolume call. Handle runs on the voice
-	// loop's reading goroutine, so a wedged pactl must not stop the wake
-	// stream from being fed. Zero uses DefaultSinkTimeout.
+	// SinkTimeout bounds each Volume/SetVolume call. Handle returns before the
+	// sink is touched, so the bound protects only the command's own goroutine:
+	// it keeps a wedged pactl from holding the one-command-in-flight slot.
+	// Zero uses DefaultSinkTimeout.
 	SinkTimeout time.Duration
 	// Logger is optional. Ignored detections log at debug level so a healthy
 	// run does not grow the log with every phrase the room happens to say.
@@ -84,8 +91,12 @@ type Handler struct {
 	cfg  Config
 	deps Deps
 
-	mu   sync.Mutex
+	mu sync.Mutex
+	// last is when the last command was accepted, for the cooldown.
 	last time.Time
+	// done is non-nil while a command runs and is closed when it finishes, so
+	// Wait can join it without a second counter.
+	done chan struct{}
 }
 
 // New validates a handler. Step and cooldown come from wakeword.commands.
@@ -114,8 +125,16 @@ func New(cfg Config, deps Deps) (*Handler, error) {
 	return &Handler{cfg: cfg, deps: deps}, nil
 }
 
-// Handle is the voice.WakeCommand for both volume models. It returns without
-// waiting for the Cue, so the wake stream stays fed.
+// Handle is the voice.WakeCommand for both volume models. It runs on the voice
+// loop's reading goroutine and returns before the sink is touched: the checks
+// it keeps here (model name, Focus, cooldown, one command in flight) are all
+// in-memory, and the volume read, write and Cue run on the command's own
+// goroutine. A slow or wedged pactl therefore cannot stop the wake stream from
+// being read (#209).
+//
+// One detection is one command. A second detection while a command is still
+// running is dropped rather than queued, because the burst that produces it is
+// a misheard word, not a request for two steps.
 func (h *Handler) Handle(ctx context.Context, name string) {
 	delta, ok := deltaFor(name, h.cfg.Step)
 	if !ok {
@@ -129,16 +148,71 @@ func (h *Handler) Handle(ctx context.Context, name string) {
 		return
 	}
 
+	done, ok := h.begin(name)
+	if !ok {
+		return
+	}
+	go func() {
+		defer h.end(done)
+		h.run(ctx, name, delta)
+	}()
+}
+
+// Wait blocks until the command that was in flight when it was called has
+// finished. The voice loop never needs it — Handle has already returned — but
+// shutdown uses it so a volume write is not abandoned, and tests use it to
+// join the goroutine.
+func (h *Handler) Wait() {
 	h.mu.Lock()
+	done := h.done
+	h.mu.Unlock()
+	if done != nil {
+		<-done
+	}
+}
+
+// begin applies the cooldown and the one-command-in-flight rule, and records
+// the acceptance. Both checks are in-memory, so a dropped detection costs the
+// loop goroutine nothing but the log line.
+func (h *Handler) begin(name string) (chan struct{}, bool) {
 	now := h.deps.Now()
+	h.mu.Lock()
+	if h.done != nil {
+		h.mu.Unlock()
+		h.deps.Logger.Debug("voicecmd: ignored", "model", name, "reason", "command in flight")
+		return nil, false
+	}
 	if !h.last.IsZero() && now.Sub(h.last) < h.cfg.Cooldown {
 		elapsed := now.Sub(h.last)
 		h.mu.Unlock()
 		h.deps.Logger.Debug("voicecmd: ignored", "model", name, "reason", "cooldown", "elapsed_ms", elapsed.Milliseconds())
-		return
+		return nil, false
 	}
+	done := make(chan struct{})
+	h.done = done
 	h.last = now
 	h.mu.Unlock()
+	return done, true
+}
+
+// end releases the in-flight slot before the waiter is woken, so a Wait that
+// returns can be followed immediately by another Handle.
+func (h *Handler) end(done chan struct{}) {
+	h.mu.Lock()
+	h.done = nil
+	h.mu.Unlock()
+	close(done)
+}
+
+// run performs one accepted command off the loop goroutine. Focus is read
+// again here, so a claim released between the detection and the sink call is
+// seen at execution time and the volume is left alone.
+func (h *Handler) run(ctx context.Context, name string, delta int) {
+	reply, music := h.deps.Focus()
+	if !reply && !music {
+		h.deps.Logger.Debug("voicecmd: ignored", "model", name, "reason", "focus released")
+		return
+	}
 
 	sinkCtx, cancel := context.WithTimeout(ctx, h.deps.SinkTimeout)
 	defer cancel()

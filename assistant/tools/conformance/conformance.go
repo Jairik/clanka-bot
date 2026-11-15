@@ -412,6 +412,8 @@ type discardAudio struct{}
 
 func (discardAudio) SetVolume(context.Context, int) error    { return nil }
 func (discardAudio) AdjustVolume(context.Context, int) error { return nil }
+func (discardAudio) Level(context.Context) (int, error)      { return 0, nil }
+func (discardAudio) SetMute(context.Context, bool) error     { return nil }
 func (discardAudio) Stop(context.Context) error              { return nil }
 
 // nameSet snapshots the registry before one module registers.

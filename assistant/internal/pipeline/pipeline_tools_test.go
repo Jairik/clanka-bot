@@ -15,18 +15,33 @@ import (
 
 // audioRecorder records the commands the audio Tools issue.
 type audioRecorder struct {
-	volume  int
-	delta   int
-	stopped int
+	volume    int
+	delta     int
+	stopped   int
+	setCalls  int
+	level     int
+	muteCalls int
+	muted     bool
 }
 
 func (a *audioRecorder) SetVolume(_ context.Context, percent int) error {
 	a.volume = percent
+	a.setCalls++
 	return nil
 }
 
 func (a *audioRecorder) AdjustVolume(_ context.Context, delta int) error {
 	a.delta = delta
+	return nil
+}
+
+func (a *audioRecorder) Level(context.Context) (int, error) {
+	return a.level, nil
+}
+
+func (a *audioRecorder) SetMute(_ context.Context, muted bool) error {
+	a.muted = muted
+	a.muteCalls++
 	return nil
 }
 

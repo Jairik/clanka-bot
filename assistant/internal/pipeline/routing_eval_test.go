@@ -329,6 +329,8 @@ type evalAudio struct{}
 
 func (*evalAudio) SetVolume(context.Context, int) error    { return nil }
 func (*evalAudio) AdjustVolume(context.Context, int) error { return nil }
+func (*evalAudio) Level(context.Context) (int, error)      { return 40, nil }
+func (*evalAudio) SetMute(context.Context, bool) error     { return nil }
 func (*evalAudio) Stop(context.Context) error              { return nil }
 
 // evalNotifyReader supplies the notify settings without a second settings

@@ -14,11 +14,11 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/tools/audiocontrol"
 )
 
-// TestMuteUsesTheAudioBackendWithoutTouchingRingOrQuietVolume pins the two
-// independent boundaries: mute is an absolute zero through the sink controls,
+// TestMuteUsesTheSinkFlagWithoutTouchingRingOrQuietVolume pins the two
+// independent boundaries: mute sets the sink mute flag and keeps the level,
 // while a Ring's absolute volume settings and quiet.volume stay untouched.
-func TestMuteUsesTheAudioBackendWithoutTouchingRingOrQuietVolume(t *testing.T) {
-	controls := &audioRecorder{}
+func TestMuteUsesTheSinkFlagWithoutTouchingRingOrQuietVolume(t *testing.T) {
+	controls := &audioRecorder{level: 40}
 	reg := tool.NewRegistry(time.Second)
 	if err := audiocontrol.Register(reg, controls); err != nil {
 		t.Fatalf("register audio: %v", err)
@@ -29,8 +29,11 @@ func TestMuteUsesTheAudioBackendWithoutTouchingRingOrQuietVolume(t *testing.T) {
 	if reply.Path != tool.PathControlPhrase || reply.Tool != audiocontrol.VolumeName {
 		t.Fatalf("reply = %+v, want audio.volume_set", reply)
 	}
-	if controls.volume != 0 {
-		t.Fatalf("sink volume = %d, want 0 from the actual audio backend", controls.volume)
+	if controls.muteCalls != 1 || !controls.muted {
+		t.Fatalf("sink mute calls/flag = %d/%v, want the flag set once", controls.muteCalls, controls.muted)
+	}
+	if controls.setCalls != 0 {
+		t.Fatalf("sink volume writes = %d after mute, want the level kept", controls.setCalls)
 	}
 
 	st, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "assistant.db"))

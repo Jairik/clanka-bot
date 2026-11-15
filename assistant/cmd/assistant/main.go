@@ -314,9 +314,11 @@ func run() error {
 
 	// One bounded health snapshot feeds both the Dashboard Health page and the
 	// system.status Tool, so the two can never use different service lists or
-	// check semantics.
+	// check semantics. The wake model cache is shared with the Dashboard, so the
+	// Compose wakeword row and the page's model rows describe it once.
 	eq := equalizer.New(cfg.Playback.Sink)
-	serviceChecks := append(dashboard.ComposeServiceChecks(cfg), status.ServiceCheck{Name: "Equalizer", Check: eq.Health})
+	wakeModels := dashboard.NewWakeModelCache(cfg.Wakeword.Addr, nil)
+	serviceChecks := append(dashboard.ComposeServiceChecks(cfg, wakeModels), status.ServiceCheck{Name: "Equalizer", Check: eq.Health})
 	systemStatus := status.New(status.Options{
 		Timeout:  cfg.Dashboard.HealthTimeout.Duration(),
 		Services: serviceChecks,
@@ -1081,8 +1083,9 @@ func run() error {
 			Hosts:         cfg.Dashboard.Hosts,
 			Logger:        logger,
 			HealthTimeout: cfg.Dashboard.HealthTimeout.Duration(),
-			Services:      dashboard.ComposeServiceChecks(cfg),
+			Services:      dashboard.ComposeServiceChecks(cfg, wakeModels),
 			Wakeword:      dashboard.WakewordFromConfig(cfg),
+			WakeModels:    wakeModels,
 			Modules:       toolSet,
 			Location:      locSvc,
 			Status:        systemStatus,

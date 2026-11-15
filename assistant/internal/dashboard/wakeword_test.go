@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +17,14 @@ import (
 
 // fakeWakewordServer answers every describe with the given model names.
 func fakeWakewordServer(t *testing.T, models ...string) string {
+	t.Helper()
+	addr, _ := countingWakewordServer(t, models...)
+	return addr
+}
+
+// countingWakewordServer also counts describes, so a test can prove one render
+// asks the service once.
+func countingWakewordServer(t *testing.T, models ...string) (string, *atomic.Int32) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -37,6 +46,7 @@ func fakeWakewordServer(t *testing.T, models ...string) string {
 		t.Fatalf("marshal info: %v", err)
 	}
 
+	var describes atomic.Int32
 	go func() {
 		for {
 			conn, err := ln.Accept()
@@ -49,11 +59,12 @@ func fakeWakewordServer(t *testing.T, models ...string) string {
 				if _, err := r.ReadBytes('\n'); err != nil {
 					return
 				}
+				describes.Add(1)
 				_, _ = fmt.Fprintf(conn, "%s\n", payload)
 			}(conn)
 		}
 	}()
-	return ln.Addr().String()
+	return ln.Addr().String(), &describes
 }
 
 func HealthWakewordRows(t *testing.T, handler *dashboard.Handler) []struct{ Name, Status, StatusLabel, Detail string } {
@@ -258,5 +269,42 @@ func TestHealthShowsCommandModelsAndTheirEnabledState(t *testing.T) {
 	}
 	if rows[2].Status != "not-configured" || rows[2].StatusLabel != "off" || !strings.Contains(rows[2].Detail, "disabled") {
 		t.Errorf("disabled command row = %+v, want off without a probe claim", rows[2])
+	}
+}
+
+// TestOneHealthRenderDescribesTheWakewordServiceOnce is the #208 acceptance
+// test: the Compose wakeword row and the model rows share one describe, so a
+// page render asks the service once instead of twice.
+func TestOneHealthRenderDescribesTheWakewordServiceOnce(t *testing.T) {
+	addr, describes := countingWakewordServer(t, "clanker")
+	cfg := config.Default()
+	cfg.Wakeword.Addr = addr
+	cache := dashboard.NewWakeModelCache(addr, nil)
+
+	var wakeCheck dashboard.ServiceCheck
+	for _, link := range dashboard.ComposeServiceChecks(cfg, cache) {
+		if link.Name == "wakeword" {
+			wakeCheck = link
+		}
+	}
+	if wakeCheck.Check == nil {
+		t.Fatal("the wakeword Compose row is not wired for a configured address")
+	}
+
+	handler := newHandler(t, dashboard.Options{
+		Services:   []dashboard.ServiceCheck{wakeCheck},
+		WakeModels: cache,
+		Wakeword: dashboard.WakewordInfo{
+			Addr:   addr,
+			Models: []dashboard.WakewordModel{{Name: "clanker", Threshold: 0.6}},
+		},
+	})
+
+	rows := HealthWakewordRows(t, handler)
+	if len(rows) != 1 || rows[0].Status != "ok" || rows[0].StatusLabel != "served" {
+		t.Fatalf("wakeword rows = %+v, want one served row", rows)
+	}
+	if got := describes.Load(); got != 1 {
+		t.Fatalf("describes = %d for one Health render, want 1", got)
 	}
 }

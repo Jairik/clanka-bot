@@ -10,4 +10,4 @@ Issue #150 asked for a custom Wake phrase to persist the moment it is added on `
 
 - Clearing every take keeps the phrase listed (still marked `!`). Only Remove phrase makes it disappear.
 - An old `?phrase=` link to an unstored phrase still opens and records. It is shown as "not saved yet" until its first take.
-- The voice-samples view caches the `describe` answer for 30 s (10 s after a failure), so the batch recorder's refresh after each take does not each wait on the service. The Health page still probes live.
+- The voice-samples view caches the `describe` answer for 30 s (10 s after a failure), so the batch recorder's refresh after each take does not each wait on the service. The Health page reads the same cache, so one render describes the service once (#208).

@@ -9,6 +9,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
@@ -18,6 +19,19 @@ import (
 
 // DefaultTimeout matches the Dashboard's shipped health_timeout.
 const DefaultTimeout = 3 * time.Second
+
+const (
+	// SharedSnapshotTTL is how long a finished snapshot answers later callers.
+	// It is short on purpose: a spoken system.status right after a page load is
+	// at most this stale, while the page, its live sampler and a spoken request
+	// still share one pass.
+	SharedSnapshotTTL = 2 * time.Second
+	// moduleGrace is how long the module list may take to hand back the checks
+	// it had already finished once the deadline fired. The Tool set answers
+	// immediately; a custom list that ignores the deadline is abandoned after
+	// it, so the snapshot never waits on a wedged check.
+	moduleGrace = 200 * time.Millisecond
+)
 
 // ServiceCheck is one Compose service's health check. A nil Check means the
 // service is not configured in this deployment, which is not a failure.
@@ -47,13 +61,28 @@ type Options struct {
 	Now      func() time.Time
 }
 
-// Source owns the shared checks and their overall deadline.
+// Source owns the shared checks and their overall deadline. One source is
+// shared by the Dashboard and the system.status Tool, so concurrent callers
+// join one in-flight pass and a just-finished snapshot is reused.
 type Source struct {
 	timeout  time.Duration
 	services []ServiceCheck
 	modules  Modules
 	location Location
 	now      func() time.Time
+
+	mu       sync.Mutex
+	last     tool.StatusReport
+	lastAt   time.Time
+	lastSet  bool
+	inflight *snapshotCall
+}
+
+// snapshotCall is one shared pass in flight; waiters block on done and read the
+// report the pass recorded.
+type snapshotCall struct {
+	done   chan struct{}
+	report tool.StatusReport
 }
 
 // New builds a status source. A zero or negative timeout uses DefaultTimeout.
@@ -75,21 +104,74 @@ func New(opts Options) *Source {
 	}
 }
 
-// Status runs every check inside one shared deadline. Service checks run
-// concurrently; module checks are one call because the module list owns their
-// order and each module's own budget.
+// Status returns the shared snapshot. Concurrent callers join one in-flight
+// pass, and a snapshot younger than SharedSnapshotTTL is reused, so a page
+// render, its live sampler and a spoken status never repeat the same probes.
+// The pass runs on its own timeout-bounded context: a caller that goes away
+// cannot fail the snapshot the other callers are waiting for. The returned
+// report may be shared with later callers, so treat it as read-only.
 func (s *Source) Status(ctx context.Context) tool.StatusReport {
 	if s == nil {
 		return tool.StatusReport{CheckedAt: time.Now().UTC(), Timeout: DefaultTimeout}
 	}
+
+	s.mu.Lock()
+	if s.lastSet && s.now().Sub(s.lastAt) < SharedSnapshotTTL {
+		report := s.last
+		s.mu.Unlock()
+		return report
+	}
+	if call := s.inflight; call != nil {
+		s.mu.Unlock()
+		// The shared pass is bounded by the snapshot timeout, so this wait is
+		// bounded too; repeating the checks for one caller is what the cache
+		// exists to avoid.
+		<-call.done
+		return call.report
+	}
+	call := &snapshotCall{done: make(chan struct{})}
+	s.inflight = call
+	s.mu.Unlock()
+
+	// Detach from the first caller's request context. Its deadline still bounds
+	// the pass through snapshot, but a cancelled HTTP request must not report
+	// "timed out" for the callers that joined later.
+	report := s.snapshot(context.WithoutCancel(ctx))
+
+	s.mu.Lock()
+	s.last, s.lastAt, s.lastSet = report, s.now(), true
+	call.report = report
+	s.inflight = nil
+	close(call.done)
+	s.mu.Unlock()
+	return report
+}
+
+// snapshot runs every section of the report inside one shared deadline. The
+// sections run concurrently, so a slow service probe cannot starve the Tool
+// modules of the whole budget before they even start.
+func (s *Source) snapshot(ctx context.Context) tool.StatusReport {
 	ctx, cancel := context.WithTimeout(ctx, s.timeout)
 	defer cancel()
+
+	var (
+		services []tool.StatusCheck
+		location tool.StatusCheck
+		modules  []tool.StatusCheck
+		wg       sync.WaitGroup
+	)
+	wg.Add(3)
+	go func() { defer wg.Done(); services = s.checkServices(ctx) }()
+	go func() { defer wg.Done(); location = s.checkLocation(ctx) }()
+	go func() { defer wg.Done(); modules = s.checkModules(ctx) }()
+	wg.Wait()
+
 	return tool.StatusReport{
 		CheckedAt: s.now().UTC(),
 		Timeout:   s.timeout,
-		Services:  s.checkServices(ctx),
-		Location:  s.checkLocation(ctx),
-		Modules:   s.checkModules(ctx),
+		Services:  services,
+		Location:  location,
+		Modules:   modules,
 	}
 }
 
@@ -170,7 +252,17 @@ func (s *Source) checkLocation(ctx context.Context) tool.StatusCheck {
 		}
 	}
 	place, known := s.location.Current()
-	if err := s.location.Health(ctx); err != nil {
+	done := make(chan error, 1)
+	go func() { done <- s.location.Health(ctx) }()
+	var err error
+	select {
+	case err = <-done:
+	case <-ctx.Done():
+		// The place lookup ignores the deadline in a wedged deployment; report
+		// it alone rather than waiting on it.
+		return timedOutCheck("location", s.timeout)
+	}
+	if err != nil {
 		return tool.StatusCheck{Name: "location", State: tool.StatusError, Detail: shorten(err.Error())}
 	}
 	if !known {
@@ -188,10 +280,8 @@ func (s *Source) checkModules(ctx context.Context) []tool.StatusCheck {
 		}}
 	}
 	names := make([]string, 0)
-	known := make(map[string]bool)
 	for _, module := range s.modules.Modules() {
 		names = append(names, module.Name())
-		known[module.Name()] = true
 	}
 
 	results := make(chan []tools.Health, 1)
@@ -199,62 +289,75 @@ func (s *Source) checkModules(ctx context.Context) []tool.StatusCheck {
 		results <- s.modules.Health(ctx)
 	}()
 
+	var health []tools.Health
 	select {
-	case health := <-results:
-		if ctx.Err() != nil {
-			// The deadline fired while the result was in flight; report the
-			// timeout rather than mixing a late result into the snapshot.
-			return timedOutModules(names, s.timeout)
-		}
-		byName := make(map[string]error, len(health))
-		separate := make(map[string]tool.StatusCheck)
-		for _, item := range health {
-			if item.Check != nil {
-				separate[item.Module] = *item.Check
-			}
-			byName[item.Module] = item.Err
-			if !known[item.Module] {
-				known[item.Module] = true
-				names = append(names, item.Module)
-			}
-		}
-		if len(names) == 0 {
-			return []tool.StatusCheck{{
-				Name:   "Tool modules",
-				State:  tool.StatusNoCheck,
-				Detail: "No Tool module declares a health check.",
-			}}
-		}
-		views := make([]tool.StatusCheck, 0, len(names))
-		for _, name := range names {
-			err, checked := byName[name]
-			if check, ok := separate[name]; ok {
-				check.Detail = shorten(check.Detail)
-				views = append(views, check)
-				continue
-			}
-			switch {
-			case !checked:
-				views = append(views, tool.StatusCheck{Name: name, State: tool.StatusNoCheck, Detail: "No health check declared."})
-			case err == nil:
-				views = append(views, tool.StatusCheck{Name: name, State: tool.StatusOK, Detail: "Health check passed."})
-			default:
-				views = append(views, tool.StatusCheck{Name: name, State: tool.StatusError, Detail: shorten(err.Error())})
-			}
-		}
-		return views
+	case health = <-results:
 	case <-ctx.Done():
-		return timedOutModules(names, s.timeout)
+		// Every module now answers for itself, so the list hands back the
+		// checks that finished at the deadline with a TimedOut flag on the rest.
+		// Give it that moment; a list that ignores the deadline is abandoned.
+		timer := time.NewTimer(moduleGrace)
+		defer timer.Stop()
+		select {
+		case health = <-results:
+		case <-timer.C:
+		}
 	}
+	return moduleChecks(names, health, s.timeout)
 }
 
-func timedOutModules(names []string, timeout time.Duration) []tool.StatusCheck {
+// moduleChecks maps per-module results to the report's rows, keeping the module
+// order. Only a module the list marked TimedOut reads as timed out; every module
+// that answered keeps its own real state.
+func moduleChecks(names []string, health []tools.Health, timeout time.Duration) []tool.StatusCheck {
+	known := make(map[string]bool, len(names))
+	for _, name := range names {
+		known[name] = true
+	}
+	byName := make(map[string]error, len(health))
+	separate := make(map[string]tool.StatusCheck)
+	timedOut := make(map[string]bool)
+	for _, item := range health {
+		if !known[item.Module] {
+			known[item.Module] = true
+			names = append(names, item.Module)
+		}
+		if item.TimedOut {
+			timedOut[item.Module] = true
+			continue
+		}
+		if item.Check != nil {
+			separate[item.Module] = *item.Check
+		}
+		byName[item.Module] = item.Err
+	}
 	if len(names) == 0 {
-		return []tool.StatusCheck{{Name: "Tool modules", State: tool.StatusTimedOut, Detail: "No response within " + timeout.String() + "."}}
+		return []tool.StatusCheck{{
+			Name:   "Tool modules",
+			State:  tool.StatusNoCheck,
+			Detail: "No Tool module declares a health check.",
+		}}
 	}
 	views := make([]tool.StatusCheck, 0, len(names))
 	for _, name := range names {
-		views = append(views, timedOutCheck(name, timeout))
+		if timedOut[name] {
+			views = append(views, timedOutCheck(name, timeout))
+			continue
+		}
+		if check, ok := separate[name]; ok {
+			check.Detail = shorten(check.Detail)
+			views = append(views, check)
+			continue
+		}
+		err, checked := byName[name]
+		switch {
+		case !checked:
+			views = append(views, tool.StatusCheck{Name: name, State: tool.StatusNoCheck, Detail: "No health check declared."})
+		case err == nil:
+			views = append(views, tool.StatusCheck{Name: name, State: tool.StatusOK, Detail: "Health check passed."})
+		default:
+			views = append(views, tool.StatusCheck{Name: name, State: tool.StatusError, Detail: shorten(err.Error())})
+		}
 	}
 	return views
 }

@@ -57,10 +57,16 @@ func (f fakeModules) Modules() []tool.Module {
 	return modules
 }
 
+// Health mirrors tools.Set.Health: at the deadline it hands back the checks it
+// has and marks the rest timed out, one module at a time.
 func (f fakeModules) Health(ctx context.Context) []tools.Health {
 	if f.block {
 		<-ctx.Done()
-		return nil
+		out := make([]tools.Health, 0, len(f.names))
+		for _, name := range f.names {
+			out = append(out, tools.Health{Module: name, TimedOut: true})
+		}
+		return out
 	}
 	return f.health
 }
@@ -490,7 +496,7 @@ func TestDashboardMountsTheAPIBehindAuthAndSameOrigin(t *testing.T) {
 }
 
 func TestComposeServiceChecksCoverTheSevenServices(t *testing.T) {
-	links := dashboard.ComposeServiceChecks(config.Default())
+	links := dashboard.ComposeServiceChecks(config.Default(), nil)
 	names := make([]string, 0, len(links))
 	for _, link := range links {
 		names = append(names, link.Name)
@@ -526,7 +532,7 @@ func TestSoloistServiceCheckReadsTheHeartbeat(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "soloist.status")
 	cfg := config.Default()
 	cfg.Spotify.PairingStatusFile = path
-	links := dashboard.ComposeServiceChecks(cfg)
+	links := dashboard.ComposeServiceChecks(cfg, nil)
 	var check dashboard.ServiceCheck
 	for _, link := range links {
 		if link.Name == "soloist" {
@@ -573,7 +579,7 @@ func TestWebSearchServiceCheckUsesTheModuleSection(t *testing.T) {
 		{Kind: yaml.ScalarNode, Value: server.URL},
 	}}
 
-	links := dashboard.ComposeServiceChecks(cfg)
+	links := dashboard.ComposeServiceChecks(cfg, nil)
 	var check dashboard.ServiceCheck
 	for _, link := range links {
 		if link.Name == "web-search" {

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/config"
 	"github.com/Jairik/clanka-bot/assistant/internal/httpclient"
@@ -68,6 +70,9 @@ type Module struct {
 	cfg      Config
 	location func() (location.Location, bool)
 	secrets  tool.SecretResolver
+	// now is the module's clock for health ages; nil uses time.Now.
+	now    func() time.Time
+	health healthMemo
 }
 
 // NewModule builds the weather module with its code defaults.
@@ -98,17 +103,35 @@ func (m *Module) Configure(section *yaml.Node) error {
 	return nil
 }
 
-// Register adds weather.current.
+// Register adds weather.current. A successful live answer also seeds the Health
+// memo, so the Health row does not pay a second provider round trip right after
+// a spoken or typed weather request.
 func (m *Module) Register(r *tool.Registry, deps tool.Deps) error {
 	m.location = deps.Location
 	m.secrets = deps.Secrets
-	return Register(r, m.deps())
+	def := New(m.deps())
+	inner := def.Handler
+	def.Handler = func(ctx context.Context, in In) (Out, error) {
+		out, err := inner(ctx, in)
+		// Health checks the current place, so only a call for that place can
+		// stand in for it; a named-city answer says nothing about home.
+		if err == nil && strings.TrimSpace(in.City) == "" {
+			m.health.record(m.clock(), nil)
+		}
+		return out, err
+	}
+	return tool.Add(r, def)
 }
 
 // Health checks that the configured provider chain answers for the current
 // place. It runs the Tool's own chain, so one upstream outage is only unhealthy
-// when no provider can answer.
+// when no provider can answer. The answer is memoised like the GitHub token
+// check: a cold provider chain can lose the shared snapshot's 3 s race even when
+// weather still answers for every real request (#208).
 func (m *Module) Health(ctx context.Context) error {
+	if err, ok := m.health.fresh(m.clock()); ok {
+		return err
+	}
 	deps := m.deps()
 	city, err := resolveCity(In{}, deps)
 	if err != nil {
@@ -120,7 +143,22 @@ func (m *Module) Health(ctx context.Context) error {
 		defer cancel()
 	}
 	_, err = fetchCurrent(ctx, deps, newCache(), city)
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		// The snapshot ran out of time; that says nothing about the providers,
+		// so leave the memo alone and let the next refresh retry.
+		return err
+	}
+	m.health.record(m.clock(), err)
 	return err
+}
+
+// clock is the module's time source for health ages. Production leaves the
+// field nil; tests inject one to exercise the TTL without waiting.
+func (m *Module) clock() time.Time {
+	if m.now != nil {
+		return m.now()
+	}
+	return time.Now()
 }
 
 func (m *Module) deps() Deps {
@@ -146,4 +184,46 @@ func (m *Module) apiKey() (string, bool) {
 	value, ok := m.secrets.Get(SecretName)
 	value = strings.TrimSpace(value)
 	return value, ok && value != ""
+}
+
+const (
+	// healthOKTTL is how long a successful provider-chain answer is reused.
+	healthOKTTL = 5 * time.Minute
+	// healthFailTTL keeps an outage visible without paying the whole chain on
+	// every refresh.
+	healthFailTTL = 30 * time.Second
+)
+
+// healthMemo is the last Health answer. The zero value is empty, so a module
+// that was never checked runs a live check on first use.
+type healthMemo struct {
+	mu   sync.Mutex
+	set  bool
+	at   time.Time
+	err  error
+	fail bool
+}
+
+// fresh returns the remembered answer while it is younger than its TTL.
+func (m *healthMemo) fresh(now time.Time) (error, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.set {
+		return nil, false
+	}
+	ttl := healthOKTTL
+	if m.fail {
+		ttl = healthFailTTL
+	}
+	if now.Sub(m.at) >= ttl {
+		return nil, false
+	}
+	return m.err, true
+}
+
+// record stores one answer and whether it was a failure.
+func (m *healthMemo) record(now time.Time, err error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.set, m.at, m.err, m.fail = true, now, err, err != nil
 }

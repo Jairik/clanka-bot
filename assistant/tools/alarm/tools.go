@@ -59,15 +59,37 @@ func NewList(m *Manager) tool.Tool[ListIn, ListOut] {
 			return ListOut{Alarms: m.List()}, nil
 		},
 		Speak: func(out ListOut) string {
+			ringing, ringingIndex := 0, -1
+			for i, alarm := range out.Alarms {
+				if alarm.State != StateRinging {
+					continue
+				}
+				ringing++
+				ringingIndex = i
+			}
 			switch len(out.Alarms) {
 			case 0:
 				return "No alarms are set."
 			case 1:
+				if ringing == 1 {
+					return ringingAlarmText(out.Alarms[0])
+				}
 				return describeAlarm(out.Alarms[0])
 			default:
-				next := out.Alarms[0]
-				return fmt.Sprintf("You have %d alarms. The next is at %s.",
-					len(out.Alarms), formatClock(next.Hour, next.Minute))
+				switch ringing {
+				case 0:
+					next := out.Alarms[0]
+					return fmt.Sprintf("You have %d alarms. The next is at %s.",
+						len(out.Alarms), formatClock(next.Hour, next.Minute))
+				case 1:
+					if label := out.Alarms[ringingIndex].Label; label != "" {
+						return fmt.Sprintf("You have %d alarms. The %s alarm is ringing.",
+							len(out.Alarms), label)
+					}
+					return fmt.Sprintf("You have %d alarms. One is ringing.", len(out.Alarms))
+				default:
+					return fmt.Sprintf("You have %d alarms. %d are ringing.", len(out.Alarms), ringing)
+				}
 			}
 		},
 		Examples: []string{
@@ -382,4 +404,13 @@ func describeAlarm(alarm Alarm) string {
 		return capitalize(alarm.Label) + " alarm is set for " + clock + repeat + "."
 	}
 	return "Your alarm is set for " + clock + repeat + "."
+}
+
+// ringingAlarmText names the Alarm the user can hear, in the same style as the
+// Timer and Reminder replies.
+func ringingAlarmText(alarm Alarm) string {
+	if alarm.Label != "" {
+		return "Your " + alarm.Label + " alarm is ringing."
+	}
+	return "Your alarm is ringing."
 }

@@ -19,7 +19,7 @@ var ErrInsecureOrigin = errors.New("plain http would send the credential in clea
 // operator value can carry userinfo.
 func RequireSecureOrigin(raw string, allowInsecure bool) error {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
-	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+	if err != nil || parsed.Hostname() == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 		return errors.New("must be a valid http or https URL with a host")
 	}
 	if parsed.Scheme == "https" || allowInsecure || loopbackHost(parsed.Hostname()) {
@@ -34,7 +34,7 @@ func RequireSecureOrigin(raw string, allowInsecure bool) error {
 // false; RequireSecureOrigin refuses it separately.
 func InsecureOrigin(raw string) bool {
 	parsed, err := url.Parse(strings.TrimSpace(raw))
-	return err == nil && parsed.Scheme == "http" && parsed.Host != "" && !loopbackHost(parsed.Hostname())
+	return err == nil && parsed.Scheme == "http" && parsed.Hostname() != "" && !loopbackHost(parsed.Hostname())
 }
 
 // loopbackHost is the same rule the inbound listeners use: "localhost" and any

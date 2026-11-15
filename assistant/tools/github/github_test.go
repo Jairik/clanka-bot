@@ -1100,6 +1100,26 @@ func TestConfigSecureOrigin(t *testing.T) {
 	}
 }
 
+// TestEnterpriseBasePathIsPreservedOnTheWire checks the actual request, not only config.
+func TestEnterpriseBasePathIsPreservedOnTheWire(t *testing.T) {
+	fake := &fakeGitHub{handler: func(w http.ResponseWriter, r *http.Request, _ []byte) {
+		if r.URL.Path != "/api/v3/search/issues" {
+			t.Errorf("request path = %q, want the Enterprise prefix", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"total_count":0,"items":[]}`)
+	}}
+	server := fake.start(t)
+	module := testConfig(t, map[string]any{"base_url": server.URL + "/api/v3"})
+	reg, _ := registerModule(t, module, fixedSecret("fixture-token"))
+	if _, err := reg.Execute(context.Background(), PRListName, nil); err != nil {
+		t.Fatalf("pr_list: %v", err)
+	}
+	if got := fake.count(http.MethodGet, "/api/v3/search/issues"); got != 1 {
+		t.Fatalf("prefixed requests = %d, want 1", got)
+	}
+}
+
 // TestInsecureOptInIsLoggedWithoutTheToken makes the clear-text choice visible
 // once at startup, and never carries the token into the log.
 func TestInsecureOptInIsLoggedWithoutTheToken(t *testing.T) {

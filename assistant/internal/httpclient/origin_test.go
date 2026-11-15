@@ -68,6 +68,9 @@ func TestRequireSecureOriginRefusesMalformedURLs(t *testing.T) {
 		"ftp://ghe.example/api/v3",
 		"https://",
 		"http://",
+		"https://:443",
+		"http://:80",
+		"https://user:private-marker@:443",
 		"//ghe.example/api/v3",
 		"http://[::1",
 		"http://user:hunter2@[::1",
@@ -77,7 +80,7 @@ func TestRequireSecureOriginRefusesMalformedURLs(t *testing.T) {
 			if err == nil {
 				t.Fatalf("RequireSecureOrigin(%q) accepted a malformed URL", raw)
 			}
-			if strings.Contains(err.Error(), "hunter2") || strings.Contains(err.Error(), "ghe.example") {
+			if strings.Contains(err.Error(), "hunter2") || strings.Contains(err.Error(), "ghe.example") || strings.Contains(err.Error(), "private-marker") {
 				t.Fatalf("error echoed the configured URL: %v", err)
 			}
 		})
@@ -102,6 +105,7 @@ func TestInsecureOriginNamesOnlyClearTextLANOrigins(t *testing.T) {
 		"http://localhost:8080/x",
 		"http://[::1]:1234/x",
 		"not a url",
+		"http://:80",
 		"",
 	} {
 		if httpclient.InsecureOrigin(raw) {

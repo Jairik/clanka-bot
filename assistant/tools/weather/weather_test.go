@@ -354,7 +354,8 @@ func TestModuleSendsTheResolvedSecret(t *testing.T) {
 	module := weather.NewModule()
 	var node yaml.Node
 	if err := node.Encode(map[string]any{
-		"weatherapi_url": api.URL,
+		// Validation accepts surrounding whitespace; the request must use the normalized URL too.
+		"weatherapi_url": " \t" + api.URL + " \n",
 		"geocoding_url":  failed.URL,
 		"forecast_url":   failed.URL,
 		"fallback_url":   failed.URL,

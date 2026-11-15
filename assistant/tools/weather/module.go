@@ -89,6 +89,8 @@ func (m *Module) Configure(section *yaml.Node) error {
 			return err
 		}
 	}
+	// Store the same credential-bearing URL that the origin validator checks.
+	cfg.WeatherAPIURL = strings.TrimSpace(cfg.WeatherAPIURL)
 	if err := cfg.validate(); err != nil {
 		return err
 	}

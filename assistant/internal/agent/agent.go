@@ -68,11 +68,19 @@ type PendingConfirm = tool.PendingConfirmation
 
 // Result is one Agent path answer.
 type Result struct {
-	Text        string
-	Calls       []ToolCall
-	Pending     *PendingConfirm
-	Unavailable bool
-	TimedOut    bool
+	Text  string
+	Calls []ToolCall
+	// Pending is a Confirmation question the caller must speak.
+	Pending *PendingConfirm
+	// TextNotStreamed marks a fixed fallback line that no delta carried. The
+	// spoken session must say it even after an earlier step streamed a
+	// preamble; it is false for a normal answer, whose deltas are the text.
+	TextNotStreamed bool
+	Unavailable     bool
+	TimedOut        bool
+	// MaxSteps is the step-limit stop, which is a failed request rather than a
+	// successful answer.
+	MaxSteps bool
 	// Cancelled is a Barge-in or shutdown, not a provider failure. The caller
 	// must not log it as unavailable or mark the request failed.
 	Cancelled bool
@@ -185,7 +193,9 @@ func (a *Agent) Run(ctx context.Context, req tool.Request, utterance string, onD
 		}
 		if len(reply.Calls) == 0 {
 			text := strings.TrimSpace(reply.Content)
-			if text == "" {
+			// An empty answer is a fallback line no delta carried.
+			notStreamed := text == ""
+			if notStreamed {
 				text = EmptyReplyMessage
 			}
 			a.history.Add(Turn{Utterance: utterance, Reply: text, Calls: recorded})
@@ -195,7 +205,7 @@ func (a *Agent) Run(ctx context.Context, req tool.Request, utterance string, onD
 				"tools", callNames(recorded),
 				"duration_ms", time.Since(started).Milliseconds(),
 			)
-			return Result{Text: text, Calls: recorded}
+			return Result{Text: text, Calls: recorded, TextNotStreamed: notStreamed}
 		}
 
 		// A confirm Tool never runs here. The registry arms the single pending
@@ -240,7 +250,8 @@ func (a *Agent) Run(ctx context.Context, req tool.Request, utterance string, onD
 
 	a.history.Add(Turn{Utterance: utterance, Reply: MaxStepsMessage, Calls: recorded})
 	a.logger.Warn("agent stopped at step limit", "request_id", req.ID, "steps", a.maxSteps)
-	return Result{Text: MaxStepsMessage, Calls: recorded}
+	// The step-limit line is a fixed fallback no delta carried.
+	return Result{Text: MaxStepsMessage, Calls: recorded, MaxSteps: true, TextNotStreamed: true}
 }
 
 // firstConfirm returns the index of the first runnable confirm call in one
@@ -376,10 +387,11 @@ func (a *Agent) failure(ctx context.Context, req tool.Request, err error) Result
 	switch {
 	case errors.Is(err, errFirstTokenTimeout):
 		a.logger.Error("agent first token timeout", "request_id", req.ID)
-		return Result{Text: FirstTokenTimeoutMessage, TimedOut: true}
+		// The timeout line is a fixed fallback no delta carried.
+		return Result{Text: FirstTokenTimeoutMessage, TimedOut: true, TextNotStreamed: true}
 	case errors.Is(err, errRequestTimeout):
 		a.logger.Error("agent request timeout", "request_id", req.ID)
-		return Result{Text: a.unavailable(), Unavailable: true}
+		return Result{Text: a.unavailable(), Unavailable: true, TextNotStreamed: true}
 	}
 	status := 0
 	var providerErr *providerError
@@ -387,8 +399,9 @@ func (a *Agent) failure(ctx context.Context, req tool.Request, err error) Result
 		status = providerErr.Status
 	}
 	// The status code is logged; the user hears only the configured message.
+	// The Unavailable line is a fixed fallback no delta carried.
 	a.logger.Error("agent request failed", "request_id", req.ID, "status", status, "error", err.Error())
-	return Result{Text: a.unavailable(), Unavailable: true}
+	return Result{Text: a.unavailable(), Unavailable: true, TextNotStreamed: true}
 }
 
 func errorPayload(message string) json.RawMessage {

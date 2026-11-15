@@ -86,6 +86,9 @@ type Reply struct {
 	// Unavailable marks an Agent-path failure whose Text is the configured
 	// Unavailable message. The reply session plays the error Cue before it.
 	Unavailable bool
+	// TextNotStreamed marks an Agent fallback line that no delta carried, so
+	// the reply session must speak it even after a streamed preamble.
+	TextNotStreamed bool
 }
 
 // Option configures a Pipeline without changing the constructor signature.
@@ -475,12 +478,17 @@ func (p *Pipeline) callAgent(ctx context.Context, req tool.Request, transcript s
 	reply.Text = result.Text
 	reply.Pending = result.Pending
 	reply.Unavailable = result.Unavailable
+	reply.TextNotStreamed = result.TextNotStreamed
 	// A spoken Unavailable message is still a reply, but the model call
 	// failed; the raw request line must say so rather than look like success.
 	switch {
 	case result.Cancelled:
 		// Barge-in or shutdown: the reply session classifies the request as
 		// cancelled. Never label it a provider failure.
+	case result.MaxSteps:
+		// The step-limit line is spoken, but the request did not complete.
+		latency.SetAttr(ctx, "agent_error", "max_steps")
+		latency.MarkFailed(ctx)
 	case result.TimedOut:
 		latency.SetAttr(ctx, "agent_error", "timeout")
 		latency.MarkFailed(ctx)

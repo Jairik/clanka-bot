@@ -881,6 +881,84 @@ func TestUnavailableMessageFuncAppliesToTheNextFailure(t *testing.T) {
 	}
 }
 
+// TestResultFlagsMarkUnstreamedFallbacks keeps the spoken session from missing
+// a fixed fallback line no delta carried, and from repeating a normal streamed
+// answer (#193).
+func TestResultFlagsMarkUnstreamedFallbacks(t *testing.T) {
+	preambleCall := toolCallReply("Let me check that.", fakeCall{ID: "1", Name: "time__now", Args: "{}"})
+	tests := []struct {
+		name            string
+		replies         []string
+		status          int
+		delay           time.Duration
+		firstToken      time.Duration
+		maxSteps        int
+		cancel          bool
+		wantText        string
+		wantNotStreamed bool
+		wantMaxSteps    bool
+		wantUnavailable bool
+		wantTimedOut    bool
+		wantCancelled   bool
+	}{
+		{name: "normal answer", replies: []string{textReply("Hello.")}, wantText: "Hello."},
+		{name: "preamble then answer", replies: []string{preambleCall, textReply("It is sunny.")}, wantText: "It is sunny."},
+		{name: "empty answer", replies: []string{textReply()}, wantText: agent.EmptyReplyMessage, wantNotStreamed: true},
+		{name: "step limit", replies: []string{preambleCall}, maxSteps: 1, wantText: agent.MaxStepsMessage, wantNotStreamed: true, wantMaxSteps: true},
+		{name: "first token timeout", replies: []string{textReply("too late")}, delay: 3 * time.Second, firstToken: 100 * time.Millisecond, wantText: agent.FirstTokenTimeoutMessage, wantNotStreamed: true, wantTimedOut: true},
+		{name: "provider failure", replies: []string{textReply("unused")}, status: 500, wantText: "Sorry, I can't answer that right now.", wantNotStreamed: true, wantUnavailable: true},
+		{name: "cancelled", replies: []string{textReply("too late")}, delay: 2 * time.Second, cancel: true, wantCancelled: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fake := newFakeProvider(t, test.replies...)
+			fake.status = test.status
+			fake.delay = test.delay
+			settings := testSettings(fake.start().URL)
+			if test.firstToken > 0 {
+				settings.FirstTokenTimeout = test.firstToken
+			}
+			if test.maxSteps > 0 {
+				settings.MaxSteps = test.maxSteps
+			}
+			var registry *tool.Registry
+			if test.maxSteps > 0 {
+				// The step-limit turn needs a Tool the model can keep calling.
+				registry = newRegistry(t)
+			}
+			a := newTestAgent(t, settings, registry, nil)
+
+			ctx := context.Background()
+			if test.cancel {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithCancel(ctx)
+				defer cancel()
+				time.AfterFunc(100*time.Millisecond, cancel)
+			}
+
+			result := a.Run(ctx, tool.Request{ID: "req-flags"}, "hello", nil)
+			if result.Text != test.wantText {
+				t.Fatalf("Text = %q, want %q", result.Text, test.wantText)
+			}
+			if result.TextNotStreamed != test.wantNotStreamed {
+				t.Fatalf("TextNotStreamed = %v, want %v", result.TextNotStreamed, test.wantNotStreamed)
+			}
+			if result.MaxSteps != test.wantMaxSteps {
+				t.Fatalf("MaxSteps = %v, want %v", result.MaxSteps, test.wantMaxSteps)
+			}
+			if result.Unavailable != test.wantUnavailable {
+				t.Fatalf("Unavailable = %v, want %v", result.Unavailable, test.wantUnavailable)
+			}
+			if result.TimedOut != test.wantTimedOut {
+				t.Fatalf("TimedOut = %v, want %v", result.TimedOut, test.wantTimedOut)
+			}
+			if result.Cancelled != test.wantCancelled {
+				t.Fatalf("Cancelled = %v, want %v", result.Cancelled, test.wantCancelled)
+			}
+		})
+	}
+}
+
 // openSecretService gives the Agent path the same real store-backed resolver
 // production uses, so key precedence is exercised at the provider boundary.
 func openSecretService(t *testing.T, names ...string) *secrets.Service {

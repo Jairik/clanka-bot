@@ -56,7 +56,7 @@ assert_kept() {
 test_ignores_the_local_database_and_dev_binary() {
 	local pattern
 	# `data` is the directory `assistant` creates outside Compose (ADR-0003).
-	for pattern in data assistant '*.db' '*.db-wal' '*.db-shm' '*.log'; do
+	for pattern in data assistant '**/*.db' '**/*.db-wal' '**/*.db-shm' '**/*.log'; do
 		assert_ignored "$pattern"
 	done
 }
@@ -96,7 +96,7 @@ test_scratch_context_drops_local_artefacts() {
 	local ctx="$TMP/context" out="$TMP/out" entry
 	mkdir -p "$ctx/data/voices" "$ctx/web/test-results" "$ctx/web/playwright-report" \
 		"$ctx/web/node_modules/pkg" "$ctx/.git/objects" "$ctx/cmd/assistant" \
-		"$ctx/internal/dashboard/ui/dist" "$out"
+		"$ctx/internal/dashboard/ui/dist" "$ctx/custom/state" "$ctx/web/src" "$out"
 	cp "$IGNORE" "$ctx/.dockerignore"
 	printf 'FROM scratch\nCOPY . /ctx\n' >"$ctx/Dockerfile"
 
@@ -104,6 +104,11 @@ test_scratch_context_drops_local_artefacts() {
 	printf 'CREATE TABLE secrets;\n' >"$ctx/data/assistant.db"
 	printf 'dummy wal\n' >"$ctx/data/assistant.db-wal"
 	printf 'dummy log\n' >"$ctx/data/assistant.log"
+	# A custom ASSISTANT_DATA_DIR can be nested anywhere in the build context.
+	for entry in assistant.db assistant.db-wal assistant.db-shm assistant.log; do
+		printf 'private fixture\n' >"$ctx/custom/state/$entry"
+		printf 'private fixture\n' >"$ctx/$entry"
+	done
 	printf 'binary\n' >"$ctx/assistant"
 	printf 'ref: main\n' >"$ctx/.git/HEAD"
 	printf 'x\n' >"$ctx/web/test-results/report.json"
@@ -112,9 +117,15 @@ test_scratch_context_drops_local_artefacts() {
 	printf 'x\n' >"$ctx/internal/dashboard/ui/dist/index.js"
 	printf '{}\n' >"$ctx/config.yaml"
 	printf 'module example\n' >"$ctx/go.mod"
+	printf '' >"$ctx/go.sum"
 	printf 'package main\n' >"$ctx/cmd/assistant/main.go"
 	printf 'package internal\n' >"$ctx/internal/x.go"
 	printf '{}\n' >"$ctx/web/package.json"
+	printf '// Required frontend source fixture.\nexport {};\n' >"$ctx/web/src/main.tsx"
+	printf '/* Required frontend style fixture. */\nbody {}\n' >"$ctx/web/src/style.css"
+	printf '// Required Vite configuration fixture.\nexport default {};\n' >"$ctx/web/vite.config.ts"
+	printf '{}\n' >"$ctx/web/tsconfig.json"
+	printf 'lockfileVersion: 9\n' >"$ctx/web/pnpm-lock.yaml"
 
 	if ! docker buildx build --progress=plain --output "type=local,dest=$out" "$ctx" \
 		>"$TMP/docker.log" 2>&1; then
@@ -124,6 +135,8 @@ test_scratch_context_drops_local_artefacts() {
 	fi
 
 	for entry in data/assistant.db data/assistant.db-wal data/assistant.log assistant \
+		assistant.db assistant.db-wal assistant.db-shm assistant.log \
+		custom/state/assistant.db custom/state/assistant.db-wal custom/state/assistant.db-shm custom/state/assistant.log \
 		.git web/test-results web/playwright-report web/node_modules \
 		internal/dashboard/ui/dist; do
 		if [[ -e "$out/ctx/$entry" ]]; then
@@ -133,7 +146,8 @@ test_scratch_context_drops_local_artefacts() {
 		fi
 	done
 
-	for entry in config.yaml go.mod cmd/assistant/main.go internal/x.go web/package.json; do
+	for entry in config.yaml go.mod go.sum cmd/assistant/main.go internal/x.go web/package.json \
+		web/src/main.tsx web/src/style.css web/vite.config.ts web/tsconfig.json web/pnpm-lock.yaml; do
 		if [[ -e "$out/ctx/$entry" ]]; then
 			pass
 		else

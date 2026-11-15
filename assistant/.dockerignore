@@ -13,11 +13,12 @@ web/playwright-report
 # carry the database off the machine. The one exception is config.yaml, which
 # the image needs; never ignore it.
 data
-*.db
-*.db-wal
-*.db-shm
-*.log
+# A custom data directory inside this context must not bypass these rules.
+**/*.db
+**/*.db-wal
+**/*.db-shm
+**/*.log
 
-# A local `go build` output, and VCS history if the context ever widens.
+# A local `go build` output and VCS metadata inside this build context.
 assistant
 .git

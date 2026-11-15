@@ -70,6 +70,7 @@ const view = (agent: Setting[], over: Partial<SettingsView> = {}): SettingsView 
   Error: "",
   HasSettings: true,
   Tools: [],
+  Ignored: [],
   Agent: agent,
   ToolWording: [],
   Quiet: [],

@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"sync"
@@ -148,6 +149,15 @@ func newDefinition(key string, kind valueKind, def any, opts []Option) Definitio
 // this is not a general event bus.
 type Observer func(keys []string)
 
+// IgnoredSetting is a stored override that no longer passes its definition's
+// validator. The row stays in SQLite, but the config/default layer applies
+// until the owner resets it. A later build with a compatible rule may use it
+// again.
+type IgnoredSetting struct {
+	Key    string `json:"key"`
+	Reason string `json:"reason"`
+}
+
 // Value is one setting's effective value and every layer that contributes to
 // it. Config and Override are nil when that layer is absent.
 type Value struct {
@@ -203,7 +213,10 @@ type Service struct {
 	defs      map[string]Definition
 	order     []string
 	overrides map[string]any
-	observer  Observer
+	// ignored maps a stored key to the reason its validator rejected it. Rows
+	// are loaded once, then removed by a successful Set or Reset of the key.
+	ignored  map[string]string
+	observer Observer
 }
 
 // New validates the definitions, reads stored overrides and returns the
@@ -216,6 +229,7 @@ func New(ctx context.Context, st *store.Store, defs ...Definition) (*Service, er
 		db:        st.DB(),
 		defs:      make(map[string]Definition, len(defs)),
 		overrides: make(map[string]any, len(defs)),
+		ignored:   make(map[string]string),
 	}
 	for _, def := range defs {
 		if strings.TrimSpace(def.Key) == "" {
@@ -258,10 +272,25 @@ func New(ctx context.Context, st *store.Store, defs ...Definition) (*Service, er
 		}
 		value, err := def.kind.decode(json.RawMessage(raw))
 		if err != nil {
-			return nil, fmt.Errorf("settings: stored override %s: %w", key, err)
+			// A row that cannot be decoded is corrupt, not merely stale: a
+			// tools.<name>.enabled row would become the code default (true) if
+			// skipped, silently re-enabling a Tool. Keep it fatal and name the
+			// recovery step, because the Settings page cannot start either.
+			return nil, fmt.Errorf("settings: stored override %s: %w (recovery: DELETE FROM settings WHERE key = '%s', then restart)",
+				key, err, key)
 		}
 		if err := def.validateValue(value); err != nil {
-			return nil, fmt.Errorf("settings: stored override %s: %w", key, err)
+			// A validator failure means the row was valid when written and the
+			// rules changed. That is data, not a wiring error: skip the row,
+			// keep it in SQLite for a later build, and let the owner reset it
+			// from the now-running Settings page. Reasons may repeat the stored
+			// value, so only the key is logged; details stay in the owner view.
+			reason := err.Error()
+			s.ignored[key] = reason
+			slog.Default().Warn("settings: ignored stored override that fails its current validator",
+				"key", key,
+			)
+			continue
 		}
 		s.overrides[key] = value
 	}
@@ -332,6 +361,24 @@ func (s *Service) List() []Value {
 		values = append(values, s.valueLocked(s.defs[key]))
 	}
 	return values
+}
+
+// Ignored returns the stored overrides skipped at load because their current
+// validator rejected them, in key order. The rows are still in SQLite; a Reset
+// removes one and a valid Set replaces it.
+func (s *Service) Ignored() []IgnoredSetting {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if len(s.ignored) == 0 {
+		return nil
+	}
+	ignored := make([]IgnoredSetting, 0, len(s.ignored))
+	for _, key := range s.order {
+		if reason, ok := s.ignored[key]; ok {
+			ignored = append(ignored, IgnoredSetting{Key: key, Reason: reason})
+		}
+	}
+	return ignored
 }
 
 // String returns the effective string, or "" for an unknown or mistyped key.
@@ -463,6 +510,8 @@ func (s *Service) SetMany(ctx context.Context, values map[string]any) error {
 	s.mu.Lock()
 	for _, w := range prepared {
 		s.overrides[w.key] = w.value
+		// The write was validated above, so it supersedes an ignored row.
+		delete(s.ignored, w.key)
 		keys = append(keys, w.key)
 	}
 	s.mu.Unlock()
@@ -519,6 +568,8 @@ func (s *Service) ResetMany(ctx context.Context, keys ...string) error {
 	s.mu.Lock()
 	for _, key := range unique {
 		delete(s.overrides, key)
+		// Resetting an ignored key removes the row the owner was warned about.
+		delete(s.ignored, key)
 	}
 	s.mu.Unlock()
 	s.notify(unique)

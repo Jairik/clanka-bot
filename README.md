@@ -857,6 +857,13 @@ below and the connection-level values. A stored Permission may only tighten
 (`read` → `act` → `confirm`), never loosen, and Local-only is code-declared and
 cannot be overridden.
 
+A stored override that no longer passes its current check (for example after a
+later build tightens a rule) is ignored instead of blocking startup: the
+`config.yaml` or code-default value applies, the row stays in SQLite, and the
+Settings page shows a warning with a Reset action. A corrupt row that cannot be
+decoded stays fatal and the error names the one SQLite row to delete. An
+invalid `config.yaml` value is always fatal.
+
 The `timezone` setting is a live IANA name for clock-time Alarms and Reminders.
 An empty value falls back to the container's `TZ`, then UTC, and UTC logs a
 startup warning. The same settings service the Dashboard writes through is the

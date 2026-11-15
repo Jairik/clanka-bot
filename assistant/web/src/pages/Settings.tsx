@@ -37,6 +37,32 @@ export function SettingsPage() {
       {data?.HasSettings && (
         <div className="space-y-2.5">
           <Equalizer />
+          {!!data.Ignored?.length && (
+            <Section title="Stored values ignored" summary={`${data.Ignored.length} warning`} tone="warn" defaultOpen flush>
+              <Lede>
+                A stored override no longer passes its current check, so the config.yaml or code-default value applies instead. The stored row is
+                kept for a later build; reset it to remove it for good.
+              </Lede>
+              <ul className="divide-y divide-separator">
+                {data.Ignored.map((row) => (
+                  <li key={row.Key} className="flex flex-col gap-2 px-3.5 py-3 sm:flex-row sm:items-center">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="font-mono text-sm">{row.Key}</span>
+                        <Badge tone="warn">ignored</Badge>
+                      </div>
+                      <p className="mt-1 break-words text-xs text-muted">{row.Reason}</p>
+                    </div>
+                    <ResetButton
+                      label={`Reset ${row.Label}`}
+                      isPending={actions.pending === row.ResetAction}
+                      onPress={() => void actions.run(row.ResetAction)}
+                    />
+                  </li>
+                ))}
+              </ul>
+            </Section>
+          )}
           <Section title="Tools" summary={`${(data.Tools ?? []).filter((t) => t.Enabled).length}/${data.Tools?.length ?? 0} enabled`} defaultOpen flush>
             <Lede>
               Enable or disable a Tool, or tighten its Permission. A Permission can only move towards Confirm; Local-only is declared in code. Changes apply on the

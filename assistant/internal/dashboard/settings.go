@@ -34,6 +34,10 @@ type settingsView struct {
 	Error       string
 	HasSettings bool
 	Tools       []settingsToolView
+	// Ignored lists stored overrides skipped at load because a later build's
+	// validator rejects them. The normal row below reports the layer that
+	// actually applies; these rows offer the Reset that removes the row.
+	Ignored     []ignoredSettingView
 	Agent       []settingView
 	ToolWording []toolWordingView
 	Quiet       []settingView
@@ -77,6 +81,15 @@ type permissionChoice struct {
 	Value    string
 	Label    string
 	Selected bool
+}
+
+// ignoredSettingView is one stored override the settings service skipped. Its
+// row explains why and carries the reset that deletes the stored entry.
+type ignoredSettingView struct {
+	Key         string
+	Label       string
+	Reason      string
+	ResetAction string
 }
 
 // toolWordingView groups the per-Tool wording keys that the service exposes.
@@ -329,6 +342,15 @@ func (h *Handler) buildSettingsView(flash, errorText string, edit *editState) se
 		return view
 	}
 	view.HasSettings = true
+
+	for _, ignored := range h.settings.Ignored() {
+		view.Ignored = append(view.Ignored, ignoredSettingView{
+			Key:         ignored.Key,
+			Label:       settingLabel(ignored.Key),
+			Reason:      ignored.Reason,
+			ResetAction: "/settings/values/" + ignored.Key + "/reset",
+		})
+	}
 
 	seen := make(map[string]bool)
 	if h.tools != nil {

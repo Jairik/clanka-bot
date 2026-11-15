@@ -206,7 +206,27 @@ func TestSearchFailureLogOmitsTheQuery(t *testing.T) {
 			kind: "http",
 		},
 		{
-			name: "body",
+			name: "body read",
+			server: func(t *testing.T) (string, time.Duration) {
+				t.Helper()
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					conn, buf, err := w.(http.Hijacker).Hijack()
+					if err != nil {
+						return
+					}
+					defer conn.Close()
+					// Promise more than is sent so the client's body read
+					// fails after the marker has already left the server.
+					fmt.Fprintf(buf, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 4096\r\n\r\n%s", redactionMarker)
+					buf.Flush()
+				}))
+				t.Cleanup(server.Close)
+				return server.URL, time.Second
+			},
+			kind: "http",
+		},
+		{
+			name: "invalid JSON",
 			server: func(t *testing.T) (string, time.Duration) {
 				t.Helper()
 				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

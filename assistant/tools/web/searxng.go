@@ -172,7 +172,8 @@ func (s *searxng) Search(ctx context.Context, query string, maxResults int) ([]R
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, fmt.Errorf("searxng: search returned %s", resp.Status)
+		// The numeric status is bounded; the reason phrase is upstream text.
+		return nil, fmt.Errorf("searxng: search returned HTTP %d", resp.StatusCode)
 	}
 	// Read one byte past the cap so an oversize page is detected rather than
 	// silently truncated into invalid JSON.
@@ -185,7 +186,9 @@ func (s *searxng) Search(ctx context.Context, query string, maxResults int) ([]R
 	}
 	var payload searxngResponse
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return nil, fmt.Errorf("searxng: invalid JSON: %w", err)
+		// encoding/json quotes the invalid byte, which could be a body echo
+		// of the query; name the failure without the response text.
+		return nil, errors.New("searxng: invalid JSON response")
 	}
 
 	results := make([]Result, 0, min(maxResults, len(payload.Results)))

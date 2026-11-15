@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -333,10 +334,10 @@ func TestSubmitWritesTheRecorderLayoutAndACopyCommand(t *testing.T) {
 	if bundle.HostPath != "/home/rbpi/clanka-bot/exports/"+bundle.Name {
 		t.Errorf("host path = %q", bundle.HostPath)
 	}
-	if want := "scp rbpi@pi:" + bundle.HostPath + " ."; bundle.SCP != want {
+	if want := "scp rbpi@pi:'" + bundle.HostPath + "' ."; bundle.SCP != want {
 		t.Errorf("SCP = %q, want %q", bundle.SCP, want)
 	}
-	if want := "tailscale file cp " + bundle.HostPath + " desktop:"; bundle.Taildrop != want {
+	if want := "tailscale file cp '" + bundle.HostPath + "' desktop:"; bundle.Taildrop != want {
 		t.Errorf("Taildrop = %q, want %q", bundle.Taildrop, want)
 	}
 
@@ -387,6 +388,66 @@ func TestSubmitWritesTheRecorderLayoutAndACopyCommand(t *testing.T) {
 	}
 	if bundles[0].SCP == "" || bundles[0].Positives != MinTakes {
 		t.Errorf("listed bundle = %+v", bundles[0])
+	}
+}
+
+// shellWords parses one pasted command line without running it and returns the
+// words the shell would hand the program. NUL separates them so a path holding
+// a newline stays one word.
+func shellWords(t *testing.T, command string) []string {
+	t.Helper()
+	out, err := exec.Command("sh", "-c", "set -- "+command+`; printf '%s\0' "$@"`).Output()
+	if err != nil {
+		t.Fatalf("sh parse %q: %v", command, err)
+	}
+	words := strings.Split(string(out), "\x00")
+	return words[:len(words)-1]
+}
+
+// A hostile host directory must still paste as the literal path, with no
+// expansion and no second command, in both copy commands.
+func TestCopyCommandsQuoteHostilePathsForAPOSIXShell(t *testing.T) {
+	const name = "clanker-20261112-093000.tar.gz"
+	tests := []struct {
+		name string
+		dir  string
+		want string // the path as the shell must see it
+	}{
+		{"plain", "/srv/clips", "'/srv/clips/clanker-20261112-093000.tar.gz'"},
+		{"space", "/srv/voice samples", "'/srv/voice samples/clanker-20261112-093000.tar.gz'"},
+		{"dollar", "/srv/$HOME", "'/srv/$HOME/clanker-20261112-093000.tar.gz'"},
+		{"command substitution", "/srv/$(id)", "'/srv/$(id)/clanker-20261112-093000.tar.gz'"},
+		{"backtick", "/srv/`id`", "'/srv/`id`/clanker-20261112-093000.tar.gz'"},
+		{"single quote", "/srv/it's", `'/srv/it'\''s/clanker-20261112-093000.tar.gz'`},
+		{"double quote", `/srv/a"b`, `'/srv/a"b/clanker-20261112-093000.tar.gz'`},
+		{"backslash", `/srv/a\b`, `'/srv/a\b/clanker-20261112-093000.tar.gz'`},
+		{"semicolon", "/srv/a;b", "'/srv/a;b/clanker-20261112-093000.tar.gz'"},
+		{"semicolon only", "/srv/;", "'/srv/;/clanker-20261112-093000.tar.gz'"},
+		{"ampersand", "/srv/a&b", "'/srv/a&b/clanker-20261112-093000.tar.gz'"},
+		{"pipe", "/srv/a|b", "'/srv/a|b/clanker-20261112-093000.tar.gz'"},
+		{"newline", "/srv/a\nb", "'/srv/a\nb/clanker-20261112-093000.tar.gz'"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			hostPath := filepath.Join(tc.dir, name)
+			if got := shellPath(hostPath); got != tc.want {
+				t.Fatalf("shellPath(%q) = %q, want %q", hostPath, got, tc.want)
+			}
+			s := &Service{hostDir: tc.dir, sshUser: "rbpi", sshHost: "pi", desktop: "desktop"}
+			bundle := Bundle{Name: name}
+			s.decorate(&bundle)
+			if bundle.HostPath != hostPath {
+				t.Fatalf("HostPath = %q, want %q", bundle.HostPath, hostPath)
+			}
+			scp := shellWords(t, bundle.SCP)
+			if len(scp) != 3 || scp[0] != "scp" || scp[1] != "rbpi@pi:"+hostPath || scp[2] != "." {
+				t.Errorf("scp pastes as %q, want the literal host path", scp)
+			}
+			taildrop := shellWords(t, bundle.Taildrop)
+			if len(taildrop) != 5 || taildrop[0] != "tailscale" || taildrop[3] != hostPath || taildrop[4] != "desktop:" {
+				t.Errorf("taildrop pastes as %q, want the literal host path", taildrop)
+			}
+		})
 	}
 }
 

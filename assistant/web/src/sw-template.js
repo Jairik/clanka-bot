@@ -64,7 +64,11 @@ self.addEventListener("fetch", (event) => {
 async function navigate(request) {
   try {
     const response = await fetch(request);
-    if (response.ok) {
+    // Only an HTML answer is the app shell. A navigation that lands on a
+    // download or a media file (a missing download attribute, a shared link)
+    // must never be stored under /index.html.
+    const type = response.headers.get("content-type") || "";
+    if (response.ok && type.startsWith("text/html")) {
       const cache = await caches.open(CACHE);
       cache.put("/index.html", response.clone());
     }

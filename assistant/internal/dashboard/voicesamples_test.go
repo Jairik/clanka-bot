@@ -286,6 +286,11 @@ func TestVoiceSamplesSubmitWritesABundleAndServesTheDownload(t *testing.T) {
 	if got := download.Header().Get("Content-Disposition"); !strings.Contains(got, "attachment") {
 		t.Errorf("Content-Disposition = %q", got)
 	}
+	// The bundle is the owner's recordings; a cached copy would outlive the
+	// session and reach the next Tailscale user of this browser.
+	if got := download.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store for a private bundle", got)
+	}
 	gz, err := gzip.NewReader(download.Body)
 	if err != nil {
 		t.Fatalf("gzip: %v", err)

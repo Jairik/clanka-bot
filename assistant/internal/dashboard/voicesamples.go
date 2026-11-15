@@ -279,6 +279,9 @@ func (h *Handler) voiceSamplesBundle(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 	w.Header().Set("Content-Type", "application/gzip")
+	// The bundle is the owner's own recordings: never let Cache Storage keep it,
+	// even if a browser opened the URL without honouring the attachment.
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": name}))
 	http.ServeContent(w, r, name, bundle.CreatedAt, file)
 }

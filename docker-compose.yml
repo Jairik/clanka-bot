@@ -5,9 +5,12 @@
 #   - a healthcheck that never calls the internet, so the stack does not flap
 #     when the network drops
 #   - ML services bake model weights before copying application code
-#   - least privilege: no-new-privileges, cap_drop ALL and a PID limit for
-#     every service that only computes or serves; soloist (host networking)
-#     and dashboard-web (static files) are the documented exceptions
+#   - least privilege: no-new-privileges, cap_drop ALL and pids_limit 256 for
+#     every compute/service container; soloist is out of scope for this block
+#     (host networking is not a capability, and it already sets
+#     no-new-privileges), while dashboard-web is exempt because nginx's root
+#     master needs CAP_CHOWN to chown /var/cache/nginx and CAP_SETUID/CAP_SETGID
+#     to drop workers. scripts/check-compose.sh enforces the exact block.
 services:
   # MiniLM vectors for the semantic Fast path. Internal-only port.
   embed:

@@ -7,12 +7,14 @@
 #   - a locally built ML service downloads model weights before its first
 #     COPY of application code (so code edits do not bust the weights layer)
 #   - every service that only computes or serves content drops all Linux
-#     capabilities, refuses privilege gain and caps its PIDs; soloist (host
-#     networking) and dashboard-web (static files) are explicit exceptions
+#     capabilities, refuses privilege gain and caps its PIDs at 256; soloist is
+#     out of scope for that block and dashboard-web cannot drop capabilities,
+#     so both are explicit exceptions
 #
 # The compose file is expected to keep the flat layout used here: top-level
-# `services:` with two-space service keys. The script only reads files; it does
-# not need Docker, so `make check` also works before the stack is built.
+# `services:` with two-space service keys. Keys may carry a trailing comment.
+# The script only reads files; it does not need Docker, so `make check` also
+# works before the stack is built.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -21,10 +23,14 @@ ML_SERVICES="wakeword stt tts embed"
 # Services that need no capability and no privilege gain. assistant handles
 # untrusted text but still needs none; it keeps its system D-Bus mount for BLE.
 HARDENED_SERVICES="assistant embed wakeword stt tts web-search"
-# Documented exceptions: soloist already sets no-new-privileges and needs host
-# networking for mDNS; dashboard-web is a static file server. Neither gains the
-# new options, and a new service must be added to one list on purpose.
-PRIVILEGE_EXEMPT_SERVICES="dashboard-web soloist"
+# Soloist is out of scope for #241's cap_drop/pids_limit block, but its existing
+# no-new-privileges is still a documented convention and is enforced here.
+# Host networking is not a Linux capability, and it runs as the host UID.
+NNP_ONLY_SERVICES="soloist"
+# The one full exception: nginx's root master needs CAP_CHOWN to chown
+# /var/cache/nginx and CAP_SETUID/CAP_SETGID to drop workers to uid 101, so
+# cap_drop: ALL makes it exit. A new service must join a list on purpose.
+FULLY_EXEMPT_SERVICES="dashboard-web"
 
 FAILURES=0
 WARNINGS=0
@@ -41,9 +47,9 @@ warn() {
 
 service_names() {
 	awk '
-		/^services:[[:space:]]*$/ { in_services=1; next }
+		/^services:[[:space:]]*(#.*)?$/ { in_services=1; next }
 		in_services && /^[^[:space:]#]/ { in_services=0 }
-		in_services && /^  [A-Za-z0-9_.-]+:[[:space:]]*$/ {
+		in_services && /^  [A-Za-z0-9_.-]+:[[:space:]]*(#.*)?$/ {
 			name=$0
 			sub(/^  /, "", name)
 			sub(/:.*/, "", name)
@@ -54,7 +60,7 @@ service_names() {
 
 service_block() {
 	awk -v svc="$1" '
-		/^  [A-Za-z0-9_.-]+:[[:space:]]*$/ {
+		/^  [A-Za-z0-9_.-]+:[[:space:]]*(#.*)?$/ {
 			name=$0
 			sub(/^  /, "", name)
 			sub(/:.*/, "", name)
@@ -67,55 +73,123 @@ service_block() {
 
 healthcheck_block() {
 	awk '
-		/^    healthcheck:[[:space:]]*$/ { in_health=1; next }
-		in_health && /^    [A-Za-z0-9_.-]+:[[:space:]]*$/ { in_health=0 }
+		/^    healthcheck:[[:space:]]*(#.*)?$/ { in_health=1; next }
+		in_health && /^    [A-Za-z0-9_.-]+:/ { in_health=0 }
 		in_health { print }
 	' <<<"$1"
 }
 
-# YAML block-list items under a service key, one per line:
+# YAML block-list items under a service key, one per line. Stop at any sibling
+# key, including one that carries a trailing comment, so a later list cannot be
+# credited to an earlier key.
 #   list_items security_opt "<service block>"
 list_items() {
 	local key=$1 block=$2
 	awk -v key="$key" '
-		$0 ~ "^    " key ":[[:space:]]*$" { inside=1; next }
-		inside && /^    [A-Za-z0-9_.-]+:[[:space:]]*$/ { inside=0 }
+		$0 ~ "^    " key ":[[:space:]]*(#.*)?$" { inside=1; next }
+		inside && /^    [A-Za-z0-9_.-]+:/ { inside=0 }
 		inside && /^[[:space:]]+-[[:space:]]*/ {
 			sub(/^[[:space:]]+-[[:space:]]*/, "")
+			sub(/[[:space:]]+#.*$/, "")
+			sub(/[[:space:]]+$/, "")
 			print
 		}
 	' <<<"$block"
 }
 
+# Count the service-level occurrences of a key, with or without a comment.
+key_count() {
+	local key=$1 block=$2
+	grep -cE "^    $key:" <<<"$block" || true
+}
+
+# First value for a service-level key, without its optional trailing comment.
+key_value() {
+	local key=$1 block=$2
+	awk -v key="$key" '
+		$0 ~ "^    " key ":" {
+			sub("^    " key ":[[:space:]]*", "")
+			sub(/[[:space:]]+#.*$/, "")
+			sub(/[[:space:]]+$/, "")
+			print
+			exit
+		}
+	' <<<"$block"
+}
+
+# One line for a list, so an override or duplicate entry is visible in a message.
+join_items() {
+	list_items "$1" "$2" | awk 'NR > 1 { printf " " } { printf "%s", $0 }'
+}
+
+check_no_new_privileges() {
+	local svc=$1 block=$2 count opt
+	count="$(key_count security_opt "$block")"
+	if [[ "$count" -ne 1 ]]; then
+		fail "$svc: security_opt must include no-new-privileges:true exactly once (found $count key(s))"
+		return
+	fi
+	opt="$(join_items security_opt "$block")"
+	if [[ "$opt" != "no-new-privileges:true" ]]; then
+		fail "$svc: security_opt must include no-new-privileges:true and no override (found '${opt:-none}')"
+	fi
+}
+
 check_privileges() {
-	local svc=$1 block=$2
-	if ! list_items security_opt "$block" | grep -qxF 'no-new-privileges:true'; then
-		fail "$svc: security_opt must include no-new-privileges:true"
+	local svc=$1 block=$2 count drops pids
+	check_no_new_privileges "$svc" "$block"
+
+	# cap_add re-adds a capability on top of cap_drop: ALL; privileged grants
+	# the whole set. Hardened services must do neither.
+	if [[ "$(key_count cap_add "$block")" -ne 0 ]]; then
+		fail "$svc: cap_add is not allowed on a hardened service; document an exception instead"
 	fi
-	if ! list_items cap_drop "$block" | grep -qxF 'ALL'; then
-		fail "$svc: cap_drop must include ALL"
+	if [[ "$(key_count privileged "$block")" -ne 0 ]]; then
+		fail "$svc: privileged is not allowed on a hardened service"
 	fi
-	if ! grep -qE '^    pids_limit:[[:space:]]*[0-9]+[[:space:]]*$' <<<"$block"; then
-		fail "$svc: pids_limit is required (a positive integer)"
+
+	count="$(key_count cap_drop "$block")"
+	drops="$(join_items cap_drop "$block")"
+	if [[ "$count" -ne 1 || "$drops" != "ALL" ]]; then
+		fail "$svc: cap_drop must include ALL and nothing else exactly once (found $count key(s): '${drops:-none}')"
+	fi
+
+	count="$(key_count pids_limit "$block")"
+	if [[ "$count" -eq 0 ]]; then
+		fail "$svc: pids_limit is required (must be exactly 256; 0 and -1 mean unlimited in Docker)"
+	elif [[ "$count" -ne 1 ]]; then
+		fail "$svc: pids_limit must appear exactly once (found $count keys)"
+	else
+		pids="$(key_value pids_limit "$block")"
+		if [[ "$pids" != "256" ]]; then
+			fail "$svc: pids_limit must be 256, not '${pids:-none}' (0 and -1 mean unlimited in Docker)"
+		fi
 	fi
 }
 
 build_context() {
 	local block=$1 short
-	short="$(awk '/^    build:[[:space:]]*[^[:space:]]/ {
-		sub(/^    build:[[:space:]]*/, "");
-		print;
-		exit
-	}' <<<"$block")"
+	# Inline form, with an optional trailing comment on the key or the value.
+	short="$(awk '
+		/^    build:/ {
+			sub(/^    build:[[:space:]]*/, "")
+			sub(/[[:space:]]+#.*$/, "")
+			sub(/[[:space:]]+$/, "")
+			if ($0 != "") print
+			exit
+		}
+	' <<<"$block")"
 	if [[ -n "$short" ]]; then
 		printf '%s\n' "$short"
 		return
 	fi
 	awk '
-		/^    build:[[:space:]]*$/ { in_build=1; next }
-		in_build && /^    [A-Za-z0-9_.-]+:[[:space:]]*$/ { in_build=0 }
+		/^    build:[[:space:]]*(#.*)?$/ { in_build=1; next }
+		in_build && /^    [A-Za-z0-9_.-]+:/ { in_build=0 }
 		in_build && /^[[:space:]]+context:/ {
 			sub(/^[[:space:]]+context:[[:space:]]*/, "")
+			sub(/[[:space:]]+#.*$/, "")
+			sub(/[[:space:]]+$/, "")
 			print
 			exit
 		}
@@ -124,10 +198,12 @@ build_context() {
 
 dockerfile_name() {
 	awk '
-		/^    build:[[:space:]]*$/ { in_build=1; next }
-		in_build && /^    [A-Za-z0-9_.-]+:[[:space:]]*$/ { in_build=0 }
+		/^    build:[[:space:]]*(#.*)?$/ { in_build=1; next }
+		in_build && /^    [A-Za-z0-9_.-]+:/ { in_build=0 }
 		in_build && /^[[:space:]]+dockerfile:/ {
 			sub(/^[[:space:]]+dockerfile:[[:space:]]*/, "")
+			sub(/[[:space:]]+#.*$/, "")
+			sub(/[[:space:]]+$/, "")
 			print
 			exit
 		}
@@ -197,7 +273,7 @@ check_service() {
 		fail "$svc: build context is required so clanka/$svc:<sha> exists for rollback"
 	fi
 
-	if ! grep -qE '^    restart:[[:space:]]*unless-stopped[[:space:]]*$' <<<"$block"; then
+	if ! grep -qE '^    restart:[[:space:]]*unless-stopped[[:space:]]*(#.*)?$' <<<"$block"; then
 		fail "$svc: restart must be unless-stopped"
 	fi
 	case " $HARDENED_SERVICES " in
@@ -205,13 +281,18 @@ check_service() {
 		check_privileges "$svc" "$block"
 		;;
 	*)
-		case " $PRIVILEGE_EXEMPT_SERVICES " in
-		*" $svc "*) ;;
-		*) fail "$svc: add it to HARDENED_SERVICES or PRIVILEGE_EXEMPT_SERVICES in scripts/check-compose.sh with a reason" ;;
+		case " $NNP_ONLY_SERVICES " in
+		*" $svc "*) check_no_new_privileges "$svc" "$block" ;;
+		*)
+			case " $FULLY_EXEMPT_SERVICES " in
+			*" $svc "*) ;;
+			*) fail "$svc: add it to HARDENED_SERVICES, NNP_ONLY_SERVICES or FULLY_EXEMPT_SERVICES in scripts/check-compose.sh with a reason" ;;
+			esac
+			;;
 		esac
 		;;
 	esac
-	if ! grep -qE '^    healthcheck:[[:space:]]*$' <<<"$block"; then
+	if ! grep -qE '^    healthcheck:[[:space:]]*(#.*)?$' <<<"$block"; then
 		fail "$svc: healthcheck is required"
 		return
 	fi

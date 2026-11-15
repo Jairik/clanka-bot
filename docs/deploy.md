@@ -622,14 +622,38 @@ layer of its own.
 
 ## Container privileges and the system D-Bus grant
 
-Every service except `soloist` and `dashboard-web` runs with
+`assistant`, `embed`, `wakeword`, `stt`, `tts` and `web-search` run with
 `no-new-privileges:true`, `cap_drop: [ALL]` and `pids_limit: 256`. None of them
 binds a privileged port, mounts a device, or needs a setuid helper, so Docker's
 default capability set buys nothing. `scripts/check-compose.sh` (run by
-`make check`) fails a listed service that loses one of those options, and fails
-any service that is in neither the hardened list nor the documented-exception
-list. `soloist` already sets `no-new-privileges` and keeps host networking for
-mDNS; `dashboard-web` only serves static files.
+`make check`) enforces the exact block rather than the presence of a word: it
+rejects a missing or duplicate `security_opt`/`cap_drop`/`pids_limit`, any
+`cap_add` or `privileged: true` that would re-add capabilities, a
+`security_opt` that is not exactly `no-new-privileges:true`, a `cap_drop` that
+is not exactly `ALL`, and a `pids_limit` other than 256. Docker treats 0 and -1
+as unlimited, so the checker requires the documented value. It also fails any
+service in none of its three classification lists, so a new service has to
+choose a class on purpose. The checker is source-level and offline (it reads the
+flat compose layout without a Docker daemon), so `docker compose config` remains
+the schema and render check.
+
+`soloist` is out of scope for this block in #241. Host networking is not a
+Linux capability, so it is not a reason to keep capabilities; Soloist runs as
+the host UID and already sets `no-new-privileges:true`, which the checker still
+enforces. `dashboard-web` is the only full exception, and it cannot drop
+capabilities: nginx's master starts as root, chowns `/var/cache/nginx`
+(`CAP_CHOWN`) and drops its workers to uid 101 (`CAP_SETUID`/`CAP_SETGID`), so
+`cap_drop: ALL` makes it exit before it serves anything. A follow-up can
+evaluate `nginx-unprivileged`, which removes that need.
+
+`pids_limit` counts tasks in the container's pids cgroup: threads and
+healthcheck processes as well as the main process. 256 is deliberate headroom
+measured by starting and health-checking every service under the cap; the
+thread pools in use (`tts` requests four OMP threads, `stt`/`embed` use
+onnxruntime/torch pools, and `web-search` runs two Granian workers) all fit.
+Raise the number deliberately, with a comment and a checker update, when a
+model's thread count changes, so a future `EAGAIN` on fork is not misread as a
+model failure.
 
 `read_only: true` is deliberately not set. `tts` and `embed` may write a
 runtime model cache, `web-search` owns `/var/cache/searxng`, and a read-only
@@ -646,10 +670,13 @@ host D-Bus policy allows the container's UID. That covers BlueZ (adapter power
 and reset, agent registration) and can also cover systemd, logind,
 NetworkManager and other system services. The assistant is the one container
 that handles untrusted text, so this is its widest host interface. No path from
-model output or a fetched page to command execution was found; the helper's
-arguments (saved device address, protocol characteristic, hex payload) are
-validated. It stays because BLE control is a feature, not because the bus is a
-safe default: do not add another bus mount to a compute service.
+model output or a fetched page to arbitrary command execution or an
+attacker-chosen D-Bus method was found. The only execs take typed arguments:
+the BLE helper receives a saved, validated device address, a fixed protocol
+characteristic and a hex payload; the `pacat`/`pactl` helpers take typed
+arguments; and the `yt-dlp` query is `--`-guarded and never goes through a
+shell. It stays because BLE control is a feature, not because the bus is a safe
+default: do not add another bus mount to a compute service.
 
 A narrower future option is an `xdg-dbus-proxy` or `dbus-broker` policy that
 exposes only `org.bluez`. That needs a Pi-verified change and is not applied

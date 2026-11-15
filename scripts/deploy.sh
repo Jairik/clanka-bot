@@ -28,16 +28,21 @@ usage() {
 Usage: scripts/deploy.sh [SHA]
 
 Without a SHA: pull the current branch with --ff-only, build images tagged
-clanka/<service>:<short SHA>, start the stack and wait for every health check.
+clanka/<service>:<short SHA>, start the stack, wait for every health check and
+prune old SHA-tagged image sets (best effort; see scripts/prune-images.sh).
 A branch with commits that are not on its upstream is refused: only pushed
 commits are built.
 
 With a SHA: check that commit out, verify its images already exist locally and
-start the stack with --no-build. This is the rollback path.
+start the stack with --no-build. This is the rollback path. The prune also runs
+after the health wait.
 
 Environment:
   DEPLOY_HEALTH_TIMEOUT  seconds to wait for health checks (default 120)
   DEPLOY_POLL_INTERVAL   seconds between health checks (default 2)
+  DEPLOY_KEEP_IMAGES     newest image sets to keep (default 3)
+  DEPLOY_PINNED_SHAS     comma-separated SHA prefixes the prune must keep
+  DEPLOY_PRUNE_BUILD_CACHE  1 also prunes the build cache (off by default)
 EOF
 }
 
@@ -154,6 +159,15 @@ ensure_receiver() {
 		die "could not prepare the Soloist receiver"
 }
 
+# Reclaim old SHA-tagged images after a healthy start. Best effort: a prune
+# problem must never turn a good deployment into a failed one.
+prune_old_images() {
+	local sha=$1
+	if ! GIT_SHA="$sha" bash "$ROOT/scripts/prune-images.sh"; then
+		warn "image pruning failed; the deployment is still healthy"
+	fi
+}
+
 main() {
 	local requested="" arg sha image missing branch upstream
 	for arg in "$@"; do
@@ -248,6 +262,7 @@ main() {
 
 	wait_for_health
 	log "deployed $sha"
+	prune_old_images "$sha"
 }
 
 main "$@"

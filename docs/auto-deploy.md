@@ -36,7 +36,8 @@ Each tick, in order:
    still prevents redundant builds.
 5. Run `scripts/deploy.sh` unchanged: `git pull --ff-only`, build the
    SHA-tagged images, `docker compose up -d --build --remove-orphans`, then the
-   bounded health wait.
+   bounded health wait and the best-effort old-image prune. A prune warning
+   leaves the deployed stack green.
 6. Re-read `HEAD` and report `deployed <sha>` only when it is the commit the
    watcher asked for. A deploy that exits 0 but leaves `HEAD` elsewhere is an
    error that names both SHAs, so the journal never claims a build the host is
@@ -114,6 +115,7 @@ Every line is prefixed `deploy-watch:` and the deploy it starts keeps its own
 | `CI status for <sha> is unknown; deploying anyway` | the API could not be reached or parsed; see "a network blip is not a CI failure" below |
 | `deploying <sha> (was <sha>)` | the deploy started |
 | `deploy returned 0 but HEAD is <sha>, not <sha>; refusing to report success` | `deploy.sh` succeeded but left the checkout on another commit; investigate before trusting the build |
+| `image pruning failed; the deployment is still healthy` | the old-image cleanup could not read its inventory; the stack is up, and the next deploy retries |
 | `deploy of <sha> failed (exit <n>)` | the build or the health wait failed; see the `deploy:` lines and `docker compose ps` |
 
 A one-off check without deploying:
@@ -145,6 +147,17 @@ A one-off check without deploying:
   anyway. A network blip is not a CI failure, and a commit that is already at
   `HEAD` is skipped regardless, so this cannot cause a redundant rebuild loop.
 
+## Disk space
+
+Each tick builds a fresh `clanka/<service>:<sha>` set, so `deploy.sh` prunes the
+older sets after the health wait. It keeps the deployed set, the newest
+`DEPLOY_KEEP_IMAGES` sets (default 3) and any pinned ones, never touches
+non-SHA tags or sets used by running containers, and only warns if the cleanup
+fails. The full policy and the corrected manual commands are in
+[deploy.md](deploy.md#image-retention-and-disk-space); never use
+`docker image prune -a` or `docker system prune`, because rollback needs the
+older tags.
+
 ## Cost and what it interrupts
 
 A deploy replaces containers, so an auto-deploy in the middle of a conversation
@@ -168,6 +181,10 @@ nothing here publishes images to a registry.
 | `DEPLOY_WATCH_API` | `https://api.github.com` | API base; tests point it at a stub |
 | `DEPLOY_WATCH_LOCK` | `/tmp/clanka-deploy-watch.lock` | single-run lock |
 | `DEPLOY_HEALTH_TIMEOUT` | `120` (`300` in the unit) | passed through to `deploy.sh` |
+| `DEPLOY_KEEP_IMAGES` | `3` | newest SHA image sets to keep; the deployed and pinned sets always survive |
+| `DEPLOY_PINNED_SHAS` | empty | comma-separated SHA prefixes the image prune must keep |
+| `DEPLOY_PRUNE_BUILD_CACHE` | `0` | `1` also prunes the host-wide build cache during the deploy, best effort |
+| `DEPLOY_BUILD_CACHE_AGE` | `168h` | age bound for the opt-in build-cache prune |
 
 The poll interval is the timer's `OnUnitActiveSec`. Edit the unit (or the
 installer and re-run it) to change it; the watcher itself is stateless, so any

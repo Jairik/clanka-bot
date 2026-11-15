@@ -179,6 +179,11 @@ type Auth struct {
 	now    func() time.Time
 	rand   io.Reader
 
+	// refreshMu serialises a whole grant-and-commit against Disconnect and
+	// Complete. It is never held together with a.mu by a caller that would then
+	// wait for it, so the order is always refreshMu then a.mu.
+	refreshMu sync.Mutex
+
 	mu      sync.Mutex
 	pending map[string]pending
 	access  string
@@ -332,6 +337,10 @@ func (a *Auth) Complete(ctx context.Context, owner, state, binding, code string)
 	if a.store == nil {
 		return ErrStore
 	}
+	// Hold refreshMu across the exchange and its commit so a refresh that read
+	// the previous token cannot write it back over this one.
+	a.refreshMu.Lock()
+	defer a.refreshMu.Unlock()
 	grant, err := a.requestToken(ctx, url.Values{
 		"grant_type":    {"authorization_code"},
 		"code":          {code},
@@ -398,6 +407,10 @@ func (a *Auth) consume(owner, state, binding string) (pending, error) {
 // Token returns a valid access token, refreshing at most once for concurrent
 // callers. The refresh token is read from the secrets table on every refresh,
 // so a Dashboard replacement is picked up without a restart.
+//
+// The refresh itself runs on a context detached from the caller and bounded by
+// Config.Timeout: a caller with a short deadline stops waiting, but it cannot
+// cancel the grant or the rotated refresh token's write.
 func (a *Auth) Token(ctx context.Context) (string, error) {
 	if a == nil || !a.cfg.Enabled() {
 		return "", ErrNotConfigured
@@ -423,17 +436,48 @@ func (a *Auth) Token(ctx context.Context) (string, error) {
 			a.mu.Unlock()
 			return "", err
 		}
+		if err := ctx.Err(); err != nil {
+			// An already-canceled caller starts no work it would abandon.
+			a.mu.Unlock()
+			return "", err
+		}
 		done := make(chan struct{})
 		a.inflight = done
 		a.mu.Unlock()
 
-		token, err := a.refresh(ctx)
+		return a.awaitRefresh(ctx, done)
+	}
+}
 
+// refreshOutcome is one single-flight refresh result.
+type refreshOutcome struct {
+	token string
+	err   error
+}
+
+// awaitRefresh runs the single-flight refresh in a goroutine that owns the
+// in-flight marker until the grant has been committed, then hands the result
+// back. The leader waits on its own context too, so a caller that runs out of
+// time returns its own error without aborting the request or dropping a
+// rotated refresh token. Later callers wait for the marker and then read the
+// cached access token.
+func (a *Auth) awaitRefresh(ctx context.Context, done chan struct{}) (string, error) {
+	result := make(chan refreshOutcome, 1)
+	go func() {
+		refreshCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), a.cfg.Timeout.Duration())
+		defer cancel()
+		token, err := a.refresh(refreshCtx)
 		a.mu.Lock()
 		a.inflight = nil
 		close(done)
 		a.mu.Unlock()
-		return token, err
+		result <- refreshOutcome{token: token, err: err}
+	}()
+	select {
+	case outcome := <-result:
+		return outcome.token, outcome.err
+	case <-ctx.Done():
+		return "", ctx.Err()
 	}
 }
 
@@ -470,10 +514,15 @@ func (a *Auth) Invalidate(token string) {
 
 // Disconnect clears the stored refresh token. It does not touch the Soloist
 // receiver's cached Connect credentials; pairing is a separate grant.
+//
+// It waits for an in-flight refresh to commit before clearing, so a grant that
+// was already running cannot write the refresh token back afterwards.
 func (a *Auth) Disconnect(ctx context.Context) (secrets.Metadata, error) {
 	if a == nil || a.store == nil {
 		return secrets.Metadata{}, ErrStore
 	}
+	a.refreshMu.Lock()
+	defer a.refreshMu.Unlock()
 	meta, err := a.store.Clear(ctx, SecretName)
 	if err != nil {
 		return secrets.Metadata{}, err
@@ -584,8 +633,12 @@ func (a *Auth) Status() WebAPIStatus {
 	return status
 }
 
-// refresh performs one token grant. It must be called without a.mu held.
+// refresh performs one token grant. It must be called without a.mu held. The
+// whole read-grant-commit sequence holds refreshMu so it cannot interleave with
+// Disconnect or with a sign-in exchange.
 func (a *Auth) refresh(ctx context.Context) (string, error) {
+	a.refreshMu.Lock()
+	defer a.refreshMu.Unlock()
 	if a.store == nil {
 		return "", ErrStore
 	}

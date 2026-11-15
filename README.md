@@ -48,9 +48,9 @@ curl -s -X POST localhost:8081/debug/transcript \
 ```
 
 Weather answers on the Fast path too. The assistant resolves the city from the
-Pi's public IP at startup and every 24h (only city, region and timezone are
-kept; coordinates are never stored) and asks the weather providers for current
-conditions:
+Pi's public IP at startup and then every `location.refresh_interval` (24h by
+default; only city, region and timezone are kept, coordinates are never
+stored) and asks the weather providers for current conditions:
 
 ```sh
 curl -s -X POST localhost:8081/debug/transcript \
@@ -73,7 +73,10 @@ unavailable right now." The complete voice turn still depends on STT/TTS
 latency and upstream availability.
 
 If the IP lookup fails, the last known place is used, then the optional
-`location.fallback` values in config, then no place at all.
+`location.fallback` values in config, then no place at all. A failed lookup is
+retried on a 30 s to 15 min backoff until one succeeds, so a Pi that boots
+without network recovers on its own; a configured fallback never suppresses
+that retry.
 
 Anything the Fast path does not handle goes to the Agent path. Its OpenRouter
 key resolves from the write-only secrets store first, then the

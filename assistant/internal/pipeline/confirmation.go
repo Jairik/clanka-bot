@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"strings"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/agent"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
@@ -116,8 +117,19 @@ func confirmedCall(reg *tool.Registry, pending tool.PendingConfirmation, result 
 	return call
 }
 
-// isClearYes matches an explicit agreement after normalisation.
+// isClearYes matches an explicit agreement after normalisation. A comma inside
+// an agreement ("yes, please") is punctuation the yes set does not store, and
+// it is internal so TrimSentence keeps it; retry without commas and close the
+// gap they leave so the clear-yes lookup still lands.
 func isClearYes(transcript string) bool {
-	_, ok := clearYes[NormalizePhrase(transcript)]
+	normalized := NormalizePhrase(transcript)
+	if _, ok := clearYes[normalized]; ok {
+		return true
+	}
+	if !strings.Contains(normalized, ",") {
+		return false
+	}
+	commaless := strings.Join(strings.Fields(strings.ReplaceAll(normalized, ",", " ")), " ")
+	_, ok := clearYes[commaless]
 	return ok
 }

@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -15,13 +16,13 @@ func TestSearchNoticeNamesTheLimit(t *testing.T) {
 		t.Fatalf("a complete search showed the notice %q", got)
 	}
 	short := searchNotice(activity.SearchWindowShort)
-	for _, want := range []string{"newest 200", "three characters"} {
+	for _, want := range []string{fmt.Sprintf("newest %d", activity.ShortSearchWindow), "three characters"} {
 		if !strings.Contains(short, want) {
 			t.Errorf("short-query notice %q lacks %q", short, want)
 		}
 	}
 	unavailable := searchNotice(activity.SearchWindowIndexUnavailable)
-	for _, want := range []string{"index is unavailable", "newest 200"} {
+	for _, want := range []string{"index is unavailable", fmt.Sprintf("newest %d", activity.ShortSearchWindow)} {
 		if !strings.Contains(unavailable, want) {
 			t.Errorf("unavailable-index notice %q lacks %q", unavailable, want)
 		}

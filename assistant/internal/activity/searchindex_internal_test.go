@@ -43,7 +43,7 @@ func TestSearchPlansAreBounded(t *testing.T) {
 	// The bounded fallback for one and two character queries must bound the
 	// rows it reads: MATERIALIZE applies the LIMIT before the haystack filter,
 	// so the filter cannot turn it back into a window scan.
-	plan = queryPlan(t, st.DB(), windowedSearchSQL(nil), shortSearchWindow, "zz", 26)
+	plan = queryPlan(t, st.DB(), windowedSearchSQL(nil), ShortSearchWindow, "zz", 26)
 	if !strings.Contains(plan, "MATERIALIZE") {
 		t.Fatalf("short-query fallback does not materialize its window:\n%s", plan)
 	}

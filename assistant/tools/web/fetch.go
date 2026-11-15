@@ -373,9 +373,8 @@ func NewFetch(cfg FetchConfig, fetcher Fetcher, provenance *Provenance, logger *
 			if cfg.requireProvenance() {
 				request, _ := tool.RequestFrom(ctx)
 				if !provenance.Allows(rawURL, request.UserText) {
-					// The address stays local and only at debug level; the
-					// model gets the one fixed line.
-					logger.Debug("web fetch refused an unvetted URL", "url", rawURL)
+					// The query may contain private Tool text, so log only the refusal.
+					logger.Debug("web fetch refused an unvetted URL")
 					return Page{}, &tool.ToolError{Say: fetchUnvetted}
 				}
 			}

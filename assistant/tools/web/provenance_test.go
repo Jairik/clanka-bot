@@ -132,9 +132,12 @@ func TestFetchRefusesAnUnvettedURLBeforeDNS(t *testing.T) {
 	if dials := fixture.dialer.recorded(); len(dials) != 0 {
 		t.Fatalf("dialer was called before the provenance refusal: %v", dials)
 	}
-	// The address is kept for a local debug log, never for the model.
-	if !strings.Contains(logs.String(), "evil.example.test") {
-		t.Fatalf("debug log did not record the refused URL: %s", logs.String())
+	// Refusal diagnostics must not retain the URL or its private query text.
+	if strings.Contains(logs.String(), "evil.example.test") || strings.Contains(logs.String(), "shopping-list") {
+		t.Fatalf("debug log leaked the refused URL or private query: %s", logs.String())
+	}
+	if !strings.Contains(logs.String(), "web fetch refused an unvetted URL") {
+		t.Fatalf("debug log omitted the refusal event: %s", logs.String())
 	}
 }
 

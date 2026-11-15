@@ -109,11 +109,11 @@ func TestVolumeSetAcceptsZeroPercent(t *testing.T) {
 	if controls.muteCalls != 0 {
 		t.Fatalf("SetMute calls = %d at an absolute zero, want none", controls.muteCalls)
 	}
-	if want := "Muted."; spoken != want {
+	if want := "Volume set to 0 percent."; spoken != want {
 		t.Fatalf("Speak = %q, want %q", spoken, want)
 	}
 
-	// The model may pass percent 0 explicitly; it must mute, not step up.
+	// The model may pass percent 0 explicitly; it must set the level, not step up.
 	result, err := reg.Execute(context.Background(), audiocontrol.VolumeName, json.RawMessage(`{"percent":0}`))
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
@@ -122,7 +122,7 @@ func TestVolumeSetAcceptsZeroPercent(t *testing.T) {
 		t.Fatalf("calls = %d set / %d adjust / %d mute, want a second absolute set at 0",
 			controls.setCalls, controls.adjCalls, controls.muteCalls)
 	}
-	if spoken, _ := reg.Speak(audiocontrol.VolumeName, result); spoken != "Muted." {
+	if spoken, _ := reg.Speak(audiocontrol.VolumeName, result); spoken != "Volume set to 0 percent." {
 		t.Fatalf("Speak = %q, want %q", spoken, "Muted.")
 	}
 }

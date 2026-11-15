@@ -79,7 +79,9 @@ func NewVolumeWithStep(controls Controls, step int) tool.Tool[VolumeIn, VolumeOu
 						return VolumeOut{}, err
 					}
 				}
-				return VolumeOut{Percent: *in.Percent, Muted: *in.Percent == 0}, nil
+				// A zero level is not a mute: the flag keeps its state, so the
+				// reply names the level change instead of claiming a mute.
+				return VolumeOut{Percent: *in.Percent}, nil
 			}
 			if in.Mute != nil {
 				return setMute(ctx, controls, step, *in.Mute)
@@ -136,7 +138,12 @@ func setMute(ctx context.Context, controls Controls, step int, muted bool) (Volu
 	}
 	level, err := controls.Level(ctx)
 	if err != nil {
-		return VolumeOut{}, err
+		// The unmute itself must still happen: a failed level read only skips
+		// the zero step, where the old combined read would have wedged mute.
+		if err := controls.SetMute(ctx, false); err != nil {
+			return VolumeOut{}, err
+		}
+		return VolumeOut{Unmuted: true}, nil
 	}
 	if err := controls.SetMute(ctx, false); err != nil {
 		return VolumeOut{}, err

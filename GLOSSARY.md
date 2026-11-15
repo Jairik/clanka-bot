@@ -180,7 +180,7 @@ A spoken or displayed summary composed from the results of several Tools, such a
 _Avoid_: Digest, report, summary
 
 **Notification**:
-An alert the Assistant pushes unprompted to a Satellite or display, subject to cooldowns. A Notification may also be spoken as an Announcement.
+An alert the Assistant pushes unprompted to a Satellite or display, subject to cooldowns. A recovery pass that finds several Missed alerts pushes one summary Notification naming them all rather than one push per alert, and `notify.cooldown` sets the floor between two such summaries. A Notification may also be spoken as an Announcement.
 _Avoid_: Alert, push, ping
 
 **Announcement**:

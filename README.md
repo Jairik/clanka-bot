@@ -472,8 +472,8 @@ or `ring.timer.max_ring` (default 5 min). `snooze` on a Timer acts as stop.
 Reaching max_ring records the alert as missed in `alert_events` and sends one
 Notification if `notify.missed_alerts` is on (see **Notifications** below).
 Startup recovery reports an open row left by a crash and an old overdue Timer
-the same way, before the scheduler starts. A missed Notification is dropped,
-not delayed, during Quiet hours.
+in one summary Notification, before the scheduler starts. A missed Notification
+is dropped, not delayed, during Quiet hours.
 Inside Quiet hours a Timer Ring and its label use `quiet.volume`; an Alarm is
 exempt and keeps its own Ring volume.
 
@@ -535,8 +535,9 @@ re-rings after `ring.alarm.snooze` (default 9 min) without disturbing the
 repeat schedule; "stop" ends the current Ring, and a repeating Alarm schedules
 its next occurrence. On startup, an Alarm up to two minutes overdue fires now;
 older ones are recorded missed and summarised in one Announcement, and a
-repeating Alarm then schedules its next occurrence. A max_ring or recovered
-missed Alarm also sends one Notification when `notify.missed_alerts` is on.
+repeating Alarm then schedules its next occurrence. A max_ring alert pushes at
+once, and recovered missed Timers and Alarms share one summary Notification when
+`notify.missed_alerts` is on.
 
 Each Alarm can override its Ring `sound`, `volume` and `ramp` for itself:
 "wake me at 7 with the birds sound" or "change my 7 am alarm to the birds
@@ -653,6 +654,7 @@ design; its result is only "Sent to your phone."
 | `notify.url` | `https://ntfy.sh` | ntfy server base URL, live overridable |
 | `notify.missed_alerts` | `true` | Push a Notification for a missed Timer or Alarm |
 | `notify.reminders` | `true` | Push a Notification when a Reminder is due |
+| `notify.cooldown` | `60s` | Minimum gap between two missed-alert summaries |
 
 The **topic is generated once** on first use and kept in the write-only
 secrets table as `NTFY_TOPIC`; it never appears in `config.yaml`, the settings
@@ -699,10 +701,19 @@ publish at the root URL, Bearer tokens) and
 tokens via `ntfy token add` / `auth-tokens`).
 
 A missed Timer or Alarm sends one high-priority Notification with its label and
-reason (`max_ring`, `restart` or `downtime`). Quiet hours suppress it before any
-network request and do not schedule a retry. A due Reminder also sends one
-high-priority Notification with the message, alongside the spoken reminder;
-`notify.reminders` turns that off, and Quiet hours mute it the same way.
+reason (`max_ring`, `restart` or `downtime`). A Ring that reaches max_ring
+pushes at once. Startup recovery reports every open and downtime-retired row in
+one pass, so it sends **one** summary Notification naming them all — "You missed
+3 alerts: pasta timer, 7am alarm, washing machine timer." — instead of one push
+per row; a summary lists at most six names and then "and N more", while the
+count stays exact. `notify.cooldown` (default 60 s, live overridable) is the
+minimum gap between two such summaries: a second recovery inside the gap is
+dropped and logged at Debug, never queued, and the durable history rows still
+hold every alert. Quiet hours suppress a Notification before any network request
+and do not schedule a retry. A due Reminder also sends one high-priority
+Notification with the message, alongside the spoken reminder; `notify.reminders`
+turns that off, and Quiet hours mute it the same way. A Reminder is never batched
+and never cooldown-suppressed, because the user asked for each one.
 `notify.phone` answers "Notifications are muted during quiet hours." instead.
 Requests are bounded by a 10 s HTTP timeout, redirects are refused so the bearer
 token stays on the configured host, and response bodies are never logged.

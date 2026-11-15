@@ -75,8 +75,8 @@ func TestUpdateIsNotOfferedToTheAgent(t *testing.T) {
 }
 
 // TestUpdateKeepsTheStoredLabelOnThePi documents why the Tool is Local-only:
-// a request that selects by time never says the label, but the result carries
-// it for the Dashboard's typed path. The local Fast path still runs normally.
+// a request that selects by time never says the label, but the result retains
+// it for the local spoken update.
 func TestUpdateKeepsTheStoredLabelOnThePi(t *testing.T) {
 	reg, manager := newUpdateRegistry(t)
 	if _, err := manager.Set(context.Background(), alarm.SetIn{
@@ -101,8 +101,7 @@ func TestUpdateKeepsTheStoredLabelOnThePi(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	// The label is load-bearing for the Dashboard, so the Tool stays Local-only
-	// rather than this test expecting a label-free payload.
+	// The local spoken result retains the label; Local-only guards its egress.
 	if !strings.Contains(string(payload), `"label":"medication"`) {
 		t.Fatalf("payload = %s, want the stored label", payload)
 	}

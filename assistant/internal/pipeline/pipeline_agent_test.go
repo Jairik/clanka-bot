@@ -212,6 +212,7 @@ func TestAgentFailureIsVisibleOnTheRequestLine(t *testing.T) {
 	}{
 		{name: "unavailable", result: agent.Result{Text: "Sorry.", Unavailable: true}, want: "unavailable"},
 		{name: "timeout", result: agent.Result{Text: "Sorry.", TimedOut: true}, want: "timeout"},
+		{name: "step limit", result: agent.Result{Text: agent.MaxStepsMessage, MaxSteps: true, TextNotStreamed: true}, want: "max_steps"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			runner := newFakeRunner()
@@ -252,6 +253,22 @@ func TestCancelledAgentTurnIsNotMarkedFailed(t *testing.T) {
 	}
 	if timeline.Failed() {
 		t.Fatal("cancelled agent turn was marked failed")
+	}
+}
+
+// TestAgentTextNotStreamedIsCarriedToTheReply is the seam the reply session
+// uses to speak a fallback line that no delta carried (#193).
+func TestAgentTextNotStreamedIsCarriedToTheReply(t *testing.T) {
+	runner := newFakeRunner()
+	runner.result = agent.Result{Text: agent.EmptyReplyMessage, TextNotStreamed: true}
+	p := newAgentPipeline(t, runner, tool.NewRegistry(time.Second), nil)
+
+	reply := p.Handle(context.Background(), tool.Request{ID: "req-agent", Device: tool.DevicePi}, "ask the agent anything")
+	if !reply.TextNotStreamed {
+		t.Fatalf("reply.TextNotStreamed = false for %+v", reply)
+	}
+	if reply.Text != agent.EmptyReplyMessage {
+		t.Fatalf("reply.Text = %q, want %q", reply.Text, agent.EmptyReplyMessage)
 	}
 }
 

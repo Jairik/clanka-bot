@@ -25,7 +25,8 @@ type Result struct {
 
 // Provider is one search backend. The module picks one implementation from
 // tools.web.backend, so a new backend is a config case plus a constructor, not
-// a Tool change.
+// a Tool change. A returned error must be safe to log: never the query, the
+// request URL or response body text, only a bounded classification.
 type Provider interface {
 	Search(ctx context.Context, query string, maxResults int) ([]Result, error)
 }

@@ -2,9 +2,12 @@ package web
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -25,7 +28,11 @@ const (
 // searxng is the Provider for a local SearXNG instance with JSON enabled.
 type searxng struct {
 	baseURL string
-	client  *http.Client
+	// host is the log-safe origin host[:port]. It never carries userinfo, a
+	// path or the query, so a transport error can name the upstream without
+	// exposing the request URL.
+	host   string
+	client *http.Client
 }
 
 // newSearxng builds the SearXNG provider. A nil client uses the shared
@@ -34,10 +41,85 @@ func newSearxng(baseURL string, timeout time.Duration, client *http.Client) *sea
 	if client == nil {
 		client = newKeepAliveClient(timeout)
 	}
+	baseURL = strings.TrimRight(baseURL, "/")
 	return &searxng{
-		baseURL: strings.TrimRight(baseURL, "/"),
+		baseURL: baseURL,
+		host:    endpointHost(baseURL),
 		client:  client,
 	}
+}
+
+// endpointHost reduces a base URL to the host[:port] a log line may name. A
+// URL that does not parse yields no host rather than a guess.
+func endpointHost(baseURL string) string {
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return ""
+	}
+	return parsed.Host
+}
+
+// transportError is one bounded search failure. Its message names only the
+// failure kind and the upstream host; the request URL carries q= and must
+// never appear in a log line. The wrapped error is kept for errors.Is/As
+// (timeouts and cancellation), not for printing.
+type transportError struct {
+	kind string
+	host string
+	err  error
+}
+
+// newTransportError bounds one transport failure. An empty kind is classified
+// from the error, and a blank host still yields a useful message.
+func newTransportError(host, kind string, err error) *transportError {
+	if kind == "" {
+		kind = transportKind(err)
+	}
+	return &transportError{kind: kind, host: host, err: err}
+}
+
+// Error is safe to log: only the kind and host, never the full URL.
+func (e *transportError) Error() string {
+	if e.host == "" {
+		return "searxng: request failed (" + e.kind + ")"
+	}
+	return "searxng: request failed (" + e.kind + ") contacting " + e.host
+}
+
+// Unwrap exposes the original failure to errors.Is/As only.
+func (e *transportError) Unwrap() error { return e.err }
+
+// transportKind names the transport phase for a local log line. It mirrors the
+// bounded vocabulary the GitHub Tools use and never includes an address.
+func transportKind(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, context.Canceled):
+		return "cancelled"
+	}
+	var dns *net.DNSError
+	if errors.As(err, &dns) {
+		return "dns"
+	}
+	var certificate *tls.CertificateVerificationError
+	if errors.As(err, &certificate) {
+		return "tls"
+	}
+	var op *net.OpError
+	if errors.As(err, &op) {
+		switch op.Op {
+		case "dial":
+			return "connect"
+		case "remote error":
+			return "tls"
+		}
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return "timeout"
+	}
+	return "other"
 }
 
 // searxngResponse is the documented JSON search payload. Only the three fields
@@ -75,31 +157,39 @@ func (s *searxng) Search(ctx context.Context, query string, maxResults int) ([]R
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
 	if err != nil {
-		return nil, fmt.Errorf("searxng: build request: %w", err)
+		// A build failure wraps a *url.Error whose text repeats the URL and
+		// q=; return the same bounded shape as a transport failure.
+		return nil, newTransportError(s.host, "request", err)
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", userAgent)
 
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("searxng: request: %w", err)
+		// client.Do returns a *url.Error that echoes the full request URL,
+		// including the query; log only the kind and host.
+		return nil, newTransportError(s.host, "", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return nil, fmt.Errorf("searxng: search returned %s", resp.Status)
+		// The numeric status is bounded; the reason phrase is upstream text.
+		return nil, fmt.Errorf("searxng: search returned HTTP %d", resp.StatusCode)
 	}
 	// Read one byte past the cap so an oversize page is detected rather than
 	// silently truncated into invalid JSON.
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes+1))
 	if err != nil {
-		return nil, fmt.Errorf("searxng: read response: %w", err)
+		// A body-read failure obeys the same bounded diagnostic contract as a dial failure.
+		return nil, newTransportError(s.host, "", err)
 	}
 	if len(body) > maxBodyBytes {
 		return nil, fmt.Errorf("searxng: response exceeds %d bytes", maxBodyBytes)
 	}
 	var payload searxngResponse
 	if err := json.Unmarshal(body, &payload); err != nil {
-		return nil, fmt.Errorf("searxng: invalid JSON: %w", err)
+		// encoding/json quotes the invalid byte, which could be a body echo
+		// of the query; name the failure without the response text.
+		return nil, errors.New("searxng: invalid JSON response")
 	}
 
 	results := make([]Result, 0, min(maxResults, len(payload.Results)))

@@ -127,6 +127,82 @@ func TestSendThatResolvesThePreviousReplyAndRefusesLocalOnly(t *testing.T) {
 	}
 }
 
+// TestRepeatOfAPublicReplyCanBeSent is the #186 acceptance path: repeating a
+// public answer keeps it public, so the next "send that to my phone" sends the
+// exact text the Assistant repeated instead of refusing it.
+func TestRepeatOfAPublicReplyCanBeSent(t *testing.T) {
+	var requests atomic.Int32
+	bodies := make(chan []byte, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		requests.Add(1)
+		bodies <- body
+		_, _ = io.WriteString(w, `{"id":"test"}`)
+	}))
+	defer server.Close()
+
+	last := lastreply.New()
+	notifyService, err := core.New(core.Options{
+		Reader:  newMapReader(map[string]any{core.URLKey: server.URL, core.MissedAlertsKey: true}),
+		Secrets: newMapSecrets(),
+		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Config:  core.DefaultConfig(),
+	})
+	if err != nil {
+		t.Fatalf("notify.New: %v", err)
+	}
+
+	reg := tool.NewRegistry(5 * time.Second)
+	fixed := time.Date(2026, 11, 12, 15, 4, 0, 0, time.UTC)
+	if err := clock.Register(reg, func() time.Time { return fixed }); err != nil {
+		t.Fatalf("register clock: %v", err)
+	}
+	if err := assistant.NewModule().Register(reg, tool.Deps{LastReply: last}); err != nil {
+		t.Fatalf("register assistant: %v", err)
+	}
+	if err := notify.NewModule().Register(reg, tool.Deps{Notify: notifyService, LastReply: last}); err != nil {
+		t.Fatalf("register notify: %v", err)
+	}
+	p, err := pipeline.New(reg, map[string]string{
+		"what time is it":       clock.Name,
+		"say that again":        assistant.RepeatName,
+		"send that to my phone": notify.Name,
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)), pipeline.WithLastReply(last))
+	if err != nil {
+		t.Fatalf("pipeline.New: %v", err)
+	}
+
+	reply := p.Handle(context.Background(), tool.Request{ID: "1", Device: tool.DevicePi}, "what time is it")
+	if reply.Text != "It's 3:04 PM." || reply.LocalOnly {
+		t.Fatalf("clock reply = %+v", reply)
+	}
+	repeated := p.Handle(context.Background(), tool.Request{ID: "2", Device: tool.DevicePi}, "say that again")
+	if repeated.Tool != assistant.RepeatName || repeated.Text != "It's 3:04 PM." || repeated.LocalOnly {
+		t.Fatalf("repeat reply = %+v, want the public clock text", repeated)
+	}
+	reply = p.Handle(context.Background(), tool.Request{ID: "3", Device: tool.DevicePi}, "send that to my phone")
+	if reply.Tool != notify.Name || reply.Text != "Sent to your phone." {
+		t.Fatalf("phone reply = %+v, want the repeated text sent", reply)
+	}
+	select {
+	case body := <-bodies:
+		var payload struct {
+			Message string `json:"message"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		if payload.Message != "It's 3:04 PM." {
+			t.Fatalf("sent message = %q, want the repeated clock reply", payload.Message)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the phone Tool sent no request")
+	}
+	if requests.Load() != 1 {
+		t.Fatalf("requests = %d, want one", requests.Load())
+	}
+}
+
 // TestRepeatCannotLaunderLocalOnlyProvenance covers the #59/#62 seam: repeating
 // a Local-only reply keeps the follow-up reply Local-only, so a later "send
 // that to my phone" is refused before the network.

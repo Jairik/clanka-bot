@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -720,5 +721,452 @@ func TestPriorityUsesTheNumericJSONForm(t *testing.T) {
 	}
 	if _, err := priorityValue("6"); err == nil {
 		t.Fatal("priorityValue accepted out-of-range number 6")
+	}
+}
+
+// countingTransport is the fake ntfy server for the batching tests. It counts
+// publishes and keeps their decoded payloads, so "one push per alert" becomes a
+// number instead of an inference.
+type countingTransport struct {
+	mu      sync.Mutex
+	payload []publishRequest
+}
+
+func (t *countingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	body, _ := io.ReadAll(req.Body)
+	var payload publishRequest
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, err
+	}
+	t.mu.Lock()
+	t.payload = append(t.payload, payload)
+	t.mu.Unlock()
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(`{"id":"test"}`)),
+		Request:    req,
+	}, nil
+}
+
+func (t *countingTransport) count() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.payload)
+}
+
+func (t *countingTransport) messages() []string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	out := make([]string, 0, len(t.payload))
+	for _, payload := range t.payload {
+		out = append(out, payload.Message)
+	}
+	return out
+}
+
+// syncBuffer collects log lines written from the recovery timer goroutine.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// batchFixture is a Notify service over a fake ntfy endpoint, a fake secret
+// store and a captured Debug-level log.
+type batchFixture struct {
+	svc     *Service
+	fake    *countingTransport
+	secrets *fakeSecrets
+	logs    *syncBuffer
+	values  *fakeReader
+}
+
+func newBatchFixture(t *testing.T, values map[string]any, tweak func(*Options)) *batchFixture {
+	t.Helper()
+	if values == nil {
+		values = map[string]any{}
+	}
+	values[URLKey] = "https://ntfy.test"
+	if _, ok := values[MissedAlertsKey]; !ok {
+		values[MissedAlertsKey] = true
+	}
+	fake := &countingTransport{}
+	secrets := newFakeSecrets()
+	logs := &syncBuffer{}
+	reader := newFakeReader(values)
+	opts := Options{
+		Reader:  reader,
+		Secrets: secrets,
+		Logger:  slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
+		Config:  DefaultConfig(),
+		HTTPClient: &http.Client{
+			Transport: fake,
+		},
+	}
+	if tweak != nil {
+		tweak(&opts)
+	}
+	svc, err := New(opts)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return &batchFixture{svc: svc, fake: fake, secrets: secrets, logs: logs, values: reader}
+}
+
+// waitForCount waits until the fake endpoint has seen want publishes.
+func (f *batchFixture) waitForCount(t *testing.T, want int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for f.fake.count() < want {
+		if time.Now().After(deadline) {
+			t.Fatalf("publishes = %d, want %d: %v", f.fake.count(), want, f.fake.messages())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// assertCount pins the publish count after a short settle, so a stray extra
+// push is caught instead of racing the assertion.
+func (f *batchFixture) assertCount(t *testing.T, want int) {
+	t.Helper()
+	time.Sleep(50 * time.Millisecond)
+	if got := f.fake.count(); got != want {
+		t.Fatalf("publishes = %d, want %d: %v", got, want, f.fake.messages())
+	}
+}
+
+func recoveryAlerts() []MissedAlert {
+	return []MissedAlert{
+		{Kind: "timer", Label: "pasta", Reason: "restart", Duration: 5 * time.Minute},
+		{Kind: "alarm", Label: "7am", Reason: "downtime"},
+		{Kind: "timer", Label: "washing machine", Reason: "downtime", Duration: 1 * time.Hour},
+	}
+}
+
+func TestRecoveryBurstPushesOneSummaryNamingEveryAlert(t *testing.T) {
+	// A whole recovery pass lands inside one hold, so three missed alerts are
+	// one push. The test flushes explicitly instead of sleeping the hold.
+	fixture := newBatchFixture(t, nil, func(opts *Options) { opts.RecoveryHold = time.Hour })
+	ctx := context.Background()
+	for _, alert := range recoveryAlerts() {
+		fixture.svc.NotifyMissed(ctx, alert)
+	}
+	if got := fixture.fake.count(); got != 0 {
+		t.Fatalf("a held recovery alert pushed %d requests before the summary", got)
+	}
+	if err := fixture.svc.flushPending(ctx); err != nil {
+		t.Fatalf("flushPending: %v", err)
+	}
+	fixture.assertCount(t, 1)
+	messages := fixture.fake.messages()
+	want := "You missed 3 alerts: pasta timer, 7am alarm, washing machine timer."
+	if messages[0] != want {
+		t.Fatalf("message = %q, want %q", messages[0], want)
+	}
+	payload := fixture.fake.payload[0]
+	if payload.Title != "Missed alerts" {
+		t.Fatalf("title = %q", payload.Title)
+	}
+	if payload.Priority == nil || *payload.Priority != 4 {
+		t.Fatalf("priority = %v, want numeric 4 (high)", payload.Priority)
+	}
+	if len(payload.Tags) != 1 || payload.Tags[0] != "warning" {
+		t.Fatalf("tags = %v", payload.Tags)
+	}
+}
+
+func TestRecoveryBurstFlushesOnTheHoldWithoutACall(t *testing.T) {
+	fixture := newBatchFixture(t, nil, func(opts *Options) { opts.RecoveryHold = 25 * time.Millisecond })
+	ctx := context.Background()
+	for _, alert := range recoveryAlerts() {
+		fixture.svc.NotifyMissed(ctx, alert)
+	}
+	fixture.waitForCount(t, 1)
+	fixture.assertCount(t, 1)
+	if message := fixture.fake.messages()[0]; !strings.Contains(message, "You missed 3 alerts") {
+		t.Fatalf("message = %q", message)
+	}
+}
+
+func TestRecoveryBurstIsOneSummaryUnderConcurrency(t *testing.T) {
+	fixture := newBatchFixture(t, nil, func(opts *Options) { opts.RecoveryHold = 25 * time.Millisecond })
+	ctx := context.Background()
+	var wg sync.WaitGroup
+	for i := 0; i < 40; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			fixture.svc.NotifyMissed(ctx, MissedAlert{Kind: "alarm", Reason: "downtime"})
+		}()
+	}
+	wg.Wait()
+	fixture.waitForCount(t, 1)
+	fixture.assertCount(t, 1)
+	if message := fixture.fake.messages()[0]; !strings.Contains(message, "You missed 40 alerts") {
+		t.Fatalf("message = %q, want the whole burst counted once", message)
+	}
+}
+
+func TestLiveMissedAlertPushesImmediately(t *testing.T) {
+	// A Ring that just reached max_ring is not a burst: it must not wait for a
+	// hold that only exists to collect a recovery pass.
+	fixture := newBatchFixture(t, nil, func(opts *Options) { opts.RecoveryHold = time.Hour })
+	fixture.svc.NotifyMissed(context.Background(), MissedAlert{
+		Kind: "timer", Label: "pasta", Reason: "max_ring", Duration: 5 * time.Minute,
+	})
+	fixture.waitForCount(t, 1)
+	if message := fixture.fake.messages()[0]; !strings.Contains(message, "pasta") {
+		t.Fatalf("message = %q", message)
+	}
+}
+
+func TestMissedCooldownSkipsTheSecondSummary(t *testing.T) {
+	now := time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
+	fixture := newBatchFixture(t, map[string]any{
+		CooldownKey: 60 * time.Second,
+	}, func(opts *Options) {
+		opts.RecoveryHold = time.Hour
+		opts.Now = func() time.Time { return now }
+	})
+	ctx := context.Background()
+	for _, alert := range recoveryAlerts() {
+		fixture.svc.NotifyMissed(ctx, alert)
+	}
+	if err := fixture.svc.flushPending(ctx); err != nil {
+		t.Fatalf("first flushPending: %v", err)
+	}
+	fixture.waitForCount(t, 1)
+
+	// A second burst ten seconds later is inside notify.cooldown. It is dropped
+	// rather than queued: the user already has a push, and the durable history
+	// rows still hold every alert.
+	now = now.Add(10 * time.Second)
+	fixture.svc.NotifyMissed(ctx, MissedAlert{Kind: "alarm", Label: "wash car", Reason: "downtime"})
+	if err := fixture.svc.flushPending(ctx); err != nil {
+		t.Fatalf("second flushPending: %v", err)
+	}
+	fixture.assertCount(t, 1)
+	if logs := fixture.logs.String(); !strings.Contains(logs, "skipped by cooldown") {
+		t.Fatalf("the skip was not logged at Debug: %s", logs)
+	}
+}
+
+func TestMissedCooldownExpiresForTheNextSummary(t *testing.T) {
+	now := time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
+	fixture := newBatchFixture(t, map[string]any{
+		CooldownKey: 60 * time.Second,
+	}, func(opts *Options) {
+		opts.RecoveryHold = time.Hour
+		opts.Now = func() time.Time { return now }
+	})
+	ctx := context.Background()
+	fixture.svc.NotifyMissed(ctx, MissedAlert{Kind: "timer", Label: "pasta", Reason: "restart"})
+	if err := fixture.svc.flushPending(ctx); err != nil {
+		t.Fatalf("first flushPending: %v", err)
+	}
+	fixture.waitForCount(t, 1)
+	now = now.Add(61 * time.Second)
+	fixture.svc.NotifyMissed(ctx, MissedAlert{Kind: "alarm", Label: "7am", Reason: "downtime"})
+	if err := fixture.svc.flushPending(ctx); err != nil {
+		t.Fatalf("second flushPending: %v", err)
+	}
+	fixture.waitForCount(t, 2)
+}
+
+func TestMissedCooldownZeroNeverSkips(t *testing.T) {
+	now := time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
+	fixture := newBatchFixture(t, map[string]any{CooldownKey: time.Duration(0)}, func(opts *Options) {
+		opts.RecoveryHold = time.Hour
+		opts.Now = func() time.Time { return now }
+	})
+	ctx := context.Background()
+	for i := 0; i < 2; i++ {
+		fixture.svc.NotifyMissed(ctx, MissedAlert{Kind: "timer", Label: "pasta", Reason: "restart"})
+		if err := fixture.svc.flushPending(ctx); err != nil {
+			t.Fatalf("flushPending %d: %v", i, err)
+		}
+	}
+	fixture.waitForCount(t, 2)
+}
+
+func TestRecoveryBurstObeysQuietAndTheSwitch(t *testing.T) {
+	// Quiet hours still drop the burst before any network request or topic.
+	fixture := newBatchFixture(t, map[string]any{MissedAlertsKey: true}, func(opts *Options) {
+		opts.RecoveryHold = time.Hour
+		opts.Quiet = quietService(t)
+	})
+	ctx := context.Background()
+	for _, alert := range recoveryAlerts() {
+		fixture.svc.NotifyMissed(ctx, alert)
+	}
+	if err := fixture.svc.flushPending(ctx); err != nil {
+		t.Fatalf("flushPending: %v", err)
+	}
+	fixture.assertCount(t, 0)
+	if fixture.secrets.count(TopicSecret) != 0 {
+		t.Fatal("a quiet recovery burst provisioned a topic")
+	}
+
+	// The missed-alert switch off: nothing is even held.
+	switchedOff := newBatchFixture(t, map[string]any{MissedAlertsKey: false}, func(opts *Options) {
+		opts.RecoveryHold = time.Hour
+	})
+	for _, alert := range recoveryAlerts() {
+		switchedOff.svc.NotifyMissed(ctx, alert)
+	}
+	if err := switchedOff.svc.flushPending(ctx); err != nil {
+		t.Fatalf("flushPending: %v", err)
+	}
+	switchedOff.assertCount(t, 0)
+}
+
+func TestRemindersAreNeverBatchedOrCooldownSuppressed(t *testing.T) {
+	// A due Reminder is user content the user asked for: each one is one
+	// request, even inside notify.cooldown, and it never joins a summary.
+	fixture := newBatchFixture(t, map[string]any{
+		RemindersKey: true,
+		CooldownKey:  10 * time.Minute,
+	}, func(opts *Options) { opts.RecoveryHold = time.Hour })
+	ctx := context.Background()
+	for _, message := range []string{"check the oven", "call mum", "take the bins out"} {
+		fixture.svc.NotifyReminder(ctx, message)
+	}
+	fixture.waitForCount(t, 3)
+	fixture.assertCount(t, 3)
+	for i, want := range []string{"check the oven", "call mum", "take the bins out"} {
+		if got := fixture.fake.messages()[i]; got != want {
+			t.Fatalf("message %d = %q, want %q", i, got, want)
+		}
+	}
+}
+
+func TestMissedSummaryNamesStayOutOfTheLog(t *testing.T) {
+	// A label is private text. The summary carries it to the phone, which is the
+	// existing egress, but it never reaches a log line.
+	fixture := newBatchFixture(t, nil, func(opts *Options) { opts.RecoveryHold = time.Hour })
+	ctx := context.Background()
+	for _, alert := range recoveryAlerts() {
+		fixture.svc.NotifyMissed(ctx, alert)
+	}
+	if err := fixture.svc.flushPending(ctx); err != nil {
+		t.Fatalf("flushPending: %v", err)
+	}
+	fixture.waitForCount(t, 1)
+	logs := fixture.logs.String()
+	if logs == "" {
+		t.Fatal("the batching path logged nothing; the Debug seam is not wired")
+	}
+	for _, label := range []string{"pasta", "7am", "washing machine"} {
+		if strings.Contains(logs, label) {
+			t.Fatalf("private label %q reached the log: %s", label, logs)
+		}
+	}
+	if strings.Contains(logs, fixture.fake.payload[0].Topic) {
+		t.Fatal("the topic reached the log")
+	}
+}
+
+func TestMissedSummaryRendering(t *testing.T) {
+	single := missedSummaryNotification([]MissedAlert{
+		{Kind: "timer", Label: "pasta", Reason: "downtime", Duration: 5 * time.Minute},
+	})
+	wantSingle := missedNotification(MissedAlert{
+		Kind: "timer", Label: "pasta", Reason: "downtime", Duration: 5 * time.Minute,
+	})
+	if single.Message != wantSingle.Message || single.Title != wantSingle.Title {
+		t.Fatalf("one alert = %q/%q, want the detailed single wording %q/%q",
+			single.Title, single.Message, wantSingle.Title, wantSingle.Message)
+	}
+
+	batch := missedSummaryNotification([]MissedAlert{
+		{Kind: "timer", Label: "pasta"},
+		{Kind: "alarm", Label: "7am"},
+		{Kind: "timer"},
+	})
+	if batch.Title != "Missed alerts" || batch.Kind != "missed" {
+		t.Fatalf("title/kind = %q/%q", batch.Title, batch.Kind)
+	}
+	if want := "You missed 3 alerts: pasta timer, 7am alarm, timer."; batch.Message != want {
+		t.Fatalf("message = %q, want %q", batch.Message, want)
+	}
+
+	// A long burst keeps the exact count but bounds the name list.
+	many := make([]MissedAlert, 0, maxSummaryNames+3)
+	for i := 0; i < maxSummaryNames+3; i++ {
+		many = append(many, MissedAlert{Kind: "timer", Label: fmt.Sprintf("t%d", i)})
+	}
+	long := missedSummaryNotification(many)
+	if want := "You missed 9 alerts: t0 timer, t1 timer, t2 timer, t3 timer, t4 timer, t5 timer and 3 more."; long.Message != want {
+		t.Fatalf("long message = %q, want %q", long.Message, want)
+	}
+	if long.Kind != "missed_timer" {
+		t.Fatalf("kind = %q, want the one kind it covers", long.Kind)
+	}
+
+	// A label is user text: it cannot add a line to the summary.
+	flattened := missedSummaryNotification([]MissedAlert{
+		{Kind: "timer", Label: "pasta\n5m"},
+		{Kind: "timer", Label: "bins"},
+	})
+	if want := "You missed 2 alerts: pasta 5m timer, bins timer."; flattened.Message != want {
+		t.Fatalf("flattened message = %q, want %q", flattened.Message, want)
+	}
+}
+
+func TestCooldownSettingIsLiveAndValidated(t *testing.T) {
+	defs := Definitions(DefaultConfig())
+	found := false
+	for _, def := range defs {
+		if def.Key != CooldownKey {
+			continue
+		}
+		found = true
+		if def.Kind != settings.Live {
+			t.Fatalf("cooldown kind = %v, want a live setting", def.Kind)
+		}
+		if got, ok := def.Default.(time.Duration); !ok || got != DefaultCooldown {
+			t.Fatalf("cooldown default = %v, want %s", def.Default, DefaultCooldown)
+		}
+	}
+	if !found {
+		t.Fatalf("missing setting %q", CooldownKey)
+	}
+	if DefaultCooldown != time.Minute {
+		t.Fatalf("DefaultCooldown = %s, want 60s", DefaultCooldown)
+	}
+	if err := validCooldown(-time.Second); err == nil {
+		t.Fatal("validCooldown accepted a negative gap")
+	}
+	if err := validCooldown("60s"); err == nil {
+		t.Fatal("validCooldown accepted a string")
+	}
+	if err := validCooldown(DefaultCooldown); err != nil {
+		t.Fatalf("validCooldown(default): %v", err)
+	}
+
+	// A wrong-typed stored value falls back to the shipped default instead of
+	// silencing the phone.
+	svc, err := New(Options{
+		Reader:  newFakeReader(map[string]any{CooldownKey: "not a duration"}),
+		Secrets: newFakeSecrets(),
+		Config:  DefaultConfig(),
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if got := svc.cooldown(); got != DefaultCooldown {
+		t.Fatalf("cooldown() = %s, want the default %s", got, DefaultCooldown)
 	}
 }

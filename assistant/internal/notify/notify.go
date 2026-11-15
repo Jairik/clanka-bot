@@ -41,6 +41,8 @@ const (
 	MissedAlertsKey = "notify.missed_alerts"
 	// RemindersKey controls whether a due Reminder is pushed to the phone.
 	RemindersKey = "notify.reminders"
+	// CooldownKey is the minimum gap between two missed-alert summaries.
+	CooldownKey = "notify.cooldown"
 )
 
 // Secret names. The topic is generated on first use; the token is optional and
@@ -60,6 +62,17 @@ const (
 	DefaultMissedAlerts = true
 	// DefaultReminders pushes a Notification when a Reminder is due.
 	DefaultReminders = true
+	// DefaultCooldown is the shipped gap between two missed-alert summaries.
+	DefaultCooldown = time.Minute
+	// recoveryHold is how long a recovered missed alert waits so the rest of
+	// the same recovery pass joins it. Timer and Alarm report their recovered
+	// rows in one synchronous pass, so the whole burst arrives well inside this
+	// window, while a lone recovered alert still reaches the phone almost at
+	// once.
+	recoveryHold = 2 * time.Second
+	// maxSummaryNames bounds the names listed in one summary. The alert count
+	// stays exact; the tail becomes "and N more".
+	maxSummaryNames = 6
 	// topicPrefix makes a generated topic recognisable without shortening its
 	// random suffix.
 	topicPrefix = "clanka-"
@@ -151,7 +164,23 @@ func Definitions(cfg Config) []settings.Definition {
 			settings.WithConfig(cfg.Reminders),
 			settings.WithDescription("Send a phone Notification when a Reminder is due, alongside the spoken reminder. Quiet hours mute it."),
 		),
+		settings.Duration(CooldownKey, DefaultCooldown,
+			settings.WithValidator(validCooldown),
+			settings.WithDescription("Minimum gap between two phone Notifications for missed Timers and Alarms. Startup recovery sends one summary for the whole burst; a second summary inside this gap is dropped. A live max_ring alert is never delayed."),
+		),
 	}
+}
+
+// validCooldown rejects a stored or Dashboard cooldown that cannot be a gap.
+func validCooldown(value any) error {
+	cooldown, ok := value.(time.Duration)
+	if !ok {
+		return errors.New("notify: cooldown must be a duration")
+	}
+	if cooldown < 0 {
+		return errors.New("notify: cooldown must not be negative")
+	}
+	return nil
 }
 
 // validURL rejects a stored or Dashboard value that is not a usable base URL.
@@ -217,9 +246,16 @@ type Options struct {
 	Secrets    SecretStore
 	HTTPClient *http.Client
 	Logger     *slog.Logger
-	// Now and Rand are injectable for deterministic tests. Rand is only used
-	// to generate the topic on first use.
+	// Now is the clock the missed-alert cooldown compares against. Zero uses
+	// time.Now.
+	Now func() time.Time
+	// Rand is injectable for deterministic tests. It is only used to generate
+	// the topic on first use.
 	Rand io.Reader
+	// RecoveryHold overrides how long recovered missed alerts are held so one
+	// recovery pass becomes one Notification. Zero uses recoveryHold, and a
+	// negative value disables the hold so each alert is pushed at once.
+	RecoveryHold time.Duration
 	// Config is the effective fallback when no Reader is bound or the key is
 	// absent, so startup recovery can use the config layer.
 	Config Config
@@ -239,7 +275,19 @@ type Service struct {
 	client  *http.Client
 	logger  *slog.Logger
 	rand    io.Reader
+	now     func() time.Time
+	hold    time.Duration
 	config  Config
+
+	// pushMu serialises missed-alert summaries so two flushes cannot both pass
+	// the cooldown check. lastSummary is written under it.
+	pushMu      sync.Mutex
+	lastSummary time.Time
+
+	// batchMu guards the held recovery batch and its one timer.
+	batchMu      sync.Mutex
+	pending      []MissedAlert
+	pendingTimer *time.Timer
 }
 
 // New builds a Notify service. The config layer is validated here so a bad URL
@@ -272,6 +320,17 @@ func New(opts Options) (*Service, error) {
 	if random == nil {
 		random = rand.Reader
 	}
+	now := opts.Now
+	if now == nil {
+		now = time.Now
+	}
+	hold := recoveryHold
+	switch {
+	case opts.RecoveryHold < 0:
+		hold = 0
+	case opts.RecoveryHold > 0:
+		hold = opts.RecoveryHold
+	}
 	return &Service{
 		reader:  opts.Reader,
 		quiet:   opts.Quiet,
@@ -279,6 +338,8 @@ func New(opts Options) (*Service, error) {
 		client:  &client,
 		logger:  logger,
 		rand:    random,
+		now:     now,
+		hold:    hold,
 		config:  cfg,
 	}, nil
 }
@@ -298,7 +359,9 @@ func (s *Service) Bind(reader Reader) {
 // Send publishes one Notification. Nothing is sent during Quiet hours; the
 // caller gets a MutedError and no retry is scheduled. The topic is provisioned
 // only after the Quiet gate, so a muted Notification has no network or storage
-// side effect.
+// side effect. Send is never rate limited: a dictated notify.phone message and
+// a due Reminder each send exactly one request, and notify.cooldown only
+// bounds the missed-alert summaries.
 func (s *Service) Send(ctx context.Context, n Notification) error {
 	if s == nil {
 		return errors.New("notify: service is not configured")
@@ -400,6 +463,12 @@ func (s *Service) Topic(ctx context.Context) (string, error) {
 // NotifyMissed delivers a missed-Notification when the setting is enabled and
 // Quiet hours allow it. It runs from the Timer/Alarm recovery and max_ring
 // hooks; failures are logged and never panic the alert path.
+//
+// A live alert (a Ring that just reached max_ring) is pushed at once: it is one
+// fact about one alert and the user may be standing next to the device. A
+// recovery pass reports every open and downtime-retired row in a burst, so
+// those alerts are held for recoveryHold and pushed as one summary naming them
+// instead of one push per row (#206).
 func (s *Service) NotifyMissed(ctx context.Context, alert MissedAlert) {
 	if s == nil {
 		return
@@ -416,17 +485,106 @@ func (s *Service) NotifyMissed(ctx context.Context, alert MissedAlert) {
 			return
 		}
 	}
-	if err := s.Send(ctx, missedNotification(alert)); err != nil {
-		s.logger.Warn("missed notification failed",
-			"kind", alert.Kind,
-			"reason", alert.Reason,
-			"error", err.Error())
+	if isRecoveryReason(alert.Reason) && s.hold > 0 {
+		s.queueRecovery(alert)
+		return
+	}
+	s.deliver(ctx, missedNotification(alert))
+}
+
+// isRecoveryReason reports whether a missed alert came from the startup
+// recovery pass rather than a Ring that just reached max_ring. Recovery is the
+// burst: one pass reports every open and downtime-retired row.
+func isRecoveryReason(reason string) bool {
+	switch strings.ToLower(strings.TrimSpace(reason)) {
+	case "restart", "downtime":
+		return true
+	}
+	return false
+}
+
+// queueRecovery holds one recovered alert until the recovery pass settles.
+func (s *Service) queueRecovery(alert MissedAlert) {
+	s.batchMu.Lock()
+	s.pending = append(s.pending, alert)
+	if s.pendingTimer == nil {
+		s.pendingTimer = time.AfterFunc(s.hold, s.flushAfterHold)
+	}
+	waiting := len(s.pending)
+	s.batchMu.Unlock()
+	s.logger.Debug("missed alert held for one summary",
+		"kind", alert.Kind, "reason", alert.Reason, "waiting", waiting)
+}
+
+// flushAfterHold runs on the recovery timer. The recovery pass's context is
+// gone by then, so the push uses a fresh one; the HTTP client still bounds it.
+func (s *Service) flushAfterHold() {
+	_ = s.flushPending(context.Background())
+}
+
+// flushPending pushes the held recovery alerts as one Notification. It returns
+// the publish error for a caller that wants it; the timer path only logs.
+func (s *Service) flushPending(ctx context.Context) error {
+	s.batchMu.Lock()
+	if s.pendingTimer != nil {
+		s.pendingTimer.Stop()
+		s.pendingTimer = nil
+	}
+	batch := s.pending
+	s.pending = nil
+	s.batchMu.Unlock()
+	if len(batch) == 0 {
+		return nil
+	}
+	return s.pushSummary(ctx, batch)
+}
+
+// pushSummary sends one Notification covering a whole recovery batch. The batch
+// is already one message, so notify.cooldown bounds how often a recovery may
+// push at all: a second batch inside the gap is dropped and logged at Debug
+// rather than queued, matching the Quiet-hours rule that a suppressed
+// Notification is not retried. The durable history rows are unaffected.
+func (s *Service) pushSummary(ctx context.Context, batch []MissedAlert) error {
+	cooldown := s.cooldown()
+	now := s.now()
+	s.pushMu.Lock()
+	defer s.pushMu.Unlock()
+	if last := s.lastSummary; cooldown > 0 && !last.IsZero() && now.Sub(last) < cooldown {
+		s.logger.Debug("missed notification skipped by cooldown",
+			"alerts", len(batch), "elapsed_ms", now.Sub(last).Milliseconds())
+		return nil
+	}
+	err := s.Send(ctx, missedSummaryNotification(batch))
+	if err != nil {
+		var muted *MutedError
+		if errors.As(err, &muted) {
+			s.logger.Info("missed notification muted", "alerts", len(batch), "reason", muted.Reason)
+			return nil
+		}
+		s.logger.Warn("missed notification failed", "alerts", len(batch), "error", err.Error())
+		return err
+	}
+	s.lastSummary = now
+	return nil
+}
+
+// deliver publishes one missed Notification, logging a failure or a mute. The
+// alert path never sees a notification error.
+func (s *Service) deliver(ctx context.Context, n Notification) {
+	if err := s.Send(ctx, n); err != nil {
+		var muted *MutedError
+		if errors.As(err, &muted) {
+			s.logger.Info("missed notification muted", "kind", n.Kind, "reason", muted.Reason)
+			return
+		}
+		s.logger.Warn("missed notification failed", "kind", n.Kind, "error", err.Error())
 	}
 }
 
 // NotifyReminder pushes one due Reminder to the phone when the setting is on
 // and Quiet hours allow it. The message is user content, so it is never logged;
-// a failure logs only the kind and the error.
+// a failure logs only the kind and the error. A Reminder is never batched and
+// never cooldown-suppressed: the user asked for it, so each one is one request.
 func (s *Service) NotifyReminder(ctx context.Context, message string) {
 	if s == nil {
 		return
@@ -501,6 +659,23 @@ func (s *Service) remindersEnabled() bool {
 		}
 	}
 	return s.config.Reminders
+}
+
+// cooldown resolves the live gap between two missed-alert summaries. A missing
+// or unusable value falls back to the shipped default, so a hand-edited read of
+// the wrong type can never silence or flood the phone.
+func (s *Service) cooldown() time.Duration {
+	s.mu.RLock()
+	reader := s.reader
+	s.mu.RUnlock()
+	if reader != nil {
+		if value, ok := reader.Get(CooldownKey); ok {
+			if cooldown, ok := value.Value.(time.Duration); ok && cooldown >= 0 {
+				return cooldown
+			}
+		}
+	}
+	return DefaultCooldown
 }
 
 // token returns a stored server-issued access token, if any. It never invents
@@ -589,6 +764,70 @@ func missedNotification(alert MissedAlert) Notification {
 		Priority: "high",
 		Tags:     []string{"warning"},
 	}
+}
+
+// missedSummaryNotification renders one recovery batch as a single
+// Notification. Only the same two fields the single-alert message already
+// sends cross to the phone: the kind and the user's label. Never a Tool result,
+// a Reminder message or a secret. A batch of one keeps the detailed wording.
+func missedSummaryNotification(batch []MissedAlert) Notification {
+	if len(batch) == 1 {
+		return missedNotification(batch[0])
+	}
+	names := make([]string, 0, len(batch))
+	for _, alert := range batch {
+		names = append(names, alertName(alert))
+	}
+	listed := names
+	tail := ""
+	if len(listed) > maxSummaryNames {
+		listed = listed[:maxSummaryNames]
+		tail = fmt.Sprintf(" and %d more", len(names)-maxSummaryNames)
+	}
+	message := fmt.Sprintf("You missed %d alerts: %s%s.", len(names), strings.Join(listed, ", "), tail)
+	return Notification{
+		Kind:     summaryKind(batch),
+		Title:    "Missed alerts",
+		Message:  message,
+		Priority: "high",
+		Tags:     []string{"warning"},
+	}
+}
+
+// alertName is the short name a summary uses for one alert: the label plus its
+// kind ("pasta timer"), or just the kind when it has no label. A label is
+// user-supplied, so it is flattened to one line instead of allowing the
+// summary to grow extra lines.
+func alertName(alert MissedAlert) string {
+	kind := strings.TrimSpace(alert.Kind)
+	if kind == "" {
+		kind = "alert"
+	}
+	label := strings.Join(strings.Fields(alert.Label), " ")
+	if label == "" {
+		return kind
+	}
+	return label + " " + kind
+}
+
+// summaryKind is the log label for a batch: one kind when the whole batch is
+// that kind, otherwise the mixed "missed". It is never sent.
+func summaryKind(batch []MissedAlert) string {
+	kind := ""
+	for _, alert := range batch {
+		next := strings.TrimSpace(alert.Kind)
+		if next == "" {
+			continue
+		}
+		if kind != "" && kind != next {
+			return "missed"
+		}
+		kind = next
+	}
+	if kind == "" {
+		return "missed"
+	}
+	return "missed_" + kind
 }
 
 // normalizeBaseURL validates and canonicalises the ntfy base URL. Credentials,

@@ -95,15 +95,49 @@ inspect)
 	fi
 	;;
 image)
-	if [[ "${1:-}" == "inspect" ]]; then
+	sub="${1:-}"
+	shift || true
+	case "$sub" in
+	inspect)
 		if [[ -f "$dir/images-missing" ]]; then
 			echo "Error response from daemon: No such image" >&2
 			exit 1
 		fi
 		echo "[]"
+		;;
+	ls)
+		if [[ -f "$dir/image-ls-fails" ]]; then
+			echo "Error response from daemon: cannot list images" >&2
+			exit 1
+		fi
+		if [[ -f "$dir/images-list" ]]; then
+			cat "$dir/images-list"
+		else
+			printf 'clanka/assistant:%s|2026-01-01 00:00:00 +0000 UTC|0123456789ab\n' "${GIT_SHA:-dev}"
+		fi
+		;;
+	rmi)
+		if [[ -f "$dir/rmi-fails" ]] && grep -qxF -- "${1:-}" "$dir/rmi-fails"; then
+			echo "Error response from daemon: conflict: image is being used by a container" >&2
+			exit 1
+		fi
+		printf 'Untagged: %s\n' "${1:-}"
+		;;
+	*) echo "stub image $sub $*" ;;
+	esac
+	;;
+ps)
+	cat "$dir/running" 2>/dev/null || true
+	;;
+system)
+	if [[ "${1:-}" == "df" ]]; then
+		echo "Images 1GB"
 	else
-		echo "stub image $*"
+		echo "stub system $*"
 	fi
+	;;
+builder)
+	echo "stub builder $*"
 	;;
 *)
 	echo "stub docker $cmd $*"
@@ -154,7 +188,8 @@ new_repo() {
 	cp "$DEPLOY_SRC" "$repo/scripts/deploy.sh"
 	cp "$MAKE_SRC" "$repo/Makefile" 2>/dev/null || true
 	cp "$REPO_ROOT/scripts/soloist-setup.sh" "$repo/scripts/soloist-setup.sh"
-	chmod +x "$repo/scripts/deploy.sh" "$repo/scripts/soloist-setup.sh"
+	cp "$REPO_ROOT/scripts/prune-images.sh" "$repo/scripts/prune-images.sh"
+	chmod +x "$repo/scripts/deploy.sh" "$repo/scripts/soloist-setup.sh" "$repo/scripts/prune-images.sh"
 	cat >"$repo/docker-compose.yml" <<'YAML'
 services:
   assistant:
@@ -235,6 +270,17 @@ assert_calls_not_contains() {
 assert_env_contains() {
 	local desc=$1 needle=$2
 	if grep -qxF -- "$needle" "$SCENARIO/env"; then pass; else fail "$desc: docker env lacks '$needle'"; fi
+}
+
+assert_calls_order() {
+	local desc=$1 first=$2 second=$3 first_line second_line
+	first_line="$(grep -nF -- "$first" "$SCENARIO/calls" | head -n 1 | cut -d: -f1 || true)"
+	second_line="$(grep -nF -- "$second" "$SCENARIO/calls" | head -n 1 | cut -d: -f1 || true)"
+	if [[ -n "$first_line" && -n "$second_line" ]] && ((first_line < second_line)); then
+		pass
+	else
+		fail "$desc: '$first' (line ${first_line:-none}) is not before '$second' (line ${second_line:-none})"
+	fi
 }
 
 assert_elapsed_under() {
@@ -506,6 +552,70 @@ test_make_build_arm64() {
 	assert_env_contains "make build-arm64 tags with the SHA" "GIT_SHA=$sha"
 }
 
+test_make_prune_images() {
+	local repo sha
+	repo=$(new_repo)
+	sha=$(git -C "$repo" rev-parse --short HEAD)
+	new_scenario
+	run_make "$repo" prune-images
+	assert_status 0 "make prune-images succeeds"
+	assert_calls_contains "make prune-images reads the image inventory" "docker image ls"
+	assert_calls_not_contains "make prune-images keeps the deployed set" "docker image rmi clanka/assistant:$sha"
+}
+
+test_prunes_old_images_after_health() {
+	local repo sha
+	repo=$(new_repo)
+	sha=$(git -C "$repo" rev-parse --short HEAD)
+	new_scenario
+	printf 'clanka/assistant|%s|aaaaaaaaaaaa|2026-01-03 00:00:00 +0000 UTC\n' "$sha" >"$SCENARIO/images-list"
+	printf 'clanka/assistant|abcdef1|bbbbbbbbbbbb|2026-01-01 00:00:00 +0000 UTC\n' >>"$SCENARIO/images-list"
+	DEPLOY_KEEP_IMAGES=1 run_deploy "$repo"
+	assert_status 0 "a deploy that prunes succeeds"
+	assert_calls_contains "an old SHA tag is removed" "docker image rmi clanka/assistant:abcdef1"
+	assert_calls_not_contains "the deployed SHA tag is kept" "docker image rmi clanka/assistant:$sha"
+	assert_calls_order "pruning runs after the health wait" "docker compose ps -q assistant" "docker image rmi clanka/assistant:abcdef1"
+	assert_out_contains "the deploy reports the removal" "removed clanka/assistant:abcdef1"
+	assert_out_contains "the deploy still reports success" "deployed $sha"
+}
+
+test_prune_rmi_failure_does_not_fail_deploy() {
+	local repo sha
+	repo=$(new_repo)
+	sha=$(git -C "$repo" rev-parse --short HEAD)
+	new_scenario
+	printf 'clanka/assistant|%s|aaaaaaaaaaaa|2026-01-03 00:00:00 +0000 UTC\n' "$sha" >"$SCENARIO/images-list"
+	printf 'clanka/assistant|abcdef2|bbbbbbbbbbbb|2026-01-01 00:00:00 +0000 UTC\n' >>"$SCENARIO/images-list"
+	printf 'clanka/assistant:abcdef2\n' >"$SCENARIO/rmi-fails"
+	DEPLOY_KEEP_IMAGES=1 run_deploy "$repo"
+	assert_status 0 "a failed rmi leaves the deploy green"
+	assert_out_contains "the rmi failure is a warning" "could not remove clanka/assistant:abcdef2"
+	assert_out_contains "the deploy still reports success" "deployed $sha"
+}
+
+test_prune_script_failure_does_not_fail_deploy() {
+	local repo sha
+	repo=$(new_repo)
+	sha=$(git -C "$repo" rev-parse --short HEAD)
+	new_scenario
+	: >"$SCENARIO/image-ls-fails"
+	run_deploy "$repo"
+	assert_status 0 "an inventory failure leaves the deploy green"
+	assert_out_contains "the deploy names the tolerated prune failure" "image pruning failed; the deployment is still healthy"
+	assert_out_contains "the deploy still reports success" "deployed $sha"
+}
+
+test_does_not_prune_when_health_fails() {
+	local repo
+	repo=$(new_repo)
+	new_scenario
+	echo unhealthy >"$SCENARIO/health/default"
+	DEPLOY_HEALTH_TIMEOUT=30 run_deploy "$repo"
+	assert_nonzero "a failed health wait still fails the deploy"
+	assert_calls_not_contains "a failed deploy does not list images" "docker image ls"
+	assert_calls_not_contains "a failed deploy does not remove images" "docker image rmi"
+}
+
 run_test() {
 	local name=$1
 	printf '== %s\n' "$name"
@@ -530,6 +640,11 @@ run_test test_refuses_non_fast_forward_pull
 run_test test_refuses_unpushed_local_commit
 run_test test_deploys_pushed_feature_branch
 run_test test_make_build_arm64
+run_test test_make_prune_images
+run_test test_prunes_old_images_after_health
+run_test test_prune_rmi_failure_does_not_fail_deploy
+run_test test_prune_script_failure_does_not_fail_deploy
+run_test test_does_not_prune_when_health_fails
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

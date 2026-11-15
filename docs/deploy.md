@@ -14,8 +14,9 @@ make build       # build every service image for this host
 make up          # start the stack in the background
 make test        # assistant tests + deployment tests
 make check       # check compose/Dockerfile deployment conventions
-make deploy      # the Pi path: pull, build, start, wait for health
+make deploy      # the Pi path: pull, build, start, wait for health, prune
 make rollback SHA=<commit>
+make prune-images  # reclaim old SHA-tagged images (policy below)
 make build-arm64 # optional QEMU arm64 build of every image (not for latency)
 sudo bash scripts/install-deploy-watch.sh  # opt in to the auto-deploy timer (auto-deploy.md)
 ```
@@ -42,7 +43,11 @@ sudo bash scripts/install-deploy-watch.sh  # opt in to the auto-deploy timer (au
 6. Waits up to `DEPLOY_HEALTH_TIMEOUT` seconds (default 120) for every service
    in `docker-compose.yml` to be healthy. On failure it exits non-zero, prints
    `docker compose ps` and the logs of the failing service(s).
-7. Because the service list comes from Compose, the script keeps working as the
+7. After the health wait, runs `scripts/prune-images.sh` best effort to
+   reclaim old SHA-tagged image sets. A prune failure warns and never fails an
+   otherwise healthy deploy; the policy is under
+   [Image retention and disk space](#image-retention-and-disk-space).
+8. Because the service list comes from Compose, the script keeps working as the
    stack grows from `assistant` alone to all eight services.
 
 **With a commit — rollback without rebuilding**
@@ -58,8 +63,9 @@ scripts/deploy.sh <sha>      # or: make rollback SHA=<sha>
 3. Runs `docker compose up -d --no-build --remove-orphans`, so the existing
    SHA-tagged images are reused and containers that only exist in a newer
    commit's service set are removed. The host then runs exactly the rolled-back
-   stack, and the health wait enumerates that commit's services only. Old images
-   are pruned by hand (`docker image prune`).
+   stack, and the health wait enumerates that commit's services only. After the
+   health wait the same best-effort prune runs, keeping the rolled-back-to SHA
+   and the newest sets.
 
 The next plain `make deploy` switches back to the tracked branch and pulls;
 that branch must not have unpushed commits, or the deploy refuses to build
@@ -69,6 +75,7 @@ Tuning and diagnostics:
 
 ```sh
 DEPLOY_HEALTH_TIMEOUT=180 scripts/deploy.sh   # slower models on the Pi
+DEPLOY_KEEP_IMAGES=5 make prune-images        # keep more rollback sets
 docker compose ps
 docker compose logs -f <service>
 ```
@@ -578,6 +585,53 @@ current SHA; a rollback checks out an older commit and reuses the images built
 for it, so the matching model weights come back too. Nothing pulls over the
 internet at deploy time except base images that Docker has not cached yet.
 
+## Image retention and disk space
+
+Every deploy builds a complete set tagged `clanka/<service>:<short SHA>`, so
+the earlier sets stay tagged and consume the SD card or SSD. Plain
+`docker image prune` removes only *dangling* images and reclaims nothing here;
+`docker image prune -a` would delete the older tags that rollback needs, so do
+not use it (or `docker system prune`) on this host.
+
+`scripts/deploy.sh` prunes after a successful health wait, best effort: a prune
+problem warns and the deployment still succeeds. `make prune-images` runs the
+same pass by hand. The policy is deliberately narrow:
+
+- Only `clanka/*` tags matching a commit SHA (`^[0-9a-f]{7,40}$`) are
+  candidates. `dev`, `arm64-*` and other local tags are never touched.
+- The deployed SHA (`GIT_SHA`), the newest `DEPLOY_KEEP_IMAGES` sets (default
+  `3`) and any `DEPLOY_PINNED_SHAS` survive. A rolled-back-to SHA is the
+  deployed SHA, so it stays; sets newer than it are kept by the newest-N rule.
+- A set with a tag used by a running container is kept whole. A failed
+  `docker image rmi` warns and continues.
+- If the image list or the running-container list cannot be read, or the
+  deployed SHA has no tags, nothing is removed and the script exits non-zero.
+  `deploy.sh` turns that into a warning.
+- Every removed tag is printed, with `docker system df` before and after.
+
+```sh
+make prune-images
+DEPLOY_KEEP_IMAGES=5 make prune-images
+DEPLOY_PINNED_SHAS=<sha>,<sha> make prune-images
+docker image ls --filter reference='clanka/*'       # inspect the inventory
+docker image rmi clanka/assistant:<old-sha>         # one old tag, if you must
+```
+
+The BuildKit cache is separate and host-wide: Docker cannot scope it to one
+Compose project. A plain deploy does not prune it, because a cache prune can
+slow the next build or make it re-download a weights layer. To bound it
+deliberately (including during a deploy):
+
+```sh
+DEPLOY_PRUNE_BUILD_CACHE=1 make prune-images
+DEPLOY_PRUNE_BUILD_CACHE=1 DEPLOY_BUILD_CACHE_AGE=72h make prune-images
+```
+
+That opt-in runs `docker builder prune -f --filter until=168h` (or the
+configured age) and, like the image prune, only warns on failure. Check
+`docker system df` after a few deploys; the old image sets shrink without
+touching the running stack.
+
 ## Model weights layer
 
 Every service is built locally from its build context, even when it wraps an
@@ -708,6 +762,11 @@ breakage or Bluetooth, so latency work stays on the Pi.
 - **Rollback says an image is missing**: that SHA was never deployed here.
   Check it out and build it once with `git checkout <sha> && make build`, or
   deploy it without the SHA argument from a clean checkout.
+- **Prune says the deployed SHA has no `clanka/*` tags**: the run had a
+  different (or no) `GIT_SHA`, so nothing was removed. Check
+  `docker image ls --filter reference='clanka/*'` and rerun with the right
+  `GIT_SHA=... make prune-images`; `deploy.sh` only warns and keeps the stack
+  running.
 - **Rollback after a reboot**: containers use `restart: unless-stopped`, so a
   reboot brings back the last deployed images. To change versions, run the
   deploy script again.

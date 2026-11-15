@@ -24,11 +24,16 @@ type fakeAPI struct {
 	mu       sync.Mutex
 	setCalls []setCall
 	devCalls int
+	// seenEmail and seenPassword are the last credentials the service handed
+	// the API, so a test can prove what the trimming rules produced.
+	seenEmail    string
+	seenPassword string
 }
 
-func (f *fakeAPI) Devices(context.Context, string, string) ([]Device, error) {
+func (f *fakeAPI) Devices(_ context.Context, email, password string) ([]Device, error) {
 	f.mu.Lock()
 	f.devCalls++
+	f.seenEmail, f.seenPassword = email, password
 	f.mu.Unlock()
 	return f.devices, f.devicesErr
 }
@@ -59,11 +64,41 @@ func (f *fakeAPI) deviceCalls() int {
 	return f.devCalls
 }
 
+func (f *fakeAPI) credentials() (string, string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.seenEmail, f.seenPassword
+}
+
 func configured(api API) *Service {
 	return NewService(Options{
 		API:         api,
 		Credentials: func() (string, string, bool) { return "owner@example.com", "secret", true },
 	})
+}
+
+// TestCredentialsTrimOnlyTheEmail proves the stored password reaches the cloud
+// exactly as entered: a value with spaces around it is still the account's
+// password, and trimming it would sign the owner out of their own account.
+func TestCredentialsTrimOnlyTheEmail(t *testing.T) {
+	api := &fakeAPI{devices: []Device{{DSN: "DSN1"}}}
+	svc := NewService(Options{
+		API:         api,
+		Credentials: func() (string, string, bool) { return "  owner@example.com  ", " pw ", true },
+	})
+	if !svc.Configured() {
+		t.Fatal("a stored password with spaces must count as configured")
+	}
+	if v := svc.View(context.Background()); !v.Configured {
+		t.Fatalf("view = %+v", v)
+	}
+	email, password := api.credentials()
+	if email != "owner@example.com" {
+		t.Fatalf("email = %q, want the padded value trimmed", email)
+	}
+	if password != " pw " {
+		t.Fatalf("password = %q, want the stored value unchanged", password)
+	}
 }
 
 func TestViewWithoutCredentialsPointsAtSecrets(t *testing.T) {

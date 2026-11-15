@@ -46,7 +46,17 @@ const (
 
 // requestTimeout bounds one HTTPS call. A page load reads the device list and
 // one properties document per light, so the client timeout is per request.
+// It also bounds the whole sign-in, which runs away from the caller's deadline.
 const requestTimeout = 20 * time.Second
+
+// Sign-in backoff after a failed login. A rejected password is retried rarely:
+// the cloud's own consumer login rate-limits repeated failures and can lock the
+// account, and the owner fixes the Secret far more slowly than a page polls. A
+// transient failure clears quickly so the next Health poll can heal it.
+const (
+	credentialBackoff = 5 * time.Minute
+	transientBackoff  = 30 * time.Second
+)
 
 // maxBody keeps a misbehaving upstream from exhausting memory. The property
 // document includes the device's scene slots, which are still far smaller.
@@ -116,12 +126,31 @@ type Client struct {
 	// sends an install id; a fresh process is a new install.
 	deviceID string
 
-	authMu sync.Mutex
-
 	mu       sync.Mutex
 	token    string
 	tokenKey string
 	expires  time.Time
+	pending  *loginCall
+	fail     failure
+}
+
+// loginCall is one sign-in in flight. Every caller that needs the same account
+// waits on done; one whose own deadline expires walks away without cancelling
+// the login, so the next call still gets its token.
+type loginCall struct {
+	key   string
+	done  chan struct{}
+	token string
+	err   error
+}
+
+// failure is the memoised result of a failed sign-in: it names the account it
+// belongs to and when the client may try again, so a wrong password does not
+// reach the cloud on every page load and Health poll.
+type failure struct {
+	key   string
+	until time.Time
+	err   error
 }
 
 // NewClient returns a client for Monster's production hosts.
@@ -235,37 +264,79 @@ func (c *Client) aylaJSON(ctx context.Context, email, password, method, path str
 	return ErrCredentials
 }
 
-// ensureToken returns a cached session or runs the app's three-step sign-in:
-// Copilot login, partner ticket, then an Ayla token exchange.
+// ensureToken returns a cached session, joins a sign-in already in flight, or
+// starts one: Copilot login, partner ticket, then an Ayla token exchange.
+//
+// The sign-in never runs on the caller's context. Health calls into this inside
+// a short shared snapshot, so aborting the login with that deadline would leave
+// no token cached and start the three POSTs from zero on the next poll. The
+// caller instead waits on its own context; the login continues on
+// context.WithoutCancel under requestTimeout, and its result serves the next
+// call.
 func (c *Client) ensureToken(ctx context.Context, email, password string) (string, error) {
 	key := credentialKey(email, password)
-	c.mu.Lock()
-	if c.token != "" && c.tokenKey == key && c.now().Before(c.expires) {
-		token := c.token
+	for {
+		c.mu.Lock()
+		if c.token != "" && c.tokenKey == key && c.now().Before(c.expires) {
+			token := c.token
+			c.mu.Unlock()
+			return token, nil
+		}
+		// A rejected password backs off for minutes, a transient failure for
+		// seconds. The memo names its account, so replacing the credentials
+		// retries at once instead of waiting it out.
+		if c.fail.key == key && c.now().Before(c.fail.until) {
+			err := c.fail.err
+			c.mu.Unlock()
+			return "", err
+		}
+		// One sign-in at a time: the Dashboard page and a Health poll can
+		// overlap, and the cloud counts each login.
+		call := c.pending
+		if call == nil {
+			call = &loginCall{key: key, done: make(chan struct{})}
+			c.pending = call
+			go c.signIn(ctx, call, email, password)
+		}
 		c.mu.Unlock()
-		return token, nil
-	}
-	c.mu.Unlock()
 
-	// One login at a time: the Dashboard page and a Health poll can overlap.
-	c.authMu.Lock()
-	defer c.authMu.Unlock()
-	c.mu.Lock()
-	if c.token != "" && c.tokenKey == key && c.now().Before(c.expires) {
-		token := c.token
-		c.mu.Unlock()
-		return token, nil
+		select {
+		case <-call.done:
+		case <-ctx.Done():
+			return "", ctx.Err()
+		}
+		if call.key == key {
+			return call.token, call.err
+		}
+		// Another account's sign-in finished while this caller was waiting;
+		// re-read the cache and the memo for this account before starting one.
 	}
-	c.mu.Unlock()
+}
+
+// signIn runs the login for every caller that joined its call, then publishes
+// either the token or a backoff failure. The parent context supplies values
+// only; its cancellation must not end a login whose token the next call needs.
+func (c *Client) signIn(parent context.Context, call *loginCall, email, password string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), requestTimeout)
+	defer cancel()
 
 	token, expiry, err := c.login(ctx, email, password)
-	if err != nil {
-		return "", err
-	}
+
 	c.mu.Lock()
-	c.token, c.tokenKey, c.expires = token, key, expiry
+	call.token, call.err = token, err
+	if err != nil {
+		backoff := transientBackoff
+		if errors.Is(err, ErrCredentials) {
+			backoff = credentialBackoff
+		}
+		c.fail = failure{key: call.key, until: c.now().Add(backoff), err: err}
+	} else {
+		c.token, c.tokenKey, c.expires = token, call.key, expiry
+		c.fail = failure{}
+	}
+	c.pending = nil
 	c.mu.Unlock()
-	return token, nil
+	close(call.done)
 }
 
 // credentialKey identifies the account without keeping the password in the

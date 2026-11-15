@@ -270,7 +270,10 @@ func (s *Service) credentials() (string, string, bool) {
 		return "", "", false
 	}
 	email, password, ok := s.cred()
-	email, password = strings.TrimSpace(email), strings.TrimSpace(password)
+	// Only the email is trimmed. A password may legitimately start or end
+	// with a space, and trimming it would make that account unable to sign in
+	// while the Secrets page and the module's own check still call it set.
+	email = strings.TrimSpace(email)
 	return email, password, ok && email != "" && password != ""
 }
 

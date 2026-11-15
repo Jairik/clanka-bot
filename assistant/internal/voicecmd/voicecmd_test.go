@@ -273,6 +273,19 @@ func TestCuePlaysOnlyWhenTheVolumeChanges(t *testing.T) {
 	}
 }
 
+func TestUpStepAboveTheCeilingNeverLowersTheLevel(t *testing.T) {
+	// Something else set the sink above 100. Clamping to 100 would make
+	// "volume up" a drop, so above the ceiling an up step is a no-op.
+	f := newFixture(t, 10, time.Second, 105, true, false)
+	f.handler.Handle(context.Background(), voicecmd.VolumeUpModel)
+	if got, _, sets := f.sink.state(); got != 105 || len(sets) != 0 {
+		t.Fatalf("volume/sets = %d/%v above the ceiling, want 105 and no write", got, sets)
+	}
+	if f.cues != 0 {
+		t.Fatalf("cues = %d above the ceiling, want none", f.cues)
+	}
+}
+
 func TestReadAndWriteFailuresDoNotPanicOrChime(t *testing.T) {
 	for _, test := range []struct {
 		name string

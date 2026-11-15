@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -171,6 +172,33 @@ func fakePactl(t *testing.T) (binary, argsPath string) {
 	return binary, argsPath
 }
 
+// fakePactlAtLevel answers get-sink-volume with percent and appends every call
+// to a log, so a test can tell the level read from a write.
+func fakePactlAtLevel(t *testing.T, percent int) (pacat, logPath string) {
+	t.Helper()
+	dir := t.TempDir()
+	logPath = filepath.Join(dir, "pactl-log.txt")
+	script := "#!/bin/sh\nprintf '%s\\n' \"$*\" >> '" + logPath + "'\n" +
+		"case \"$1\" in\n" +
+		"get-sink-volume) echo \"Volume: front-left: 1 / " + strconv.Itoa(percent) + "% / -1.00 dB\" ;;\n" +
+		"get-sink-mute) echo \"Mute: no\" ;;\n" +
+		"esac\n"
+	if err := os.WriteFile(filepath.Join(dir, "pactl"), []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake pactl: %v", err)
+	}
+	return filepath.Join(dir, "pacat"), logPath
+}
+
+// pactlCalls returns one argument line per fake pactl invocation.
+func pactlCalls(t *testing.T, logPath string) []string {
+	t.Helper()
+	data, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read pactl log: %v", err)
+	}
+	return strings.Split(strings.TrimSpace(string(data)), "\n")
+}
+
 func TestPulseSinkSetVolumeRunsPactl(t *testing.T) {
 	// The pactl fake sits beside the pacat path so the sink finds it.
 	pactl, argsPath := fakePactl(t)
@@ -194,25 +222,71 @@ func TestPulseSinkSetVolumeRunsPactl(t *testing.T) {
 	}
 }
 
-func TestPulseSinkAdjustVolumeUsesRelativePercent(t *testing.T) {
-	pactl, argsPath := fakePactl(t)
-	pacat := filepath.Join(filepath.Dir(pactl), "pacat")
-	if err := os.WriteFile(pacat, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
-		t.Fatalf("write fake pacat: %v", err)
-	}
-	sink := audio.NewPulseSink(pacat, "")
+// A relative step reads the level, caps the target at 0-100 and writes only a
+// real change, so "louder" can never reach PulseAudio's amplification range.
+func TestPulseSinkAdjustVolumeCapsAtTheCeiling(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		start int
+		delta int
+		want  string // the one set-sink-volume line; empty means no write
+	}{
+		{name: "a step reaching the ceiling", start: 95, delta: 10, want: "set-sink-volume @DEFAULT_SINK@ 100%"},
+		{name: "an up step at the ceiling", start: 100, delta: 10},
+		{name: "a down step at the floor", start: 0, delta: -10},
+		{name: "a down step", start: 40, delta: -10, want: "set-sink-volume @DEFAULT_SINK@ 30%"},
+		{name: "an up step above the ceiling", start: 105, delta: 10},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			pacat, logPath := fakePactlAtLevel(t, test.start)
+			sink := audio.NewPulseSink(pacat, "")
 
-	if err := sink.AdjustVolume(context.Background(), 10); err != nil {
-		t.Fatalf("AdjustVolume: %v", err)
+			if err := sink.AdjustVolume(context.Background(), test.delta); err != nil {
+				t.Fatalf("AdjustVolume: %v", err)
+			}
+			calls := pactlCalls(t, logPath)
+			if first := calls[0]; first != "get-sink-volume @DEFAULT_SINK@" {
+				t.Fatalf("first call = %q, want a level read", first)
+			}
+			var writes []string
+			for _, call := range calls {
+				if strings.HasPrefix(call, "set-sink-volume") {
+					writes = append(writes, call)
+				}
+			}
+			if test.want == "" {
+				if len(writes) != 0 {
+					t.Fatalf("writes = %v, want none", writes)
+				}
+				return
+			}
+			if len(writes) != 1 || writes[0] != test.want {
+				t.Fatalf("writes = %v, want %q", writes, test.want)
+			}
+		})
 	}
-	args, err := os.ReadFile(argsPath)
+}
+
+// Level must not depend on get-sink-mute: a Bluetooth sink can answer that
+// slowly or not at all, and a step still has to work.
+func TestPulseSinkLevelSkipsTheMuteQuery(t *testing.T) {
+	dir := t.TempDir()
+	script := "#!/bin/sh\n" +
+		"case \"$1\" in\n" +
+		"get-sink-volume) echo \"Volume: mono: 26214 / 40% / -23.88 dB\" ;;\n" +
+		"get-sink-mute) echo \"connection failure\" >&2; exit 1 ;;\n" +
+		"esac\n"
+	if err := os.WriteFile(filepath.Join(dir, "pactl"), []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake pactl: %v", err)
+	}
+	sink := audio.NewPulseSink(filepath.Join(dir, "pacat"), "")
+
+	level, err := sink.Level(context.Background())
 	if err != nil {
-		t.Fatalf("read args: %v", err)
+		t.Fatalf("Level: %v", err)
 	}
-	for _, want := range []string{"set-sink-volume", "@DEFAULT_SINK@", "+10%"} {
-		if !strings.Contains(string(args), want) {
-			t.Errorf("pactl args missing %q in:\n%s", want, args)
-		}
+	if level != 40 {
+		t.Fatalf("level = %d, want 40", level)
 	}
 }
 

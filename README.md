@@ -372,7 +372,9 @@ Focus, at a stricter per-model threshold (default 0.7, overridable through
 sink that `audio.volume_set` and the Dashboard slider drive, so it carries
 replies and Cues as well as music; Quiet hours and Ring volumes stay software
 gains and are not rewritten. While music holds Focus, an up step stops at
-`music.max_volume`; a down step is never blocked. The feature stays off
+`music.max_volume`; a down step is never blocked. Every up step also stops at
+the sink's 100% ceiling, and an up step above that ceiling is a no-op rather
+than a clamp down. The feature stays off
 until models trained on this house's samples exist and the false-trigger
 measurement in `docs/spikes/wake-over-music.md` meets its target.
 
@@ -550,13 +552,19 @@ act on a ringing alert first, then the current reply, then playing music. With
 nothing in Focus they fall through to the semantic Fast path, so `cancel` still
 reaches `timer.cancel` and `louder` still steps the volume up. A volume phrase
 runs the Tool's extraction even though it matched exactly, so `quieter` steps
-down and `mute` sets the sink volume to zero; `unmute` steps up because there is
-no stored pre-mute level. These drive the actual Pulse sink through `pactl`.
-`mute` is an explicit master mute of the host's default sink, not a per-stream
-music volume, so it silences every stream on that sink: the next spoken reply
-and any Ring are inaudible until the volume is raised again. Nothing restores
-the previous level automatically, because the mute was a direct user command.
-The volume change does not rewrite `quiet.volume` or any `ring.<kind>.volume`:
+down and `mute` sets the sink mute flag. `unmute` clears that flag and restores
+whatever level was playing; when the level was already 0 — an absolute "volume
+zero" leaves the flag alone — it also takes one step so the room is audible
+again. These drive the actual Pulse sink through `pactl`: `mute` reads and
+writes only the sink's mute flag, not its level. A relative step reads the level
+and caps it at 0-100%, so `louder` reaching 100% stays there and an up step
+never lowers a level set above 100 by something else. A relative step does not
+clear a genuine mute, because raising the level under a muted sink is silent;
+say `unmute` for that. `mute` is an explicit master mute of the host's default
+sink, not a per-stream music volume, so it silences every stream on that sink:
+the next spoken reply and any Ring are inaudible until `unmute` or a Dashboard
+change lifts it. The volume change does not rewrite `quiet.volume` or any
+`ring.<kind>.volume`:
 those configured levels stay as they were, and a Ring still applies its own
 volume once the sink is audible. Music ducking and its restore belong to the
 Ring's `ring.Music` seam (#72), not to this volume control.

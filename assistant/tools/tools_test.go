@@ -35,7 +35,9 @@ func (s *stubControls) AdjustVolume(_ context.Context, delta int) error {
 	s.delta = delta
 	return nil
 }
-func (s *stubControls) Stop(context.Context) error { return nil }
+func (s *stubControls) Level(context.Context) (int, error)  { return 40, nil }
+func (s *stubControls) SetMute(context.Context, bool) error { return nil }
+func (s *stubControls) Stop(context.Context) error          { return nil }
 
 // recorder collects spoken alerts.
 type recorder struct {

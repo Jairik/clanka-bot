@@ -12,11 +12,15 @@ import (
 
 // fakeControls records the audio commands the Tools issue.
 type fakeControls struct {
-	volume   int
-	delta    int
-	stopped  int
-	setCalls int
-	adjCalls int
+	volume     int
+	delta      int
+	stopped    int
+	setCalls   int
+	adjCalls   int
+	level      int
+	levelCalls int
+	muteCalls  int
+	muted      bool
 }
 
 func (f *fakeControls) SetVolume(_ context.Context, percent int) error {
@@ -28,6 +32,17 @@ func (f *fakeControls) SetVolume(_ context.Context, percent int) error {
 func (f *fakeControls) AdjustVolume(_ context.Context, delta int) error {
 	f.delta = delta
 	f.adjCalls++
+	return nil
+}
+
+func (f *fakeControls) Level(context.Context) (int, error) {
+	f.levelCalls++
+	return f.level, nil
+}
+
+func (f *fakeControls) SetMute(_ context.Context, muted bool) error {
+	f.muted = muted
+	f.muteCalls++
 	return nil
 }
 
@@ -72,6 +87,10 @@ func TestVolumeSetExtractsAbsolutePercent(t *testing.T) {
 	if controls.setCalls != 1 || controls.volume != 40 {
 		t.Fatalf("SetVolume calls = %d volume = %d, want one call at 40", controls.setCalls, controls.volume)
 	}
+	// An absolute level above zero clears a stale mute, as the Dashboard does.
+	if controls.muteCalls != 1 || controls.muted {
+		t.Fatalf("SetMute calls = %d muted = %v, want one clear", controls.muteCalls, controls.muted)
+	}
 	if want := "Volume set to 40 percent."; spoken != want {
 		t.Fatalf("Speak = %q, want %q", spoken, want)
 	}
@@ -81,10 +100,14 @@ func TestVolumeSetAcceptsZeroPercent(t *testing.T) {
 	controls := &fakeControls{}
 	reg := newRegistry(t, controls)
 
-	// Zero is a normal volume (mute), not a missing argument.
+	// Zero is a normal volume (makes it silent), not a missing argument, and it
+	// only moves the level: the mute flag keeps its state.
 	spoken := runTool(t, reg, audiocontrol.VolumeName, "turn the volume to zero")
 	if controls.setCalls != 1 || controls.volume != 0 {
 		t.Fatalf("SetVolume calls = %d volume = %d, want one call at 0", controls.setCalls, controls.volume)
+	}
+	if controls.muteCalls != 0 {
+		t.Fatalf("SetMute calls = %d at an absolute zero, want none", controls.muteCalls)
 	}
 	if want := "Muted."; spoken != want {
 		t.Fatalf("Speak = %q, want %q", spoken, want)
@@ -95,8 +118,9 @@ func TestVolumeSetAcceptsZeroPercent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Execute: %v", err)
 	}
-	if controls.setCalls != 2 || controls.volume != 0 || controls.adjCalls != 0 {
-		t.Fatalf("calls = %d set / %d adjust, want a second absolute set at 0", controls.setCalls, controls.adjCalls)
+	if controls.setCalls != 2 || controls.volume != 0 || controls.adjCalls != 0 || controls.muteCalls != 0 {
+		t.Fatalf("calls = %d set / %d adjust / %d mute, want a second absolute set at 0",
+			controls.setCalls, controls.adjCalls, controls.muteCalls)
 	}
 	if spoken, _ := reg.Speak(audiocontrol.VolumeName, result); spoken != "Muted." {
 		t.Fatalf("Speak = %q, want %q", spoken, "Muted.")
@@ -127,6 +151,10 @@ func TestVolumeSetExtractsLouderAsAStep(t *testing.T) {
 	if controls.adjCalls != 1 || controls.delta != 10 {
 		t.Fatalf("AdjustVolume calls = %d delta = %d, want one call at +10", controls.adjCalls, controls.delta)
 	}
+	// Raising the level does not clear a genuine mute; that needs "unmute".
+	if controls.muteCalls != 0 {
+		t.Fatalf("SetMute calls = %d after a step, want none", controls.muteCalls)
+	}
 	if want := "Volume up."; spoken != want {
 		t.Fatalf("Speak = %q, want %q", spoken, want)
 	}
@@ -145,28 +173,70 @@ func TestVolumeSetExtractsQuieterAsANegativeStep(t *testing.T) {
 	}
 }
 
-func TestVolumeSetMutesThroughTheAudioBackend(t *testing.T) {
-	controls := &fakeControls{}
+func TestVolumeSetMutesThroughTheSinkFlag(t *testing.T) {
+	controls := &fakeControls{level: 40}
 	reg := newRegistry(t, controls)
 
 	spoken := runTool(t, reg, audiocontrol.VolumeName, "mute")
-	if controls.setCalls != 1 || controls.volume != 0 || controls.adjCalls != 0 {
-		t.Fatalf("set calls = %d volume = %d adjust = %d, want one absolute set at 0",
-			controls.setCalls, controls.volume, controls.adjCalls)
+	// Mute keeps the level, so unmuting restores what was playing.
+	if controls.muteCalls != 1 || !controls.muted {
+		t.Fatalf("SetMute calls = %d muted = %v, want one mute", controls.muteCalls, controls.muted)
+	}
+	if controls.setCalls != 0 || controls.adjCalls != 0 {
+		t.Fatalf("set calls = %d adjust = %d, want no level change", controls.setCalls, controls.adjCalls)
 	}
 	if want := "Muted."; spoken != want {
 		t.Fatalf("Speak = %q, want %q", spoken, want)
 	}
+
+	// The model may pass the flag explicitly too.
+	result, err := reg.Execute(context.Background(), audiocontrol.VolumeName, json.RawMessage(`{"mute":true}`))
+	if err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	if controls.muteCalls != 2 || !controls.muted || controls.setCalls != 0 {
+		t.Fatalf("calls = %d mute / %d set, want a second mute flag write only",
+			controls.muteCalls, controls.setCalls)
+	}
+	if spoken, _ := reg.Speak(audiocontrol.VolumeName, result); spoken != "Muted." {
+		t.Fatalf("Speak = %q, want %q", spoken, "Muted.")
+	}
 }
 
-func TestVolumeSetExtractsUnmuteAsAStepNotAMute(t *testing.T) {
-	controls := &fakeControls{}
+func TestUnmuteClearsTheFlagAndKeepsTheLevel(t *testing.T) {
+	controls := &fakeControls{level: 40}
 	reg := newRegistry(t, controls)
 
-	runTool(t, reg, audiocontrol.VolumeName, "unmute")
+	spoken := runTool(t, reg, audiocontrol.VolumeName, "unmute")
+	if controls.muteCalls != 1 || controls.muted {
+		t.Fatalf("SetMute calls = %d muted = %v, want one clear", controls.muteCalls, controls.muted)
+	}
+	if controls.setCalls != 0 || controls.adjCalls != 0 {
+		t.Fatalf("set calls = %d adjust = %d, want no level change above zero",
+			controls.setCalls, controls.adjCalls)
+	}
+	if want := "Unmuted."; spoken != want {
+		t.Fatalf("Speak = %q, want %q", spoken, want)
+	}
+}
+
+func TestUnmuteFromZeroAppliesOneStep(t *testing.T) {
+	// An earlier absolute zero left nothing to restore, so one step is the
+	// honest recovery instead of silence.
+	controls := &fakeControls{level: 0}
+	reg := newRegistry(t, controls)
+
+	spoken := runTool(t, reg, audiocontrol.VolumeName, "unmute")
+	if controls.muteCalls != 1 || controls.muted {
+		t.Fatalf("SetMute calls = %d muted = %v, want one clear", controls.muteCalls, controls.muted)
+	}
 	if controls.adjCalls != 1 || controls.delta != 10 || controls.setCalls != 0 {
 		t.Fatalf("set calls = %d adjust = %d delta = %d, want one +10 step",
 			controls.setCalls, controls.adjCalls, controls.delta)
+	}
+	// The reply names the action, not the side effect.
+	if want := "Unmuted."; spoken != want {
+		t.Fatalf("Speak = %q, want %q", spoken, want)
 	}
 }
 

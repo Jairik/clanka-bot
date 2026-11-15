@@ -170,9 +170,14 @@ func (h *Handler) Handle(ctx context.Context, name string) {
 	}
 }
 
-// target applies one step and the music cap. The cap is a ceiling only: a down
-// step never stops above it, so the user can always make the room quieter.
+// target applies one step, the 100% ceiling and the music cap. The music cap
+// is a ceiling only: a down step never stops above it, so the user can always
+// make the room quieter. An up step above the 100% ceiling is a no-op instead
+// of a clamp, so a level set above 100 elsewhere is never lowered by "louder".
 func (h *Handler) target(current, delta int, music bool) (int, bool) {
+	if delta > 0 && current >= 100 {
+		return current, true
+	}
 	target := current + delta
 	if target < 0 {
 		target = 0

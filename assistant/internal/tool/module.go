@@ -178,6 +178,10 @@ type Speaker interface {
 type AudioControls interface {
 	SetVolume(ctx context.Context, percent int) error
 	AdjustVolume(ctx context.Context, delta int) error
+	// Level reads the sink level alone, so a step never depends on the mute query.
+	Level(ctx context.Context) (int, error)
+	// SetMute mutes or unmutes the sink without changing its level.
+	SetMute(ctx context.Context, muted bool) error
 	Stop(ctx context.Context) error
 }
 

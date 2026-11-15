@@ -123,9 +123,45 @@ func (s *PulseSink) SetVolume(ctx context.Context, percent int) error {
 	return s.pactlVolume(ctx, strconv.Itoa(percent)+"%")
 }
 
-// AdjustVolume changes the sink volume by a relative percent.
+// AdjustVolume steps the sink volume by a relative percent. The target is
+// capped at 0-100 so "louder" cannot climb into PulseAudio's amplification
+// range, which the Dashboard and the wake-free command cannot express. A step
+// that cannot change the level writes nothing.
 func (s *PulseSink) AdjustVolume(ctx context.Context, delta int) error {
-	return s.pactlVolume(ctx, fmt.Sprintf("%+d%%", delta))
+	current, err := s.Level(ctx)
+	if err != nil {
+		return err
+	}
+	// An up step at or above the ceiling cannot raise the level, and clamping to
+	// 100 would turn it into a drop, so it writes nothing.
+	if delta > 0 && current >= 100 {
+		return nil
+	}
+	target := current + delta
+	if target < 0 {
+		target = 0
+	}
+	if target > 100 {
+		target = 100
+	}
+	if target == current {
+		return nil
+	}
+	return s.SetVolume(ctx, target)
+}
+
+// Level reads only the sink's level, without the mute query, so a slow or
+// failing get-sink-mute cannot fail a relative volume step.
+func (s *PulseSink) Level(ctx context.Context) (int, error) {
+	out, err := s.runPactl(ctx, "get-sink-volume", s.target())
+	if err != nil {
+		return 0, err
+	}
+	percent, ok := parsePactlPercent(out)
+	if !ok {
+		return 0, fmt.Errorf("audio: pactl get-sink-volume: no percent in %q", truncate(out, 120))
+	}
+	return percent, nil
 }
 
 // Stop cancels the playback streams this process opened, leaving unrelated
@@ -158,7 +194,7 @@ func (s *PulseSink) Volume(ctx context.Context) (VolumeState, error) {
 	target := s.target()
 	var (
 		wg        sync.WaitGroup
-		volumeOut string
+		percent   int
 		volumeErr error
 		muteOut   string
 		muteErr   error
@@ -166,7 +202,7 @@ func (s *PulseSink) Volume(ctx context.Context) (VolumeState, error) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		volumeOut, volumeErr = s.runPactl(ctx, "get-sink-volume", target)
+		percent, volumeErr = s.Level(ctx)
 	}()
 	go func() {
 		defer wg.Done()
@@ -177,10 +213,6 @@ func (s *PulseSink) Volume(ctx context.Context) (VolumeState, error) {
 	// The level is the part that matters, so its error wins when both fail.
 	if volumeErr != nil {
 		return VolumeState{}, volumeErr
-	}
-	percent, ok := parsePactlPercent(volumeOut)
-	if !ok {
-		return VolumeState{}, fmt.Errorf("audio: pactl get-sink-volume: no percent in %q", truncate(volumeOut, 120))
 	}
 	if muteErr != nil {
 		return VolumeState{}, muteErr

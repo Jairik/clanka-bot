@@ -582,6 +582,187 @@ func TestDisconnectClearsOnlyTheWebAPIToken(t *testing.T) {
 	}
 }
 
+// refreshOutcome is one Token result handed back from a test goroutine.
+type refreshOutcome struct {
+	token string
+	err   error
+}
+
+// stallRefresh makes the next refresh grant block at the token endpoint and
+// reports when it has arrived, so a test can act while a grant is genuinely in
+// flight. Release is idempotent and runs as a cleanup so a failing test cannot
+// leave the fake server's handler blocked.
+func (f *authFixture) stallRefresh(rotate bool) (release func(), started <-chan struct{}) {
+	block := make(chan struct{})
+	signalled := make(chan struct{}, 1)
+	f.fake.mu.Lock()
+	f.fake.rotate = rotate
+	f.fake.blockRefresh = block
+	f.fake.startedRefresh = signalled
+	f.fake.mu.Unlock()
+
+	var once sync.Once
+	release = func() { once.Do(func() { close(block) }) }
+	f.t.Cleanup(release)
+	return release, signalled
+}
+
+// awaitGrant waits for the stall signal without racing the request.
+func awaitGrant(t *testing.T, started <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the refresh never reached the token endpoint")
+	}
+}
+
+func (f *authFixture) refreshCallCount() int {
+	f.fake.mu.Lock()
+	defer f.fake.mu.Unlock()
+	return f.fake.refreshCalls
+}
+
+// A caller whose deadline is shorter than the token response must get its own
+// error without aborting the grant: the rotated refresh token still has to be
+// stored, and the next caller must read the cached access token instead of
+// starting a second grant.
+func TestShortCallerDeadlineDoesNotAbortTheRefresh(t *testing.T) {
+	f := newAuthFixture(t)
+	f.beginAndComplete(t)
+	f.clock.Advance(2 * time.Hour)
+
+	before := f.refreshCallCount()
+	release, started := f.stallRefresh(true)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	if _, err := f.auth.Token(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Token = %v, want context.DeadlineExceeded", err)
+	}
+	awaitGrant(t, started)
+
+	release()
+	token, err := f.auth.Token(context.Background())
+	if err != nil || token != "access-2" {
+		t.Fatalf("Token after the grant = %q, %v", token, err)
+	}
+	if stored, ok := f.secrets.Get(spotify.SecretName); !ok || stored != "refresh-2" {
+		t.Fatalf("stored refresh token = %q, %v; the rotation was lost", stored, ok)
+	}
+	if calls := f.refreshCallCount() - before; calls != 1 {
+		t.Fatalf("refresh calls = %d, want one shared grant", calls)
+	}
+	if status := f.auth.Status(); status.State != spotify.WebAPIConnected {
+		t.Fatalf("status = %+v, want connected", status)
+	}
+}
+
+// Disconnect must not be undone by a refresh that was already in flight: it
+// waits for the grant to commit, then clears the secret and the cached token.
+func TestDisconnectDuringAnInFlightRefreshWins(t *testing.T) {
+	f := newAuthFixture(t)
+	f.beginAndComplete(t)
+	f.clock.Advance(2 * time.Hour)
+
+	release, started := f.stallRefresh(true)
+
+	refreshed := make(chan refreshOutcome, 1)
+	go func() {
+		token, err := f.auth.Token(context.Background())
+		refreshed <- refreshOutcome{token: token, err: err}
+	}()
+	awaitGrant(t, started)
+
+	disconnected := make(chan error, 1)
+	go func() {
+		_, err := f.auth.Disconnect(context.Background())
+		disconnected <- err
+	}()
+	select {
+	case err := <-disconnected:
+		t.Fatalf("Disconnect returned while a refresh held the grant (err = %v)", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	release()
+	if outcome := <-refreshed; outcome.err != nil || outcome.token != "access-2" {
+		t.Fatalf("in-flight Token = %q, %v", outcome.token, outcome.err)
+	}
+	if err := <-disconnected; err != nil {
+		t.Fatalf("Disconnect: %v", err)
+	}
+
+	if stored, ok := f.secrets.Get(spotify.SecretName); ok {
+		t.Fatalf("an in-flight refresh reinstalled the refresh token %q after Disconnect", stored)
+	}
+	if status := f.auth.Status(); status.State != spotify.WebAPINotConfigured {
+		t.Fatalf("status = %+v, want not_configured", status)
+	}
+	if _, err := f.auth.Token(context.Background()); !errors.Is(err, spotify.ErrNotConfigured) {
+		t.Fatalf("Token after Disconnect = %v, want ErrNotConfigured", err)
+	}
+}
+
+// A sign-in that completes during an in-flight refresh must keep its newly
+// exchanged token: the refresh read the old value and must not overwrite it.
+func TestCompleteDuringAnInFlightRefreshKeepsTheNewToken(t *testing.T) {
+	f := newAuthFixture(t)
+	f.beginAndComplete(t)
+	f.clock.Advance(2 * time.Hour)
+
+	before := f.refreshCallCount()
+	release, started := f.stallRefresh(true)
+
+	refreshed := make(chan refreshOutcome, 1)
+	go func() {
+		token, err := f.auth.Token(context.Background())
+		refreshed <- refreshOutcome{token: token, err: err}
+	}()
+	awaitGrant(t, started)
+
+	begin, err := f.auth.Begin(testOwner)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	parsed, err := url.Parse(begin.AuthorizeURL)
+	if err != nil {
+		t.Fatalf("parse authorize URL: %v", err)
+	}
+	f.fake.mu.Lock()
+	f.fake.challenge = parsed.Query().Get("code_challenge")
+	f.fake.mu.Unlock()
+
+	completed := make(chan error, 1)
+	go func() {
+		completed <- f.auth.Complete(context.Background(), testOwner, parsed.Query().Get("state"), begin.Binding, testCode)
+	}()
+	select {
+	case err := <-completed:
+		t.Fatalf("Complete finished while a refresh held the grant (err = %v)", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	release()
+	if outcome := <-refreshed; outcome.err != nil || outcome.token != "access-2" {
+		t.Fatalf("in-flight Token = %q, %v", outcome.token, outcome.err)
+	}
+	if err := <-completed; err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	if stored, _ := f.secrets.Get(spotify.SecretName); stored != "refresh-1" {
+		t.Fatalf("stored refresh token = %q, want the newly exchanged one", stored)
+	}
+	token, err := f.auth.Token(context.Background())
+	if err != nil || token != "access-1" {
+		t.Fatalf("Token after Complete = %q, %v", token, err)
+	}
+	if calls := f.refreshCallCount() - before; calls != 1 {
+		t.Fatalf("refresh calls = %d, want the single in-flight grant", calls)
+	}
+}
+
 // lockedBuffer collects test logs from the auth goroutines.
 type lockedBuffer struct {
 	mu  sync.Mutex

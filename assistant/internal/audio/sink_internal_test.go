@@ -190,3 +190,18 @@ func waitForExit(t *testing.T, pidPath string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// A Cue plays at the 16 kHz capture rate, where a full 64 KiB pipe holds 2.048 s
+// of audio. The drain bound must cover that honest tail, not the 1.4 s 24 kHz
+// case, or a long library sound is killed mid-play and the Ring reports a stop.
+func TestDrainBoundCoversTheSixteenKilohertzCueTail(t *testing.T) {
+	const (
+		pipeBytes      = 64 * 1024
+		cueRate        = 16000
+		bytesPerSample = 2
+	)
+	tail := time.Duration(pipeBytes/bytesPerSample/cueRate) * time.Second
+	if drainTimeout <= tail {
+		t.Fatalf("drainTimeout %s does not cover the %s 16 kHz cue tail", drainTimeout, tail)
+	}
+}

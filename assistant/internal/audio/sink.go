@@ -25,11 +25,13 @@ import (
 // every later reply, Filler, Cue, Ring and Announcement.
 //
 // pacat runs with --latency-msec=100 and Close follows the last Write, so a
-// healthy tail is milliseconds. The pipe itself holds at most about 1.4 s of
-// 24 kHz mono PCM, which is the worst honest case for drainTimeout.
+// healthy tail is milliseconds. The pipe itself holds at most 64 KiB, which is
+// 2.05 s of the 16 kHz mono PCM every Cue plays (cmd/assistant builds the Cue
+// sink at the capture rate) and 1.4 s at 24 kHz; drainTimeout covers the
+// former with headroom so a healthy long Cue is not killed mid-play.
 var (
 	// drainTimeout bounds the wait for the buffered tail to play out.
-	drainTimeout = 2 * time.Second
+	drainTimeout = 4 * time.Second
 	// killTimeout bounds the wait after the stream context is cancelled and
 	// CommandContext has killed pacat.
 	killTimeout = 1 * time.Second
@@ -120,8 +122,9 @@ func (s *PulseSink) Open(ctx context.Context, format Format) (io.WriteCloser, er
 	cmd := exec.CommandContext(streamCtx, s.binary, args...)
 	// Backstop only. WaitDelay's timer starts when the child exits or its
 	// context is cancelled, so it cannot bound the drain; it does bound a pipe
-	// that a grandchild still holds open once pacat is gone.
-	cmd.WaitDelay = killTimeout
+	// that a grandchild still holds open once pacat is gone. Keep it well
+	// inside killTimeout so this bound, not our own timer, ends the wait.
+	cmd.WaitDelay = killTimeout / 2
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		cancel()

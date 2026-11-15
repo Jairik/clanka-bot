@@ -120,8 +120,8 @@ func TestPulseSinkCloseBoundsAStalledDrain(t *testing.T) {
 	var closeErr error
 	select {
 	case closeErr = <-closed:
-	case <-time.After(6 * time.Second):
-		t.Fatal("Close did not return within 6s: a stalled pacat still holds the drain")
+	case <-time.After(8 * time.Second):
+		t.Fatal("Close did not return within 8s: a stalled pacat still holds the drain")
 	}
 	elapsed := time.Since(started)
 
@@ -131,9 +131,9 @@ func TestPulseSinkCloseBoundsAStalledDrain(t *testing.T) {
 	if !strings.Contains(closeErr.Error(), "did not drain") {
 		t.Fatalf("Close = %v, want a drain-stall error", closeErr)
 	}
-	// drainTimeout 2s + killTimeout 1s, with room for a loaded runner.
-	if elapsed > 4*time.Second {
-		t.Fatalf("Close took %s, want at most 4s", elapsed)
+	// drainTimeout 4s + killTimeout 1s, with room for a loaded runner.
+	if elapsed > 6*time.Second {
+		t.Fatalf("Close took %s, want at most 6s", elapsed)
 	}
 	assertRecordedProcessGone(t, pidPath)
 }

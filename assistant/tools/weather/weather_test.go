@@ -354,7 +354,8 @@ func TestModuleSendsTheResolvedSecret(t *testing.T) {
 	module := weather.NewModule()
 	var node yaml.Node
 	if err := node.Encode(map[string]any{
-		"weatherapi_url": api.URL,
+		// Validation accepts surrounding whitespace; the request must use the normalized URL too.
+		"weatherapi_url": " \t" + api.URL + " \n",
 		"geocoding_url":  failed.URL,
 		"forecast_url":   failed.URL,
 		"fallback_url":   failed.URL,
@@ -374,6 +375,67 @@ func TestModuleSendsTheResolvedSecret(t *testing.T) {
 	}
 	if out, ok := result.(weather.Out); !ok || out.City != "Berlin" || out.Condition != "partly cloudy" {
 		t.Fatalf("result = %#v", result)
+	}
+}
+
+// TestWeatherAPIConfigRequiresASecureOrigin pins #242: the WeatherAPI key
+// travels in the query string, so weatherapi_url must be HTTPS or a loopback
+// fake with no insecure opt-in at all. The keyless provider URLs stay free.
+func TestWeatherAPIConfigRequiresASecureOrigin(t *testing.T) {
+	tests := []struct {
+		name         string
+		weatherapi   string
+		wantRejected bool
+	}{
+		{"default https", weather.DefaultWeatherAPIURL, false},
+		{"custom https", "https://weatherapi.example/v1/current.json", false},
+		{"loopback ipv4", "http://127.0.0.1:1234/v1/current.json", false},
+		{"loopback localhost", "http://localhost:1234/v1/current.json", false},
+		{"loopback ipv6", "http://[::1]:1234/v1/current.json", false},
+		{"LAN plain http", "http://192.168.1.20/v1/current.json", true},
+		{"public plain http", "http://api.weatherapi.com/v1/current.json", true},
+		{"missing scheme", "weatherapi.example/v1/current.json", true},
+		{"unsupported scheme", "ftp://weatherapi.example/v1/current.json", true},
+		{"empty host", "https://", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			module := weather.NewModule()
+			var node yaml.Node
+			// The keyless URLs are deliberately plain http to a non-loopback
+			// host: only the credential-bearing weatherapi_url is restricted.
+			if err := node.Encode(map[string]any{
+				"weatherapi_url": tt.weatherapi,
+				"geocoding_url":  "http://geocoding.example/v1/search",
+				"forecast_url":   "http://forecast.example/v1/forecast",
+				"fallback_url":   "http://wttr.example",
+			}); err != nil {
+				t.Fatalf("encode tools.weather: %v", err)
+			}
+			err := module.Configure(&node)
+			if tt.wantRejected {
+				if err == nil {
+					t.Fatalf("Configure accepted weatherapi_url %q", tt.weatherapi)
+				}
+				if !strings.Contains(err.Error(), "weatherapi_url") {
+					t.Fatalf("error = %v, want the field named", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Configure rejected weatherapi_url %q: %v", tt.weatherapi, err)
+			}
+		})
+	}
+
+	// An empty value keeps its own required message, not a URL-shape one.
+	module := weather.NewModule()
+	var node yaml.Node
+	if err := node.Encode(map[string]any{"weatherapi_url": "  "}); err != nil {
+		t.Fatalf("encode tools.weather: %v", err)
+	}
+	if err := module.Configure(&node); err == nil || !strings.Contains(err.Error(), "required") {
+		t.Fatalf("Configure error = %v, want the required message", err)
 	}
 }
 

@@ -3,10 +3,12 @@ package weather
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/config"
+	"github.com/Jairik/clanka-bot/assistant/internal/httpclient"
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"gopkg.in/yaml.v3"
@@ -37,6 +39,11 @@ func DefaultConfig() Config {
 func (c Config) validate() error {
 	if strings.TrimSpace(c.WeatherAPIURL) == "" {
 		return errors.New("weatherapi_url is required")
+	}
+	// The WeatherAPI key travels in the query string, so there is no insecure
+	// opt-in for this one. The keyless Open-Meteo and wttr.in URLs stay free.
+	if err := httpclient.RequireSecureOrigin(c.WeatherAPIURL, false); err != nil {
+		return fmt.Errorf("weatherapi_url: %w", err)
 	}
 	if strings.TrimSpace(c.GeocodingURL) == "" {
 		return errors.New("geocoding_url is required")
@@ -82,6 +89,8 @@ func (m *Module) Configure(section *yaml.Node) error {
 			return err
 		}
 	}
+	// Store the same credential-bearing URL that the origin validator checks.
+	cfg.WeatherAPIURL = strings.TrimSpace(cfg.WeatherAPIURL)
 	if err := cfg.validate(); err != nil {
 		return err
 	}

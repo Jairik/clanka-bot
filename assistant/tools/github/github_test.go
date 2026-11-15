@@ -1005,6 +1005,8 @@ func TestConfigValidationFailsClosed(t *testing.T) {
 		{"max above the cap", map[string]any{"max_results": maxResultLimit + 1}},
 		{"unsupported scheme", map[string]any{"base_url": "ftp://api.github.test"}},
 		{"empty host", map[string]any{"base_url": "https://"}},
+		{"plain http enterprise origin", map[string]any{"base_url": "http://ghe.example/api/v3"}},
+		{"plain http LAN origin", map[string]any{"base_url": "http://192.168.1.20/api/v3"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1037,6 +1039,109 @@ func TestConfigValidationFailsClosed(t *testing.T) {
 	})
 	if got := module.cfg.AllowedRepos; len(got) != 1 || got[0] != "acme/widgets" {
 		t.Fatalf("AllowedRepos = %v, want one normalized entry", got)
+	}
+}
+
+// TestConfigSecureOrigin pins #242: the fine-grained PAT may only leave the Pi
+// over HTTPS or to a loopback fake, unless the operator explicitly opts into a
+// clear-text LAN origin. The refusal runs at Configure, before any client
+// exists, so a rejected config cannot send a credentialed request.
+func TestConfigSecureOrigin(t *testing.T) {
+	accepted := []struct {
+		name        string
+		values      map[string]any
+		wantBaseURL string
+	}{
+		{
+			name:        "custom https enterprise origin keeps its base path",
+			values:      map[string]any{"base_url": "https://ghe.example/api/v3"},
+			wantBaseURL: "https://ghe.example/api/v3",
+		},
+		{
+			name:        "loopback http fixture",
+			values:      map[string]any{"base_url": "http://127.0.0.1:1234/api/v3"},
+			wantBaseURL: "http://127.0.0.1:1234/api/v3",
+		},
+		{
+			name:        "localhost http fixture",
+			values:      map[string]any{"base_url": "http://localhost:1234/api/v3"},
+			wantBaseURL: "http://localhost:1234/api/v3",
+		},
+		{
+			name:        "explicit clear-text opt-in",
+			values:      map[string]any{"base_url": "http://ghe.example/api/v3", "allow_insecure_http": true},
+			wantBaseURL: "http://ghe.example/api/v3",
+		},
+	}
+	for _, tt := range accepted {
+		t.Run(tt.name, func(t *testing.T) {
+			module := testConfig(t, tt.values)
+			if module.cfg.BaseURL != tt.wantBaseURL {
+				t.Fatalf("BaseURL = %q, want %q", module.cfg.BaseURL, tt.wantBaseURL)
+			}
+		})
+	}
+
+	module := NewModule()
+	var node yaml.Node
+	if err := node.Encode(map[string]any{"base_url": "http://ghe.example/api/v3"}); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	err := module.Configure(&node)
+	if err == nil {
+		t.Fatal("Configure accepted a clear-text PAT origin")
+	}
+	if !strings.Contains(err.Error(), "allow_insecure_http") {
+		t.Fatalf("error = %v, want the opt-in named for the operator", err)
+	}
+	// No client means no request path: the token cannot leave on this config.
+	if module.client != nil {
+		t.Fatal("a refused config built the HTTP client")
+	}
+}
+
+// TestEnterpriseBasePathIsPreservedOnTheWire checks the actual request, not only config.
+func TestEnterpriseBasePathIsPreservedOnTheWire(t *testing.T) {
+	fake := &fakeGitHub{handler: func(w http.ResponseWriter, r *http.Request, _ []byte) {
+		if r.URL.Path != "/api/v3/search/issues" {
+			t.Errorf("request path = %q, want the Enterprise prefix", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"total_count":0,"items":[]}`)
+	}}
+	server := fake.start(t)
+	module := testConfig(t, map[string]any{"base_url": server.URL + "/api/v3"})
+	reg, _ := registerModule(t, module, fixedSecret("fixture-token"))
+	if _, err := reg.Execute(context.Background(), PRListName, nil); err != nil {
+		t.Fatalf("pr_list: %v", err)
+	}
+	if got := fake.count(http.MethodGet, "/api/v3/search/issues"); got != 1 {
+		t.Fatalf("prefixed requests = %d, want 1", got)
+	}
+}
+
+// TestInsecureOptInIsLoggedWithoutTheToken makes the clear-text choice visible
+// once at startup, and never carries the token into the log.
+func TestInsecureOptInIsLoggedWithoutTheToken(t *testing.T) {
+	module := testConfig(t, map[string]any{
+		"base_url":            "http://ghe.example/api/v3",
+		"allow_insecure_http": true,
+	})
+	_, logs := registerModule(t, module, fixedSecret("ghp_clear_text_token"))
+	if !strings.Contains(logs.String(), "allow_insecure_http") || !strings.Contains(logs.String(), "clear text") {
+		t.Fatalf("logs = %q, want the clear-text opt-in warning", logs.String())
+	}
+	if strings.Contains(logs.String(), "ghp_clear_text_token") {
+		t.Fatal("the token reached the log")
+	}
+
+	// A secure origin stays quiet, so the warning only marks a real risk.
+	_, secureLogs := registerModule(t, testConfig(t, map[string]any{
+		"base_url":            "https://ghe.example/api/v3",
+		"allow_insecure_http": true,
+	}), fixedSecret("ghp_secure_token"))
+	if strings.Contains(secureLogs.String(), "clear text") {
+		t.Fatalf("secure logs = %q, want no clear-text warning", secureLogs.String())
 	}
 }
 

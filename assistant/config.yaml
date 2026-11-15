@@ -100,6 +100,8 @@ tools:
   weather:
     # Optional primary provider. The key is WEATHERAPI_API_KEY in .env or
     # Dashboard > Secrets; without it the two keyless providers still answer.
+    # The key travels in the query string, so this must be HTTPS (a loopback
+    # fake is the only plain-http exception). The keyless URLs below are free.
     weatherapi_url: "https://api.weatherapi.com/v1/current.json"
     geocoding_url: "https://geocoding-api.open-meteo.com/v1/search"
     forecast_url: "https://api.open-meteo.com/v1/forecast"
@@ -154,6 +156,11 @@ tools:
     # scope) because GitHub's notifications API rejects fine-grained tokens
     # (see README.md "GitHub").
     base_url: "https://api.github.com"
+    # A plain-http base_url is refused unless it is a loopback fake: the
+    # fine-grained PAT is a bearer token on every call. A LAN GitHub Enterprise
+    # origin on clear text needs this deliberate opt-in, which is logged at
+    # startup because the token is then readable on the network.
+    allow_insecure_http: false
     # One HTTP request, including reading the response body.
     timeout: 4s
     # The operator target when the model omits repo. No repository is

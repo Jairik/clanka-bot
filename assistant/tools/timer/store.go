@@ -115,6 +115,7 @@ func (m *Manager) recover() error {
 			Label:           saved.label,
 			DurationSeconds: int(saved.duration.Round(time.Second) / time.Second),
 			FiresAt:         saved.firesAt,
+			State:           StatePending,
 		}
 		if !saved.firesAt.After(now) {
 			if overdue := now.Sub(saved.firesAt); overdue > overdueGrace {

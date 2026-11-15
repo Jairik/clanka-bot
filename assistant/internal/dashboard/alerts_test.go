@@ -781,15 +781,15 @@ func TestAlertsListsAndCancelsOneOffAlarmAndRingingTimer(t *testing.T) {
 	}
 	f.clock.Set(time.Date(2026, 11, 12, 6, 59, 59, 950_000_000, time.UTC))
 
-	// A one-off Alarm deletes its pending row when it fires, and List omits the
-	// row while its Ring finishes. The page must still show it and cancel it.
+	// A one-off Alarm deletes its pending row when it fires, and List now shows
+	// the ringing row instead (#197). The page must still show it and cancel it.
 	fired, err := f.alarm.Set(f.ctx, alarm.SetIn{Hour: 7, Schedule: string(alarm.Once), Label: "wake once"})
 	if err != nil {
 		t.Fatalf("set one-off Alarm: %v", err)
 	}
 	f.player.waitStart(t)
-	if rows := f.alarm.List(); len(rows) != 0 {
-		t.Fatalf("pending Alarms after firing = %+v, want none", rows)
+	if rows := f.alarm.List(); len(rows) != 1 || rows[0].State != alarm.StateRinging {
+		t.Fatalf("pending Alarms after firing = %+v, want the ringing one-off", rows)
 	}
 
 	// A real Timer fires while the Alarm owns the speaker. Its pending row and
@@ -822,10 +822,10 @@ func TestAlertsListsAndCancelsOneOffAlarmAndRingingTimer(t *testing.T) {
 	if got := len(v.kindLabels("alarm")); got != 1 {
 		t.Fatalf("active Alarm rows = %d, want the one firing Alarm", got)
 	}
-	// A fired one-off has no next occurrence, so it must not get an override
-	// editor; only its active cancel row belongs on the page.
+	// A ringing Alarm is not pending: it has no override editor until the Ring
+	// ends, only the active cancel row on the page.
 	if len(v.Alarms) != 0 {
-		t.Fatalf("fired one-off Alarm got a nonexistent pending editor: %+v", v.Alarms)
+		t.Fatalf("ringing Alarm got a pending override editor: %+v", v.Alarms)
 	}
 
 	// Cancelling the ringing one-off frees the speaker for the queued Timer.
@@ -862,6 +862,106 @@ func TestAlertsListsAndCancelsOneOffAlarmAndRingingTimer(t *testing.T) {
 	if v := f.view(); v.hasLabel("wake once") || v.hasLabel("kettle") {
 		t.Fatalf("cancelled alerts stayed in the view: %+v", v.Alerts)
 	}
+}
+
+// TestAlertsRingingTimerKeepsTheRingingWording is the #197 Dashboard
+// regression: a sounding Timer is now in timers.List(), and the page must keep
+// the one row that says "Ringing now" rather than replacing it with the
+// scheduled row's "due now of 1 second" detail.
+func TestAlertsRingingTimerKeepsTheRingingWording(t *testing.T) {
+	f := newAlertsFixture(t)
+	f.setMaxRing(5 * time.Second)
+	f.player.onPlay = func(ctx context.Context) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	f.clock.Set(time.Date(2026, 11, 12, 6, 59, 59, 0, time.UTC))
+
+	started, err := f.timer.Start("pasta", time.Second)
+	if err != nil {
+		t.Fatalf("start Timer: %v", err)
+	}
+	f.player.waitStart(t)
+
+	// The Timer is sounding, so List now reports it alongside the pending ones;
+	// that is what used to dedupe its open history row away.
+	ringing := f.timer.List()
+	if len(ringing) != 1 || ringing[0].State != timer.StateRinging {
+		t.Fatalf("timers.List while ringing = %+v, want the ringing pasta Timer", ringing)
+	}
+
+	v := f.view()
+	if got := len(v.kindLabels("timer")); got != 1 {
+		t.Fatalf("timer rows = %d (%+v), want exactly the ringing row", got, v.Alerts)
+	}
+	row := v.Alerts[0]
+	if row.Label != "pasta" || row.Detail != "Ringing now" {
+		t.Fatalf("row = %+v, want the pasta Timer ringing now", row)
+	}
+	if !strings.Contains(row.Next, "07:00") {
+		t.Fatalf("row next = %q, want the 07:00 the Timer fired at", row.Next)
+	}
+
+	// Cancelling the ringing Timer clears the one row again.
+	if rec := f.post("/alerts/timer/"+url.PathEscape(started.ID)+"/cancel", nil); rec.Code != http.StatusOK {
+		t.Fatalf("cancel ringing Timer status = %d", rec.Code)
+	}
+	waitFor(t, 3*time.Second, "the cancelled Timer to leave the page", func() bool {
+		return !f.view().hasLabel("pasta")
+	})
+}
+
+// TestAlertsRingingAlarmKeepsTheRingingWording is the Alarm half of the #197
+// Dashboard regression: a sounding Alarm is now in alarms.List() with the
+// occurrence that is ringing, and the page must keep the one row that says
+// "Ringing now" instead of replacing it with the schedule detail.
+func TestAlertsRingingAlarmKeepsTheRingingWording(t *testing.T) {
+	f := newAlertsFixture(t)
+	f.setMaxRing(5 * time.Second)
+	f.player.onPlay = func(ctx context.Context) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	f.clock.Set(time.Date(2026, 11, 12, 6, 59, 59, 0, time.UTC))
+
+	started, err := f.alarm.Set(f.ctx, alarm.SetIn{Hour: 7, Schedule: "daily", Label: "wake"})
+	if err != nil {
+		t.Fatalf("set Alarm: %v", err)
+	}
+	f.player.waitStart(t)
+
+	ringing := f.alarm.List()
+	if len(ringing) != 1 || ringing[0].State != alarm.StateRinging {
+		t.Fatalf("alarms.List while ringing = %+v, want the ringing wake Alarm", ringing)
+	}
+	if want := time.Date(2026, 11, 12, 7, 0, 0, 0, time.UTC); !ringing[0].NextFiresAt.Equal(want) {
+		t.Fatalf("alarms.List next = %s, want the ringing occurrence %s", ringing[0].NextFiresAt, want)
+	}
+
+	v := f.view()
+	if got := len(v.kindLabels("alarm")); got != 1 {
+		t.Fatalf("alarm rows = %d (%+v), want exactly the ringing row", got, v.Alerts)
+	}
+	row := v.Alerts[0]
+	if row.Label != "wake" || row.Detail != "Ringing now" {
+		t.Fatalf("row = %+v, want the wake Alarm ringing now", row)
+	}
+	if !strings.Contains(row.Next, "07:00") {
+		t.Fatalf("row next = %q, want the 07:00 the Alarm fired at", row.Next)
+	}
+	// The override editor lists pending rows only, so it is empty mid-Ring and
+	// returns with the next occurrence once the Ring ends.
+	if len(v.Alarms) != 0 {
+		t.Fatalf("alarm editors = %+v, want none while the Alarm rings", v.Alarms)
+	}
+
+	// Cancelling the ringing Alarm clears the one row again.
+	if rec := f.post("/alerts/alarm/"+url.PathEscape(started.ID)+"/cancel", nil); rec.Code != http.StatusOK {
+		t.Fatalf("cancel ringing Alarm status = %d", rec.Code)
+	}
+	waitFor(t, 3*time.Second, "the cancelled Alarm to leave the page", func() bool {
+		return !f.view().hasLabel("wake")
+	})
 }
 
 func TestAlertsMutationsRequireIdentityAndSameOrigin(t *testing.T) {

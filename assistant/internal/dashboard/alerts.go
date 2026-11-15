@@ -427,15 +427,29 @@ func (h *Handler) buildAlertsView(flash, errorText string, edit *alertEditState)
 	events := h.alertHistory(deps)
 	pending := make(map[string]bool)
 	live := make(map[string]bool)
+	// sounding holds a Timer or Reminder the manager reports as ringing. Its
+	// open history row is the row the page shows ("Ringing now"), so the
+	// scheduled row is held back here and only used when the store has no
+	// history row for it, which is the in-memory manager case.
+	sounding := make(map[string]scheduledAlertView)
+	schedule := func(key string, ringing bool, row scheduledAlertView) {
+		if ringing {
+			row.Detail = "Ringing now"
+			sounding[key] = row
+			return
+		}
+		pending[key] = true
+		view.Alerts = append(view.Alerts, row)
+	}
 	if timers != nil {
 		for _, item := range timers.List() {
-			pending[alertKey("timer", item.ID)] = true
+			key := alertKey("timer", item.ID)
 			label := item.Label
 			if label == "" {
 				label = "—"
 			}
 			detail := fmt.Sprintf("%s of %s left", remainingLabel(item.RemainingSeconds), displayDuration(time.Duration(item.DurationSeconds)*time.Second))
-			view.Alerts = append(view.Alerts, scheduledAlertView{
+			schedule(key, item.State == timer.StateRinging, scheduledAlertView{
 				Audio:        item.Audio,
 				KindKey:      "timer",
 				Kind:         "Timer",
@@ -451,12 +465,15 @@ func (h *Handler) buildAlertsView(flash, errorText string, edit *alertEditState)
 	}
 	if alarms != nil {
 		for _, item := range alarms.List() {
-			pending[alertKey("alarm", item.ID)] = true
+			key := alertKey("alarm", item.ID)
 			label := item.Label
 			if label == "" {
 				label = "—"
 			}
-			view.Alerts = append(view.Alerts, scheduledAlertView{
+			// A ringing Alarm is held back like the other two kinds: its open
+			// history row is the row that says "Ringing now", and the marker
+			// carries the occurrence that is sounding.
+			schedule(key, item.State == alarm.StateRinging, scheduledAlertView{
 				Audio:        item.Audio,
 				KindKey:      "alarm",
 				Kind:         "Alarm",
@@ -472,12 +489,12 @@ func (h *Handler) buildAlertsView(flash, errorText string, edit *alertEditState)
 	}
 	if reminders != nil {
 		for _, item := range reminders.List() {
-			pending[alertKey("reminder", item.ID)] = true
+			key := alertKey("reminder", item.ID)
 			detail := "Speaks once"
 			if item.When != "" {
 				detail += " · " + item.When
 			}
-			view.Alerts = append(view.Alerts, scheduledAlertView{
+			schedule(key, item.State == reminder.StateRinging, scheduledAlertView{
 				KindKey:      "reminder",
 				Kind:         "Reminder",
 				Label:        item.Message,
@@ -543,12 +560,20 @@ func (h *Handler) buildAlertsView(flash, errorText string, edit *alertEditState)
 			firesAt:      at,
 		})
 	}
+	// A sounding alert whose history row is missing (an in-memory manager, or a
+	// failed history read) still belongs on the page as the row the user hears.
+	for key, row := range sounding {
+		if !live[key] {
+			view.Alerts = append(view.Alerts, row)
+		}
+	}
 	sort.SliceStable(view.Alerts, func(i, j int) bool {
 		return view.Alerts[i].firesAt.Before(view.Alerts[j].firesAt)
 	})
 
-	// The override editor lists only pending Alarms. A one-off that already
-	// fired has no next occurrence to edit, so it stays a cancel-only row.
+	// The override editor lists only pending Alarms. A ringing Alarm is
+	// covered by its "Ringing now" row (and a fired one-off has no next
+	// occurrence to edit), so it stays a cancel-only row until the Ring ends.
 	if alarms != nil {
 		view.Alarms = h.buildAlarmEditors(alarms.List(), edit)
 	}
@@ -576,6 +601,9 @@ func (h *Handler) buildAlarmEditors(alarms []alarm.Alarm, edit *alertEditState) 
 	defaultRamp := durationText(effective.Ramp)
 	out := make([]alarmEditorView, 0, len(alarms))
 	for _, item := range alarms {
+		if item.State == alarm.StateRinging {
+			continue // pending rows only; the active row is the one to cancel
+		}
 		clock := clockText(item.Hour, item.Minute)
 		title := "Alarm at " + clock
 		if item.Label != "" {

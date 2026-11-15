@@ -54,6 +54,14 @@ func alertIntents() []focus.Intent { return []focus.Intent{focus.Stop, focus.Can
 // leak a goroutine. A Ring bounds itself with its max_ring setting.
 const alertTimeout = 30 * time.Second
 
+// Timer states reported by List and Remaining. A fired Timer leaves the
+// pending map before its alert sounds, so the read Tools need this marker to
+// tell a scheduled Timer from the one the user can hear now.
+const (
+	StatePending = "pending"
+	StateRinging = "ringing"
+)
+
 // Timer is one running or recently set timer.
 type Timer struct {
 	Audio            string    `json:"audio,omitempty"` // Audio replaces the completion speech.
@@ -62,6 +70,9 @@ type Timer struct {
 	DurationSeconds  int       `json:"duration_seconds"`
 	RemainingSeconds int       `json:"remaining_seconds"`
 	FiresAt          time.Time `json:"fires_at"`
+	// State is StatePending for a scheduled Timer and StateRinging while its
+	// alert is sounding. Read-only metadata: it never changes Focus or routing.
+	State string `json:"state,omitempty"`
 }
 
 // entry is one live timer and its callback.
@@ -110,6 +121,10 @@ type Manager struct {
 	// live entry are gone by then, so a cancel by label needs this metadata to
 	// find the alert the user can hear.
 	activeLabels map[string]string
+	// ringing keeps the fired Timer while its alert is actually sounding, so
+	// List and Remaining can answer about the alert the user hears instead of
+	// claiming nothing is scheduled.
+	ringing map[string]Timer
 }
 
 // MissedAlert is the notification hook payload for a Timer that ran to
@@ -154,6 +169,7 @@ func NewManagerText(now func() time.Time, say func(ctx context.Context, text str
 		active:        make(map[string]context.CancelFunc),
 		ringCancelled: make(map[string]bool),
 		activeLabels:  make(map[string]string),
+		ringing:       make(map[string]Timer),
 	}
 }
 
@@ -277,6 +293,7 @@ func (m *Manager) Start(label string, d time.Duration, audio ...string) (Timer, 
 		DurationSeconds:  int(d.Round(time.Second) / time.Second),
 		RemainingSeconds: int(d.Round(time.Second) / time.Second),
 		FiresAt:          now.Add(d),
+		State:            StatePending,
 	}
 
 	if m.db != nil {
@@ -370,6 +387,7 @@ func (m *Manager) fire(id string) {
 		delete(m.active, timer.ID)
 		delete(m.ringCancelled, timer.ID)
 		delete(m.activeLabels, timer.ID)
+		delete(m.ringing, timer.ID)
 		m.mu.Unlock()
 	}()
 
@@ -382,7 +400,7 @@ func (m *Manager) fire(id string) {
 			Duration:     time.Duration(timer.DurationSeconds) * time.Second,
 			FiresAt:      timer.FiresAt,
 			FallbackText: fallbackText(fallback, timer),
-			OnStart:      func() { m.markRinging(eventID) },
+			OnStart:      func() { m.markRinging(eventID, timer) },
 		})
 		if m.releaseRing(timer.ID) {
 			result = ring.Result{Played: result.Played, Outcome: ring.OutcomeStopped, EndedBy: "cancel"}
@@ -391,7 +409,7 @@ func (m *Manager) fire(id string) {
 		return
 	}
 
-	m.markRinging(eventID)
+	m.markRinging(eventID, timer)
 	endedBy, _ := m.alert(ringCtx, timer, ringFn, say, focusRegistry)
 	if m.releaseRing(timer.ID) {
 		endedBy = "cancel"
@@ -401,12 +419,13 @@ func (m *Manager) fire(id string) {
 
 // releaseRing removes the active Ring for id and reports whether a cancel
 // asked for it, so a cancelled Ring records stopped/cancel instead of a
-// shutdown.
+// shutdown. It also drops the ringing marker as soon as the alert has ended.
 func (m *Manager) releaseRing(id string) bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.active, id)
 	delete(m.activeLabels, id)
+	delete(m.ringing, id)
 	cancelled := m.ringCancelled[id]
 	delete(m.ringCancelled, id)
 	return cancelled
@@ -498,8 +517,17 @@ func (m *Manager) beginFire(ctx context.Context, timer Timer) (int64, error) {
 	return id, nil
 }
 
-// markRinging records that the alert now owns the speaker.
-func (m *Manager) markRinging(eventID int64) {
+// markRinging records that the alert now owns the speaker and, while it
+// sounds, makes the Timer visible to List and Remaining with StateRinging.
+// The history row is closed separately by the fire path.
+func (m *Manager) markRinging(eventID int64, timer Timer) {
+	timer.State = StateRinging
+	timer.RemainingSeconds = 0
+	m.mu.Lock()
+	if !m.closed {
+		m.ringing[timer.ID] = timer
+	}
+	m.mu.Unlock()
 	if eventID <= 0 {
 		return
 	}
@@ -583,21 +611,27 @@ func capitalize(label string) string {
 	return strings.ToUpper(string(first)) + label[size:]
 }
 
-// List returns the active timers, soonest first.
+// List returns the active timers, soonest first. A Timer whose alert is
+// sounding is included with StateRinging, so a beep the user can hear is never
+// reported as nothing scheduled.
 func (m *Manager) List() []Timer {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := m.now()
-	out := make([]Timer, 0, len(m.entries))
+	out := make([]Timer, 0, len(m.entries)+len(m.ringing))
 	for _, e := range m.entries {
 		out = append(out, remainingAt(e.timer, now))
+	}
+	for _, timer := range m.ringing {
+		out = append(out, timer)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].FiresAt.Before(out[j].FiresAt) })
 	return out
 }
 
 // Remaining returns the soonest active timer, or the soonest one whose label
-// matches when a label is given.
+// matches when a label is given. A ringing Timer counts as active: it reports
+// zero seconds left and StateRinging.
 func (m *Manager) Remaining(label string) (Timer, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -605,15 +639,24 @@ func (m *Manager) Remaining(label string) (Timer, bool) {
 	label = cleanLabel(label)
 	var best Timer
 	found := false
+	consider := func(timer Timer) {
+		if found && !timer.FiresAt.Before(best.FiresAt) {
+			return
+		}
+		best = timer
+		found = true
+	}
 	for _, e := range m.entries {
 		if label != "" && e.timer.Label != label {
 			continue
 		}
-		if found && !e.timer.FiresAt.Before(best.FiresAt) {
+		consider(remainingAt(e.timer, now))
+	}
+	for _, timer := range m.ringing {
+		if label != "" && timer.Label != label {
 			continue
 		}
-		best = remainingAt(e.timer, now)
-		found = true
+		consider(timer)
 	}
 	return best, found
 }
@@ -625,6 +668,9 @@ func remainingAt(timer Timer, now time.Time) Timer {
 		remaining = 0
 	}
 	timer.RemainingSeconds = int(remaining.Round(time.Second) / time.Second)
+	if timer.State == "" {
+		timer.State = StatePending
+	}
 	return timer
 }
 
@@ -898,6 +944,12 @@ func NewRemaining(m *Manager) tool.Tool[RemainingIn, RemainingOut] {
 			return RemainingOut{Timer: timer}, nil
 		},
 		Speak: func(out RemainingOut) string {
+			if out.Timer.State == StateRinging {
+				if out.Timer.Label != "" {
+					return "Your " + out.Timer.Label + " timer is ringing."
+				}
+				return "Your timer is ringing."
+			}
 			left := parse.HumanDuration(time.Duration(out.Timer.RemainingSeconds) * time.Second)
 			if out.Timer.Label != "" {
 				return "The " + out.Timer.Label + " timer has " + left + " left."
@@ -933,14 +985,39 @@ func NewList(m *Manager) tool.Tool[ListIn, ListOut] {
 			return ListOut{Timers: m.List()}, nil
 		},
 		Speak: func(out ListOut) string {
+			ringing := 0
+			ringingIndex := -1
+			for i, timer := range out.Timers {
+				if timer.State != StateRinging {
+					continue
+				}
+				ringing++
+				ringingIndex = i
+			}
 			switch len(out.Timers) {
 			case 0:
 				return "No timers are running."
 			case 1:
+				if ringing == 1 {
+					if label := out.Timers[0].Label; label != "" {
+						return "Your " + label + " timer is ringing."
+					}
+					return "Your timer is ringing."
+				}
 				return "Your timer has " + parse.HumanDuration(time.Duration(out.Timers[0].RemainingSeconds)*time.Second) + " left."
 			default:
-				next := parse.HumanDuration(time.Duration(out.Timers[0].RemainingSeconds) * time.Second)
-				return fmt.Sprintf("You have %d timers. The next one has %s left.", len(out.Timers), next)
+				switch ringing {
+				case 0:
+					next := parse.HumanDuration(time.Duration(out.Timers[0].RemainingSeconds) * time.Second)
+					return fmt.Sprintf("You have %d timers. The next one has %s left.", len(out.Timers), next)
+				case 1:
+					if label := out.Timers[ringingIndex].Label; label != "" {
+						return fmt.Sprintf("You have %d timers. The %s timer is ringing.", len(out.Timers), label)
+					}
+					return fmt.Sprintf("You have %d timers. One is ringing.", len(out.Timers))
+				default:
+					return fmt.Sprintf("You have %d timers. %d are ringing.", len(out.Timers), ringing)
+				}
 			}
 		},
 		Examples: []string{

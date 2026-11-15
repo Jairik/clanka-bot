@@ -57,6 +57,14 @@ const (
 	defaultFallback = "Your alarm is going off."
 )
 
+// Alarm states reported by List. A fired Alarm leaves the pending map and its
+// row moves past the occurrence before the Ring sounds, so the read Tool needs
+// this marker to tell a scheduled Alarm from the one the user can hear now.
+const (
+	StatePending = "pending"
+	StateRinging = "ringing"
+)
+
 // Alarm is one configured clock-time alert. Sound, Volume and RampSeconds are
 // optional per-Alarm Ring overrides (#57): Sound names a library sound and is
 // empty for the kind default; a nil Volume or RampSeconds keeps the kind
@@ -73,6 +81,9 @@ type Alarm struct {
 	Sound       string    `json:"sound,omitempty"`
 	Volume      *int      `json:"volume,omitempty"`
 	RampSeconds *int      `json:"ramp_seconds,omitempty"`
+	// State is StatePending for a scheduled Alarm and StateRinging while its
+	// Ring is sounding. Read-only metadata: it never changes Focus or routing.
+	State string `json:"state,omitempty"`
 }
 
 // SetIn is one alarm.set request. Schedule is once, daily, weekdays, weekends
@@ -237,6 +248,12 @@ type Manager struct {
 	// active holds the cancel function of each Ring that owns the speaker, so
 	// alarm.cancel can stop it and record stopped/cancel.
 	active map[string]context.CancelFunc
+	// ringing keeps the fired Alarm while its Ring actually sounds, so List can
+	// answer about the alert the user hears instead of claiming nothing is
+	// scheduled. It carries the occurrence that is ringing, not the next one,
+	// and it is filled from the Ring engine's OnStart so an Alarm still waiting
+	// behind another alert is not marked ringing early.
+	ringing map[string]Alarm
 }
 
 // NewManager builds an empty manager.
@@ -265,6 +282,7 @@ func NewManager(opts Options) *Manager {
 		entries:       make(map[string]*entry),
 		cancelled:     make(map[string]bool),
 		active:        make(map[string]context.CancelFunc),
+		ringing:       make(map[string]Alarm),
 	}
 	manager.fireTx = manager.beginFire
 	manager.advanceFire = manager.advanceFailedFire
@@ -336,6 +354,7 @@ func (m *Manager) Set(ctx context.Context, in SetIn) (SetOut, error) {
 		NextFiresAt: next,
 		Volume:      cloneInt(in.Volume),
 		RampSeconds: cloneInt(in.RampSeconds),
+		State:       StatePending,
 	}
 	if spoken := strings.TrimSpace(in.Sound); spoken != "" {
 		name, fallback, err := m.resolveSound(ctx, spoken)
@@ -374,8 +393,12 @@ func (m *Manager) Set(ctx context.Context, in SetIn) (SetOut, error) {
 
 // List returns the configured Alarms, soonest first. It reads the store when
 // one is attached, so a row that is firing or waiting on a snooze is still
-// described accurately; an in-memory Manager lists its live entries.
+// described accurately; an in-memory Manager lists its live entries. An Alarm
+// whose Ring is sounding is included with StateRinging and the occurrence that
+// is ringing, so a beep the user can hear is never reported as nothing
+// scheduled. Its next occurrence returns once the Ring has ended.
 func (m *Manager) List() []Alarm {
+	ringing := m.ringingSnapshot()
 	if m.db != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), storeTimeout)
 		defer cancel()
@@ -384,26 +407,58 @@ func (m *Manager) List() []Alarm {
 			m.logger.Error("alarm list", "error", err.Error())
 			return nil
 		}
-		out := make([]Alarm, 0, len(stored))
+		out := make([]Alarm, 0, len(stored)+len(ringing))
 		for _, saved := range stored {
+			if _, ok := ringing[saved.alarm.ID]; ok {
+				// The ringing marker already describes this Alarm with the
+				// occurrence the user hears; its advanced row would otherwise
+				// list the same Alarm twice, as tomorrow.
+				continue
+			}
 			if saved.nextFiresAt.UnixMilli() <= 0 && saved.snoozedUntil.IsZero() {
 				continue // a one-off that already fired and is finishing its Ring
 			}
-			out = append(out, saved.alarm)
+			alarm := saved.alarm
+			alarm.State = StatePending
+			out = append(out, alarm)
+		}
+		for _, alarm := range ringing {
+			out = append(out, alarm)
 		}
 		sortAlarms(out)
 		return out
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	out := make([]Alarm, 0, len(m.entries))
-	for _, e := range m.entries {
+	out := make([]Alarm, 0, len(m.entries)+len(ringing))
+	for id, e := range m.entries {
+		if _, ok := ringing[id]; ok {
+			// finishRing schedules the next occurrence just before the fire
+			// releases the marker; keep the sounding row only.
+			continue
+		}
 		alarm := e.alarm
 		alarm.NextFiresAt = e.occurrence
+		alarm.State = StatePending
+		out = append(out, alarm)
+	}
+	for _, alarm := range ringing {
 		out = append(out, alarm)
 	}
 	sortAlarms(out)
 	return out
+}
+
+// ringingSnapshot copies the sounding Alarms, so List never holds the lock
+// while it reads the store.
+func (m *Manager) ringingSnapshot() map[string]Alarm {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	ringing := make(map[string]Alarm, len(m.ringing))
+	for id, alarm := range m.ringing {
+		ringing[id] = alarm
+	}
+	return ringing
 }
 
 // sortAlarms orders the soonest next fire first.
@@ -798,6 +853,9 @@ func (m *Manager) Close() {
 		e.timer.Stop()
 		delete(m.entries, id)
 	}
+	for id := range m.ringing {
+		delete(m.ringing, id)
+	}
 	m.mu.Unlock()
 	m.wg.Wait()
 }
@@ -901,6 +959,7 @@ func (m *Manager) fire(id string, snoozed bool) {
 		ringCancel()
 		m.mu.Lock()
 		delete(m.active, id)
+		delete(m.ringing, id)
 		m.mu.Unlock()
 	}()
 
@@ -920,14 +979,14 @@ func (m *Manager) fire(id string, snoozed bool) {
 			Ramp:         rampDuration(alarm.RampSeconds),
 			AllowSnooze:  true,
 			SnoozeText:   SnoozeText,
-			OnStart:      func() { m.markRinging(state.eventID) },
+			OnStart:      func() { m.markRinging(state.eventID, alarm) },
 		})
 		m.finishRing(id, state, result)
 		return
 	}
 
 	// No Ring engine: speak the single fallback line, still bounded by Close.
-	m.markRinging(state.eventID)
+	m.markRinging(state.eventID, alarm)
 	m.speakFallback(ringCtx, alarm)
 	result := ring.Result{Played: true, Outcome: ring.OutcomeStopped, EndedBy: "spoken"}
 	if ringCtx.Err() != nil {
@@ -952,8 +1011,11 @@ func (m *Manager) speakFallback(ctx context.Context, alarm Alarm) {
 }
 
 // finishRing records the Ring outcome and decides whether to snooze or to
-// continue the repeat schedule. A cancelled Alarm schedules nothing.
+// continue the repeat schedule. A cancelled Alarm schedules nothing. The
+// ringing marker drops first, so once the alert has ended List and the history
+// agree about it.
 func (m *Manager) finishRing(id string, state fireState, result ring.Result) {
+	m.releaseRinging(id)
 	cancelled := m.isCancelled(id)
 	outcome := result.Outcome
 	endedBy := result.EndedBy
@@ -1042,8 +1104,17 @@ func (m *Manager) snoozeDuration() time.Duration {
 	return ring.DefaultAlarmSnooze
 }
 
-// markRinging records that the Alarm now owns the speaker.
-func (m *Manager) markRinging(eventID int64) {
+// markRinging records that the Alarm now owns the speaker and, while it Rings,
+// makes the Alarm visible to List with StateRinging. The marker carries the
+// occurrence that is sounding, so List never presents the next occurrence as
+// the one the user hears. The history row is opened by the fire path.
+func (m *Manager) markRinging(eventID int64, alarm Alarm) {
+	alarm.State = StateRinging
+	m.mu.Lock()
+	if !m.closed {
+		m.ringing[alarm.ID] = alarm
+	}
+	m.mu.Unlock()
 	if eventID <= 0 {
 		return
 	}
@@ -1052,6 +1123,14 @@ func (m *Manager) markRinging(eventID int64) {
 	if err := m.history.MarkRinging(ctx, eventID, m.now()); err != nil {
 		m.logger.Error("alarm history ringing", "event_id", eventID, "error", err.Error())
 	}
+}
+
+// releaseRinging drops the sounding marker as soon as the Ring has ended, so a
+// finished alert is not reported as ringing while its outcome is written.
+func (m *Manager) releaseRinging(id string) {
+	m.mu.Lock()
+	delete(m.ringing, id)
+	m.mu.Unlock()
 }
 
 // closeEvent records one occurrence's outcome. When its fire transaction never

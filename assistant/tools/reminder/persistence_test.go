@@ -171,9 +171,9 @@ func TestReminderSurvivesRestart(t *testing.T) {
 	if got := thirdRec.wait(t, 3*time.Second); got != "check the oven" {
 		t.Fatalf("spoken = %q, want the recovered reminder", got)
 	}
-	if got := len(third.List()); got != 0 {
-		t.Fatalf("pending reminders after firing = %d, want 0", got)
-	}
+	// The fired Reminder stays in List while its Cue and message play (#197),
+	// so wait for the alert to finish before expecting an empty list.
+	waitListLen(t, third, 0)
 	if got := countReminderRows(t, thirdStore); got != 0 {
 		t.Fatalf("persisted rows after firing = %d, want 0", got)
 	}
@@ -423,8 +423,8 @@ func TestCancelStopsARingingReminder(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("the Reminder never started speaking")
 	}
-	if got := m.List(); len(got) != 0 {
-		t.Fatalf("pending Reminders after firing = %+v, want none", got)
+	if got := m.List(); len(got) != 1 || got[0].ID != item.ID || got[0].State != reminder.StateRinging {
+		t.Fatalf("List while ringing = %+v, want the ringing Reminder", got)
 	}
 
 	cancelled, err := m.Cancel(item.ID)

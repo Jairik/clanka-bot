@@ -226,9 +226,9 @@ func TestTimerSurvivesRestart(t *testing.T) {
 	if got := waitAlert(t, rec); got != "Tea timer is done." {
 		t.Fatalf("alert = %q, want the labelled line", got)
 	}
-	if got := len(second.List()); got != 0 {
-		t.Fatalf("timers after firing = %d, want 0", got)
-	}
+	// The fired Timer stays in List while its alert sounds (#197), so wait for
+	// the alert to finish rather than sampling the instant the line is spoken.
+	waitUntil(t, "the fired Timer to leave List", func() bool { return len(second.List()) == 0 })
 	if got := countTimerRows(t, secondStore); got != 0 {
 		t.Fatalf("persisted rows after firing = %d, want 0", got)
 	}

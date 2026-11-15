@@ -54,9 +54,12 @@ func TestConcurrentSetCancelAndFire(t *testing.T) {
 	if _, err := m.CancelTimers(""); err != nil {
 		t.Fatalf("CancelTimers(all): %v", err)
 	}
-	if got := len(m.List()); got != 0 {
-		t.Fatalf("timers = %d after cancelling everything, want 0", got)
-	}
+	// A cancelled Ring unwinds asynchronously, so a Timer whose alert was
+	// already sounding can stay in List for a moment after CancelTimers
+	// returns (#197). Wait for the alert goroutines to finish.
+	waitUntil(t, "every Timer to leave List after cancelling everything", func() bool {
+		return len(m.List()) == 0
+	})
 
 	// A pending Timer cancelled before its deadline never speaks. A fresh
 	// Manager keeps the first phase's stragglers out of this assertion.

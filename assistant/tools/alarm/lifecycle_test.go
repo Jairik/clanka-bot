@@ -182,7 +182,7 @@ func TestToolsExtractSetListAndCancel(t *testing.T) {
 	if !ok || !info.LocalOnly || info.Permission != tool.PermissionRead {
 		t.Fatalf("alarm.list info = %+v, want a local-only read", info)
 	}
-	for _, name := range []string{alarm.SetName, alarm.CancelName, alarm.UpdateName} {
+	for _, name := range []string{alarm.SetName, alarm.CancelName} {
 		info, ok := reg.Info(name)
 		if !ok || info.LocalOnly {
 			t.Fatalf("%s info = %+v, want LocalOnlyNo", name, info)
@@ -190,6 +190,11 @@ func TestToolsExtractSetListAndCancel(t *testing.T) {
 		if info.Permission != tool.PermissionAct {
 			t.Fatalf("%s permission = %s, want act", name, info.Permission)
 		}
+	}
+	// alarm.update returns the stored Alarm with its label, so it is Local-only
+	// while still acting and routing locally.
+	if info, ok := reg.Info(alarm.UpdateName); !ok || !info.LocalOnly || info.Permission != tool.PermissionAct {
+		t.Fatalf("alarm.update info = %+v, want a Local-only act", info)
 	}
 
 	set := func(utterance string) alarm.SetOut {

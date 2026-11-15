@@ -122,10 +122,11 @@ func NewUpdate(m *Manager) tool.Tool[UpdateIn, UpdateOut] {
 		Name:        UpdateName,
 		Description: "Change an existing alarm's sound, volume or ramp; time, label and repeat are unchanged.",
 		Permission:  tool.PermissionAct,
-		// Like alarm.set/cancel, it changes only the local schedule and the
-		// reply names the target the user already supplied. It never lists
-		// other alarms, which is what keeps alarm.list LocalOnlyYes.
-		LocalOnly: tool.LocalOnlyNo,
+		// The result embeds the stored Alarm, including a label the request may
+		// not name when it matches by time or id, or when only one Alarm exists.
+		// It stays on the Pi like alarm.list: the Agent, Hermes and MCP surfaces
+		// cannot see or call it (#322).
+		LocalOnly: tool.LocalOnlyYes,
 		Handler: func(ctx context.Context, in UpdateIn) (UpdateOut, error) {
 			return m.Update(ctx, in)
 		},

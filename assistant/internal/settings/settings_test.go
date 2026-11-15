@@ -1,9 +1,12 @@
 package settings_test
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"log/slog"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -322,6 +325,36 @@ func TestNewSkipsAStoredOverrideThatNoLongerValidates(t *testing.T) {
 	}
 	if got := svc.Ignored(); len(got) != 0 {
 		t.Fatalf("Ignored() after Reset = %+v, want none", got)
+	}
+}
+
+// TestIgnoredOverrideWarningOmitsValues keeps interpolated validator data out of logs.
+func TestIgnoredOverrideWarningOmitsValues(t *testing.T) {
+	const marker = "private-validator-marker"
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	def := settings.String("test.setting", "safe", settings.WithValidator(func(value any) error {
+		if value == marker {
+			return fmt.Errorf("invalid setting value %q", value)
+		}
+		return nil
+	}))
+	svc, _, err := openSeeded(t, map[string]string{"test.setting": `"` + marker + `"`}, def)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if strings.Contains(logs.String(), marker) {
+		t.Fatalf("warning exposed the stored value: %s", logs.String())
+	}
+	if !strings.Contains(logs.String(), "test.setting") {
+		t.Fatalf("warning omitted the setting key: %s", logs.String())
+	}
+	// The authenticated recovery view still explains why the row was ignored.
+	ignored := svc.Ignored()
+	if len(ignored) != 1 || !strings.Contains(ignored[0].Reason, marker) {
+		t.Fatalf("Ignored = %+v, want the owner-facing validator detail", ignored)
 	}
 }
 

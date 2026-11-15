@@ -283,13 +283,12 @@ func New(ctx context.Context, st *store.Store, defs ...Definition) (*Service, er
 			// A validator failure means the row was valid when written and the
 			// rules changed. That is data, not a wiring error: skip the row,
 			// keep it in SQLite for a later build, and let the owner reset it
-			// from the now-running Settings page. Only the key and reason are
-			// logged, never the stored value.
+			// from the now-running Settings page. Reasons may repeat the stored
+			// value, so only the key is logged; details stay in the owner view.
 			reason := err.Error()
 			s.ignored[key] = reason
 			slog.Default().Warn("settings: ignored stored override that fails its current validator",
 				"key", key,
-				"reason", reason,
 			)
 			continue
 		}

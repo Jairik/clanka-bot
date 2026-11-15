@@ -1,3 +1,23 @@
 # Host build artefacts: the image builds the web app itself.
 web/node_modules
 internal/dashboard/ui/dist
+# Playwright output from a local Dashboard run.
+web/test-results
+web/playwright-report
+
+# The local checkout's SQLite database. Running the assistant outside Compose
+# creates data/, and its secrets table holds the write-only values (OpenRouter
+# key, GitHub tokens, ntfy topic, Spotify refresh token) next to timers, notes
+# and activity. The runtime image copies neither, but the builder does a
+# `COPY . .`, so a build exporting its cache (buildx cache-to=registry) would
+# carry the database off the machine. The one exception is config.yaml, which
+# the image needs; never ignore it.
+data
+*.db
+*.db-wal
+*.db-shm
+*.log
+
+# A local `go build` output, and VCS history if the context ever widens.
+assistant
+.git

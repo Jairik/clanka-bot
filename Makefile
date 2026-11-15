@@ -55,6 +55,7 @@ test: ## Run the assistant, deployment, auto-deploy, wakeword-CLI and mic-check 
 	bash scripts/tests/deploy_test.sh
 	bash scripts/tests/deploy_watch_test.sh
 	bash scripts/tests/check_compose_test.sh
+	bash scripts/tests/check_dockerignore_test.sh
 	python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
 	python3 -m unittest discover -s wakeword/tests -p 'test_*.py' -v
 

@@ -54,6 +54,11 @@ type HistoryOptions struct {
 	MaxRows    int
 	// Now overrides the clock for deterministic tests.
 	Now func() time.Time
+	// SkipSearchWarmup keeps NewHistory from starting the background rebuild of
+	// the trigram search index. A test that seeds a large fixture sets it so the
+	// fixture is stable, and drives WarmSearchIndex itself. A search still
+	// creates the index and stays correct meanwhile (searchindex.go).
+	SkipSearchWarmup bool
 }
 
 // History is the durable Activity table. It is safe for concurrent use; the
@@ -67,6 +72,15 @@ type History struct {
 	// pruneMu keeps two prune calls (startup and the hourly tick) from
 	// interleaving their read-then-update batches.
 	pruneMu sync.Mutex
+	// schemaMu and schemaReady apply the search index schema once; schemaErr
+	// remembers a build that cannot create it, so a search degrades to the
+	// bounded window instead of retrying DDL on every request.
+	schemaMu    sync.Mutex
+	schemaReady bool
+	schemaErr   error
+	// warmMu keeps two index rebuilds (the background loop and a caller that
+	// asks for one) from indexing the same batch twice.
+	warmMu sync.Mutex
 }
 
 // NewHistory wraps the assistant's database. The table is created by store
@@ -91,6 +105,12 @@ func NewHistory(db *sql.DB, opts HistoryOptions) *History {
 	}
 	if h.now == nil {
 		h.now = time.Now
+	}
+	if !opts.SkipSearchWarmup {
+		// An upgraded database may have a whole retained window to tokenize.
+		// That must not delay startup, so it runs in bounded batches here; a
+		// search is correct while it runs (searchindex.go).
+		go h.warmSearchIndex()
 	}
 	return h
 }
@@ -187,12 +207,12 @@ func (h *History) QueryPage(ctx context.Context, q Query) (Page, error) {
 	default:
 		return Page{}, ErrBadFilter
 	}
-	if needle := normalizeQuery(q.Text); needle != "" {
-		// instr on the writer-maintained lowercased haystack is a bounded scan:
-		// the at index has already narrowed the rows to the requested window,
-		// and the text pattern is capped at maxQueryRunes.
-		conditions = append(conditions, "instr(search, ?) > 0")
-		args = append(args, needle)
+	limit := q.Limit
+	if limit <= 0 {
+		limit = DefaultPageLimit
+	}
+	if limit > maxPageLimit {
+		limit = maxPageLimit
 	}
 	if q.Before != "" {
 		at, id, err := decodeCursor(q.Before)
@@ -202,17 +222,22 @@ func (h *History) QueryPage(ctx context.Context, q Query) (Page, error) {
 		conditions = append(conditions, "(at < ? OR (at = ? AND id < ?))")
 		args = append(args, at, at, id)
 	}
-	limit := q.Limit
-	if limit <= 0 {
-		limit = DefaultPageLimit
-	}
-	if limit > maxPageLimit {
-		limit = maxPageLimit
+	if needle := normalizeQuery(q.Text); needle != "" {
+		// The trigram index answers a three-character or longer query as an id
+		// set; a shorter one, or a build without the index, reads only the
+		// newest shortSearchWindow rows. Neither walks the retained window.
+		if h.windowedSearch(ctx, needle) {
+			return h.pageByWindow(ctx, conditions, args, needle, limit)
+		}
+		condition, textArgs, err := h.searchCondition(ctx, needle)
+		if err != nil {
+			return Page{}, err
+		}
+		conditions = append(conditions, condition)
+		args = append(args, textArgs...)
 	}
 
-	statement := `SELECT id, request_id, at, source, path, tool, outcome, error,
-		transcript, reply, local_only, response_ms, stages, checkpoints, calls, summary
-		FROM activity`
+	statement := `SELECT ` + entryColumns + ` FROM activity`
 	if len(conditions) > 0 {
 		statement += " WHERE " + strings.Join(conditions, " AND ")
 	}
@@ -228,13 +253,13 @@ func (h *History) QueryPage(ctx context.Context, q Query) (Page, error) {
 	var entries []Entry
 	var cursors []string
 	for rows.Next() {
-		entry, cursor, err := scanEntry(rows)
+		scanned, err := scanEntry(rows)
 		if err != nil {
 			return Page{}, err
 		}
-		entry.Cursor = cursor
-		entries = append(entries, entry)
-		cursors = append(cursors, cursor)
+		scanned.entry.Cursor = scanned.cursor
+		entries = append(entries, scanned.entry)
+		cursors = append(cursors, scanned.cursor)
 	}
 	if err := rows.Err(); err != nil {
 		return Page{}, fmt.Errorf("activity history: read: %w", err)
@@ -411,8 +436,11 @@ func searchText(e Entry) string {
 // normalizeQuery trims, lowercases and collapses one client query, capped so a
 // pasted document cannot become an unbounded pattern. It collapses whitespace
 // for the same reason the haystack does, and cuts without an ellipsis because
-// the cap is a rune boundary, not a display.
+// the cap is a rune boundary, not a display. A NUL byte is dropped: it is not
+// text, and it would truncate an FTS5 query string into a syntax error rather
+// than a plain "no matches".
 func normalizeQuery(text string) string {
+	text = strings.ReplaceAll(text, "\x00", "")
 	needle := collapseSpace(strings.ToLower(strings.TrimSpace(text)))
 	if runes := []rune(needle); len(runes) > maxQueryRunes {
 		needle = string(runes[:maxQueryRunes])
@@ -441,9 +469,23 @@ func summarizeCalls(raw string) string {
 	return string(encoded)
 }
 
-// scanEntry reads one row into an Entry and its cursor. Column order is the
-// SELECT in QueryPage.
-func scanEntry(rows *sql.Rows) (Entry, string, error) {
+// entryColumns is the one SELECT list for a full history row; scanEntry reads
+// exactly these columns in this order.
+const entryColumns = `id, request_id, at, source, path, tool, outcome, error,
+	transcript, reply, local_only, response_ms, stages, checkpoints, calls, summary`
+
+// scanResult is one scanned row: the integer id keys the windowed page's
+// ordered id list, the cursor is what the page hands the client, and the entry
+// is what it shows.
+type scanResult struct {
+	id     int64
+	cursor string
+	entry  Entry
+}
+
+// scanEntry reads one row into an Entry and its cursor. Column order is
+// entryColumns.
+func scanEntry(rows *sql.Rows) (scanResult, error) {
 	var (
 		entry                      Entry
 		id, at                     int64
@@ -455,7 +497,7 @@ func scanEntry(rows *sql.Rows) (Entry, string, error) {
 	if err := rows.Scan(&id, &requestID, &at, &entry.Source, &entry.Path, &entry.Tool,
 		&entry.Outcome, &entry.Error, &entry.Transcript, &entry.Reply, &localOnly,
 		&response, &stages, &checkpoints, &calls, &summary); err != nil {
-		return Entry{}, "", fmt.Errorf("activity history: scan: %w", err)
+		return scanResult{}, fmt.Errorf("activity history: scan: %w", err)
 	}
 	entry.ID = requestID
 	entry.At = time.UnixMilli(at)
@@ -466,15 +508,15 @@ func scanEntry(rows *sql.Rows) (Entry, string, error) {
 		entry.ResponseMS = &ms
 	}
 	if err := json.Unmarshal([]byte(stages), &entry.Stages); err != nil {
-		return Entry{}, "", fmt.Errorf("activity history: decode stages: %w", err)
+		return scanResult{}, fmt.Errorf("activity history: decode stages: %w", err)
 	}
 	if err := json.Unmarshal([]byte(checkpoints), &entry.Checkpoints); err != nil {
-		return Entry{}, "", fmt.Errorf("activity history: decode checkpoints: %w", err)
+		return scanResult{}, fmt.Errorf("activity history: decode checkpoints: %w", err)
 	}
 	if err := json.Unmarshal([]byte(calls), &entry.Calls); err != nil {
-		return Entry{}, "", fmt.Errorf("activity history: decode calls: %w", err)
+		return scanResult{}, fmt.Errorf("activity history: decode calls: %w", err)
 	}
-	return entry, encodeCursor(at, id), nil
+	return scanResult{id: id, cursor: encodeCursor(at, id), entry: entry}, nil
 }
 
 // encodeCursor and decodeCursor wrap the (at, rowid) pair the keyset page

@@ -121,6 +121,8 @@ func uploadFailure(filename string, err error) error {
 	switch {
 	case strings.Contains(message, "no audio frames"):
 		reason = "contains no audio frames"
+	case strings.Contains(message, "silent"):
+		reason = "is silent"
 	case strings.Contains(message, "truncated"):
 		reason = "is truncated"
 	case strings.Contains(message, "unsupported"):

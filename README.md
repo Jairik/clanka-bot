@@ -390,7 +390,11 @@ checks that the service advertises each one. Moonshine weights are downloaded an
 `download.moonshine.ai` at build time and baked in; the container starts
 offline. Rebuild `stt` after changing `STT_MODELS` or `STT_MODEL`. Set
 `ASSISTANT_PULSE_SOURCE` from `pactl list short sources` (the dev box uses the
-USB webcam's mono source).
+USB webcam's mono source). The `stt` service transcribes one stream at a time:
+a second request (the Dashboard mic during a voice turn) waits
+`STT_SESSION_WAIT` (5 s) for the model and is then refused with a `busy` error
+instead of a client timeout, and a session that sends no audio for
+`STT_SESSION_TIMEOUT` (30 s) ends and gives the model back.
 
 The mic endpoint threshold (`stt.endpoint.threshold_dbfs`, default -38) depends
 on source gain. The C270 was calibrated to 32% gain on 2026-11-12: idle RMS

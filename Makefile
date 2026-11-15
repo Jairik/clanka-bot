@@ -4,7 +4,7 @@ SHELL := /bin/bash
 GIT_SHA ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
 export GIT_SHA
 
-.PHONY: web web-dev web-image build up down logs deploy rollback prune-images build-arm64 test tts-test check routing-eval latency-report new-tool wakeword-test soloist soloist-update deploy-watch-install
+.PHONY: web web-dev web-image build up down logs deploy rollback prune-images build-arm64 test tts-test stt-test check routing-eval latency-report new-tool wakeword-test soloist soloist-update deploy-watch-install
 
 build: ## Build every service image for this host.
 	docker compose build
@@ -65,6 +65,9 @@ test: ## Run the assistant, deployment, auto-deploy, wakeword-CLI and mic-check 
 
 tts-test: ## Run the Wyoming/pcm Python tests (needs wyoming and numpy installed).
 	python3 -m pytest tts/tests -q
+
+stt-test: ## Run the STT Wyoming server tests (needs wyoming and pytest installed).
+	python3 -m pytest stt/tests -q
 
 check: ## Check compose and Dockerfile deployment conventions.
 	bash scripts/check-compose.sh

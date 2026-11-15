@@ -102,7 +102,7 @@ output for the Tool. The image is pinned to
 the Provider implementation; only `searxng` exists and an unknown value fails
 startup. If SearXNG is down, times out, returns invalid JSON or an oversize
 body, the Tool fails cleanly and the Agent can say it couldn't search. A failed
-search logs the backend and a bounded failure kind (`dns`, `connect`, `tls`,
+search logs the backend and a bounded failure kind (such as `dns`, `connect`, `tls`,
 `timeout`, `cancelled`, `http`), never the query or the request URL. Results
 are bounded (query, count, title, URL and snippet) and the HTTP client keeps
 connections alive between calls. See [`searxng/README.md`](searxng/README.md)

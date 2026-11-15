@@ -179,7 +179,8 @@ func (s *searxng) Search(ctx context.Context, query string, maxResults int) ([]R
 	// silently truncated into invalid JSON.
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodyBytes+1))
 	if err != nil {
-		return nil, fmt.Errorf("searxng: read response: %w", err)
+		// A body-read failure obeys the same bounded diagnostic contract as a dial failure.
+		return nil, newTransportError(s.host, "", err)
 	}
 	if len(body) > maxBodyBytes {
 		return nil, fmt.Errorf("searxng: response exceeds %d bytes", maxBodyBytes)

@@ -24,6 +24,54 @@ import (
 // contains spaces so the encoded q= value differs from the raw text.
 const redactionMarker = "private note marker 7f3a"
 
+// failingSearchBody returns an upstream error without a network request.
+type failingSearchBody struct{ err error }
+
+func (b failingSearchBody) Read([]byte) (int, error) { return 0, b.err }
+func (b failingSearchBody) Close() error             { return nil }
+
+// TestSearchProviderErrorsOmitUpstreamText pins body, reason-phrase and userinfo redaction.
+func TestSearchProviderErrorsOmitUpstreamText(t *testing.T) {
+	cause := errors.New(redactionMarker)
+	for _, kind := range []string{"body", "status", "transport"} {
+		t.Run(kind, func(t *testing.T) {
+			client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				if kind == "transport" {
+					return nil, &url.Error{Op: "Get", URL: r.URL.String(), Err: cause}
+				}
+				response := &http.Response{StatusCode: http.StatusOK, Body: failingSearchBody{cause}, Header: make(http.Header)}
+				if kind == "status" {
+					response.StatusCode = http.StatusServiceUnavailable
+					response.Status = "503 " + redactionMarker
+					response.Body = io.NopCloser(strings.NewReader(""))
+				}
+				return response, nil
+			})}
+			provider := newSearxng("http://fixture-user:fixture-password@web-search:8080", time.Second, client)
+			_, err := provider.Search(context.Background(), redactionMarker, 5)
+			if err == nil {
+				t.Fatal("search succeeded, want a failure")
+			}
+			assertNoQuery(t, err.Error())
+			for _, private := range []string{"fixture-user", "fixture-password", "http://"} {
+				if strings.Contains(err.Error(), private) {
+					t.Fatalf("private URL component leaked: %v", err)
+				}
+			}
+			if kind != "status" && !errors.Is(err, cause) {
+				t.Fatal("original failure is no longer reachable")
+			}
+			want := "other"
+			if kind == "status" {
+				want = "http"
+			}
+			if got := failureKind(err); got != want {
+				t.Fatalf("kind = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
 // assertNoQuery fails if text carries the raw or URL-encoded query marker.
 func assertNoQuery(t *testing.T, text string) {
 	t.Helper()
@@ -115,6 +163,9 @@ func TestSearchTransportErrorIsBounded(t *testing.T) {
 			t.Fatal("search with a cancelled context succeeded")
 		}
 		assertNoQuery(t, err.Error())
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancellation is no longer identifiable with errors.Is: %v", err)
+		}
 		if got := failureKind(err); got != "cancelled" {
 			t.Fatalf("kind = %q, want cancelled: %v", got, err)
 		}
@@ -128,7 +179,8 @@ func TestSearchTransportErrorIsBounded(t *testing.T) {
 		server.StartTLS()
 		defer server.Close()
 
-		provider := newSearxng(server.URL, time.Second, nil)
+		// Certificate verification must not race an unrelated one-second deadline.
+		provider := newSearxng(server.URL, 10*time.Second, nil)
 		_, err := provider.Search(context.Background(), redactionMarker, 5)
 		if err == nil {
 			t.Fatal("search against an untrusted certificate succeeded")
@@ -223,7 +275,7 @@ func TestSearchFailureLogOmitsTheQuery(t *testing.T) {
 				t.Cleanup(server.Close)
 				return server.URL, time.Second
 			},
-			kind: "http",
+			kind: "other",
 		},
 		{
 			name: "invalid JSON",

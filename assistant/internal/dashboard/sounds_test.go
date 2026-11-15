@@ -360,6 +360,10 @@ func TestSoundsAudioServesCanonicalWAVWithRanges(t *testing.T) {
 	if ranges := rec.Header().Get("Accept-Ranges"); ranges != "bytes" {
 		t.Fatalf("Accept-Ranges = %q", ranges)
 	}
+	// Replacing a Sound under the same name must not keep serving the old file.
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
 	if body := rec.Body.Bytes(); len(body) < 44 || string(body[0:4]) != "RIFF" {
 		t.Fatalf("body is not a WAV (%d bytes)", len(body))
 	}
@@ -372,6 +376,9 @@ func TestSoundsAudioServesCanonicalWAVWithRanges(t *testing.T) {
 	f.handler.ServeHTTP(rangeRec, rangeReq)
 	if rangeRec.Code != http.StatusPartialContent {
 		t.Fatalf("range status = %d, want 206", rangeRec.Code)
+	}
+	if got := rangeRec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("range Cache-Control = %q, want no-store", got)
 	}
 	if got := rangeRec.Body.String(); got != "RI" {
 		t.Fatalf("range body = %q", got)

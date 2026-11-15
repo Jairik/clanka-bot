@@ -743,6 +743,11 @@ func TestVoicesBrowserPreviewIsAuthenticatedWAVAndKeepsTheActiveVoice(t *testing
 	if contentType := rec.Header().Get("Content-Type"); contentType != "audio/wav" {
 		t.Fatalf("Content-Type = %q", contentType)
 	}
+	// The URL names the voice but not the rate: a cached copy would replay the
+	// wrong take to the next preview or the next Tailscale user.
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
 	body := rec.Body.Bytes()
 	if len(body) < 44 || string(body[0:4]) != "RIFF" || string(body[8:12]) != "WAVE" {
 		t.Fatalf("preview is not a WAV (%d bytes)", len(body))
@@ -768,6 +773,11 @@ func TestVoicesBrowserPreviewIsAuthenticatedWAVAndKeepsTheActiveVoice(t *testing
 	f.handler.ServeHTTP(rangeRec, rangeReq)
 	if rangeRec.Code != http.StatusPartialContent || rangeRec.Body.String() != "RIFF" {
 		t.Fatalf("range status = %d body = %q", rangeRec.Code, rangeRec.Body.String())
+	}
+	// The Range response carries the same policy, so a player cannot cache a
+	// slice of a private take either.
+	if got := rangeRec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("range Cache-Control = %q, want no-store", got)
 	}
 }
 

@@ -5,6 +5,7 @@ import { brotliCompressSync, constants, gzipSync } from "node:zlib";
 import { createHash } from "node:crypto";
 import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { extname, join, relative } from "node:path";
+import { precacheList } from "./src/precache";
 
 // The build is embedded in the Go binary (internal/dashboard/ui/dist), so the
 // Pi serves it with no CDN and no internet access.
@@ -49,8 +50,19 @@ function precompress(): Plugin {
   };
 }
 
-// The service worker precaches the shell; its file list and version come from
-// the finished bundle, so a new build replaces the old cache.
+// The service worker precaches only the shell (Home, icons and fonts): a first
+// visit must not download the route chunks it never opens. The file list, the
+// cache policy and the version all come from the finished bundle, so a new
+// build replaces the old cache. The policy is inlined from the same file its
+// unit test imports, because a classic worker cannot import a module.
+const serviceWorkerPolicy = () =>
+  readFileSync("src/sw-cache-policy.js", "utf8").replace(/^export /gm, "");
+
+// A lazy page chunk is named after its page (Settings-abc.js); the entry, the
+// shell and the shared chunks are lower-case. Finding one in the install list
+// means the whole app is being precached again.
+const ROUTE_CHUNK = /^\/assets\/[A-Z][A-Za-z]+-[^/]+\.(?:js|css)$/;
+
 function serviceWorker(): Plugin {
   let outDir = "";
   return {
@@ -74,15 +86,28 @@ function serviceWorker(): Plugin {
         }
       };
       walk(outDir);
-      files.sort();
+
+      const html = readFileSync(join(outDir, "index.html"), "utf8");
+      const precache = precacheList(files, html);
+      const routes = precache.filter((file) => ROUTE_CHUNK.test(file));
+      if (routes.length > 0) {
+        throw new Error(`The service worker precaches route chunks: ${routes.join(", ")}`);
+      }
 
       const version = createHash("sha256")
-        .update(files.map((f) => f + ":" + statSync(join(outDir, f.slice(1))).size).join("|"))
+        .update(precache.map((f) => f + ":" + statSync(join(outDir, f.slice(1))).size).join("|"))
         .digest("hex")
         .slice(0, 12);
       const template = readFileSync("src/sw-template.js", "utf8");
-      const sw = template.replace("__VERSION__", version).replace("__PRECACHE__", JSON.stringify(files, null, 2));
+      const sw = template
+        .replace("__CACHE_POLICY__", serviceWorkerPolicy())
+        .replace("__VERSION__", version)
+        .replace("__PRECACHE__", JSON.stringify(precache, null, 2));
       writeFileSync(join(outDir, "sw.js"), sw);
+
+      const bytes = precache.reduce((sum, file) => sum + statSync(join(outDir, file.slice(1))).size, 0);
+      console.log(`\nService worker precache: ${precache.length} files, ${(bytes / 1024).toFixed(0)} kB`);
+      console.log(precache.map((file) => `  ${file}`).join("\n"));
     },
   };
 }

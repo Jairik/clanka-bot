@@ -104,6 +104,9 @@ func (h *Handler) settingsWordingPreview(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	w.Header().Set("Content-Type", "audio/wav")
+	// The query is the draft wording; the voice and rate come from settings the
+	// URL does not carry, so a cached copy can replay the wrong take.
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": wordingPreviewFile}))
 	// ServeContent gives the same Range and Content-Length handling as
 	// /voices/audio, so the player can scrub and loop.

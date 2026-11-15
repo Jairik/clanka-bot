@@ -1,11 +1,14 @@
-// clanka's service worker: precache the app shell, keep API reads
-// network-first, and answer an unreachable Pi with the cached shell (or a
-// plain offline page) instead of a browser error. The build replaces the two
-// placeholders with the asset list and a content-derived version.
+// clanka's service worker: precache just the app shell, keep API reads
+// network-first, cache only immutable build output, and answer an unreachable
+// Pi with the cached shell (or a plain offline page) instead of a browser
+// error. The build replaces the placeholders with the cache policy it also
+// unit-tests, the asset list and a content-derived version.
 const VERSION = "__VERSION__";
 const PRECACHE = __PRECACHE__;
 const CACHE = "clanka-" + VERSION;
 const OFFLINE_URL = "/offline.html";
+
+__CACHE_POLICY__
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -49,6 +52,10 @@ self.addEventListener("fetch", (event) => {
     );
     return;
   }
+  // Everything else is network-only: previews and takes vary by query string,
+  // media needs Range and is private, and a cached copy of either would replay
+  // the wrong voice, rate or recording.
+  if (!shouldCache(request, url)) return;
   event.respondWith(cacheFirst(request));
 });
 
@@ -67,6 +74,7 @@ async function navigate(request) {
   }
 }
 
+// Only reached through shouldCache, so the key is immutable build output.
 async function cacheFirst(request) {
   const hit = await caches.match(request);
   if (hit) return hit;

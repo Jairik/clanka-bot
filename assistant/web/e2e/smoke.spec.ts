@@ -162,6 +162,43 @@ test("page chunks are not part of the initial load", async ({ page, isMobile, re
   expect(chunks.some((url) => /Settings-[^/]+\.js$/.test(url))).toBe(true);
 });
 
+test("a first visit warms only the current page's neighbour", async ({ page, isMobile }) => {
+  test.skip(isMobile, "hover prefetch is desktop-only");
+  const chunks: string[] = [];
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    // A lazy page chunk is PascalCase; the entry and shell chunks are not.
+    if (/^\/assets\/[A-Z]/.test(path)) chunks.push(path.slice("/assets/".length));
+  });
+  await settle(page, "/");
+
+  // Home's only neighbour is Activity. Settings, Voice Samples and Monster must
+  // not download until the user asks for them.
+  await expect.poll(() => chunks.length, { timeout: 10_000 }).toBeGreaterThan(0);
+  expect(chunks.filter((file) => !file.startsWith("Activity-"))).toEqual([]);
+
+  // Hover warms exactly the hovered page.
+  await page.getByRole("link", { name: "Sounds" }).hover();
+  await expect.poll(() => chunks.some((file) => file.startsWith("Sounds-"))).toBe(true);
+  expect(chunks.filter((file) => file.startsWith("Settings-"))).toEqual([]);
+});
+
+test("the built worker precaches the shell and never caches media", async ({ page }) => {
+  await page.goto("/");
+  const sw = await page.evaluate(async () => (await fetch("/sw.js")).text());
+
+  const precache = JSON.parse(sw.match(/const PRECACHE = (\[[\s\S]*?\]);/)![1]) as string[];
+  expect(precache).toContain("/index.html");
+  expect(precache).toContain("/offline.html");
+  // A lazy page chunk is PascalCase: none may be in the install list.
+  expect(precache.filter((file) => /^\/assets\/[A-Z]/.test(file))).toEqual([]);
+
+  // The shipped policy is the tested one, not an un-replaced placeholder.
+  expect(sw).toContain('request.destination === "audio"');
+  expect(sw).toContain("if (url.search) return false;");
+  expect(sw).not.toContain("__CACHE_POLICY__");
+});
+
 test("installs: manifest, worker and an offline shell", async ({ page, context }) => {
   await page.goto("/");
 

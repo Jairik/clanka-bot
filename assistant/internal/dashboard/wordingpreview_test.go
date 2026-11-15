@@ -31,6 +31,11 @@ func TestWordingPreviewServesWAVInTheActiveVoice(t *testing.T) {
 	if contentType := rec.Header().Get("Content-Type"); contentType != "audio/wav" {
 		t.Fatalf("Content-Type = %q", contentType)
 	}
+	// The query carries the draft but not the voice or rate, so a cached preview
+	// would replay the previous take after either changed.
+	if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", got)
+	}
 	disposition := rec.Header().Get("Content-Disposition")
 	if !strings.Contains(disposition, "inline") || !strings.Contains(disposition, "filename=wording-preview.wav") {
 		t.Fatalf("Content-Disposition = %q", disposition)

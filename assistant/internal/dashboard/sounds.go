@@ -317,9 +317,12 @@ func (h *Handler) soundsAudio(w http.ResponseWriter, r *http.Request) {
 	http.ServeContent(w, r, entry.Name+".wav", entry.AddedAt, bytes.NewReader(data))
 }
 
-// setSoundHeaders marks a library response as inline canonical audio.
+// setSoundHeaders marks a library response as inline canonical audio. It is
+// never cached: replacing a Sound under the same name must not keep playing the
+// old file, and the bytes are the owner's own library.
 func setSoundHeaders(w http.ResponseWriter, name string) {
 	w.Header().Set("Content-Type", "audio/wav")
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": name + ".wav"}))
 }
 

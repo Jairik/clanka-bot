@@ -255,6 +255,9 @@ func (h *Handler) voiceSamplesAudio(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "audio/wav")
+	// The take is the owner's own recording and its URL is not identity-scoped:
+	// Cache Storage would hand it to the next Tailscale user on this browser.
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": id + ".wav"}))
 	http.ServeContent(w, r, id+".wav", info.ModTime(), file)
 }

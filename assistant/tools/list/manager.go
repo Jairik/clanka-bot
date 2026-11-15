@@ -287,7 +287,7 @@ func (m *Manager) resolveItem(ctx context.Context, spoken string, items []Item) 
 	for _, item := range items {
 		texts = append(texts, item.Text)
 	}
-	result := m.names.Match(ctx, spoken, texts)
+	result := m.names.Match(ctx, namematch.SourceListItems, spoken, texts)
 	if !result.Matched() {
 		return Item{}, false
 	}

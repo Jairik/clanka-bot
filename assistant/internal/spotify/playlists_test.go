@@ -250,3 +250,114 @@ func TestLookupIsEmptyBeforeTheFirstRefresh(t *testing.T) {
 		t.Fatal("empty cache reported content")
 	}
 }
+
+// hookRecorder records every OnRefresh call and the context it was handed.
+type hookRecorder struct {
+	mu    sync.Mutex
+	calls [][]string
+	ctxs  []context.Context
+}
+
+func (h *hookRecorder) hook(ctx context.Context, names []string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.calls = append(h.calls, append([]string(nil), names...))
+	h.ctxs = append(h.ctxs, ctx)
+}
+
+func (h *hookRecorder) count() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.calls)
+}
+
+func (h *hookRecorder) names(i int) []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]string(nil), h.calls[i]...)
+}
+
+func (h *hookRecorder) ctx(i int) context.Context {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.ctxs[i]
+}
+
+func TestSuccessfulRefreshCallsTheWarmHookOnceWithTheLoadedNames(t *testing.T) {
+	api := &scriptedAPI{pages: map[string]string{"0": pageOne, "3": pageTwo}}
+	tick := newFakeTicker()
+	hooks := &hookRecorder{}
+	cache := spotify.NewPlaylistCache(spotify.PlaylistCacheOptions{
+		API: api, NewTicker: tick.factory, OnRefresh: hooks.hook,
+	})
+	cache.Start(t.Context())
+	defer cache.Close()
+
+	eventually(t, "the hook after the startup refresh", func() bool { return hooks.count() == 1 })
+	if got, want := strings.Join(hooks.names(0), ","), "Chill Vibes,Focus,Running"; got != want {
+		t.Fatalf("hook names = %q, want the loaded names sorted %q", got, want)
+	}
+	if err := hooks.ctx(0).Err(); err != nil {
+		t.Fatalf("hook context was already done: %v", err)
+	}
+
+	// The library changes; one tick refreshes it and hands the new names over.
+	api.set(nil, map[string]string{"0": `{"items":[{"name":"Late Night","uri":"spotify:playlist:late"}],"next":null}`})
+	tick.ch <- time.Now()
+	eventually(t, "the hook after the tick", func() bool { return hooks.count() == 2 })
+	if got := strings.Join(hooks.names(1), ","); got != "Late Night" {
+		t.Fatalf("hook names after the tick = %q, want the refreshed names", got)
+	}
+
+	// Close cancels the warm context it handed the hook, so a warm in flight
+	// stops with the cache instead of outliving it.
+	cache.Close()
+	if err := hooks.ctx(1).Err(); err == nil {
+		t.Fatal("Close left the warm context live")
+	}
+}
+
+func TestFailedRefreshDoesNotCallTheWarmHook(t *testing.T) {
+	api := &scriptedAPI{pages: map[string]string{"0": pageTwo}, err: errors.New("spotify is down")}
+	var logs syncBuffer
+	tick := newFakeTicker()
+	hooks := &hookRecorder{}
+	cache := spotify.NewPlaylistCache(spotify.PlaylistCacheOptions{
+		API: api, Logger: slog.New(slog.NewTextHandler(&logs, nil)),
+		NewTicker: tick.factory, OnRefresh: hooks.hook,
+	})
+	cache.Start(t.Context())
+	defer cache.Close()
+
+	eventually(t, "the failure logged", func() bool { return strings.Contains(logs.String(), "refresh failed") })
+	if n := hooks.count(); n != 0 {
+		t.Fatalf("hook calls after a failed refresh = %d, want 0", n)
+	}
+
+	// Once the API recovers the next tick warms, so a failure only skips one
+	// warm rather than disabling the hook.
+	api.set(nil, map[string]string{"0": pageTwo})
+	tick.ch <- time.Now()
+	eventually(t, "the hook after recovery", func() bool { return hooks.count() == 1 })
+	if got := strings.Join(hooks.names(0), ","); got != "Focus" {
+		t.Fatalf("hook names after recovery = %q, want Focus", got)
+	}
+}
+
+// A refresh a caller drives itself runs on the request path, so it must not
+// hand the names to the warm hook: the caller's own lookup follows at once and
+// the embed budget is that lookup's, not a warm's.
+func TestDirectRefreshDoesNotCallTheWarmHook(t *testing.T) {
+	api := &scriptedAPI{pages: map[string]string{"0": pageTwo}}
+	hooks := &hookRecorder{}
+	cache := spotify.NewPlaylistCache(spotify.PlaylistCacheOptions{API: api, OnRefresh: hooks.hook})
+	if err := cache.Refresh(t.Context()); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if n := hooks.count(); n != 0 {
+		t.Fatalf("hook calls after a direct refresh = %d, want 0", n)
+	}
+	if !cache.Loaded() {
+		t.Fatal("direct refresh did not load the cache")
+	}
+}

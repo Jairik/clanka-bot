@@ -45,6 +45,12 @@ type PlaylistCacheOptions struct {
 	NewTicker func(d time.Duration) (<-chan time.Time, func())
 	// Now is the clock for Updated; nil uses time.Now.
 	Now func() time.Time
+	// OnRefresh is called with the loaded names after a successful background
+	// refresh, in the refresh goroutine and with the context Close cancels. A
+	// failed refresh never calls it, and it has no error return: a warm that
+	// fails must not fail the refresh. Nil means no hook. It is the seam the
+	// library owner uses to warm the name matcher off the request path.
+	OnRefresh func(ctx context.Context, names []string)
 }
 
 // PlaylistCache is a local copy of the user's playlists so a spoken name
@@ -58,6 +64,7 @@ type PlaylistCache struct {
 	pageSize  int
 	newTicker func(time.Duration) (<-chan time.Time, func())
 	now       func() time.Time
+	onRefresh func(context.Context, []string)
 
 	mu      sync.RWMutex
 	lists   []Playlist
@@ -79,6 +86,7 @@ func NewPlaylistCache(opts PlaylistCacheOptions) *PlaylistCache {
 		pageSize:  opts.PageSize,
 		newTicker: opts.NewTicker,
 		now:       opts.Now,
+		onRefresh: opts.OnRefresh,
 	}
 	if c.logger == nil {
 		c.logger = slog.Default()
@@ -145,10 +153,29 @@ func (c *PlaylistCache) Close() {
 
 // refreshLogged refreshes and logs a failure. The error carries the HTTP
 // status and Spotify's machine reason only, never a token or response body.
+// Only a successful refresh reaches the warm hook, so a failed refresh keeps
+// the previous list and does not touch the matcher.
 func (c *PlaylistCache) refreshLogged(ctx context.Context) {
-	if err := c.Refresh(ctx); err != nil && ctx.Err() == nil {
-		c.logger.Warn("spotify playlist refresh failed; keeping the previous list", "error", safeError(err))
+	if err := c.Refresh(ctx); err != nil {
+		if ctx.Err() == nil {
+			c.logger.Warn("spotify playlist refresh failed; keeping the previous list", "error", safeError(err))
+		}
+		return
 	}
+	c.warm(ctx)
+}
+
+// warm hands the names a successful refresh loaded to the library's warm hook.
+// It runs in the background refresh goroutine, never on a request path, so the
+// candidate batch is embedded before the next spoken lookup instead of inside
+// it. The hook has no error return: a warm that fails is simply a cold first
+// lookup, exactly as before the warm existed, so it must not fail the refresh.
+func (c *PlaylistCache) warm(ctx context.Context) {
+	if c.onRefresh == nil || ctx.Err() != nil {
+		// Closed or closing: there is no request path left to warm for.
+		return
+	}
+	c.onRefresh(ctx, c.Names())
 }
 
 // safeError reduces an error to what is safe to log: the API status and reason

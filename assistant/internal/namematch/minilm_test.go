@@ -56,7 +56,7 @@ func TestNameMatchAgainstMiniLM(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.kind+"/"+tc.spoken, func(t *testing.T) {
-			result := matcher.Match(context.Background(), tc.spoken, candidates)
+			result := matcher.Match(context.Background(), namematch.SourceSounds, tc.spoken, candidates)
 			if result.Err != nil {
 				t.Fatalf("Match(%q) error: %v", tc.spoken, result.Err)
 			}

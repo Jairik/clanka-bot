@@ -104,7 +104,7 @@ func (s *Service) resolvePlaylist(ctx context.Context, spoken string) (spotify.P
 			return spotify.Playlist{}, toolError(err)
 		}
 	}
-	res := s.names.Match(ctx, spoken, s.playlists.Names())
+	res := s.names.Match(ctx, namematch.SourcePlaylists, spoken, s.playlists.Names())
 	if res.Matched() {
 		if pl, ok := s.playlists.Lookup(res.Name); ok {
 			return pl, nil

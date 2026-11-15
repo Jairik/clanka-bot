@@ -10,6 +10,7 @@ import (
 	"log/slog"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
+	"github.com/Jairik/clanka-bot/assistant/internal/namematch"
 	"github.com/Jairik/clanka-bot/assistant/internal/spotify"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 )
@@ -75,9 +76,26 @@ func (m *Module) registerPlayback(r *tool.Registry, deps tool.Deps) error {
 		return spotify.MaxVolume(svc)
 	}
 	player := spotify.NewPlayer(m.Client(), m.cfg.DeviceName, maxVolume)
-	m.cache = spotify.NewPlaylistCache(spotify.PlaylistCacheOptions{API: m.Client(), Logger: deps.Logger})
+	m.cache = spotify.NewPlaylistCache(spotify.PlaylistCacheOptions{
+		API:       m.Client(),
+		Logger:    deps.Logger,
+		OnRefresh: warmNameMatcher(deps.Names),
+	})
 	m.service = NewService(player, deps.Focus).WithLibrary(player, m.cache, deps.Names)
 	return RegisterTools(r, m.service)
+}
+
+// warmNameMatcher is the playlist-refresh hook: after a refresh the shared name
+// matcher embeds any playlist name it has not seen, in the cache's background
+// goroutine, so the next spoken lookup embeds only the query instead of a cold
+// batch that can exceed one lookup's budget. A warm failure is not spoken and
+// does not fail the refresh; the first lookup then behaves exactly as it did
+// before the warm existed. A nil matcher (or nil embedder) makes Warm a no-op,
+// so exact names keep working.
+func warmNameMatcher(names *namematch.Matcher) func(context.Context, []string) {
+	return func(ctx context.Context, candidates []string) {
+		_ = names.Warm(ctx, namematch.SourcePlaylists, candidates)
+	}
 }
 
 // RegisterTools adds the playback and the playlist/library Tools for one

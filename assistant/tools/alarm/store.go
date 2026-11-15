@@ -467,6 +467,128 @@ func (m *Manager) beginFire(id string, snoozed bool) (fireState, bool, error) {
 	return fireState{eventID: eventID, alarm: alarm, occurrence: occurrence, next: next}, true, nil
 }
 
+// fireRetryBackoff is the pause before the single retry of a fire
+// transaction: a locked SQLite database is usually transient (#173).
+const fireRetryBackoff = 200 * time.Millisecond
+
+// beginFireWithRetry runs the fire transaction, retrying once after a short
+// backoff because a locked or briefly busy store is usually transient. A
+// second failure is returned so fire can ring from the captured entry instead
+// of dropping the occurrence.
+func (m *Manager) beginFireWithRetry(id string, snoozed bool) (fireState, bool, error) {
+	m.mu.Lock()
+	fireTx := m.fireTx
+	m.mu.Unlock()
+	if fireTx == nil {
+		fireTx = m.beginFire
+	}
+	state, ok, err := fireTx(id, snoozed)
+	if err == nil {
+		return state, ok, nil
+	}
+	if !m.waitRetry() {
+		return fireState{}, false, err
+	}
+	m.logger.Warn("alarm fire retry", "alarm_id", id, "error", err.Error())
+	return fireTx(id, snoozed)
+}
+
+// waitRetry pauses for the fire backoff, returning false when the Manager is
+// closing so a shutdown never waits on a retry.
+func (m *Manager) waitRetry() bool {
+	timer := time.NewTimer(fireRetryBackoff)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return true
+	case <-m.ctx.Done():
+		return false
+	}
+}
+
+// degradedState builds the Ring state for an occurrence whose fire transaction
+// failed twice. The captured live entry already carries the label, sound,
+// volume, ramp and audio, so the Alarm still Rings; only the durable half is
+// deferred to the late history write (#173).
+func (m *Manager) degradedState(captured Alarm, occurrence time.Time, snoozed bool) fireState {
+	state := fireState{
+		alarm:      captured,
+		occurrence: occurrence,
+		unrecorded: true,
+		firedAt:    m.now(),
+	}
+	if !snoozed && captured.Schedule != Once {
+		next := nextOccurrence(scheduleSpec{schedule: captured.Schedule, days: weekdayMaskOf(captured.Weekdays)},
+			captured.Hour, captured.Minute, m.location(), occurrence)
+		state.next = &next
+	}
+	m.advanceFailedFire(captured, state.next, snoozed)
+	return state
+}
+
+// advanceFailedFire moves the pending row past the occurrence that is about to
+// Ring, so a later start does not ring it a second time. If even this write
+// fails the row keeps its past occurrence and the next start may ring the same
+// Alarm once more: a duplicate Ring is accepted here, because a lost wake-up
+// is the worse outcome (#173). Do not turn this back into a silent drop.
+func (m *Manager) advanceFailedFire(alarm Alarm, next *time.Time, snoozed bool) {
+	query := `UPDATE alarms SET next_fires_at = ?, snoozed_until = NULL WHERE id = ?`
+	args := []any{int64(0), alarm.ID}
+	switch {
+	case alarm.Schedule == Once:
+		// A one-off is finished by this Ring; a zero occurrence stops recovery
+		// from ringing or reporting it again.
+		query = `UPDATE alarms SET next_fires_at = 0, snoozed_until = NULL WHERE id = ?`
+		args = []any{alarm.ID}
+	case snoozed:
+		// The snooze marker was the occurrence; the row's own next stays.
+		query = `UPDATE alarms SET snoozed_until = NULL WHERE id = ?`
+		args = []any{alarm.ID}
+	case next != nil:
+		args[0] = next.UnixMilli()
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), storeTimeout)
+	defer cancel()
+	if _, err := m.db.ExecContext(ctx, query, args...); err != nil {
+		m.logger.Error("alarm fire advance", "alarm_id", alarm.ID, "error", err.Error())
+	}
+}
+
+// recordLateFire writes the history row an occurrence could not open at fire
+// time, retrying once so a briefly locked store still records it. A second
+// failure is only logged: the Ring already happened, and an absent history row
+// is preferable to a missed wake-up (#173).
+func (m *Manager) recordLateFire(state fireState, recorded alertstore.State, endedBy string) {
+	if m.history == nil {
+		return
+	}
+	event := alertstore.Event{
+		Kind:     "alarm",
+		SourceID: state.alarm.ID,
+		Label:    state.alarm.Label,
+		FiresAt:  state.occurrence,
+		FiredAt:  state.firedAt,
+		State:    recorded,
+		EndedAt:  m.now(),
+		EndedBy:  endedBy,
+	}
+	var err error
+	for attempt := 0; attempt < 2; attempt++ {
+		if attempt > 0 && !m.waitRetry() {
+			break
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), storeTimeout)
+		_, err = m.history.Insert(ctx, event)
+		cancel()
+		if err == nil {
+			return
+		}
+	}
+	if err != nil {
+		m.logger.Error("alarm fire record", "alarm_id", state.alarm.ID, "error", err.Error())
+	}
+}
+
 // setNext repairs a repeating row that lost its next occurrence.
 func (m *Manager) setNext(ctx context.Context, id string, next time.Time) error {
 	if _, err := m.db.ExecContext(ctx,

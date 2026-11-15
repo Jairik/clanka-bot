@@ -182,6 +182,11 @@ func TestVoiceSamplesUploadPlaybackDeleteAndClear(t *testing.T) {
 	if got := audio.Header().Get("Content-Type"); got != "audio/wav" {
 		t.Errorf("audio Content-Type = %q", got)
 	}
+	// A raw take is the owner's own recording, and Cache Storage is
+	// origin-scoped: it must never be cached.
+	if got := audio.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("audio Cache-Control = %q, want no-store", got)
+	}
 	if _, err := wakesample.ParseWAV(audio.Body.Bytes()); err != nil {
 		t.Errorf("served audio is not canonical: %v", err)
 	}
@@ -280,6 +285,11 @@ func TestVoiceSamplesSubmitWritesABundleAndServesTheDownload(t *testing.T) {
 	}
 	if got := download.Header().Get("Content-Disposition"); !strings.Contains(got, "attachment") {
 		t.Errorf("Content-Disposition = %q", got)
+	}
+	// The bundle is the owner's recordings; a cached copy would outlive the
+	// session and reach the next Tailscale user of this browser.
+	if got := download.Header().Get("Cache-Control"); got != "no-store" {
+		t.Errorf("Cache-Control = %q, want no-store for a private bundle", got)
 	}
 	gz, err := gzip.NewReader(download.Body)
 	if err != nil {

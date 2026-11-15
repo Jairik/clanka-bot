@@ -275,6 +275,9 @@ func (h *Handler) voicesAudio(w http.ResponseWriter, r *http.Request) {
 	}
 	data := audio.EncodeWAV(pcm, format)
 	w.Header().Set("Content-Type", "audio/wav")
+	// The URL names the voice but not the rate, and the optional text is the
+	// owner's own draft: a cached copy would replay the wrong take.
+	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": voice.Name + ".wav"}))
 	http.ServeContent(w, r, voice.Name+".wav", time.Time{}, bytes.NewReader(data))
 }

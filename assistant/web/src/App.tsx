@@ -3,7 +3,7 @@ import { useLocation } from "./api";
 import { ChatProvider } from "./chat";
 import { LiveProvider } from "./events";
 import { Home } from "./pages/Home";
-import { pageLoaders, prefetchAll, type LazyPageId } from "./routes";
+import { pageLoaders, prefetchNear, type LazyPageId } from "./routes";
 import { SessionProvider, Shell, pageFor, type PageId } from "./shell";
 import { SpeakProvider } from "./speak";
 
@@ -35,21 +35,29 @@ const VIEWS: Record<PageId, React.ComponentType> = {
   settings: lazyPage("settings", "SettingsPage"),
 };
 
-export function App() {
-  const { path } = useLocation();
-  const page = pageFor(path);
-  const View = page ? VIEWS[page.id] : NotFound;
-
-  // Warm the rest of the routes once the landing page is interactive.
+/**
+ * Warm the pages either side of the current one once the page is interactive:
+ * one prefetch per neighbour, not the every-route import this used to do.
+ */
+export function usePrefetchNear(current: PageId | undefined) {
   useEffect(() => {
-    const run = () => prefetchAll();
+    if (!current) return;
+    const run = () => prefetchNear(current);
     if (typeof requestIdleCallback === "function") {
       const id = requestIdleCallback(run, { timeout: 4000 });
       return () => cancelIdleCallback(id);
     }
     const id = setTimeout(run, 1500);
     return () => clearTimeout(id);
-  }, []);
+  }, [current]);
+}
+
+export function App() {
+  const { path } = useLocation();
+  const page = pageFor(path);
+  const View = page ? VIEWS[page.id] : NotFound;
+
+  usePrefetchNear(page?.id);
 
   return (
     <SessionProvider>

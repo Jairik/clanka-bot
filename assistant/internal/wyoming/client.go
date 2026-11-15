@@ -103,11 +103,22 @@ type ServerError struct {
 	Code string
 }
 
+// ErrBusy is the refusal a serialising speech-to-text service sends when
+// another connection already holds its model: a first-class answer instead of
+// a read timeout. stt_server.py words it as code "busy" (#196).
+var ErrBusy = errors.New("wyoming: speech recognition is busy")
+
 func (e *ServerError) Error() string {
 	if e.Code != "" {
 		return fmt.Sprintf("wyoming: %s (%s)", e.Text, e.Code)
 	}
 	return "wyoming: " + e.Text
+}
+
+// Is reports the busy refusal to errors.Is, so a caller can tell "try again in
+// a moment" from a model failure without matching the service's wording.
+func (e *ServerError) Is(target error) bool {
+	return target == ErrBusy && e.Code == "busy"
 }
 
 // Describe asks the service what it can do. It is the readiness check.

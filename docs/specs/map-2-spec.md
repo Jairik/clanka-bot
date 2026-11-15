@@ -38,7 +38,7 @@ Status: **grilled, ready for `/to-tickets`** (2026-11-11). Built from [map-2-bri
 - Timezone: a `timezone` setting (overridable). If unset, `TZ` is used; UTC logs a startup warning. No IP auto-detection.
 - Ring: alert sound looped, label spoken once at the start, until "stop"/"snooze" or a max ring time (default 5 min). After the max ring time the alert is recorded as missed and a Notification is sent if configured. Snooze (default 9 min) applies to Alarms only; "snooze" on a Timer acts as "stop".
 - Downtime: on startup, alerts overdue by ≤ 2 min go off now. Older ones become one summary Announcement. Repeating Alarms then schedule their next occurrence.
-- Local-only: `*.set` and `*.cancel` are `LocalOnlyNo`. `timer.remaining`, `timer.list`, `alarm.list` and `reminder.list` are `LocalOnlyYes`, because their replies can name a private label or message, so they need strong `Examples` for the Fast path.
+- Local-only: `*.set` and `*.cancel` are `LocalOnlyNo`, and an `*.update` is `LocalOnlyNo` only when its payload is label-free. `timer.remaining`, `timer.list`, `alarm.list`, `alarm.update` and `reminder.list` are `LocalOnlyYes`, because their replies can name a private label or message, so they need strong `Examples` for the Fast path.
 - User-customisable sounds and Ring behaviour: see Sounds.
 
 ### Sounds

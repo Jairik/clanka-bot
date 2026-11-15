@@ -506,8 +506,9 @@ the per-kind settings.
 Alarms are clock-time Scheduled alerts and survive a restart. "Wake me at 7"
 sets a one-off (today, or tomorrow when 7 has already passed); "set an alarm
 for 6:30 on weekdays" repeats Monday to Friday, and weekends or chosen weekdays
-("on monday and thursday") work too. `alarm.list` is Local-only because labels
-can be private; "cancel my 7 am alarm" removes the matching Alarm. Each
+("on monday and thursday") work too. `alarm.list` and `alarm.update` are
+Local-only because labels can be private; "cancel my 7 am alarm" removes the
+matching Alarm. Each
 schedule is interpreted in the live `timezone` setting. A spring-forward wall
 time that does not exist fires after the jump (02:30 becomes 03:30), and a
 fall-back wall time that happens twice fires at its first occurrence. Alarms

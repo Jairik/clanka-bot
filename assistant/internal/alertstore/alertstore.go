@@ -66,11 +66,6 @@ func New(db *sql.DB) *Store {
 // Open reports whether the history is backed by a database.
 func (s *Store) Open() bool { return s != nil && s.db != nil }
 
-// execer is the one method a *sql.DB and a *sql.Tx share for one insert.
-type execer interface {
-	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
-}
-
 // InsertTx writes one event inside the caller's transaction. The scheduler
 // uses it together with the pending-row delete, so a crash can neither fire an
 // alert twice nor leave no history of a fire.
@@ -78,22 +73,7 @@ func (s *Store) InsertTx(ctx context.Context, tx *sql.Tx, event Event) (int64, e
 	if s == nil || tx == nil {
 		return 0, nil
 	}
-	return insert(ctx, tx, event)
-}
-
-// Insert writes one event in its own statement. A scheduler whose fire
-// transaction failed still records the occurrence once a later write works,
-// so the alert history never loses a fire that reached the speaker.
-func (s *Store) Insert(ctx context.Context, event Event) (int64, error) {
-	if s == nil || s.db == nil {
-		return 0, nil
-	}
-	return insert(ctx, s.db, event)
-}
-
-// insert is the shared event write behind Insert and InsertTx.
-func insert(ctx context.Context, db execer, event Event) (int64, error) {
-	result, err := db.ExecContext(ctx,
+	result, err := tx.ExecContext(ctx,
 		`INSERT INTO alert_events
 			(kind, source_id, label, duration_ms, fires_at, fired_at, state, ended_at, ended_by)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,

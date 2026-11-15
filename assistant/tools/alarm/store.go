@@ -355,8 +355,8 @@ func (m *Manager) readAlarms(ctx context.Context) ([]storedAlarm, error) {
 // occurrence and opens the history row in one transaction. A missing row means
 // a concurrent cancel won; the fire then stays silent. For an in-memory
 // Manager the caller builds the state from its live entry.
-func (m *Manager) beginFire(id string, snoozed bool) (fireState, bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), storeTimeout)
+func (m *Manager) beginFire(ctx context.Context, id string, snoozed bool) (fireState, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
 	defer cancel()
 
 	tx, err := m.db.BeginTx(ctx, nil)
@@ -471,37 +471,61 @@ func (m *Manager) beginFire(id string, snoozed bool) (fireState, bool, error) {
 // transaction: a locked SQLite database is usually transient (#173).
 const fireRetryBackoff = 200 * time.Millisecond
 
+// firePreRingBudget bounds every store write in front of the Ring: both fire
+// attempts and the best-effort advance of the degraded path. A local SQLite
+// write is normally a few milliseconds; past this budget the store is treated
+// as unavailable and the Alarm rings from its captured entry instead of letting
+// a wedged disk delay a wake-up arbitrarily (#173).
+const firePreRingBudget = 2 * time.Second
+
+// preRingState runs the durable half of a fire under one deadline. If the store
+// stays unavailable, the captured entry still has everything the Ring needs, so
+// the occurrence rings from memory and its history row is written once a later
+// write works (#173).
+func (m *Manager) preRingState(captured Alarm, occurrence time.Time, snoozed bool) (fireState, bool) {
+	ctx, cancel := context.WithTimeout(m.ctx, firePreRingBudget)
+	defer cancel()
+	state, ok, err := m.beginFireWithRetry(ctx, captured.ID, snoozed)
+	if err == nil {
+		return state, ok
+	}
+	m.logger.Error("alarm fire history", "alarm_id", captured.ID, "error", err.Error())
+	return m.degradedState(ctx, captured, occurrence), true
+}
+
 // beginFireWithRetry runs the fire transaction, retrying once after a short
 // backoff because a locked or briefly busy store is usually transient. A
 // second failure is returned so fire can ring from the captured entry instead
 // of dropping the occurrence.
-func (m *Manager) beginFireWithRetry(id string, snoozed bool) (fireState, bool, error) {
+func (m *Manager) beginFireWithRetry(ctx context.Context, id string, snoozed bool) (fireState, bool, error) {
 	m.mu.Lock()
 	fireTx := m.fireTx
 	m.mu.Unlock()
 	if fireTx == nil {
 		fireTx = m.beginFire
 	}
-	state, ok, err := fireTx(id, snoozed)
+	state, ok, err := fireTx(ctx, id, snoozed)
 	if err == nil {
 		return state, ok, nil
 	}
-	if !m.waitRetry() {
+	if !m.waitRetry(ctx) {
 		return fireState{}, false, err
 	}
 	m.logger.Warn("alarm fire retry", "alarm_id", id, "error", err.Error())
-	return fireTx(id, snoozed)
+	return fireTx(ctx, id, snoozed)
 }
 
 // waitRetry pauses for the fire backoff, returning false when the Manager is
-// closing so a shutdown never waits on a retry.
-func (m *Manager) waitRetry() bool {
+// closing or the pre-Ring budget is spent, so a retry never outlives either.
+func (m *Manager) waitRetry(ctx context.Context) bool {
 	timer := time.NewTimer(fireRetryBackoff)
 	defer timer.Stop()
 	select {
 	case <-timer.C:
 		return true
 	case <-m.ctx.Done():
+		return false
+	case <-ctx.Done():
 		return false
 	}
 }
@@ -510,20 +534,36 @@ func (m *Manager) waitRetry() bool {
 // failed twice. The captured live entry already carries the label, sound,
 // volume, ramp and audio, so the Alarm still Rings; only the durable half is
 // deferred to the late history write (#173).
-func (m *Manager) degradedState(captured Alarm, occurrence time.Time, snoozed bool) fireState {
+//
+// A repeat keeps its next occurrence even when the occurrence that failed was a
+// snooze re-ring: the row and List() both advertise the next one, so the live
+// schedule must hold it too. Otherwise the Alarm would vanish from the process
+// while the Dashboard still showed tomorrow.
+func (m *Manager) degradedState(ctx context.Context, captured Alarm, occurrence time.Time) fireState {
 	state := fireState{
 		alarm:      captured,
 		occurrence: occurrence,
 		unrecorded: true,
 		firedAt:    m.now(),
 	}
-	if !snoozed && captured.Schedule != Once {
+	if captured.Schedule != Once {
 		next := nextOccurrence(scheduleSpec{schedule: captured.Schedule, days: weekdayMaskOf(captured.Weekdays)},
 			captured.Hour, captured.Minute, m.location(), occurrence)
 		state.next = &next
 	}
-	m.advanceFailedFire(captured, state.next, snoozed)
+	m.mu.Lock()
+	advance := m.advanceFire
+	m.mu.Unlock()
+	if advance == nil {
+		advance = m.advanceFailedFire
+	}
+	advance(ctx, captured, state.next)
 	return state
+}
+
+// execer is the one method a *sql.DB and a *sql.Tx share for the advance.
+type execer interface {
+	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 }
 
 // advanceFailedFire moves the pending row past the occurrence that is about to
@@ -531,33 +571,35 @@ func (m *Manager) degradedState(captured Alarm, occurrence time.Time, snoozed bo
 // fails the row keeps its past occurrence and the next start may ring the same
 // Alarm once more: a duplicate Ring is accepted here, because a lost wake-up
 // is the worse outcome (#173). Do not turn this back into a silent drop.
-func (m *Manager) advanceFailedFire(alarm Alarm, next *time.Time, snoozed bool) {
-	query := `UPDATE alarms SET next_fires_at = ?, snoozed_until = NULL WHERE id = ?`
-	args := []any{int64(0), alarm.ID}
-	switch {
-	case alarm.Schedule == Once:
-		// A one-off is finished by this Ring; a zero occurrence stops recovery
-		// from ringing or reporting it again.
-		query = `UPDATE alarms SET next_fires_at = 0, snoozed_until = NULL WHERE id = ?`
-		args = []any{alarm.ID}
-	case snoozed:
-		// The snooze marker was the occurrence; the row's own next stays.
-		query = `UPDATE alarms SET snoozed_until = NULL WHERE id = ?`
-		args = []any{alarm.ID}
-	case next != nil:
-		args[0] = next.UnixMilli()
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), storeTimeout)
-	defer cancel()
-	if _, err := m.db.ExecContext(ctx, query, args...); err != nil {
+func (m *Manager) advanceFailedFire(ctx context.Context, alarm Alarm, next *time.Time) error {
+	_, err := advanceFireRow(ctx, m.db, alarm, next)
+	if err != nil {
 		m.logger.Error("alarm fire advance", "alarm_id", alarm.ID, "error", err.Error())
 	}
+	return err
+}
+
+// advanceFireRow writes one row's post-fire state through the caller's handle,
+// so the best-effort advance and the late terminal write share one rule.
+func advanceFireRow(ctx context.Context, db execer, alarm Alarm, next *time.Time) (sql.Result, error) {
+	if alarm.Schedule == Once || next == nil {
+		// A one-off is finished by this Ring; a zero occurrence stops recovery
+		// from ringing or reporting it again. A repeat without a next is a
+		// defensive zero the next recover repairs.
+		return db.ExecContext(ctx,
+			`UPDATE alarms SET next_fires_at = 0, snoozed_until = NULL WHERE id = ?`, alarm.ID)
+	}
+	return db.ExecContext(ctx,
+		`UPDATE alarms SET next_fires_at = ?, snoozed_until = NULL WHERE id = ?`,
+		next.UnixMilli(), alarm.ID)
 }
 
 // recordLateFire writes the history row an occurrence could not open at fire
-// time, retrying once so a briefly locked store still records it. A second
-// failure is only logged: the Ring already happened, and an absent history row
-// is preferable to a missed wake-up (#173).
+// time, retrying once so a briefly locked store still records it. The row's
+// advance travels in the same transaction, so a late-recorded fire can never be
+// read as missed by a later recover (#173). A second failure is only logged:
+// the Ring already happened, and an absent history row is preferable to a
+// missed wake-up.
 func (m *Manager) recordLateFire(state fireState, recorded alertstore.State, endedBy string) {
 	if m.history == nil {
 		return
@@ -574,11 +616,11 @@ func (m *Manager) recordLateFire(state fireState, recorded alertstore.State, end
 	}
 	var err error
 	for attempt := 0; attempt < 2; attempt++ {
-		if attempt > 0 && !m.waitRetry() {
+		if attempt > 0 && !m.waitRetry(context.Background()) {
 			break
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), storeTimeout)
-		_, err = m.history.Insert(ctx, event)
+		err = m.writeLateFire(ctx, state, event)
 		cancel()
 		if err == nil {
 			return
@@ -587,6 +629,24 @@ func (m *Manager) recordLateFire(state fireState, recorded alertstore.State, end
 	if err != nil {
 		m.logger.Error("alarm fire record", "alarm_id", state.alarm.ID, "error", err.Error())
 	}
+}
+
+// writeLateFire records one degraded occurrence: the pending row advance and
+// the terminal history row commit together. Whenever the history shows the
+// fire, the row is already past it, so recover cannot classify it as missed.
+func (m *Manager) writeLateFire(ctx context.Context, state fireState, event alertstore.Event) error {
+	tx, err := m.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("alarm: begin late fire: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := advanceFireRow(ctx, tx, state.alarm, state.next); err != nil {
+		return fmt.Errorf("alarm: advance late fire %s: %w", state.alarm.ID, err)
+	}
+	if _, err := m.history.InsertTx(ctx, tx, event); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // setNext repairs a repeating row that lost its next occurrence.

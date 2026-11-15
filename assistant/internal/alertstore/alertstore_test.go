@@ -179,45 +179,6 @@ func TestRecoverKindKeepsAReminderOpen(t *testing.T) {
 	}
 }
 
-// TestInsertWritesATerminalEventWithoutATransaction covers the late write a
-// scheduler uses when its fire transaction failed but the alert still rang: no
-// transaction is opened, and the row is already terminal.
-func TestInsertWritesATerminalEventWithoutATransaction(t *testing.T) {
-	ctx := context.Background()
-	history, _ := openHistory(t)
-	firedAt := time.UnixMilli(1_700_000_000_000)
-	id, err := history.Insert(ctx, alertstore.Event{
-		Kind:     "alarm",
-		SourceID: "4",
-		Label:    "wake",
-		FiresAt:  firedAt,
-		FiredAt:  firedAt,
-		State:    alertstore.StateStopped,
-		EndedAt:  firedAt.Add(time.Minute),
-		EndedBy:  "spoken",
-	})
-	if err != nil {
-		t.Fatalf("Insert: %v", err)
-	}
-	if id <= 0 {
-		t.Fatalf("Insert id = %d, want a row id", id)
-	}
-	events, err := history.List(ctx, 10)
-	if err != nil {
-		t.Fatalf("List: %v", err)
-	}
-	if len(events) != 1 || events[0].State != alertstore.StateStopped || events[0].EndedBy != "spoken" {
-		t.Fatalf("events = %+v, want the stopped/spoken row", events)
-	}
-	if !events[0].FiresAt.Equal(firedAt) {
-		t.Fatalf("fires_at = %s, want %s", events[0].FiresAt, firedAt)
-	}
-	// A nil store is a no-op, like the other writers.
-	if _, err := (*alertstore.Store)(nil).Insert(ctx, alertstore.Event{Kind: "alarm"}); err != nil {
-		t.Fatalf("nil store Insert: %v", err)
-	}
-}
-
 // eventState reads one row's state through List.
 func eventState(t *testing.T, history *alertstore.Store, id int64) alertstore.State {
 	t.Helper()

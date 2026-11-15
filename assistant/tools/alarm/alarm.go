@@ -214,8 +214,13 @@ type Manager struct {
 	missed  func(MissedAlert)
 	// fireTx is the durable half of one fire: it advances the pending row and
 	// opens the history row in one transaction. Production always uses
-	// beginFire; a test replaces it to inject a store error (#173).
-	fireTx func(id string, snoozed bool) (fireState, bool, error)
+	// beginFire; a test replaces it to inject a store error (#173). The context
+	// carries the bounded pre-Ring budget.
+	fireTx func(ctx context.Context, id string, snoozed bool) (fireState, bool, error)
+	// advanceFire is the best-effort row advance in front of a degraded Ring.
+	// Production uses advanceFailedFire; a test replaces it to fail one write
+	// of the degraded path (#173).
+	advanceFire func(ctx context.Context, alarm Alarm, next *time.Time) error
 
 	closed bool
 	// ctx is cancelled by Close so an active Ring and queued callbacks stop.
@@ -262,6 +267,7 @@ func NewManager(opts Options) *Manager {
 		active:        make(map[string]context.CancelFunc),
 	}
 	manager.fireTx = manager.beginFire
+	manager.advanceFire = manager.advanceFailedFire
 	return manager
 }
 
@@ -861,16 +867,9 @@ func (m *Manager) fire(id string, snoozed bool) {
 			state.next = &next
 		}
 	} else {
-		var err error
-		state, ok, err = m.beginFireWithRetry(id, snoozed)
-		if err != nil {
-			// A store error at fire time must never drop the occurrence: the
-			// captured entry still has everything the Ring needs, so it rings
-			// from memory and its history row is written once the store works
-			// again (#173).
-			m.logger.Error("alarm fire history", "alarm_id", id, "error", err.Error())
-			state = m.degradedState(captured, capturedOccurrence, snoozed)
-		} else if !ok {
+		var ok bool
+		state, ok = m.preRingState(captured, capturedOccurrence, snoozed)
+		if !ok {
 			// Cancelled or already fired; the row is authoritative.
 			return
 		}

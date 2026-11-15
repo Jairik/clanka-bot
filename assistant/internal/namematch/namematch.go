@@ -12,6 +12,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 
@@ -28,9 +29,19 @@ type Embedder interface {
 // 0.85 after normalisation, while unrelated requests stay below 0.45.
 const DefaultThreshold = 0.60
 
-// DefaultTimeout bounds one lookup, including embedding every candidate.
-// Callers with a shorter context deadline keep their own deadline.
+// DefaultTimeout bounds one lookup, including embedding any candidate vector
+// that is not cached yet. Callers with a shorter context deadline keep their
+// own deadline.
 const DefaultTimeout = 2 * time.Second
+
+// WarmTimeout bounds one background warm. It is generous because a warm runs
+// off the request path; a caller's shorter deadline still applies.
+const WarmTimeout = 2 * time.Minute
+
+// maxCachedVectors bounds the candidate vector cache at about 3 MB for a
+// 384-dimension model. A fill that would exceed it clears the cache and starts
+// over, which is rare after a warm.
+const maxCachedVectors = 2048
 
 // Result reasons, reported in the request log rather than spoken.
 const (
@@ -69,14 +80,33 @@ type Config struct {
 	Timeout time.Duration
 }
 
-// Matcher resolves spoken names against caller-supplied candidates. It holds
-// no per-library state: each lookup is independent, so sounds, voices and
-// playlists can share one matcher without a cache to refresh or lock.
+// Matcher resolves spoken names against caller-supplied candidates. One
+// matcher serves every library: candidate vectors are cached by the normalised
+// text that was embedded, so the same matcher can be shared by sounds, voices
+// and playlists without per-library state. The query is never cached because
+// it changes per request.
 type Matcher struct {
 	embedder  Embedder
 	threshold func() float64
 	timeout   time.Duration
+
+	// mu guards cached and dims. It is never held across an Embed call: hits
+	// are copied out, the misses are embedded, then the lock is taken again to
+	// store them.
+	mu sync.Mutex
+	// cached holds candidate vectors keyed by the normalised text that was
+	// embedded. An embedding is a pure function of that text and the model, so
+	// an entry can only go stale when the embed model itself changes. A model
+	// change that keeps the same dimension cannot be detected here: the key
+	// carries no model identity, and the vectors are still valid shapes.
+	cached map[string][]float32
+	// dims is the model dimension the cache was filled with. It is zero while
+	// the cache is empty.
+	dims int
 }
+
+// candidate is one library name and the normalised text embedded for it.
+type candidate struct{ name, text string }
 
 // New builds a matcher over the shared embed client. A nil embedder is allowed
 // for callers that only need exact matching; a similarity lookup then returns
@@ -86,7 +116,12 @@ func New(embedder Embedder, cfg Config) *Matcher {
 	if timeout <= 0 {
 		timeout = DefaultTimeout
 	}
-	return &Matcher{embedder: embedder, threshold: cfg.Threshold, timeout: timeout}
+	return &Matcher{
+		embedder:  embedder,
+		threshold: cfg.Threshold,
+		timeout:   timeout,
+		cached:    make(map[string][]float32),
+	}
 }
 
 // Match resolves spoken against candidates. Candidates are original library
@@ -122,7 +157,6 @@ func (m *Matcher) Match(ctx context.Context, spoken string, candidates []string)
 
 	// 2. Normalised spelling: punctuation, case, articles and a trailing
 	// medium noun cannot change an exact match ("The Lo-Fi Beats Playlist").
-	type candidate struct{ name, text string }
 	indexed := make([]candidate, 0, len(names))
 	var normal []string
 	for _, name := range names {
@@ -153,13 +187,20 @@ func (m *Matcher) Match(ctx context.Context, spoken string, candidates []string)
 		return Result{Reason: ReasonEmbedFailed, Err: fmt.Errorf("namematch: no embedder configured")}
 	}
 
-	// 3. One batch embeds the candidates and the query together. Libraries are
-	// small (sounds, voices, one user's playlists), so this is simpler than a
-	// vector cache whose staleness would need its own refresh policy.
+	// 3. Candidate vectors are content-addressed by the normalised text, so a
+	// repeated lookup embeds only the query plus any candidate it has not seen.
+	// The vectors are copied out under the lock and the lock is released before
+	// the embed call.
+	hits := m.cachedVectors(indexed)
 	texts := make([]string, 0, len(indexed)+1)
-	for _, item := range indexed {
-		texts = append(texts, item.text)
+	positions := make([]int, 0, len(indexed))
+	for i, item := range indexed {
+		if hits[i] == nil {
+			texts = append(texts, item.text)
+			positions = append(positions, i)
+		}
 	}
+	queryPos := len(texts)
 	texts = append(texts, query)
 
 	embedCtx, cancel := context.WithTimeout(ctx, m.timeout)
@@ -171,11 +212,50 @@ func (m *Matcher) Match(ctx context.Context, spoken string, candidates []string)
 	if err := validateVectors(vectors, len(texts)); err != nil {
 		return Result{Reason: ReasonInvalidVectors, Err: err}
 	}
+	queryVector := vectors[queryPos]
+	dims := len(queryVector)
 
-	queryVector := vectors[len(indexed)]
+	// A vector cached under a previous model can have a different length;
+	// vector.Cosine would read past the shorter one, so discard and re-embed
+	// those candidates rather than score them.
+	var stale []int
+	for i, vec := range hits {
+		if vec != nil && len(vec) != dims {
+			stale = append(stale, i)
+		}
+	}
+	if len(stale) > 0 {
+		staleTexts := make([]string, len(stale))
+		for j, i := range stale {
+			staleTexts[j] = indexed[i].text
+		}
+		fresh, err := m.embedder.Embed(embedCtx, staleTexts)
+		if err != nil {
+			return Result{Reason: ReasonEmbedFailed, Err: err}
+		}
+		if err := validateVectors(fresh, len(staleTexts)); err != nil {
+			return Result{Reason: ReasonInvalidVectors, Err: err}
+		}
+		for j, i := range stale {
+			if len(fresh[j]) != dims {
+				return Result{Reason: ReasonInvalidVectors, Err: fmt.Errorf(
+					"namematch: vector for %q has %d dimensions, want %d", indexed[i].text, len(fresh[j]), dims)}
+			}
+			hits[i] = fresh[j]
+		}
+		m.storeCached(staleTexts, fresh, dims)
+	}
+
+	missTexts := make([]string, len(positions))
+	for j, i := range positions {
+		hits[i] = vectors[j]
+		missTexts[j] = indexed[i].text
+	}
+	m.storeCached(missTexts, vectors[:len(positions)], dims)
+
 	best, bestScore, ties := -1, math.Inf(-1), 0
 	for i := range indexed {
-		score := vector.Cosine(queryVector, vectors[i])
+		score := vector.Cosine(queryVector, hits[i])
 		switch {
 		case score > bestScore:
 			best, bestScore, ties = i, score, 1
@@ -196,6 +276,98 @@ func (m *Matcher) Match(ctx context.Context, spoken string, candidates []string)
 		return Result{Score: bestScore, Reason: ReasonAmbiguous}
 	}
 	return Result{Name: indexed[best].name, Score: bestScore, Reason: ReasonSimilarity}
+}
+
+// Warm embeds and caches every candidate the cache is missing. A library owner
+// calls it after a refresh so the next spoken lookup embeds only the query
+// instead of a cold batch that can exceed one lookup's budget. It makes no
+// embed request when everything is already cached. A concurrent Warm and Match
+// may embed the same miss once each; that is harmless.
+func (m *Matcher) Warm(ctx context.Context, candidates []string) error {
+	if m == nil || m.embedder == nil {
+		// Without an embedder there is nothing to warm; exact matching still
+		// works, so a warm is a no-op rather than an error.
+		return nil
+	}
+	names := uniqueNames(candidates)
+	texts := make([]string, 0, len(names))
+	seen := make(map[string]bool, len(names))
+	for _, name := range names {
+		text := Normalize(name)
+		if text == "" || seen[text] {
+			continue
+		}
+		seen[text] = true
+		texts = append(texts, text)
+	}
+	if len(texts) == 0 {
+		return nil
+	}
+
+	m.mu.Lock()
+	misses := make([]string, 0, len(texts))
+	for _, text := range texts {
+		if vec, ok := m.cached[text]; ok && (m.dims == 0 || len(vec) == m.dims) {
+			continue
+		}
+		misses = append(misses, text)
+	}
+	m.mu.Unlock()
+	if len(misses) == 0 {
+		return nil
+	}
+
+	warmCtx, cancel := context.WithTimeout(ctx, WarmTimeout)
+	defer cancel()
+	vectors, err := m.embedder.Embed(warmCtx, misses)
+	if err != nil {
+		return err
+	}
+	if err := validateVectors(vectors, len(misses)); err != nil {
+		return err
+	}
+	m.storeCached(misses, vectors, len(vectors[0]))
+	return nil
+}
+
+// cachedVectors returns the cached vector per indexed candidate, nil for a
+// miss. The lock is released before returning: stored vectors are never
+// mutated, so a reader can safely score a shared slice.
+func (m *Matcher) cachedVectors(indexed []candidate) [][]float32 {
+	hits := make([][]float32, len(indexed))
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i, item := range indexed {
+		if vec, ok := m.cached[item.text]; ok {
+			hits[i] = vec
+		}
+	}
+	return hits
+}
+
+// storeCached records freshly embedded candidate vectors, keyed by the text
+// that was embedded. The cache is bounded: a store that would overflow clears
+// it first, so memory cannot grow with a runaway library.
+func (m *Matcher) storeCached(texts []string, vectors [][]float32, dims int) {
+	if len(texts) == 0 || dims <= 0 || len(vectors) != len(texts) {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.cached == nil {
+		m.cached = make(map[string][]float32, len(texts))
+	}
+	// A different model dimension means every cached vector is unusable.
+	if (m.dims != 0 && m.dims != dims) || len(m.cached)+len(texts) > maxCachedVectors {
+		m.cached = make(map[string][]float32, len(texts))
+	}
+	for i, text := range texts {
+		if len(m.cached) >= maxCachedVectors {
+			break
+		}
+		m.cached[text] = vectors[i]
+	}
+	m.dims = dims
 }
 
 // Normalize folds a spoken or library name to the words compared before the

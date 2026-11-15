@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -358,4 +359,263 @@ func TestEqualTopScoresAreAmbiguous(t *testing.T) {
 	if math.Abs(result.Score-1) > 1e-6 {
 		t.Fatalf("score = %v, want the tied best score reported", result.Score)
 	}
+}
+
+// batchRecorder records every Embed batch, not just the last, so a cache test
+// can prove which texts reached the embed service on each call. It is safe for
+// concurrent use.
+type batchRecorder struct {
+	mu      sync.Mutex
+	batches [][]string
+	table   map[string][]float32
+	reply   func(texts []string) ([][]float32, error)
+}
+
+func (r *batchRecorder) Embed(_ context.Context, texts []string) ([][]float32, error) {
+	r.mu.Lock()
+	r.batches = append(r.batches, append([]string(nil), texts...))
+	table, reply := r.table, r.reply
+	r.mu.Unlock()
+	if reply != nil {
+		return reply(texts)
+	}
+	vectors := make([][]float32, len(texts))
+	for i, text := range texts {
+		vec, ok := table[text]
+		if !ok {
+			return nil, fmt.Errorf("no fake vector for %q", text)
+		}
+		vectors[i] = vec
+	}
+	return vectors, nil
+}
+
+func (r *batchRecorder) setTable(table map[string][]float32) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.table = table
+}
+
+func (r *batchRecorder) calls() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.batches)
+}
+
+func (r *batchRecorder) batch(i int) []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.batches[i]...)
+}
+
+func sameTexts(got, want []string) bool {
+	return strings.Join(got, "|") == strings.Join(want, "|")
+}
+
+func TestRepeatedMatchReusesCachedCandidateVectors(t *testing.T) {
+	recorder := &batchRecorder{table: map[string][]float32{
+		"birds":    {1, 0, 0},
+		"jazz mix": {0, 0, 1},
+		"bird":     {0.8, 0.6, 0},
+	}}
+	matcher := namematch.New(recorder, namematch.Config{Threshold: fixedThreshold(0.70)})
+	candidates := []string{"jazz mix", "birds"}
+
+	first := matcher.Match(context.Background(), "the bird sound", candidates)
+	if !first.Matched() || first.Name != "birds" {
+		t.Fatalf("first Match = %+v, want birds", first)
+	}
+	if recorder.calls() != 1 {
+		t.Fatalf("first Match made %d embed calls, want 1", recorder.calls())
+	}
+	if got := recorder.batch(0); !sameTexts(got, []string{"birds", "jazz mix", "bird"}) {
+		t.Fatalf("first batch = %v, want the two candidates and the query", got)
+	}
+
+	second := matcher.Match(context.Background(), "the bird sound", candidates)
+	if !second.Matched() || second.Name != "birds" || second.Score != first.Score {
+		t.Fatalf("second Match = %+v, want the same result as %+v", second, first)
+	}
+	if recorder.calls() != 2 {
+		t.Fatalf("second Match made %d embed calls in total, want 2", recorder.calls())
+	}
+	if got := recorder.batch(1); !sameTexts(got, []string{"bird"}) {
+		t.Fatalf("second batch = %v, want exactly the query", got)
+	}
+}
+
+func TestAddingOneCandidateEmbedsOnlyTheNewCandidateAndTheQuery(t *testing.T) {
+	recorder := &batchRecorder{table: map[string][]float32{
+		"birds": {1, 0, 0},
+		"rain":  {0, 1, 0},
+		"storm": {0, 0, 1},
+		"bird":  {0.8, 0.6, 0},
+	}}
+	matcher := namematch.New(recorder, namematch.Config{Threshold: fixedThreshold(0.70)})
+	ctx := context.Background()
+
+	if result := matcher.Match(ctx, "the bird sound", []string{"birds", "rain"}); result.Name != "birds" {
+		t.Fatalf("first Match = %+v, want birds", result)
+	}
+	if result := matcher.Match(ctx, "the bird sound", []string{"birds", "rain", "storm"}); !result.Matched() {
+		t.Fatalf("second Match = %+v, want a match", result)
+	}
+	if recorder.calls() != 2 {
+		t.Fatalf("embed calls = %d, want 2", recorder.calls())
+	}
+	if got := recorder.batch(1); !sameTexts(got, []string{"storm", "bird"}) {
+		t.Fatalf("second batch = %v, want the new candidate and the query only", got)
+	}
+	// The cache is now complete, so a repeat lookup embeds only the query.
+	if result := matcher.Match(ctx, "the bird sound", []string{"birds", "rain", "storm"}); result.Name != "birds" {
+		t.Fatalf("third Match = %+v, want birds", result)
+	}
+	if got := recorder.batch(2); !sameTexts(got, []string{"bird"}) {
+		t.Fatalf("third batch = %v, want only the query", got)
+	}
+}
+
+func TestWarmFillsTheCacheSoTheNextMatchEmbedsOnlyTheQuery(t *testing.T) {
+	recorder := &batchRecorder{table: map[string][]float32{
+		"birds":    {1, 0},
+		"jazz mix": {0, 1},
+		"bird":     {0.8, 0.6},
+	}}
+	matcher := namematch.New(recorder, namematch.Config{Threshold: fixedThreshold(0.70)})
+	ctx := context.Background()
+	candidates := []string{"Jazz Mix", "birds"}
+
+	if err := matcher.Warm(ctx, candidates); err != nil {
+		t.Fatalf("Warm: %v", err)
+	}
+	if recorder.calls() != 1 {
+		t.Fatalf("Warm made %d embed calls, want 1", recorder.calls())
+	}
+	if got := recorder.batch(0); !sameTexts(got, []string{"jazz mix", "birds"}) {
+		t.Fatalf("warm batch = %v, want both normalised candidates", got)
+	}
+
+	result := matcher.Match(ctx, "the bird sound", candidates)
+	if !result.Matched() || result.Name != "birds" {
+		t.Fatalf("Match after Warm = %+v, want birds", result)
+	}
+	if recorder.calls() != 2 {
+		t.Fatalf("embed calls = %d, want 2: Warm then the query only", recorder.calls())
+	}
+	if got := recorder.batch(1); !sameTexts(got, []string{"bird"}) {
+		t.Fatalf("match batch = %v, want only the query", got)
+	}
+}
+
+func TestWarmMakesNoEmbedRequestWhenEverythingIsCached(t *testing.T) {
+	recorder := &batchRecorder{table: map[string][]float32{
+		"birds": {1, 0},
+		"rain":  {0, 1},
+	}}
+	matcher := namematch.New(recorder, namematch.Config{Threshold: fixedThreshold(0.70)})
+	ctx := context.Background()
+	candidates := []string{"birds", "rain"}
+
+	if err := matcher.Warm(ctx, candidates); err != nil {
+		t.Fatalf("first Warm: %v", err)
+	}
+	if err := matcher.Warm(ctx, candidates); err != nil {
+		t.Fatalf("second Warm: %v", err)
+	}
+	if recorder.calls() != 1 {
+		t.Fatalf("embed calls = %d, want 1: the second Warm is a no-op", recorder.calls())
+	}
+	if recorder.calls() > 0 && len(recorder.batch(0)) != 2 {
+		t.Fatalf("warm batch = %v, want both candidates", recorder.batch(0))
+	}
+}
+
+func TestWarmWithNoEmbedderIsANoOp(t *testing.T) {
+	matcher := namematch.New(nil, namematch.Config{Threshold: fixedThreshold(0.70)})
+	if err := matcher.Warm(context.Background(), []string{"birds"}); err != nil {
+		t.Fatalf("Warm without an embedder = %v, want nil", err)
+	}
+}
+
+func TestModelDimensionChangeDiscardsAndReembedsCachedVectors(t *testing.T) {
+	recorder := &batchRecorder{table: map[string][]float32{
+		"birds": {1, 0},
+		"rain":  {0, 1},
+		"bird":  {0.8, 0.6},
+	}}
+	matcher := namematch.New(recorder, namematch.Config{Threshold: fixedThreshold(0.70)})
+	ctx := context.Background()
+	candidates := []string{"birds", "rain"}
+
+	// Fill the cache against the two-dimension model. "birds" wins at 0.8.
+	if result := matcher.Match(ctx, "the bird sound", candidates); result.Name != "birds" {
+		t.Fatalf("two-dimension Match = %+v, want birds", result)
+	}
+
+	// The embed model is redeployed with a third dimension, where "rain" is
+	// the true nearest. A stale two-dimension vector would either score
+	// nonsense or panic, so every candidate must be embedded again.
+	recorder.setTable(map[string][]float32{
+		"birds": {0, 1, 0},
+		"rain":  {1, 0, 0},
+		"bird":  {1, 0, 0},
+	})
+	result := matcher.Match(ctx, "the bird sound", candidates)
+	if !result.Matched() || result.Name != "rain" {
+		t.Fatalf("three-dimension Match = %+v, want rain", result)
+	}
+	if recorder.calls() != 3 {
+		t.Fatalf("embed calls = %d, want 3: the query then the stale candidates", recorder.calls())
+	}
+	if got := recorder.batch(1); !sameTexts(got, []string{"bird"}) {
+		t.Fatalf("second batch = %v, want only the query against the new model", got)
+	}
+	if got := recorder.batch(2); !sameTexts(got, []string{"birds", "rain"}) {
+		t.Fatalf("re-embed batch = %v, want every stale candidate", got)
+	}
+
+	// The refilled cache now holds three-dimension vectors, so a repeat lookup
+	// embeds only the query.
+	if result := matcher.Match(ctx, "the bird sound", candidates); result.Name != "rain" {
+		t.Fatalf("repeat Match = %+v, want rain", result)
+	}
+	if got := recorder.batch(3); !sameTexts(got, []string{"bird"}) {
+		t.Fatalf("repeat batch = %v, want only the query", got)
+	}
+}
+
+func TestConcurrentMatchesAndWarmShareTheCacheSafely(t *testing.T) {
+	recorder := &batchRecorder{table: map[string][]float32{
+		"birds": {1, 0},
+		"rain":  {0, 1},
+		"dusk":  {0, 1},
+		"bird":  {0.8, 0.6},
+	}}
+	matcher := namematch.New(recorder, namematch.Config{Threshold: fixedThreshold(0.70)})
+	candidates := []string{"birds", "rain", "dusk"}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 20; j++ {
+				if result := matcher.Match(context.Background(), "the bird sound", candidates); result.Name != "birds" {
+					t.Errorf("concurrent Match = %+v, want birds", result)
+					return
+				}
+			}
+		}()
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for j := 0; j < 20; j++ {
+			if err := matcher.Warm(context.Background(), candidates); err != nil {
+				t.Errorf("concurrent Warm: %v", err)
+				return
+			}
+		}
+	}()
+	wg.Wait()
 }

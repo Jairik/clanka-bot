@@ -1060,12 +1060,21 @@ matcher (`internal/namematch`). Exact and normalised names win first and make
 no embed request. Normalisation lowercases, drops punctuation and a leading
 `the`/`a`/`an`/`my` and a trailing `sound`/`voice`/`playlist`, so
 `The Lo-Fi Beats Playlist` is the same name as `lo fi beats`. Anything else is
-compared with MiniLM embedding similarity against every candidate; the best
-name at or above the threshold wins, and everything else is no match. A name is
-never forced: empty input, an embed failure, malformed vectors, a score below
-the threshold, two names that normalise to the same words and an exact score
-tie all return no match. A caller then keeps its existing value and, where the
-Tool promises it, says aloud that the name did not match.
+compared with MiniLM embedding similarity. Candidate vectors are cached by the
+normalised text that was embedded, because an embedding is a pure function of
+the text: a repeated lookup embeds only the query, and an added or renamed
+entry is embedded once. The cache is bounded at 2048 vectors (about 3 MB at 384
+dimensions) and is cleared when a fill would overflow or when the embed model's
+dimension changes, so a redeployed model never mixes vector lengths. A model
+change that keeps the same dimension is not detected. `Matcher.Warm` fills the
+cache for a library off the request path, so a refresh can warm it before the
+next spoken lookup instead of paying a cold batch that can exceed the two-second
+lookup budget. The best name at or above the threshold wins, and everything
+else is no match. A name is never forced: empty input, an embed failure,
+malformed vectors, a score below the threshold, two names that normalise to the
+same words and an exact score tie all return no match. A caller then keeps its
+existing value and, where the Tool promises it, says aloud that the name did
+not match.
 
 `name_match.threshold` is the live similarity floor, default `0.60`, with the
 same override → `config.yaml` → code default layers as every other setting. It

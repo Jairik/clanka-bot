@@ -6,7 +6,6 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"strings"
@@ -72,6 +71,55 @@ func (s *scriptSource) Read(p []byte) (int, error) {
 
 func (s *scriptSource) Close() error { return nil }
 
+// stagedSource streams silence until the test stages a script, then plays it
+// once and returns to silence. A follow-up fixture stages its speech when the
+// loop reaches the state under test, so it never depends on how fast the
+// scheduler drains a padding run of frames (#332).
+type stagedSource struct {
+	ctx context.Context
+
+	mu     sync.Mutex
+	script [][]byte
+	index  int
+}
+
+func (s *stagedSource) Open(ctx context.Context) (io.ReadCloser, error) {
+	s.mu.Lock()
+	s.ctx = ctx
+	s.mu.Unlock()
+	return s, nil
+}
+
+func (s *stagedSource) Read(p []byte) (int, error) {
+	s.mu.Lock()
+	ctx := s.ctx
+	s.mu.Unlock()
+	select {
+	case <-ctx.Done():
+		return 0, ctx.Err()
+	case <-time.After(time.Millisecond):
+	}
+
+	s.mu.Lock()
+	frame := silentFrame()
+	if s.index < len(s.script) {
+		frame = s.script[s.index]
+		s.index++
+	}
+	s.mu.Unlock()
+	return copy(p, frame), nil
+}
+
+func (s *stagedSource) Close() error { return nil }
+
+// stage appends frames to the script instead of replacing it, so a test can
+// deliver one utterance after another without losing the current position.
+func (s *stagedSource) stage(frames [][]byte) {
+	s.mu.Lock()
+	s.script = append(s.script, frames...)
+	s.mu.Unlock()
+}
+
 // fakeWake fires once per opened stream after the configured number of frames.
 type fakeWake struct {
 	afterWords int
@@ -83,6 +131,13 @@ type fakeWake struct {
 	// maxFires caps firings across streams so a test can let the loop settle
 	// after the interruptions it means to observe.
 	maxFires int
+	// onOpen, when set, runs after each stream opens with its 1-based count, so
+	// a test can synchronize on the loop going back to waiting for a wake word.
+	onOpen func(stream int)
+
+	// loud counts the voiced frames written to any stream: evidence that staged
+	// speech reached the loop instead of being dropped at a closed window.
+	loud atomic.Int64
 
 	mu          sync.Mutex
 	streams     int
@@ -94,9 +149,15 @@ func (f *fakeWake) Open(ctx context.Context) (voice.WakeStream, error) {
 	f.mu.Lock()
 	f.streams++
 	f.openStreams++
+	stream := f.streams
 	f.mu.Unlock()
+	if f.onOpen != nil {
+		f.onOpen(stream)
+	}
 	return &fakeWakeStream{owner: f, detections: make(chan voice.Detection, 1)}, nil
 }
+
+func (f *fakeWake) loudFrames() int { return int(f.loud.Load()) }
 
 func (f *fakeWake) snapshot() (streams, open, fires int) {
 	f.mu.Lock()
@@ -123,6 +184,9 @@ func (s *fakeWakeStream) Write(pcm []byte) error {
 	frames := s.frames
 	s.mu.Unlock()
 
+	if !isSilent(pcm) {
+		s.owner.loud.Add(1)
+	}
 	if frames == s.owner.afterWords {
 		s.owner.mu.Lock()
 		if s.owner.maxFires > 0 && s.owner.fires >= s.owner.maxFires {
@@ -170,6 +234,9 @@ type fakeSTT struct {
 	text string
 	// err, when set, makes Finish fail like a client read-idle timeout.
 	err error
+	// onWrite, when set, runs after each frame with its 1-based Open number, so
+	// a test can synchronize on a capture session starting to record audio.
+	onWrite func(stream int)
 
 	mu      sync.Mutex
 	frames  [][]byte
@@ -181,8 +248,9 @@ type fakeSTT struct {
 func (f *fakeSTT) Open(ctx context.Context) (voice.STTStream, error) {
 	f.mu.Lock()
 	f.opens++
+	stream := f.opens
 	f.mu.Unlock()
-	return &fakeSTTStream{owner: f}, nil
+	return &fakeSTTStream{owner: f, stream: stream}, nil
 }
 
 func (f *fakeSTT) received() [][]byte {
@@ -203,12 +271,19 @@ func (f *fakeSTT) openCount() int {
 	return f.opens
 }
 
-type fakeSTTStream struct{ owner *fakeSTT }
+type fakeSTTStream struct {
+	owner  *fakeSTT
+	stream int
+}
 
 func (s *fakeSTTStream) Write(pcm []byte) error {
 	s.owner.mu.Lock()
-	defer s.owner.mu.Unlock()
 	s.owner.frames = append(s.owner.frames, append([]byte(nil), pcm...))
+	hook := s.owner.onWrite
+	s.owner.mu.Unlock()
+	if hook != nil {
+		hook(s.stream)
+	}
 	return nil
 }
 
@@ -587,6 +662,35 @@ func isSilent(pcm []byte) bool {
 	return true
 }
 
+// utteranceFrames is one spoken question: enough voiced audio that a wake
+// detection, the loop's select and the session's pre-capture gate cannot drop
+// all of it under load, then trailing silence to endpoint it.
+func utteranceFrames() [][]byte {
+	return append(repeat(loudFrame(), 40), repeat(silentFrame(), 40)...)
+}
+
+// waitForSignal waits for a loop transition a fixture exposes, or fails.
+func waitForSignal(t *testing.T, signal <-chan struct{}, msg string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(5 * time.Second):
+		t.Fatal(msg)
+	}
+}
+
+// waitForReply waits for one completed reply, or fails.
+func waitForReply(t *testing.T, calls <-chan string, msg string) string {
+	t.Helper()
+	select {
+	case transcript := <-calls:
+		return transcript
+	case <-time.After(5 * time.Second):
+		t.Fatal(msg)
+	}
+	return ""
+}
+
 // flakySource fails its first Open, like Pulse not being ready at container start.
 type flakySource struct {
 	inner *scriptSource
@@ -655,9 +759,19 @@ func (b *lockedBuffer) String() string {
 // finalise and the reply hand-off share one request ID, and the timeline
 // starts at the last voiced frame.
 func TestLoopStagesCorrelateUnderOneRequestID(t *testing.T) {
-	source := &scriptSource{frames: append(repeat(loudFrame(), 8), repeat(silentFrame(), 40)...)}
+	// The session drops frames captured before it starts, so stage the question
+	// once it is recording instead of scripting loud frames that a slow
+	// scheduler could lose entirely (#332).
+	source := &stagedSource{}
 	wake := &fakeWake{afterWords: 5}
 	stt := &fakeSTT{text: "what time is it"}
+	recording := make(chan struct{})
+	var once sync.Once
+	stt.onWrite = func(stream int) {
+		if stream == 1 {
+			once.Do(func() { close(recording) })
+		}
+	}
 	var recorded atomic.Value // *latency.Timeline
 	responder := &fakeResponder{
 		calls: make(chan string, 1),
@@ -675,11 +789,9 @@ func TestLoopStagesCorrelateUnderOneRequestID(t *testing.T) {
 	})
 	runLoop(t, loop)
 
-	select {
-	case <-responder.calls:
-	case <-time.After(5 * time.Second):
-		t.Fatal("no reply")
-	}
+	waitForSignal(t, recording, "the session never started recording audio")
+	source.stage(utteranceFrames())
+	waitForReply(t, responder.calls, "no reply")
 
 	value := recorded.Load()
 	if value == nil {
@@ -697,6 +809,17 @@ func TestLoopStagesCorrelateUnderOneRequestID(t *testing.T) {
 	}
 	if _, ok := timeline.Duration(latency.StageSTTFinalize); !ok {
 		t.Fatal("stt_finalize stage missing")
+	}
+	// The stage is a measurement only if the question reached the session.
+	var voiced bool
+	for _, frame := range stt.received() {
+		if !isSilent(frame) {
+			voiced = true
+			break
+		}
+	}
+	if !voiced {
+		t.Fatal("the session never recorded a voiced frame")
 	}
 
 	// The endpoint and transcript lines carry the same request ID.
@@ -810,48 +933,129 @@ func TestLoopFeedsTheActivityObserver(t *testing.T) {
 	}
 }
 
-// A completed reply opens a no-wake turn, while a zero window leaves the wake gate closed.
+// followUpFixture runs one no-wake loop and exposes the transitions its cases
+// synchronize on, so no case depends on how fast the scheduler drains frames.
+type followUpFixture struct {
+	source    *stagedSource
+	wake      *fakeWake
+	stt       *fakeSTT
+	responder *fakeResponder
+	// capturing closes when the no-wake session records its first frame: its
+	// speaker-tail gate is open and the window is listening.
+	capturing chan struct{}
+	// wakeWaiting closes when the loop is back in waitForWake after the first
+	// reply, which is the state the disabled and expired cases refuse speech in.
+	wakeWaiting chan struct{}
+}
+
+func newFollowUpFixture(t *testing.T, window time.Duration) *followUpFixture {
+	t.Helper()
+	fixture := &followUpFixture{
+		source:      &stagedSource{script: utteranceFrames()},
+		capturing:   make(chan struct{}),
+		wakeWaiting: make(chan struct{}),
+	}
+	var capturing, waiting sync.Once
+	fixture.stt = &fakeSTT{text: "what time is it", onWrite: func(stream int) {
+		if stream == 2 {
+			capturing.Do(func() { close(fixture.capturing) })
+		}
+	}}
+	// Streams open in order: the first detection, the reply's barge-in watch,
+	// then either the no-wake session's watch or a fresh detection.
+	fixture.wake = &fakeWake{afterWords: 3, maxFires: 1, onOpen: func(stream int) {
+		if stream >= 3 {
+			waiting.Do(func() { close(fixture.wakeWaiting) })
+		}
+	}}
+	fixture.responder = &fakeResponder{calls: make(chan string, 4)}
+	loop := newLoop(t, voice.Config{FrameBytes: frameBytes, Endpoint: endpointConfig(300 * time.Millisecond)},
+		voice.Deps{Source: fixture.source, Wake: fixture.wake, STT: fixture.stt, Responder: fixture.responder})
+	// Only the first reply opens a window, so the loop settles after the
+	// transition each case is about.
+	var replies atomic.Int32
+	loop.BindFollowUp(func() time.Duration {
+		if replies.Add(1) > 1 {
+			return 0
+		}
+		return window
+	})
+	runLoop(t, loop)
+	return fixture
+}
+
+// waitForLoudFrames waits until staged speech reaches the wake service, which
+// proves the loop consumed it instead of dropping it at a closed window.
+func (f *followUpFixture) waitForLoudFrames(t *testing.T) {
+	t.Helper()
+	before := f.wake.loudFrames()
+	deadline := time.Now().Add(5 * time.Second)
+	for f.wake.loudFrames() == before {
+		if time.Now().After(deadline) {
+			t.Fatal("the staged utterance never reached the wake service")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+// A completed reply opens a no-wake turn, while a zero window and an expired
+// window leave the wake gate closed. The second utterance is staged at a real
+// loop transition, never padded with silence: silence padding ties the fixture
+// to scheduler pace and expired under load (#332).
 func TestFollowUpWithoutWakeAndDisable(t *testing.T) {
-	for _, enabled := range []bool{true, false} {
-		t.Run(fmt.Sprint(enabled), func(t *testing.T) {
-			source := &scriptSource{frames: append(repeat(loudFrame(), 8), repeat(silentFrame(), 40)...)}
-			wake := &fakeWake{afterWords: 3, maxFires: 1}
-			stt := &fakeSTT{text: "what time is it"}
-			var once sync.Once
-			responder := &fakeResponder{calls: make(chan string, 4), onCall: func(context.Context) {
-				once.Do(func() {
-					source.mu.Lock()
-					source.frames = append(append(repeat(silentFrame(), 400), repeat(loudFrame(), 8)...), repeat(silentFrame(), 40)...)
-					source.index = 0
-					source.mu.Unlock()
-				})
-			}}
-			loop := newLoop(t, voice.Config{FrameBytes: frameBytes, Endpoint: endpointConfig(300 * time.Millisecond)}, voice.Deps{Source: source, Wake: wake, STT: stt, Responder: responder})
-			loop.BindFollowUp(func() time.Duration {
-				if enabled {
-					return time.Second
-				}
-				return 0
-			})
-			runLoop(t, loop)
-			select {
-			case <-responder.calls:
-			case <-time.After(2 * time.Second):
-				t.Fatal("first turn missing")
+	tests := []struct {
+		name   string
+		window time.Duration
+		// accepts reports whether the second utterance should start a turn.
+		accepts bool
+		// wantSTTOpens counts capture sessions: the first reply, plus the
+		// no-wake session when a live window opens.
+		wantSTTOpens int
+	}{
+		{name: "accepts", window: time.Second, accepts: true, wantSTTOpens: 2},
+		{name: "disabled", window: 0, wantSTTOpens: 1},
+		// Shorter than the first reply's window: the no-wake session must expire
+		// before its utterance cap turns the silence into a request.
+		{name: "expired", window: 500 * time.Millisecond, wantSTTOpens: 2},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := newFollowUpFixture(t, test.window)
+			waitForReply(t, fixture.responder.calls, "first turn missing")
+
+			if test.accepts {
+				waitForSignal(t, fixture.capturing, "the no-wake window never captured audio")
+			} else {
+				waitForSignal(t, fixture.wakeWaiting, "the loop never went back to waiting for a wake word")
 			}
+			if got := fixture.stt.openCount(); got != test.wantSTTOpens {
+				t.Fatalf("STT opens before the second utterance = %d, want %d", got, test.wantSTTOpens)
+			}
+
+			fixture.source.stage(utteranceFrames())
+			if test.accepts {
+				transcript := waitForReply(t, fixture.responder.calls, "no-wake follow-up missing")
+				if transcript != "what time is it" {
+					t.Fatalf("follow-up transcript = %q", transcript)
+				}
+				words := fixture.responder.wakeWords()
+				if len(words) != 2 || words[1] != "" {
+					t.Fatalf("follow-up wake provenance = %v, want the second turn with no wake word", words)
+				}
+				return
+			}
+
+			// Refusal only counts once the staged speech reached the wake
+			// service: the loop was listening for a wake word and heard it.
+			fixture.waitForLoudFrames(t)
 			select {
-			case <-responder.calls:
-				if !enabled {
-					t.Fatal("disabled follow-up accepted speech")
-				}
-				words := responder.wakeWords()
-				if len(words) < 2 || words[1] != "" {
-					t.Fatalf("follow-up used wake: %v", words)
-				}
+			case got := <-fixture.responder.calls:
+				t.Fatalf("%v window accepted a no-wake utterance %q", test.window, got)
 			case <-time.After(time.Second):
-				if enabled {
-					t.Fatal("no-wake follow-up missing")
-				}
+			}
+			if got := fixture.stt.openCount(); got != test.wantSTTOpens {
+				t.Fatalf("STT opens after the staged speech = %d, want %d", got, test.wantSTTOpens)
 			}
 		})
 	}

@@ -22,11 +22,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/url"
 	"strings"
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/config"
+	"github.com/Jairik/clanka-bot/assistant/internal/httpclient"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"gopkg.in/yaml.v3"
 )
@@ -64,6 +64,11 @@ type Config struct {
 	// BaseURL is the REST API origin, without a trailing slash. The default is
 	// github.com; a GitHub Enterprise Server can supply its own origin.
 	BaseURL string `yaml:"base_url"`
+	// AllowInsecureHTTP deliberately accepts a plain-http base_url that is not a
+	// loopback host, for a LAN GitHub Enterprise Server whose TLS is out of
+	// scope. The PAT then travels in clear text, so this is off by default and
+	// the startup log says when it takes effect.
+	AllowInsecureHTTP bool `yaml:"allow_insecure_http"`
 	// Timeout bounds one HTTP request, including the response body.
 	Timeout config.Duration `yaml:"timeout"`
 	// DefaultRepo is the operator's repo for an issue when the model omits the
@@ -119,15 +124,13 @@ func (c Config) normalize() Config {
 // validate rejects a config the Tools cannot honour. It fails at startup, not
 // after a model has asked to write somewhere unexpected.
 func (c Config) validate() error {
-	parsed, err := url.Parse(c.BaseURL)
-	if err != nil {
+	// The fine-grained PAT is a bearer token on every call, so a clear-text
+	// origin is refused unless the operator opted in explicitly.
+	if err := httpclient.RequireSecureOrigin(c.BaseURL, c.AllowInsecureHTTP); err != nil {
+		if errors.Is(err, httpclient.ErrInsecureOrigin) {
+			return fmt.Errorf("base_url: %w; set tools.github.allow_insecure_http: true to accept a clear-text origin deliberately", err)
+		}
 		return fmt.Errorf("base_url: %w", err)
-	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return errors.New("base_url must be an http or https URL")
-	}
-	if parsed.Host == "" {
-		return errors.New("base_url must name a host")
 	}
 	if c.Timeout.Duration() <= 0 {
 		return errors.New("timeout must be positive")
@@ -246,6 +249,12 @@ func (m *Module) Register(r *tool.Registry, deps tool.Deps) error {
 	m.token = resolve(SecretName)
 	m.classic = resolve(NotificationsSecretName)
 	m.client = newClient(m.cfg.BaseURL, m.cfg.Timeout.Duration(), m.token, m.classic)
+
+	// A clear-text GitHub Enterprise origin is only reachable through the
+	// explicit opt-in, so say once that the PAT leaves the Pi in clear text.
+	if m.cfg.AllowInsecureHTTP && httpclient.InsecureOrigin(m.cfg.BaseURL) {
+		m.logger.Warn("github: allow_insecure_http is active for a plain-http base_url; the token travels in clear text")
+	}
 
 	// A list can use at most two pages; leave the whole registry call room for
 	// both pages and JSON mapping, while each HTTP request keeps its own bound.

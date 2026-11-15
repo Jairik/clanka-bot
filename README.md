@@ -61,8 +61,11 @@ curl -s -X POST localhost:8081/debug/transcript \
 Weather uses [WeatherAPI](https://www.weatherapi.com/docs/) when
 `WEATHERAPI_API_KEY` is set in `.env` or Dashboard > Secrets, with Open-Meteo
 and [wttr.in](https://github.com/chubin/wttr.in#json-output) as independent
-fallbacks. Without a key, the two keyless providers still work. Each provider
-gets 250 ms before the next fallback also starts; the first successful answer
+fallbacks. Without a key, the two keyless providers still work.
+`tools.weather.weatherapi_url` must be HTTPS unless it is a loopback test fake,
+because the key travels in the query string; the keyless Open-Meteo and wttr.in
+URLs are unrestricted. Each provider gets 250 ms before the next fallback also
+starts; the first successful answer
 wins and all share a 1 s Tool deadline to leave time for the voice reply.
 Successful answers, including fallback answers, are cached for 15 minutes and
 refreshed on the next request after expiry; failures say "Weather is
@@ -159,8 +162,12 @@ read-only and never marks a thread read.
 the Tool code hardcodes no target. `tools.github.allowed_repos` is the write
 allowlist: an issue for any other repository is refused before a request leaves
 the Pi, and an empty list refuses every write. `pr_list` accepts an optional
-repository filter and checks it against the same allowlist. Calls use the
-documented `X-GitHub-Api-Version: 2026-03-10` header, one keep-alive HTTP
+repository filter and checks it against the same allowlist. `tools.github.base_url`
+is the REST origin and must be HTTPS unless it is a loopback test fake, so the
+bearer token never travels in clear text; a LAN GitHub Enterprise Server on plain
+HTTP needs the deliberate `tools.github.allow_insecure_http: true` opt-in, and the
+startup log then says the token is sent in clear text. Calls use the documented
+`X-GitHub-Api-Version: 2026-03-10` header, one keep-alive HTTP
 client, bounded response bodies, at most two pages of ten items, and a short
 spoken result. One call is bounded end to end by `tools.github.timeout`
 (4 s including a cold DNS lookup and the TLS handshake), so a slow Tailscale

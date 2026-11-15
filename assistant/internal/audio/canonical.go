@@ -30,6 +30,10 @@ const (
 	// noise; maxGain bounds how far a quiet recording is lifted.
 	silenceRMS = 0.001
 	maxGain    = 8.0
+	// silencePeak is the quietest peak amplitude (about -50 dBFS) an upload may
+	// have. A quieter clip is treated as silent and refused, because publishing
+	// it would let a Ring or error Cue be assigned a sound nobody can hear.
+	silencePeak = 0.00316
 )
 
 // Canonicalize decodes source (RIFF/WAVE or MP3), downmixes it to mono,
@@ -81,6 +85,9 @@ func Canonicalize(ctx context.Context, source, output string, target Format) (ti
 	}
 	if levels.frames == 0 {
 		return 0, fmt.Errorf("audio: %s contains no audio frames", filepath.Base(source))
+	}
+	if levels.peak < silencePeak {
+		return 0, fmt.Errorf("audio: %s is silent (peak %.6f is below %.5f)", filepath.Base(source), levels.peak, silencePeak)
 	}
 	duration := time.Duration(levels.frames) * time.Second / time.Duration(target.Rate)
 

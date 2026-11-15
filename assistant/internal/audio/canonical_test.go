@@ -6,6 +6,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -47,6 +48,17 @@ func sinePCM(rate, channels int, seconds, amplitude float64) []byte {
 		}
 	}
 	return out
+}
+
+// peakAmplitude is the largest absolute sample in PCM16, scaled to 0..1.
+func peakAmplitude(pcm []byte) float64 {
+	peak := 0.0
+	for index := 0; index+1 < len(pcm); index += 2 {
+		if absolute := math.Abs(float64(int16(binary.LittleEndian.Uint16(pcm[index:]))) / math.MaxInt16); absolute > peak {
+			peak = absolute
+		}
+	}
+	return peak
 }
 
 func TestResamplerMatchesAWholeBufferConversion(t *testing.T) {
@@ -181,6 +193,92 @@ func TestCanonicalizeRejectsAnEmptyWAV(t *testing.T) {
 	writeTestWAV(t, source, 16000, 1, 16, nil)
 	if _, err := audio.Canonicalize(context.Background(), source, filepath.Join(dir, "out.wav"), audio.Format{Rate: 16000, Width: 2, Channels: 1}); err == nil {
 		t.Fatal("Canonicalize accepted a WAV with no frames")
+	}
+}
+
+func TestCanonicalizeRejectsSilentRecordingsWithoutLeavingOutput(t *testing.T) {
+	cases := map[string][]byte{
+		"all zeros":      make([]byte, 32000),
+		"about -60 dBFS": sinePCM(16000, 1, 1.0, 0.001),
+	}
+	for name, pcm := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			source := filepath.Join(dir, "quiet.wav")
+			writeTestWAV(t, source, 16000, 1, 16, pcm)
+			output := filepath.Join(dir, "out.wav")
+			_, err := audio.Canonicalize(context.Background(), source, output, audio.Format{Rate: 16000, Width: 2, Channels: 1})
+			if err == nil {
+				t.Fatal("Canonicalize accepted a silent recording")
+			}
+			if !strings.Contains(err.Error(), "silent") {
+				t.Fatalf("error = %v, want a silent rejection", err)
+			}
+			if _, err := os.Stat(output); !os.IsNotExist(err) {
+				t.Fatalf("output exists after a silent rejection: %v", err)
+			}
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(entries) != 1 || entries[0].Name() != "quiet.wav" {
+				t.Fatalf("directory after a silent rejection = %v, want only quiet.wav", entries)
+			}
+		})
+	}
+}
+
+func TestCanonicalizeAcceptsAndNormalisesAQuietRecording(t *testing.T) {
+	// About -40 dBFS peak: quiet but audible, so it is above silencePeak and
+	// normalises like any other Cue.
+	pcm := sinePCM(16000, 1, 0.3, 0.01)
+	dir := t.TempDir()
+	source := filepath.Join(dir, "quiet.wav")
+	writeTestWAV(t, source, 16000, 1, 16, pcm)
+	output := filepath.Join(dir, "out.wav")
+
+	duration, err := audio.Canonicalize(context.Background(), source, output, audio.Format{Rate: 16000, Width: 2, Channels: 1})
+	if err != nil {
+		t.Fatalf("Canonicalize: %v", err)
+	}
+	if duration < 290*time.Millisecond || duration > 310*time.Millisecond {
+		t.Fatalf("duration = %s, want about 300ms", duration)
+	}
+	decoded, err := audio.ReadWAV(output)
+	if err != nil {
+		t.Fatalf("ReadWAV: %v", err)
+	}
+	peak := peakAmplitude(decoded.PCM)
+	if peak <= peakAmplitude(pcm) {
+		t.Fatalf("output peak = %.4f, want the quiet input lifted", peak)
+	}
+	if peak < 0.05 || peak > 0.892 {
+		t.Fatalf("output peak = %.4f, want a normalised Cue below the ceiling", peak)
+	}
+}
+
+func TestCanonicalizeLeavesAboveFloorNearSilenceUnamplified(t *testing.T) {
+	// One sample at about -48 dBFS clears silencePeak while the clip's RMS
+	// stays under silenceRMS, so the existing near-silence rule applies: the
+	// upload is accepted and written unchanged instead of boosting noise.
+	const sample = 131
+	pcm := make([]byte, 16000*2)
+	binary.LittleEndian.PutUint16(pcm[100*2:], uint16(int16(sample)))
+	dir := t.TempDir()
+	source := filepath.Join(dir, "near-silent.wav")
+	writeTestWAV(t, source, 16000, 1, 16, pcm)
+	output := filepath.Join(dir, "out.wav")
+
+	if _, err := audio.Canonicalize(context.Background(), source, output, audio.Format{Rate: 16000, Width: 2, Channels: 1}); err != nil {
+		t.Fatalf("Canonicalize: %v", err)
+	}
+	decoded, err := audio.ReadWAV(output)
+	if err != nil {
+		t.Fatalf("ReadWAV: %v", err)
+	}
+	want := float64(sample) / math.MaxInt16
+	if peak := peakAmplitude(decoded.PCM); math.Abs(peak-want) > 1.0/math.MaxInt16 {
+		t.Fatalf("peak = %.6f, want the unamplified %.6f", peak, want)
 	}
 }
 

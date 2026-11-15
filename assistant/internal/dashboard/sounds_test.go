@@ -641,6 +641,21 @@ func TestSoundsWritesAnswerJSONWithTheRealStatus(t *testing.T) {
 	}
 }
 
+func TestSoundsUploadRejectsSilentAudioWithAClearReason(t *testing.T) {
+	f := newSoundsFixture(t, nil)
+	rec := f.upload("silent.wav", testWAV(16000, 1, 100*time.Millisecond, 0))
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("silent upload status = %d, want 400", rec.Code)
+	}
+	v := decodeSounds(t, rec)
+	if v.Flash != "" || !strings.Contains(v.Error, "is silent") {
+		t.Fatalf("silent upload view = error %q flash %q", v.Error, v.Flash)
+	}
+	if v.hasSound("silent") {
+		t.Fatalf("silent upload entered the library: %+v", v.Sounds)
+	}
+}
+
 // blockingPreviewSink holds a preview inside Write until its context is
 // cancelled, which is how the shared serial sink behaves when pacat is killed.
 type blockingPreviewSink struct {

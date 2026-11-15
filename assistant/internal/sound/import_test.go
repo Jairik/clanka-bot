@@ -156,6 +156,51 @@ func TestImportRejectsUndecodableAndLeavesNoPartialFile(t *testing.T) {
 	}
 }
 
+func TestImportRejectsSilentAudioWithoutPublishing(t *testing.T) {
+	f := newFixture(t, sound.Config{})
+	// An all-zero recording decodes cleanly, so only the peak floor stops it.
+	source := stereoWAV(t, 16000, 1, 200*time.Millisecond, 0)
+	_, err := f.sounds.Import(context.Background(), bytes.NewReader(source), "silent.wav")
+	if err == nil {
+		t.Fatal("Import accepted an all-zero recording")
+	}
+	if !strings.Contains(err.Error(), `"silent.wav" is silent`) {
+		t.Fatalf("Import error = %v, want the clear silent reason", err)
+	}
+	if got := libraryWAVs(t, f.sounds.LibraryDir()); len(got) != 0 {
+		t.Fatalf("library files after a silent upload = %v", got)
+	}
+	if got := f.sounds.List(); len(got) != 1 || got[0].Name != sound.BuiltinChime {
+		t.Fatalf("index rows after a silent upload = %+v, want only the built-in chime", got)
+	}
+	entries, err := os.ReadDir(f.sounds.LibraryDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".") {
+			t.Fatalf("temp file %q left behind", entry.Name())
+		}
+	}
+}
+
+func TestImportKeepsAQuietButAudibleRecording(t *testing.T) {
+	f := newFixture(t, sound.Config{})
+	// About -40 dBFS peak is below the normal listening level but above the
+	// silence floor, so it still imports and is normalised.
+	source := stereoWAV(t, 16000, 1, 200*time.Millisecond, 0.01)
+	entry, err := f.sounds.Import(context.Background(), bytes.NewReader(source), "quiet.wav")
+	if err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+	if entry.Name != "quiet" {
+		t.Fatalf("name = %q, want quiet", entry.Name)
+	}
+	if got := libraryWAVs(t, f.sounds.LibraryDir()); len(got) != 1 || got[0] != "quiet.wav" {
+		t.Fatalf("library files = %v, want quiet.wav only", got)
+	}
+}
+
 func TestImportUsesUniqueNamesAndAvoidsReservedOnes(t *testing.T) {
 	f := newFixture(t, sound.Config{})
 	source := stereoWAV(t, 16000, 1, 100*time.Millisecond, 0.2)

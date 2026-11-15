@@ -295,7 +295,9 @@ func run() error {
 	lastReplyStore := lastreply.New()
 
 	// Resolve the place once before serving so the first request has it; Watch
-	// keeps it fresh every 24h. The prompt reads the service per request.
+	// keeps it fresh every 24h and retries a failed boot lookup on a bounded
+	// backoff so a Pi that boots before Wi-Fi is ready recovers without a
+	// restart. The prompt reads the service per request.
 	locSvc := location.NewService(
 		location.NewIPWhoIs(&http.Client{Timeout: cfg.Location.Timeout.Duration()}, cfg.Location.ProviderURL),
 		location.Location{

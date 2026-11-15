@@ -11,7 +11,7 @@ import { PageFrame } from "../shell";
 import type { ActivityView, Request } from "../types";
 import { Badge, Empty, Fold, Notice, Section, cn, foldOpen } from "../ui";
 
-type Page = { key: string; list: Request[]; next: string };
+type Page = { key: string; list: Request[]; next: string; notice: string };
 
 export function ActivityPage() {
   const { view, requests, loadError } = useChat();
@@ -44,7 +44,7 @@ export function ActivityPage() {
       getJSON<ActivityView>(activityQuery({ filter, q })).then(
         (v) => {
           if (cancelled) return;
-          setFeed({ key, list: v.Requests ?? [], next: v.Next });
+          setFeed({ key, list: v.Requests ?? [], next: v.Next, notice: v.SearchNotice });
           setError("");
         },
         (e) => !cancelled && setError(e instanceof Error ? e.message : String(e)),
@@ -57,6 +57,10 @@ export function ActivityPage() {
   }, [key, server, filter, q]);
 
   const searching = server && feed?.key !== key;
+  // The fetched page carries the store's own account of how far a search
+  // reached. An unfiltered page and a ring-only deployment have no window to
+  // declare, so the notice is empty there even if a previous query had one.
+  const searchNotice = server && feed?.key === key ? feed.notice : "";
   const base = server ? (feed?.key === key ? feed.list : []) : [...requests].reverse();
   const olderList = older?.key === key ? older.list : [];
   // Newest first, filtered once more so a stub that ignores the query still
@@ -75,8 +79,8 @@ export function ActivityPage() {
       const page = await getJSON<ActivityView>(activityQuery({ filter, q, before: next }));
       setOlder((prev) =>
         prev && prev.key === key
-          ? { key, list: [...prev.list, ...(page.Requests ?? [])], next: page.Next }
-          : { key, list: page.Requests ?? [], next: page.Next },
+          ? { key, list: [...prev.list, ...(page.Requests ?? [])], next: page.Next, notice: page.SearchNotice }
+          : { key, list: page.Requests ?? [], next: page.Next, notice: page.SearchNotice },
       );
       setError("");
     } catch (e) {
@@ -114,6 +118,12 @@ export function ActivityPage() {
           ))}
         </ToggleButtonGroup>
       </div>
+      {searchNotice && (
+        <p className="flex items-start gap-1.5 pb-2 text-xs text-muted">
+          <Info className="mt-0.5 size-3.5 shrink-0" />
+          {searchNotice}
+        </p>
+      )}
 
       <div className="space-y-3" aria-busy={searching || loadingOlder}>
         {searching && <p className="py-3 text-center text-sm text-muted">Searching the history…</p>}
@@ -142,7 +152,8 @@ export function ActivityPage() {
           <div className="border">
             {q || filter !== "all" ? (
               <p className="flex items-center justify-center gap-2 py-10 text-sm text-muted">
-                Nothing matches{q ? ` “${q}”` : " this filter"}.
+                Nothing matches{q ? ` “${q}”` : " this filter"}
+                {searchNotice ? " in the searched window" : ""}.
                 <button
                   onClick={() => {
                     setQ("");

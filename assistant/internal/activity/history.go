@@ -142,18 +142,73 @@ func (h *History) Add(entry Entry) error {
 	if entry.ResponseMS != nil {
 		response = *entry.ResponseMS
 	}
-	_, err = h.db.ExecContext(context.Background(), `
+	const insertActivity = `
 		INSERT INTO activity (request_id, at, source, path, tool, outcome, error,
 			transcript, reply, local_only, response_ms, stages, checkpoints, calls, search)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+	haystack := searchText(entry)
+	insertArgs := []any{
 		entry.ID, at.UnixMilli(), entry.Source, entry.Path, entry.Tool, entry.Outcome,
 		entry.Error, entry.Transcript, entry.Reply, entry.LocalOnly, response,
-		string(stages), string(checkpoints), string(calls), searchText(entry))
+		string(stages), string(checkpoints), string(calls), haystack,
+	}
+	ctx := context.Background()
+	if err := h.ensureSearchIndex(ctx); err != nil {
+		// A build without FTS5: keep writing history, mark the index incomplete
+		// so a later start that can create it rebuilds the gap, and let searches
+		// use the bounded window in the meantime.
+		h.markSearchIndexIncomplete(ctx)
+		return h.insertActivityOnly(ctx, insertActivity, insertArgs)
+	}
+	tx, err := h.db.BeginTx(ctx, nil)
 	if err != nil {
+		return fmt.Errorf("activity history: insert: %w", err)
+	}
+	result, err := tx.ExecContext(ctx, insertActivity, insertArgs...)
+	if err != nil {
+		_ = tx.Rollback()
+		slog.Default().Warn("activity history write", "error", err.Error())
+		return fmt.Errorf("activity history: insert: %w", err)
+	}
+	id, err := result.LastInsertId()
+	if err == nil {
+		err = indexEntry(ctx, tx, id, haystack)
+	}
+	if err != nil {
+		// The row is the source of truth and the index is derived: commit the
+		// row without it and let the rebuild fill the gap rather than losing the
+		// request from history.
+		_ = tx.Rollback()
+		slog.Default().Warn("activity history index write", "error", err.Error())
+		h.markSearchIndexIncomplete(ctx)
+		return h.insertActivityOnly(ctx, insertActivity, insertArgs)
+	}
+	if err := tx.Commit(); err != nil {
 		slog.Default().Warn("activity history write", "error", err.Error())
 		return fmt.Errorf("activity history: insert: %w", err)
 	}
 	return nil
+}
+
+// insertActivityOnly writes the row without an index entry, for the degraded
+// path where the index is missing or its write failed.
+func (h *History) insertActivityOnly(ctx context.Context, statement string, args []any) error {
+	if _, err := h.db.ExecContext(ctx, statement, args...); err != nil {
+		slog.Default().Warn("activity history write", "error", err.Error())
+		return fmt.Errorf("activity history: insert: %w", err)
+	}
+	return nil
+}
+
+// markSearchIndexIncomplete drops the completion latch after a write that the
+// index did not take, so the next rebuild re-indexes exactly the gap above the
+// persisted cursor instead of trusting an index that is now behind.
+func (h *History) markSearchIndexIncomplete(ctx context.Context) {
+	if _, err := h.db.ExecContext(ctx,
+		`UPDATE activity_search_state SET complete = 0 WHERE id = 1 AND complete = 1`); err != nil &&
+		!isClosedDatabase(err) {
+		slog.Default().Warn("activity search index state", "error", err.Error())
+	}
 }
 
 // Query is one bounded history read: a filter, an optional free-text search,
@@ -170,6 +225,10 @@ type Query struct {
 type Page struct {
 	Entries []Entry
 	Next    string
+	// SearchWindow is non-empty when a text query could only read part of the
+	// retained history. The page shows that limit instead of implying that the
+	// whole store was searched (searchindex.go).
+	SearchWindow SearchWindow
 }
 
 // ErrBadCursor means the caller sent a cursor this version did not mint.
@@ -223,18 +282,22 @@ func (h *History) QueryPage(ctx context.Context, q Query) (Page, error) {
 		args = append(args, at, at, id)
 	}
 	if needle := normalizeQuery(q.Text); needle != "" {
-		// The trigram index answers a three-character or longer query as an id
-		// set; a shorter one, or a build without the index, reads only the
-		// newest shortSearchWindow rows. Neither walks the retained window.
-		if h.windowedSearch(ctx, needle) {
-			return h.pageByWindow(ctx, conditions, args, needle, limit)
+		// The trigram index answers a three-character or longer query; a shorter
+		// one, or a build without the index, reads only the newest
+		// shortSearchWindow rows. Neither walks the retained window, and both
+		// say so on the page rather than returning a silent partial answer.
+		switch {
+		case len([]rune(needle)) < minTrigramRunes:
+			page, err := h.pageByWindow(ctx, conditions, args, needle, limit)
+			page.SearchWindow = SearchWindowShort
+			return page, err
+		case h.ensureSearchIndex(ctx) != nil:
+			page, err := h.pageByWindow(ctx, conditions, args, needle, limit)
+			page.SearchWindow = SearchWindowIndexUnavailable
+			return page, err
+		default:
+			return h.searchPage(ctx, conditions, args, needle, limit)
 		}
-		condition, textArgs, err := h.searchCondition(ctx, needle)
-		if err != nil {
-			return Page{}, err
-		}
-		conditions = append(conditions, condition)
-		args = append(args, textArgs...)
 	}
 
 	statement := `SELECT ` + entryColumns + ` FROM activity`
@@ -302,26 +365,29 @@ func (h *History) Prune(ctx context.Context) (PruneResult, error) {
 	h.pruneMu.Lock()
 	defer h.pruneMu.Unlock()
 
+	// Retention is the one path that can meet a half-built index: on the first
+	// start after an upgrade the rebuild may not have reached the rows this
+	// pass deletes. The index is maintained explicitly here (no triggers), so a
+	// row the rebuild has not indexed yet is simply absent from the retraction
+	// and nothing raises SQLITE_CORRUPT.
+	indexed := h.ensureSearchIndex(ctx) == nil
 	var result PruneResult
 	now := h.now()
 	cutoff := now.Add(-h.maxAge).UnixMilli()
-	deleted, err := h.db.ExecContext(ctx, `DELETE FROM activity WHERE at < ?`, cutoff)
+	deleted, err := h.deleteRows(ctx, indexed, `at < ?`, cutoff)
 	if err != nil {
 		return result, fmt.Errorf("activity history: age prune: %w", err)
 	}
-	result.Deleted, _ = deleted.RowsAffected()
+	result.Deleted = deleted
 
 	// Cap the row count independently of age: a busy week still cannot grow
 	// the file past MaxRows entries.
-	capped, err := h.db.ExecContext(ctx,
-		`DELETE FROM activity WHERE id NOT IN (
-			SELECT id FROM activity ORDER BY at DESC, id DESC LIMIT ?)`, h.maxRows)
+	capped, err := h.deleteRows(ctx, indexed,
+		`id NOT IN (SELECT id FROM activity ORDER BY at DESC, id DESC LIMIT ?)`, h.maxRows)
 	if err != nil {
 		return result, fmt.Errorf("activity history: row cap: %w", err)
 	}
-	if n, err := capped.RowsAffected(); err == nil {
-		result.Deleted += n
-	}
+	result.Deleted += capped
 
 	fullCutoff := now.Add(-h.fullWindow).UnixMilli()
 	// Tool, path and call names stay on the trimmed row, so the read keeps them
@@ -366,12 +432,21 @@ func (h *History) Prune(ctx context.Context) (PruneResult, error) {
 			// short text plus the Tool, path and call names it keeps.
 			entry := Entry{Transcript: transcript, Reply: reply, Error: failure, Tool: row.tool, Path: row.path}
 			_ = json.Unmarshal([]byte(calls), &entry.Calls)
+			haystack := searchText(entry)
 			if _, err := tx.ExecContext(ctx, `
 				UPDATE activity SET transcript = ?, reply = ?, error = ?, calls = ?,
 					search = ?, summary = 1 WHERE id = ?`,
-				transcript, reply, failure, calls, searchText(entry), row.id); err != nil {
+				transcript, reply, failure, calls, haystack, row.id); err != nil {
 				tx.Rollback()
 				return result, fmt.Errorf("activity history: trim update: %w", err)
+			}
+			if indexed {
+				// The index entry follows the shortened haystack: dropped text
+				// stops matching, kept text keeps matching.
+				if err := indexEntry(ctx, tx, row.id, haystack); err != nil {
+					tx.Rollback()
+					return result, fmt.Errorf("activity history: trim index: %w", err)
+				}
 			}
 			result.Trimmed++
 		}
@@ -383,7 +458,49 @@ func (h *History) Prune(ctx context.Context) (PruneResult, error) {
 	if err := h.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM activity`).Scan(&result.Remaining); err != nil {
 		return result, fmt.Errorf("activity history: count after prune: %w", err)
 	}
+	if indexed && (result.Deleted > 0 || result.Trimmed > 0) {
+		// A pass that removed postings leaves dead space in the index and free
+		// pages in the file. One bounded merge, plus at most one full compaction
+		// every searchOptimizeInterval, keeps that space reusable instead of
+		// ratcheting the file to the peak haystack. It runs here, after the
+		// retention writes, and never on the request goroutine.
+		h.compactSearchIndex(ctx, false)
+	}
 	return result, nil
+}
+
+// deleteRows removes the activity rows matching one retention predicate and
+// their index entries in the same transaction, so a delete cannot leave an
+// index entry behind or fail because the index never held the row.
+func (h *History) deleteRows(ctx context.Context, indexed bool, predicate string, args ...any) (int64, error) {
+	if !indexed {
+		deleted, err := h.db.ExecContext(ctx, `DELETE FROM activity WHERE `+predicate, args...)
+		if err != nil {
+			return 0, err
+		}
+		affected, _ := deleted.RowsAffected()
+		return affected, nil
+	}
+	tx, err := h.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`DELETE FROM activity_fts WHERE rowid IN (SELECT id FROM activity WHERE `+predicate+`)`,
+		args...); err != nil {
+		_ = tx.Rollback()
+		return 0, err
+	}
+	deleted, err := tx.ExecContext(ctx, `DELETE FROM activity WHERE `+predicate, args...)
+	if err != nil {
+		_ = tx.Rollback()
+		return 0, err
+	}
+	affected, _ := deleted.RowsAffected()
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return affected, nil
 }
 
 // Matches applies the Activity page's filter and free-text search to an Entry

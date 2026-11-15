@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -20,13 +21,18 @@ const (
 	smallWindowRows = 2000
 	// fillerHaystack is about 1 KB, the size the issue measured with.
 	fillerHaystack = 1000
-	// searchCeiling is the acceptance bound for one no-match search over the
-	// whole retained window. The scan it replaces took 59-88 ms locally and
-	// 190 ms with 4 KB haystacks; an indexed answer is well under a
-	// millisecond, so this leaves room for a loaded CI machine and still fails
-	// a reintroduced scan. raceSlowdown (race_on_test.go) scales it under the
-	// race detector, which slows the driver by an order of magnitude.
+	// searchCeiling is the acceptance bound for one search over the whole
+	// retained window. The scan it replaces took 53-88 ms locally at 1 KB
+	// haystacks; an indexed answer is well under a millisecond, so this leaves
+	// room for a loaded CI machine and still fails a reintroduced window scan.
+	// raceSlowdown (race_on_test.go) scales it under the race detector, which
+	// slows the driver by an order of magnitude.
 	searchCeiling = 20 * time.Millisecond * raceSlowdown
+	// writeCeiling is the 99th-percentile bound for one history insert with the
+	// index attached. Without a merge policy this was 48.7 ms, because FTS5
+	// merged segments on the goroutine that also holds the only connection; the
+	// explicit policy keeps the burst off the write path entirely.
+	writeCeiling = 20 * time.Millisecond * raceSlowdown
 )
 
 var fillerWords = strings.Fields("the quick brown fox jumps over a lazy dog " +
@@ -104,10 +110,11 @@ func bestQueryTime(t *testing.T, history *activity.History, text string, runs in
 	return best, matched
 }
 
-// TestSearchIsBoundedOnTheRetainedWindow is the #210 acceptance test: a
-// no-match search over a full 20,000-row window is answered from the trigram
-// index, a real match still returns the same rows, and the cost does not grow
-// with the window.
+// TestSearchIsBoundedOnTheRetainedWindow is the #210 acceptance test: both the
+// absent needle (the old scan's worst case) and the needle that matches most of
+// the window (the indexed read's worst case) answer well inside the bound, a
+// real match still returns the same rows, and the cost does not grow with the
+// window.
 func TestSearchIsBoundedOnTheRetainedWindow(t *testing.T) {
 	// One rare marker near the oldest end, so the match cannot come from a
 	// newest-page shortcut.
@@ -125,6 +132,21 @@ func TestSearchIsBoundedOnTheRetainedWindow(t *testing.T) {
 				largeWindowRows, elapsed, searchCeiling)
 		}
 		t.Logf("no-match search over %d rows: %v", largeWindowRows, elapsed)
+	})
+
+	// The scan it replaced stopped early for a needle that matches almost every
+	// row, so the indexed read must not give that back: a page materializing
+	// every match and all sixteen columns took 88 ms here (#373 review).
+	t.Run("a match-most search is not slower than the scan", func(t *testing.T) {
+		elapsed, matched := bestQueryTime(t, history, "the", 20)
+		if matched != 25 {
+			t.Fatalf("match-most search returned %d rows, want a full page", matched)
+		}
+		if elapsed > searchCeiling {
+			t.Fatalf("match-most search over %d rows took %v, want under %v",
+				largeWindowRows, elapsed, searchCeiling)
+		}
+		t.Logf("match-most search over %d rows: %v (%d rows)", largeWindowRows, elapsed, matched)
 	})
 
 	t.Run("a match still returns the row", func(t *testing.T) {
@@ -165,7 +187,6 @@ func TestSearchIsBoundedOnTheRetainedWindow(t *testing.T) {
 	// window also queues an unrelated write behind it. With the search bounded,
 	// an insert that arrives during it is not stuck.
 	t.Run("a no-match search does not hold the connection", func(t *testing.T) {
-		ctx := context.Background()
 		const searches = 40
 		done := make(chan struct{})
 		started := make(chan struct{})
@@ -184,8 +205,9 @@ func TestSearchIsBoundedOnTheRetainedWindow(t *testing.T) {
 		<-started
 
 		// Each write must answer while the searches run. The scan this replaces
-		// held the connection for 59-88 ms per search, so a write could wait a
-		// whole scan; the ceiling is 100x a real insert and still catches that.
+		// held the connection for 53-88 ms per search, so a write could wait a
+		// whole scan; the ceiling is a wide multiple of a real insert and still
+		// catches that.
 		worst := time.Duration(0)
 		for i := 0; i < 5; i++ {
 			at := time.Now().Add(time.Duration(i) * time.Minute)
@@ -236,6 +258,7 @@ func TestSearchMatchesTheSameRowsInTheSameOrder(t *testing.T) {
 			t.Fatalf("Add: %v", err)
 		}
 	}
+	warmSearchIndex(t, history)
 	// The ring matcher is the reference behavior the SQL used to mirror with
 	// instr; the trigram index must not change which rows come back.
 	var want []string
@@ -293,6 +316,7 @@ func TestPagedSearchDoesNotDuplicateOrSkipRows(t *testing.T) {
 			t.Fatalf("Add: %v", err)
 		}
 	}
+	warmSearchIndex(t, history)
 	want := make([]string, 0, total/2)
 	for i := total - 2; i >= 0; i -= 2 { // newest first, even ids only
 		want = append(want, fmt.Sprintf("req-%02d", i))
@@ -304,6 +328,7 @@ func TestPagedSearchDoesNotDuplicateOrSkipRows(t *testing.T) {
 	}{
 		{"indexed", "kettle is on"},
 		{"bounded window", "ke"},
+		{"match-most", "the"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var seen []string
@@ -321,6 +346,12 @@ func TestPagedSearchDoesNotDuplicateOrSkipRows(t *testing.T) {
 					break
 				}
 			}
+			if tc.name == "match-most" {
+				if len(seen) != total {
+					t.Fatalf("paged search for %q returned %d rows, want %d", tc.text, len(seen), total)
+				}
+				return
+			}
 			if len(seen) != len(want) {
 				t.Fatalf("paged search for %q returned %d rows, want %d", tc.text, len(seen), len(want))
 			}
@@ -331,9 +362,10 @@ func TestPagedSearchDoesNotDuplicateOrSkipRows(t *testing.T) {
 	}
 }
 
-// TestShortQueryReadsOnlyTheNewestWindow covers the documented fallback for
-// one and two character queries, which a trigram index cannot answer: it must
-// not error, and it must not walk the retained window.
+// TestShortQueryReadsOnlyTheNewestWindow covers the documented fallback for one
+// and two character queries, which a trigram index cannot answer: it must not
+// error, it must not walk the retained window, and the page must be told the
+// answer only covered that window.
 func TestShortQueryReadsOnlyTheNewestWindow(t *testing.T) {
 	ctx := context.Background()
 	history, _ := openHistory(t, activity.HistoryOptions{})
@@ -363,8 +395,12 @@ func TestShortQueryReadsOnlyTheNewestWindow(t *testing.T) {
 		if len(got) != 1 || got[0] != "req-250" {
 			t.Fatalf("search %q matched %v, want only the row inside the newest window", needle, got)
 		}
+		if page.SearchWindow != activity.SearchWindowShort {
+			t.Fatalf("search %q reported window %q, want the short-query notice", needle, page.SearchWindow)
+		}
 	}
-	// Three characters reach the index, so the older row matches again.
+	// Three characters reach the index, so the older row matches again and the
+	// answer is complete.
 	page, err := history.QueryPage(ctx, activity.Query{Text: "zeb", Limit: 50})
 	if err != nil {
 		t.Fatalf("QueryPage: %v", err)
@@ -372,11 +408,14 @@ func TestShortQueryReadsOnlyTheNewestWindow(t *testing.T) {
 	if got := ids(page.Entries); len(got) != 2 || got[0] != "req-250" || got[1] != "req-050" {
 		t.Fatalf("three-character search matched %v, want both zebra rows newest first", got)
 	}
+	if page.SearchWindow != activity.SearchWindowNone {
+		t.Fatalf("an indexed search reported window %q, want a complete answer", page.SearchWindow)
+	}
 }
 
-// TestSearchIndexFollowsTrimAndDelete covers the writer half: the triggers must
-// carry a trimmed row's kept text into the index, drop the text retention
-// removed, and index a new row immediately.
+// TestSearchIndexFollowsTrimAndDelete covers the writer half: the index must
+// carry a trimmed row's kept text, drop the text retention removed, and index a
+// new row immediately.
 func TestSearchIndexFollowsTrimAndDelete(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
@@ -431,34 +470,226 @@ func TestSearchIndexFollowsTrimAndDelete(t *testing.T) {
 	if got := searchIDs(t, history, "brand-new-marker"); len(got) != 1 || got[0] != "fresh" {
 		t.Fatalf("a new row matched %v before any rebuild, want it immediately", got)
 	}
+	ftsIntegrity(t, st)
 }
 
-// TestSearchIndexBackfillIsResumableAndIdempotent covers the upgrade path: a
-// database from a build without the index is rebuilt in bounded batches, a
-// restart continues from the persisted cursor, and a second pass does nothing.
-func TestSearchIndexBackfillIsResumableAndIdempotent(t *testing.T) {
+// TestPruneSurvivesAPartiallyIndexedUpgrade is the regression test for the
+// SQLITE_CORRUPT blocker: an upgraded database has rows the rebuild has not
+// reached, and the first Prune after the upgrade deletes and trims rows above
+// the backfill cursor. The old external-content design raised "database disk
+// image is malformed (267)" on exactly this statement, because a trigger
+// retracted an index entry that did not exist yet. The explicit-maintenance
+// design must survive it and leave both tables agreeing.
+func TestPruneSurvivesAPartiallyIndexedUpgrade(t *testing.T) {
 	ctx := context.Background()
-	const rows = 1000
-	// The marker sits above the first batch, so a search must still find it
-	// while the rebuild is partway through.
-	history, st := seedWindow(t, rows, 200, map[int]string{900: "resume-marker"})
-
+	st := openStore(t)
+	const rows = 900
+	seedRawRows(t, st, rows, 400)
+	markers := map[int]string{
+		10:  "deleted-indexed-marker",
+		850: "above-cursor-marker",
+	}
+	for i, marker := range markers {
+		if _, err := st.DB().Exec(`
+			UPDATE activity SET search = ? || ' ' || search WHERE request_id = ?`,
+			marker, fmt.Sprintf("req-%d", i)); err != nil {
+			t.Fatalf("mark row %d: %v", i, err)
+		}
+	}
+	// The upgrade shape: rows exist, and only the first batch is indexed.
+	last := time.Now().Add(-time.Minute).UnixMilli()
+	history := activity.NewHistory(st.DB(), activity.HistoryOptions{
+		FullWindow:       time.Hour,
+		MaxAge:           30 * 24 * time.Hour,
+		MaxRows:          rows * 5 / 9, // the cap deletes ids 1..400, straddling the cursor
+		SkipSearchWarmup: true,
+		Now:              func() time.Time { return time.UnixMilli(last) },
+	})
 	first, err := history.WarmSearchIndex(ctx)
 	if err != nil {
 		t.Fatalf("WarmSearchIndex: %v", err)
 	}
-	if first.Complete {
-		t.Fatal("the first batch reported a complete rebuild for a 1000-row window")
+	if first.Complete || first.IndexedThrough != 200 {
+		t.Fatalf("first batch = %+v, want 200 rows indexed and an incomplete rebuild", first)
 	}
-	if first.IndexedThrough == 0 || first.IndexedThrough >= rows {
-		t.Fatalf("first batch indexed through %d, want a bounded prefix of %d rows", first.IndexedThrough, rows)
-	}
-	// Rows above the cursor are not in the index yet; the search must still
-	// answer completely instead of silently ignoring them.
-	if got := searchIDs(t, history, "resume-marker"); len(got) != 1 {
-		t.Fatalf("a search during the rebuild matched %v, want the not-yet-indexed row", got)
+	if n := ftsRows(t, st); n != 200 {
+		t.Fatalf("index holds %d rows after one batch, want 200", n)
 	}
 
+	// This is the statement that used to fail: a row cap that deletes indexed
+	// and un-indexed rows together, followed by a trim of rows the rebuild has
+	// not reached.
+	result, err := history.Prune(ctx)
+	if err != nil {
+		t.Fatalf("Prune on a partly indexed upgrade raised %v", err)
+	}
+	if result.Deleted != 400 || result.Remaining != 500 {
+		t.Fatalf("prune = %+v, want 400 deleted and 500 kept", result)
+	}
+	// The kept rows are above the cursor; the search still finds them through
+	// the un-indexed tail while the rebuild continues.
+	if got := searchIDs(t, history, "above-cursor-marker"); len(got) != 1 || got[0] != "req-850" {
+		t.Fatalf("a row above the cursor matched %v", got)
+	}
+	if got := searchIDs(t, history, "deleted-indexed-marker"); len(got) != 0 {
+		t.Fatalf("a deleted indexed row still matched %v", got)
+	}
+	ftsIntegrity(t, st)
+
+	// A mixed DELETE is the other half of the repro: ids 1..200 were indexed,
+	// 201..600 were not, and both ranges are already gone above.
+	if _, err := st.DB().ExecContext(ctx, `DELETE FROM activity WHERE id <= 450`); err != nil {
+		t.Fatalf("mixed delete across the cursor: %v", err)
+	}
+	ftsIntegrity(t, st)
+
+	// Finishing the rebuild converges the index on what is left.
+	state := warmSearchIndex(t, history)
+	if !state.Complete {
+		t.Fatalf("rebuild did not finish: %+v", state)
+	}
+	if n := ftsRows(t, st); n != 450 {
+		t.Fatalf("index holds %d rows for the 450 retained rows", n)
+	}
+	ftsIntegrity(t, st)
+}
+
+// TestSearchIndexUpgradesFromTheTriggerDesign opens a database written by the
+// previous design on this branch: an external-content table, the three sync
+// triggers and a state table without the new columns. The upgrade must drop the
+// triggers, replace the table with the content-bearing one, reset the state and
+// rebuild, so the corrupting shape cannot survive an upgrade.
+func TestSearchIndexUpgradesFromTheTriggerDesign(t *testing.T) {
+	ctx := context.Background()
+	st := openStore(t)
+	seedRawRows(t, st, 300, 200)
+	for _, statement := range []string{
+		`CREATE VIRTUAL TABLE activity_fts USING fts5(search, content='activity', content_rowid='id', tokenize='trigram')`,
+		`CREATE TRIGGER activity_fts_delete AFTER DELETE ON activity BEGIN
+			INSERT INTO activity_fts (activity_fts, rowid, search) VALUES ('delete', old.id, old.search);
+		END`,
+		`CREATE TRIGGER activity_fts_update AFTER UPDATE OF search ON activity BEGIN
+			INSERT INTO activity_fts (activity_fts, rowid, search) VALUES ('delete', old.id, old.search);
+			INSERT INTO activity_fts (rowid, search) VALUES (new.id, new.search);
+		END`,
+		`CREATE TABLE activity_search_state (
+			id INTEGER PRIMARY KEY CHECK (id = 1),
+			indexed_through INTEGER NOT NULL DEFAULT 0,
+			complete INTEGER NOT NULL DEFAULT 0
+		)`,
+		`INSERT INTO activity_search_state (id, indexed_through, complete) VALUES (1, 100, 0)`,
+		`INSERT INTO activity_fts (rowid, search) SELECT id, search FROM activity WHERE id <= 100`,
+	} {
+		if _, err := st.DB().ExecContext(ctx, statement); err != nil {
+			t.Fatalf("seed old design: %v", err)
+		}
+	}
+	history := activity.NewHistory(st.DB(), activity.HistoryOptions{SkipSearchWarmup: true})
+	if state := warmSearchIndex(t, history); !state.Complete || state.IndexedThrough != 300 {
+		t.Fatalf("upgraded rebuild = %+v, want complete through 300", state)
+	}
+	var triggers int
+	if err := st.DB().QueryRow(
+		`SELECT count(*) FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'activity_fts%'`).Scan(&triggers); err != nil {
+		t.Fatalf("count triggers: %v", err)
+	}
+	if triggers != 0 {
+		t.Fatalf("%d sync triggers survived the upgrade", triggers)
+	}
+	var sql string
+	if err := st.DB().QueryRow(`SELECT sql FROM sqlite_master WHERE name = 'activity_fts'`).Scan(&sql); err != nil {
+		t.Fatalf("read definition: %v", err)
+	}
+	if strings.Contains(strings.ToLower(sql), "content=") {
+		t.Fatalf("upgraded index is still external content: %s", sql)
+	}
+	if n := ftsRows(t, st); n != 300 {
+		t.Fatalf("index holds %d rows for 300 retained rows", n)
+	}
+	ftsIntegrity(t, st)
+	if _, err := history.Prune(ctx); err != nil {
+		t.Fatalf("Prune after the upgrade: %v", err)
+	}
+}
+
+// TestSearchIndexBackfillResumesAfterACrash covers the crash half of the
+// blocker: a committed batch survives, the next start resumes from its cursor,
+// and no trigger can disagree with the index because there are none.
+func TestSearchIndexBackfillResumesAfterACrash(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := dir + "/data/assistant.db"
+
+	first, err := store.Open(ctx, path)
+	if err != nil {
+		t.Fatalf("first Open: %v", err)
+	}
+	seedRawRows(t, first, 1000, 200)
+	if _, err := first.DB().Exec(`
+		UPDATE activity SET search = 'resume-marker ' || search WHERE request_id = 'req-900'`); err != nil {
+		t.Fatalf("mark row: %v", err)
+	}
+	history := activity.NewHistory(first.DB(), activity.HistoryOptions{SkipSearchWarmup: true})
+	state, err := history.WarmSearchIndex(ctx)
+	if err != nil {
+		t.Fatalf("WarmSearchIndex: %v", err)
+	}
+	if state.Complete || state.IndexedThrough != 200 {
+		t.Fatalf("first batch = %+v, want a bounded prefix", state)
+	}
+	// A crash right here leaves exactly this: one committed batch.
+	if err := first.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	second, err := store.Open(ctx, path)
+	if err != nil {
+		t.Fatalf("second Open: %v", err)
+	}
+	defer second.Close()
+	history = activity.NewHistory(second.DB(), activity.HistoryOptions{SkipSearchWarmup: true})
+	var indexed, complete int
+	if err := second.DB().QueryRow(`SELECT indexed_through, complete FROM activity_search_state WHERE id = 1`).
+		Scan(&indexed, &complete); err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	if indexed != 200 || complete != 0 {
+		t.Fatalf("state after restart = (%d, %d), want (200, 0)", indexed, complete)
+	}
+	// The index never holds a row above the cursor, so there is nothing a
+	// trigger could retract and nothing a search could double-count.
+	var above int
+	if err := second.DB().QueryRow(`SELECT count(*) FROM activity_fts WHERE rowid > ?`, indexed).
+		Scan(&above); err != nil {
+		t.Fatalf("count index rows: %v", err)
+	}
+	if above != 0 {
+		t.Fatalf("index holds %d rows above the cursor after a crash", above)
+	}
+	if got := searchIDs(t, history, "resume-marker"); len(got) != 1 {
+		t.Fatalf("a search mid-rebuild matched %v, want the un-indexed row", got)
+	}
+	// The resumed rebuild finishes, and every row is indexed once.
+	if state := warmSearchIndex(t, history); !state.Complete || state.IndexedThrough != 1000 {
+		t.Fatalf("resumed rebuild = %+v", state)
+	}
+	if n := ftsRows(t, second); n != 1000 {
+		t.Fatalf("index holds %d rows for 1000 retained rows", n)
+	}
+	if got := searchIDs(t, history, "resume-marker"); len(got) != 1 {
+		t.Fatalf("resume-marker matched %v after the rebuild, want exactly one row", got)
+	}
+	ftsIntegrity(t, second)
+}
+
+// TestSearchIndexBackfillIsIdempotent re-runs a committed batch against an
+// index that already holds every row. The index must not grow and must stay
+// internally consistent; count(*) is a real count here because the table
+// carries its own content.
+func TestSearchIndexBackfillIsIdempotent(t *testing.T) {
+	ctx := context.Background()
+	const rows = 1000
+	history, st := seedWindow(t, rows, 200, map[int]string{900: "resume-marker"})
 	state := warmSearchIndex(t, history)
 	if !state.Complete || state.IndexedThrough != rows {
 		t.Fatalf("rebuild finished at %+v, want complete through %d", state, rows)
@@ -466,49 +697,113 @@ func TestSearchIndexBackfillIsResumableAndIdempotent(t *testing.T) {
 	if n := ftsRows(t, st); n != rows {
 		t.Fatalf("the index holds %d rows for %d retained rows", n, rows)
 	}
-	if got := searchIDs(t, history, "resume-marker"); len(got) != 1 {
-		t.Fatalf("after the rebuild, resume-marker matched %v, want exactly one row", got)
+	ftsIntegrity(t, st)
+	// Rewind the cursor without clearing the index: the next pass replays
+	// batches it has already written.
+	if _, err := st.DB().ExecContext(ctx,
+		`UPDATE activity_search_state SET indexed_through = 500, complete = 0 WHERE id = 1`); err != nil {
+		t.Fatalf("rewind cursor: %v", err)
 	}
-
-	// A second start reads the persisted cursor and does no work.
-	again, err := history.WarmSearchIndex(ctx)
-	if err != nil {
-		t.Fatalf("second WarmSearchIndex: %v", err)
-	}
-	if !again.Complete || again.IndexedThrough != state.IndexedThrough {
-		t.Fatalf("second warmup = %+v, want the same completed state", again)
+	if state := warmSearchIndex(t, history); !state.Complete {
+		t.Fatalf("replayed rebuild = %+v, want complete", state)
 	}
 	if n := ftsRows(t, st); n != rows {
-		t.Fatalf("a second warmup left %d index rows, want %d: it duplicated entries", n, rows)
+		t.Fatalf("a replayed batch left %d index rows, want %d: it duplicated entries", n, rows)
 	}
-
-	// A row deleted by retention after the rebuild leaves the index with it.
-	if _, err := st.DB().ExecContext(ctx, `DELETE FROM activity WHERE request_id = 'req-900'`); err != nil {
-		t.Fatalf("delete row: %v", err)
+	if got := searchIDs(t, history, "resume-marker"); len(got) != 1 {
+		t.Fatalf("resume-marker matched %v after the replay, want exactly one row", got)
 	}
-	if got := searchIDs(t, history, "resume-marker"); len(got) != 0 {
-		t.Fatalf("a deleted row still matched %v", got)
-	}
+	ftsIntegrity(t, st)
 }
 
-// TestNewHistoryDoesNotWaitForTheIndexRebuild covers the startup half of the
-// migration note: opening the store and wiring the history must not block on
-// tokenizing a whole retained window.
-func TestNewHistoryDoesNotWaitForTheIndexRebuild(t *testing.T) {
+// TestSearchIndexIsReclaimedAfterATrim covers the growth half: retention
+// rewrites every trimmed haystack to a short summary, and the maintenance step
+// must return the dead postings to SQLite rather than ratchet the file to the
+// peak haystack. The test measures the bytes the index's shadow tables actually
+// occupy (dbstat) and the database's free pages.
+func TestSearchIndexIsReclaimedAfterATrim(t *testing.T) {
+	ctx := context.Background()
+	const rows = 4000
 	st := openStore(t)
-	seedRawRows(t, st, largeWindowRows, fillerHaystack)
+	seedRawRows(t, st, rows, 400)
+	now := time.Now().Truncate(time.Minute)
+	history := activity.NewHistory(st.DB(), activity.HistoryOptions{
+		FullWindow:       time.Hour,
+		MaxAge:           30 * 24 * time.Hour,
+		MaxRows:          rows * 2,
+		SkipSearchWarmup: true,
+		Now:              func() time.Time { return now },
+	})
+	// The seeded rows end one minute ago and span ~67 hours, so most of them
+	// are older than the full window and get trimmed.
+	warmSearchIndex(t, history)
+	ftsBytesBefore := ftsBytes(t, st)
+	if ftsBytesBefore == 0 {
+		t.Skip("this build has no dbstat virtual table")
+	}
 
-	started := time.Now()
-	history := activity.NewHistory(st.DB(), activity.HistoryOptions{})
-	elapsed := time.Since(started)
-	if elapsed > 200*time.Millisecond {
-		t.Fatalf("NewHistory took %v with %d rows to index, want a background rebuild",
-			elapsed, largeWindowRows)
+	// Prune trims at most pruneBatch rows per call.
+	for i := 0; i < 10; i++ {
+		result, err := history.Prune(ctx)
+		if err != nil {
+			t.Fatalf("Prune: %v", err)
+		}
+		if result.Trimmed == 0 {
+			break
+		}
 	}
-	if history == nil {
-		t.Fatal("NewHistory returned nil")
+	ftsBytesAfter := ftsBytes(t, st)
+	t.Logf("index bytes: %d before trim, %d after; pages=%d freelist=%d",
+		ftsBytesBefore, ftsBytesAfter, pageCount(t, st), freelist(t, st))
+	if ftsBytesAfter >= ftsBytesBefore {
+		t.Fatalf("the index occupies %d bytes after trimming, was %d: the trim did not reclaim it",
+			ftsBytesAfter, ftsBytesBefore)
 	}
-	t.Logf("NewHistory with %d unindexed rows: %v", largeWindowRows, elapsed)
+	pageCount(t, st)
+	if freelist(t, st) == 0 {
+		t.Fatal("trimming left no free pages for the next writes: the file will ratchet")
+	}
+	// The trimmed rows still match by what they keep (the Tool name), and the
+	// long haystack text is gone from the index.
+	if got := searchIDs(t, history, "calendar.get_events"); len(got) == 0 {
+		t.Fatal("a trimmed row lost its kept summary text in the index")
+	}
+	ftsIntegrity(t, st)
+}
+
+// TestSearchIndexKeepsTheWritePathBounded measures the p99 of a history insert
+// with the index attached. FTS5's default merge policy put a segment merge on
+// the request goroutine (48.7 ms p99 at 20,000 rows, #373 review); the explicit
+// policy moves that work to the maintenance path, so the p99 stays close to the
+// index-free write it replaces.
+func TestSearchIndexKeepsTheWritePathBounded(t *testing.T) {
+	history, _ := seedWindow(t, largeWindowRows, fillerHaystack, nil)
+	warmSearchIndex(t, history)
+	base := time.Now().Add(time.Duration(largeWindowRows) * time.Minute)
+	// Warm the statement cache and the page cache first; the first insert into
+	// a freshly built index pays a one-time flush.
+	for i := 0; i < 20; i++ {
+		if err := history.Add(entry(fmt.Sprintf("warm-%d", i), base.Add(time.Duration(i)*time.Second), nil)); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+	}
+	const writes = 200
+	durations := make([]time.Duration, 0, writes)
+	for i := 0; i < writes; i++ {
+		started := time.Now()
+		if err := history.Add(entry(fmt.Sprintf("new-%d", i), base.Add(time.Duration(i)*time.Second), nil)); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+		durations = append(durations, time.Since(started))
+	}
+	sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
+	p99 := durations[98*writes/100]
+	if p99 > writeCeiling {
+		t.Fatalf("p99 history insert took %v, want under %v: a merge is running on the write path",
+			p99, writeCeiling)
+	}
+	t.Logf("history insert with the index: p50=%v p90=%v p99=%v max=%v",
+		durations[writes/2], durations[90*writes/100], p99, durations[writes-1])
 }
 
 // searchIDs runs one search and returns the ids it matched, newest first.
@@ -529,7 +824,8 @@ func ids(entries []activity.Entry) []string {
 	return out
 }
 
-// ftsRows counts the entries in the trigram index.
+// ftsRows counts the rows in the trigram index. The table carries its own
+// content, so this is a real row count, not activity's.
 func ftsRows(t *testing.T, st *store.Store) int {
 	t.Helper()
 	var n int
@@ -547,6 +843,45 @@ func ftsRowCount(t *testing.T, st *store.Store, needle string) int {
 	if err := st.DB().QueryRow(
 		`SELECT count(*) FROM activity_fts WHERE activity_fts MATCH ?`, `"`+needle+`"`).Scan(&n); err != nil {
 		t.Fatalf("match index rows: %v", err)
+	}
+	return n
+}
+
+// ftsIntegrity runs FTS5's internal consistency check, which for a
+// content-bearing table also compares the index with the stored content.
+func ftsIntegrity(t *testing.T, st *store.Store) {
+	t.Helper()
+	if _, err := st.DB().Exec(`INSERT INTO activity_fts (activity_fts) VALUES ('integrity-check')`); err != nil {
+		t.Fatalf("index integrity check: %v", err)
+	}
+}
+
+// ftsBytes is the on-disk size of the index's shadow tables.
+func ftsBytes(t *testing.T, st *store.Store) int64 {
+	t.Helper()
+	var n int64
+	err := st.DB().QueryRow(
+		`SELECT coalesce(sum(pgsize), 0) FROM dbstat WHERE name LIKE 'activity_fts%'`).Scan(&n)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+func freelist(t *testing.T, st *store.Store) int {
+	t.Helper()
+	var n int
+	if err := st.DB().QueryRow(`PRAGMA freelist_count`).Scan(&n); err != nil {
+		t.Fatalf("freelist_count: %v", err)
+	}
+	return n
+}
+
+func pageCount(t *testing.T, st *store.Store) int {
+	t.Helper()
+	var n int
+	if err := st.DB().QueryRow(`PRAGMA page_count`).Scan(&n); err != nil {
+		t.Fatalf("page_count: %v", err)
 	}
 	return n
 }

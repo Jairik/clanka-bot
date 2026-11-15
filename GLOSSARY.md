@@ -103,9 +103,12 @@ _Avoid_: Request log viewer, trace, transcript history
 **Activity history**:
 The durable part of Activity: one SQLite row per completed request, older than
 the in-memory ring, paged newest first and searchable across the text the row
-shows. Retention keeps a recent window in full, trims older rows to a short
-summary and deletes rows past the age and row limits. The ring stays the fast
-first page; the history is the source of truth for anything older.
+shows. A search is a case-insensitive substring match, answered by a trigram
+FTS5 index over the same haystack; a one- or two-character query has no trigram,
+so it reads only the newest 200 rows and the page says so. Retention keeps a
+recent window in full, trims older rows to a short summary and deletes rows past
+the age and row limits. The ring stays the fast first page; the history is the
+source of truth for anything older.
 _Avoid_: Request log archive, transcript database, telemetry
 
 **UI artifact**:

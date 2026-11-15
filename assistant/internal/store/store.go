@@ -370,8 +370,22 @@ func Open(ctx context.Context, path string) (*Store, error) {
 	return st, nil
 }
 
-// dsn builds the SQLite URI: WAL for restart-safe writes, a busy timeout for
-// the single writer, and foreign keys for later tables.
+// dsn builds the SQLite URI. Every pragma here is per connection, so it is
+// reapplied when the pool dials a new one:
+//
+//   - busy_timeout(5000): wait up to five seconds for a lock another
+//     connection holds instead of returning SQLITE_BUSY to a startup recovery.
+//   - journal_mode(WAL): restart-safe writes; converting an existing
+//     rollback-journal file also works, the mode is persistent per database.
+//   - foreign_keys(1): enforce references for later tables.
+//   - synchronous(NORMAL): WAL's usual durability, still fsync at checkpoint.
+//
+// _txlock=immediate makes BeginTx take the write lock at BEGIN rather than on
+// the first write. A deferred transaction that reads first and then upgrades
+// cannot use the busy handler at all: SQLite returns SQLITE_BUSY at once
+// because waiting could deadlock with the writer that committed since the read
+// snapshot. Every transaction this store begins writes, so paying the lock
+// wait at BEGIN is exactly what recovery needs.
 func dsn(path string) string {
 	uri := url.URL{Scheme: "file", Path: filepath.ToSlash(path)}
 	query := uri.Query()
@@ -379,6 +393,7 @@ func dsn(path string) string {
 	query.Add("_pragma", "journal_mode(WAL)")
 	query.Add("_pragma", "foreign_keys(1)")
 	query.Add("_pragma", "synchronous(NORMAL)")
+	query.Add("_txlock", "immediate")
 	uri.RawQuery = query.Encode()
 	return uri.String()
 }

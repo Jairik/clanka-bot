@@ -134,6 +134,8 @@ type entry struct {
 // single pending Confirmation.
 type Registry struct {
 	defaultTimeout time.Duration
+	// now is the clock pending Confirmations age by; tests advance it.
+	now func() time.Time
 
 	mu     sync.RWMutex
 	tools  map[string]*entry
@@ -144,18 +146,37 @@ type Registry struct {
 
 	// pending is the one confirm call waiting for a spoken yes. Confirmation
 	// enforcement lives here so no caller, including the model, can run a
-	// confirm Tool around it.
+	// confirm Tool around it. pendingAt bounds how long an unanswered question
+	// blocks Announcements.
 	pendingMu sync.Mutex
 	pending   *PendingConfirmation
+	pendingAt time.Time
+}
+
+// Option configures a Registry.
+type Option func(*Registry)
+
+// WithClock injects the clock pending Confirmations age by. Nil keeps time.Now.
+func WithClock(now func() time.Time) Option {
+	return func(r *Registry) {
+		if now != nil {
+			r.now = now
+		}
+	}
 }
 
 // NewRegistry creates an empty registry. defaultTimeout applies to Tools that
 // declare none.
-func NewRegistry(defaultTimeout time.Duration) *Registry {
-	return &Registry{
+func NewRegistry(defaultTimeout time.Duration, opts ...Option) *Registry {
+	r := &Registry{
 		defaultTimeout: defaultTimeout,
+		now:            time.Now,
 		tools:          make(map[string]*entry),
 	}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
 }
 
 // SetPolicy installs the live Tool override policy. nil clears it, which

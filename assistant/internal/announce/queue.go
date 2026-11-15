@@ -357,9 +357,12 @@ func (q *Queue) run() {
 	}
 }
 
-// blockedWaiting reports that only the blocked predicate keeps a queued item
-// from starting. An urgent alert ignores a hold, so it is still waiting when
-// the blocked gate is the only thing left.
+// blockedWaiting reports that the blocked predicate is the only gate left
+// before a queued item starts. An urgent alert ignores a hold, so it is still
+// waiting when the blocked gate is the only thing left. The predicate is
+// opaque and may change without a queue event (a Confirmation TTL, a Ring
+// timing out), so the caller rechecks while this holds rather than trusting
+// one evaluation.
 func (q *Queue) blockedWaiting() bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
@@ -369,7 +372,7 @@ func (q *Queue) blockedWaiting() bool {
 	if q.held && !q.hasUrgentLocked() {
 		return false
 	}
-	return q.blocked != nil && q.blocked()
+	return q.blocked != nil
 }
 
 // hasUrgentLocked reports whether an alert is waiting behind the hold. The

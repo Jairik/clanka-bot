@@ -438,7 +438,8 @@ than as healthy.
 
 Timers are stored in the database and survive a restart. Give one a label
 ("set a pasta timer for 10 minutes") and ask for it later ("how long is left on
-the pasta timer"); `timer.list` is Local-only because labels can be private.
+the pasta timer"); `timer.list` and `timer.remaining` are Local-only because
+their replies can name a private label.
 On startup, a Timer up to two minutes overdue goes off immediately, while older
 ones are recorded missed and summarised in one Announcement. A Timer that fires
 **Rings**: it loops the assigned `timer_ring` Cue with a gap, speaks its label

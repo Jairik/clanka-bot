@@ -884,7 +884,9 @@ func NewRemaining(m *Manager) tool.Tool[RemainingIn, RemainingOut] {
 		Name:        RemainingName,
 		Description: "Say how long is left on a timer, optionally named by label.",
 		Permission:  tool.PermissionRead,
-		LocalOnly:   tool.LocalOnlyNo,
+		// The reply repeats the Timer's label, which can be private, so it stays
+		// on the Pi like timer.list: the Agent path cannot see or call it.
+		LocalOnly: tool.LocalOnlyYes,
 		Handler: func(_ context.Context, in RemainingIn) (RemainingOut, error) {
 			timer, ok := m.Remaining(in.Label)
 			if !ok {

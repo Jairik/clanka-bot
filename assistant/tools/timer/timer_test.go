@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/tools/timer"
 )
@@ -199,13 +200,46 @@ func TestListIsLocalOnly(t *testing.T) {
 	if !info.LocalOnly {
 		t.Fatal("timer.list is not LocalOnlyYes")
 	}
-	for _, name := range []string{timer.SetName, timer.CancelName, timer.RemainingName} {
+	for _, name := range []string{timer.SetName, timer.CancelName} {
 		info, ok := reg.Info(name)
 		if !ok {
 			t.Fatalf("%s not registered", name)
 		}
 		if info.LocalOnly {
 			t.Errorf("%s is LocalOnlyYes, want LocalOnlyNo", name)
+		}
+	}
+}
+
+// TestRemainingIsLocalOnly mirrors TestListIsLocalOnly: the reply repeats the
+// Timer's label, and a lookup with no label answers about the soonest Timer, so
+// the same private text would otherwise reach the Agent path (#171).
+func TestRemainingIsLocalOnly(t *testing.T) {
+	m := newManager(nil)
+	if got := timer.NewRemaining(m).LocalOnly; got != tool.LocalOnlyYes {
+		t.Fatalf("timer.remaining LocalOnly = %d, want LocalOnlyYes", got)
+	}
+	reg := newRegistry(t, m)
+	info, ok := reg.Info(timer.RemainingName)
+	if !ok {
+		t.Fatal("timer.remaining not registered")
+	}
+	if !info.LocalOnly {
+		t.Fatal("timer.remaining is not LocalOnlyYes")
+	}
+}
+
+// TestLocalOnlyTimerToolsStayOnTheFastPath keeps the privacy declaration from
+// quietly removing the local route: a Local-only Tool still answers by voice.
+func TestLocalOnlyTimerToolsStayOnTheFastPath(t *testing.T) {
+	reg := newRegistry(t, newManager(nil))
+	for _, name := range []string{timer.RemainingName, timer.ListName} {
+		info, ok := reg.Info(name)
+		if !ok {
+			t.Fatalf("%s not registered", name)
+		}
+		if !pipeline.FastPathEligible(info) {
+			t.Errorf("%s is not Fast path eligible; a Local-only Tool must still route locally", name)
 		}
 	}
 }

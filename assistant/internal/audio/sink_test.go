@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -84,6 +85,131 @@ func TestPulseSinkUsesDefaultDeviceWhenUnset(t *testing.T) {
 	}
 	if strings.Contains(string(args), "--device=") {
 		t.Fatalf("unexpected --device in:\n%s", args)
+	}
+}
+
+// TestPulseSinkCloseBoundsAStalledDrain is the field case: pacat accepts the
+// PCM and then stops draining without exiting (suspended sink, dead Bluetooth
+// device, wedged Pulse server, blocked client-library write). Close must return
+// within its bound and the child must be killed; the serial speaker gate stays
+// shut until Close returns, so an unbounded wait silences every later sound.
+func TestPulseSinkCloseBoundsAStalledDrain(t *testing.T) {
+	dir := t.TempDir()
+	pidPath := filepath.Join(dir, "pid")
+	binary := filepath.Join(dir, "pacat")
+	// Ignore stdin entirely and keep running. exec keeps the pid the script
+	// records, so the check below observes this very process.
+	script := "#!/bin/sh\necho $$ > '" + pidPath + "'\nexec sleep 30\n"
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake pacat: %v", err)
+	}
+	t.Cleanup(func() { killRecordedProcess(pidPath) })
+
+	sink := audio.NewPulseSink(binary, "")
+	writer, err := sink.Open(context.Background(), audio.Format{Rate: 24000, Width: 2, Channels: 1})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if _, err := writer.Write([]byte{1, 2, 3, 4}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	closed := make(chan error, 1)
+	go func() { closed <- writer.Close() }()
+	started := time.Now()
+	var closeErr error
+	select {
+	case closeErr = <-closed:
+	case <-time.After(8 * time.Second):
+		t.Fatal("Close did not return within 8s: a stalled pacat still holds the drain")
+	}
+	elapsed := time.Since(started)
+
+	if closeErr == nil {
+		t.Fatal("Close = nil, want a drain-stall error")
+	}
+	if !strings.Contains(closeErr.Error(), "did not drain") {
+		t.Fatalf("Close = %v, want a drain-stall error", closeErr)
+	}
+	// drainTimeout 4s + killTimeout 1s, with room for a loaded runner.
+	if elapsed > 6*time.Second {
+		t.Fatalf("Close took %s, want at most 6s", elapsed)
+	}
+	assertRecordedProcessGone(t, pidPath)
+}
+
+// TestPulseSinkCloseWaitsForASlowDrain keeps the documented promise: a tail
+// that plays slower than the writer still reaches pacat before Close returns.
+func TestPulseSinkCloseWaitsForASlowDrain(t *testing.T) {
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "pacat")
+	pcmPath := filepath.Join(dir, "pcm.raw")
+	script := "#!/bin/sh\ncat > '" + pcmPath + "'\nsleep 0.5\n"
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake pacat: %v", err)
+	}
+	sink := audio.NewPulseSink(binary, "")
+	writer, err := sink.Open(context.Background(), audio.Format{Rate: 24000, Width: 2, Channels: 1})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if _, err := writer.Write([]byte{5, 6, 7, 8}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	started := time.Now()
+	if err := writer.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed < 400*time.Millisecond {
+		t.Fatalf("Close returned after %s, want it to wait for the 500ms tail", elapsed)
+	}
+	pcm, err := os.ReadFile(pcmPath)
+	if err != nil {
+		t.Fatalf("read pcm: %v", err)
+	}
+	if string(pcm) != string([]byte{5, 6, 7, 8}) {
+		t.Fatalf("pcm = %v, want [5 6 7 8]", pcm)
+	}
+}
+
+// killRecordedProcess makes sure a failing test never leaves the fake child
+// behind for its full sleep.
+func killRecordedProcess(pidPath string) {
+	text, err := os.ReadFile(pidPath)
+	if err != nil {
+		return
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(text)))
+	if err != nil || pid <= 0 {
+		return
+	}
+	if process, err := os.FindProcess(pid); err == nil {
+		_ = process.Kill()
+	}
+}
+
+// assertRecordedProcessGone proves the killed child is not still running.
+func assertRecordedProcessGone(t *testing.T, pidPath string) {
+	t.Helper()
+	text, err := os.ReadFile(pidPath)
+	if err != nil {
+		t.Fatalf("read fake pacat pid: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(text)))
+	if err != nil || pid <= 0 {
+		t.Fatalf("fake pacat pid = %q", text)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		process, err := os.FindProcess(pid)
+		if err != nil || process.Signal(syscall.Signal(0)) != nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("pacat pid %d is still running after Close", pid)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

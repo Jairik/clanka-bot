@@ -6,6 +6,7 @@ package audio
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os/exec"
@@ -13,7 +14,33 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
+
+// Closing a stream waits for pacat to play its buffered tail, then stops
+// waiting. The bounds are what keep a sink that no longer accepts samples
+// (suspended output, dead Bluetooth device, wedged Pulse server, a blocked
+// client-library write) from holding Close forever: speech.SerialSink keeps
+// its one-speaker gate shut until Close returns, so an unbounded wait silences
+// every later reply, Filler, Cue, Ring and Announcement.
+//
+// pacat runs with --latency-msec=100 and Close follows the last Write, so a
+// healthy tail is milliseconds. The pipe itself holds at most 64 KiB, which is
+// 2.05 s of the 16 kHz mono PCM every Cue plays (cmd/assistant builds the Cue
+// sink at the capture rate) and 1.4 s at 24 kHz; drainTimeout covers the
+// former with headroom so a healthy long Cue is not killed mid-play.
+var (
+	// drainTimeout bounds the wait for the buffered tail to play out.
+	drainTimeout = 4 * time.Second
+	// killTimeout bounds the wait after the stream context is cancelled and
+	// CommandContext has killed pacat.
+	killTimeout = 1 * time.Second
+)
+
+// errDrainTimeout reports a pacat that was still running after its stdin
+// closed, so Close stopped the stream instead of waiting for a drain that
+// never came. The reply path logs it.
+var errDrainTimeout = errors.New("audio: pacat did not drain after stdin closed")
 
 // Format is the PCM layout expected by the sink.
 type Format struct {
@@ -61,8 +88,9 @@ func pactlFor(pacat string) string {
 }
 
 // Open starts pacat and returns a writer for raw PCM. Closing the writer waits
-// until the audio has drained. Volume and stop are handled by SetVolume,
-// AdjustVolume and Stop below.
+// for the audio to drain, for at most drainTimeout; a sink that stopped
+// accepting samples is killed instead of blocking the caller. Volume and stop
+// are handled by SetVolume, AdjustVolume and Stop below.
 func (s *PulseSink) Open(ctx context.Context, format Format) (io.WriteCloser, error) {
 	sampleFormat, err := sampleFormat(format.Width)
 	if err != nil {
@@ -92,6 +120,11 @@ func (s *PulseSink) Open(ctx context.Context, format Format) (io.WriteCloser, er
 	// A child context lets Stop cancel only the streams this process opened.
 	streamCtx, cancel := context.WithCancel(ctx)
 	cmd := exec.CommandContext(streamCtx, s.binary, args...)
+	// Backstop only. WaitDelay's timer starts when the child exits or its
+	// context is cancelled, so it cannot bound the drain; it does bound a pipe
+	// that a grandchild still holds open once pacat is gone. Keep it well
+	// inside killTimeout so this bound, not our own timer, ends the wait.
+	cmd.WaitDelay = killTimeout / 2
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		cancel()
@@ -325,23 +358,64 @@ func (w *processWriter) Write(p []byte) (int, error) {
 	return n, nil
 }
 
+// Close drains pacat and returns its exit status. Both waits are bounded so a
+// stalled sink cannot hold the serial speaker gate. Close is idempotent and
+// always releases the stream and its context exactly once.
 func (w *processWriter) Close() error {
 	w.closeOnce.Do(func() {
-		_ = w.stdin.Close()
-		err := w.cmd.Wait()
+		w.closeErr = w.close()
+	})
+	return w.closeErr
+}
+
+// close is Close's body. It returns the drain stall as an error so the reply
+// path logs it instead of the speaker going quiet.
+func (w *processWriter) close() (err error) {
+	defer func() {
+		// The stream context must outlive the drain; cancelling it here also
+		// tells CommandContext that the child is no longer needed.
 		if w.release != nil {
 			w.release()
 		}
 		w.cancel()
-		if err != nil {
-			if ctxErr := w.ctx.Err(); ctxErr != nil {
-				w.closeErr = ctxErr
-				return
+	}()
+
+	// Closing stdin is how pacat is told to play its buffer and exit.
+	_ = w.stdin.Close()
+
+	done := make(chan error, 1)
+	go func() { done <- w.cmd.Wait() }()
+
+	select {
+	case err = <-done:
+	case <-time.After(drainTimeout):
+		// The drain stalled. Cancelling the stream is what makes CommandContext
+		// kill pacat, and only then can WaitDelay help. A caller that already
+		// cancelled (Stop, Barge-in) owns the reason.
+		callerStopped := w.ctx.Err()
+		w.cancel()
+		select {
+		case err = <-done:
+		case <-time.After(killTimeout):
+			if callerStopped != nil {
+				return callerStopped
 			}
-			w.closeErr = fmt.Errorf("audio: pacat: %w%s", err, w.stderrTail())
+			return fmt.Errorf("%w and was still running %s after it was stopped%s",
+				errDrainTimeout, killTimeout, w.stderrTail())
 		}
-	})
-	return w.closeErr
+		if callerStopped != nil {
+			return callerStopped
+		}
+		return fmt.Errorf("%w and was stopped after %s%s", errDrainTimeout, drainTimeout, w.stderrTail())
+	}
+
+	if err != nil {
+		if ctxErr := w.ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		return fmt.Errorf("audio: pacat: %w%s", err, w.stderrTail())
+	}
+	return nil
 }
 
 func (w *processWriter) stderrTail() string {

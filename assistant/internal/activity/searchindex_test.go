@@ -298,6 +298,90 @@ func TestSearchMatchesTheSameRowsInTheSameOrder(t *testing.T) {
 	}
 }
 
+// TestSearchMatchesTheRingRuleAcrossFiltersAndPages is the broad equivalence
+// check for the page machinery: every filter and a range of query densities,
+// paged to exhaustion with a Small limit, must return exactly the ring rule's
+// rows in exactly its order. It exercises the dense probe, the chunked index
+// read and the cursor together, which is where a bounded candidate set could
+// silently drop a row.
+func TestSearchMatchesTheRingRuleAcrossFiltersAndPages(t *testing.T) {
+	ctx := context.Background()
+	history, _ := openHistory(t, activity.HistoryOptions{})
+	base := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
+	sources := []string{"voice", "dashboard", "debug", "dashboard_mic"}
+	const total = 400
+	entries := make([]activity.Entry, 0, total)
+	for i := 0; i < total; i++ {
+		text := fmt.Sprintf("the folder report number %d", i)
+		outcome := "ok"
+		failure := ""
+		switch {
+		case i%7 == 0:
+			text = "the kettle boiled over rare-marker"
+		case i%11 == 0:
+			text = "the weather needle in the weekend forecast"
+		}
+		if i%13 == 0 {
+			outcome = "failed"
+			failure = "weather provider timed out"
+		}
+		e := entry(fmt.Sprintf("req-%03d", i), base.Add(time.Duration(i)*time.Minute), func(e *activity.Entry) {
+			e.Source = sources[i%len(sources)]
+			e.Transcript = text
+			e.Outcome = outcome
+			e.Error = failure
+			if i%5 == 0 {
+				e.Tool = "notes.search"
+			}
+		})
+		if err := history.Add(e); err != nil {
+			t.Fatalf("Add: %v", err)
+		}
+		entries = append(entries, e)
+	}
+	warmSearchIndex(t, history)
+
+	for _, filter := range []string{"all", "voice", "typed", "mic", "problems"} {
+		for _, needle := range []string{"", "the", "kettle", "weather", "eath", "ra", "zzzz-not-present"} {
+			var want []string
+			// The ring rule is newest first, which is the reverse of the seed.
+			for i := len(entries) - 1; i >= 0; i-- {
+				if entries[i].Matches(filter, needle) {
+					want = append(want, entries[i].ID)
+				}
+			}
+			var seen []string
+			cursor := ""
+			for page := 0; page < 2*total; page++ {
+				result, err := history.QueryPage(ctx, activity.Query{
+					Filter: filter, Text: needle, Limit: 7, Before: cursor,
+				})
+				if err != nil {
+					t.Fatalf("QueryPage(filter=%q, text=%q): %v", filter, needle, err)
+				}
+				for _, e := range result.Entries {
+					seen = append(seen, e.ID)
+				}
+				cursor = result.Next
+				if cursor == "" {
+					break
+				}
+			}
+			if strings.Join(seen, ",") != strings.Join(want, ",") {
+				t.Fatalf("filter=%q text=%q matched %d rows (%v...), ring rule has %d (%v...)",
+					filter, needle, len(seen), head(seen, 5), len(want), head(want, 5))
+			}
+		}
+	}
+}
+
+func head(ids []string, n int) []string {
+	if len(ids) < n {
+		return ids
+	}
+	return ids[:n]
+}
+
 // TestPagedSearchDoesNotDuplicateOrSkipRows keeps the keyset cursor honest on
 // both search paths: paging an indexed query and paging the bounded window
 // fallback must not repeat or drop a row.

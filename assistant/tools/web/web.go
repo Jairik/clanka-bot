@@ -271,7 +271,10 @@ func New(cfg Config, provider Provider, provenance *Provenance, logger *slog.Log
 			}
 			results, err := provider.Search(ctx, query, limit)
 			if err != nil {
-				logger.Warn("web search failed", "backend", cfg.Backend, "error", err.Error())
+				// The Provider contract keeps this error free of the query
+				// and the request URL; the kind plus that bounded message is
+				// enough to diagnose a local failure.
+				logger.Warn("web search failed", "backend", cfg.Backend, "kind", failureKind(err), "error", err.Error())
 				return Out{}, &tool.ToolError{Say: searchUnavailable}
 			}
 			if results == nil {
@@ -292,6 +295,17 @@ func resultURLs(results []Result) []string {
 		urls = append(urls, result.URL)
 	}
 	return urls
+}
+
+// failureKind names the bounded class of a search failure for the local log
+// line. A transport failure carries its own kind; every other Provider error
+// is a response failure. It never inspects the query.
+func failureKind(err error) string {
+	var transport *transportError
+	if errors.As(err, &transport) {
+		return transport.kind
+	}
+	return "http"
 }
 
 // NewProvider selects the backend through the config switch. It is exported so

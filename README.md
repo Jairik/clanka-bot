@@ -1162,8 +1162,9 @@ python -m pytest tts/tests stt/tests
 
 ## Deploying
 
-`make deploy` is the deployment path: it pulls the current branch, builds
-SHA-tagged images, starts the stack and waits for health checks. Roll back with
+`make deploy` is the deployment path: it pulls the current branch (refusing
+one with commits that are not pushed), builds SHA-tagged images, starts the
+stack and waits for health checks. Roll back with
 `make rollback SHA=<commit>`, which reuses that commit's images without a
 rebuild. The Pi provisioning checklist, image-tagging rules and the model-weights
 layer convention are in [`docs/deploy.md`](docs/deploy.md).

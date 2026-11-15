@@ -143,12 +143,18 @@ git_config() {
 	git -C "$1" config user.name "deploy watch test"
 }
 
+# Build a scratch checkout with a bare "origin". Pass "stub-deploy" to commit
+# a deploy.sh that exits 0 without moving HEAD.
 new_repo() {
 	local repo remote
 	repo="$(mktemp -d "$TMP/repo.XXXXXX")"
 	mkdir -p "$repo/scripts"
 	cp "$WATCH_SRC" "$repo/scripts/deploy-watch.sh"
-	cp "$DEPLOY_SRC" "$repo/scripts/deploy.sh"
+	if [[ "${1:-}" == "stub-deploy" ]]; then
+		printf '#!/usr/bin/env bash\nexit 0\n' >"$repo/scripts/deploy.sh"
+	else
+		cp "$DEPLOY_SRC" "$repo/scripts/deploy.sh"
+	fi
 	cp "$REPO_ROOT/scripts/soloist-setup.sh" "$repo/scripts/soloist-setup.sh"
 	chmod +x "$repo/scripts/deploy-watch.sh" "$repo/scripts/deploy.sh"
 	printf 'exports/\n' >"$repo/.gitignore"
@@ -226,6 +232,11 @@ assert_calls_contains() {
 assert_calls_empty() {
 	local desc=$1
 	if [[ ! -s "$SCENARIO/calls" ]]; then pass; else fail "$desc: docker was called: $(tr '\n' ';' <"$SCENARIO/calls")"; fi
+}
+
+assert_curl_empty() {
+	local desc=$1
+	if [[ ! -s "$SCENARIO/curl-calls" ]]; then pass; else fail "$desc: curl was called: $(tr '\n' ';' <"$SCENARIO/curl-calls")"; fi
 }
 
 assert_env_contains() {
@@ -379,6 +390,113 @@ test_dirty_tree_is_left_alone() {
 	assert_calls_empty "dirty tree never deploys"
 }
 
+test_non_main_branch_is_left_alone() {
+	local repo head
+	repo=$(new_repo)
+	new_scenario
+	git -C "$repo" checkout -q -b feature
+	git -C "$repo" push -q -u origin feature
+	advance_origin "$repo"
+	head="$(git -C "$repo" rev-parse HEAD)"
+	run_watch "$repo"
+	assert_status 0 "feature branch is not an error"
+	assert_out_contains "feature branch is explained" "not origin/main; leaving it alone"
+	assert_out_contains "feature branch names its own upstream" "upstream origin/feature"
+	assert_calls_empty "feature branch never deploys"
+	assert_curl_empty "feature branch is refused before the CI gate"
+	if [[ "$(git -C "$repo" rev-parse HEAD)" == "$head" ]]; then pass; else fail "feature branch keeps its commit"; fi
+}
+
+test_branch_without_upstream_is_left_alone() {
+	local repo
+	repo=$(new_repo)
+	new_scenario
+	git -C "$repo" checkout -q -b local-only
+	advance_origin "$repo"
+	run_watch "$repo"
+	assert_status 0 "branch without an upstream is not an error"
+	assert_out_contains "missing upstream is explained" "upstream none"
+	assert_out_contains "missing upstream is not deployed" "not origin/main; leaving it alone"
+	assert_calls_empty "branch without an upstream never deploys"
+	assert_curl_empty "branch without an upstream is refused before the CI gate"
+}
+
+test_local_commit_ahead_is_left_alone() {
+	local repo head
+	repo=$(new_repo)
+	new_scenario
+	echo hotfix >>"$repo/tracked.txt"
+	git -C "$repo" add -A
+	git -C "$repo" commit -qm "local hotfix"
+	head="$(git -C "$repo" rev-parse HEAD)"
+	run_watch "$repo"
+	assert_status 0 "ahead checkout is not an error"
+	assert_out_contains "ahead checkout is explained" "checkout is not behind origin/main (local commits?); leaving it alone"
+	assert_calls_empty "ahead checkout never deploys"
+	assert_curl_empty "ahead checkout is refused before the CI gate"
+	run_watch "$repo"
+	assert_status 0 "ahead checkout stays quiet on the next tick"
+	assert_out_contains "next tick explains itself again" "not behind origin/main (local commits?)"
+	assert_calls_empty "next tick does not rebuild the same HEAD"
+	if [[ "$(git -C "$repo" rev-parse HEAD)" == "$head" ]]; then pass; else fail "ahead checkout keeps its local commit"; fi
+	run_watch "$repo" --force
+	assert_status 0 "forced ahead checkout is not an error"
+	assert_out_contains "force does not override the ahead refusal" "not behind origin/main (local commits?)"
+	assert_calls_empty "force does not rebuild an ahead checkout"
+}
+
+test_diverged_history_is_left_alone() {
+	local repo head
+	repo=$(new_repo)
+	new_scenario
+	echo local >>"$repo/tracked.txt"
+	git -C "$repo" add -A
+	git -C "$repo" commit -qm "local commit"
+	advance_origin "$repo"
+	head="$(git -C "$repo" rev-parse HEAD)"
+	run_watch "$repo"
+	assert_status 0 "diverged checkout is not an error"
+	assert_out_contains "diverged checkout is explained" "checkout is not behind origin/main (local commits?); leaving it alone"
+	assert_out_not_contains "diverged checkout never starts a deploy" "deploying "
+	assert_calls_empty "diverged checkout never deploys"
+	assert_curl_empty "diverged checkout is refused before the CI gate"
+	if [[ "$(git -C "$repo" rev-parse HEAD)" == "$head" ]]; then pass; else fail "diverged checkout keeps its local commit"; fi
+}
+
+test_success_without_moving_head_is_an_error() {
+	local repo target_short local_short local_full
+	repo=$(new_repo stub-deploy)
+	new_scenario
+	advance_origin "$repo"
+	target_short="$(git -C "$repo" rev-parse --short "$NEW_SHA")"
+	local_full="$(git -C "$repo" rev-parse HEAD)"
+	local_short="$(git -C "$repo" rev-parse --short "$local_full")"
+	run_watch "$repo"
+	if [[ "$STATUS" != 0 ]]; then pass; else fail "deploy that leaves HEAD behind must exit non-zero, got $STATUS"; fi
+	assert_out_contains "mismatch is reported" "refusing to report success"
+	assert_out_contains "mismatch names both SHAs" \
+		"deploy-watch: error: deploy returned 0 but HEAD is $local_short, not $target_short"
+	assert_out_not_contains "mismatch is not announced as deployed" "deploy-watch: deployed $target_short"
+	if [[ "$(git -C "$repo" rev-parse HEAD)" == "$local_full" ]]; then pass; else fail "mismatch leaves HEAD alone"; fi
+}
+
+test_detached_rollback_recovers_when_origin_moves() {
+	local repo first short
+	repo=$(new_repo)
+	first="$(git -C "$repo" rev-parse HEAD)"
+	git -C "$repo" checkout -q --detach "$first"
+	new_scenario
+	advance_origin "$repo"
+	short="$(git -C "$repo" rev-parse --short "$NEW_SHA")"
+	run_watch "$repo"
+	assert_status 0 "detached checkout recovers and deploys"
+	assert_out_contains "detached checkout is recovered" "detached HEAD; switching back to main"
+	assert_calls_contains "recovered checkout builds the stack" "docker compose up -d --build --remove-orphans"
+	assert_env_contains "recovered deploy tags the new SHA" "GIT_SHA=$short"
+	if [[ "$(git -C "$repo" rev-parse --abbrev-ref HEAD)" == "main" ]]; then pass; else fail "recovered checkout is on main"; fi
+	if [[ "$(git -C "$repo" rev-parse HEAD)" == "$NEW_SHA" ]]; then pass; else fail "recovered checkout reaches origin/main"; fi
+}
+
 test_dry_run_changes_nothing() {
 	local repo
 	repo=$(new_repo)
@@ -446,6 +564,12 @@ run_test test_ci_unreachable_still_deploys
 run_test test_ci_malformed_payload_still_deploys
 run_test test_no_ci_checks_warns_and_deploys
 run_test test_dirty_tree_is_left_alone
+run_test test_non_main_branch_is_left_alone
+run_test test_branch_without_upstream_is_left_alone
+run_test test_local_commit_ahead_is_left_alone
+run_test test_diverged_history_is_left_alone
+run_test test_success_without_moving_head_is_an_error
+run_test test_detached_rollback_recovers_when_origin_moves
 run_test test_dry_run_changes_nothing
 run_test test_lock_held_skips
 run_test test_force_deploys_when_current

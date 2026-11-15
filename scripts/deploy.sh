@@ -29,6 +29,8 @@ Usage: scripts/deploy.sh [SHA]
 
 Without a SHA: pull the current branch with --ff-only, build images tagged
 clanka/<service>:<short SHA>, start the stack and wait for every health check.
+A branch with commits that are not on its upstream is refused: only pushed
+commits are built.
 
 With a SHA: check that commit out, verify its images already exist locally and
 start the stack with --no-build. This is the rollback path.
@@ -153,7 +155,7 @@ ensure_receiver() {
 }
 
 main() {
-	local requested="" arg sha image missing
+	local requested="" arg sha image missing branch upstream
 	for arg in "$@"; do
 		case "$arg" in
 		-h | --help)
@@ -222,6 +224,16 @@ main() {
 		ensure_on_branch
 		if ! git pull --ff-only; then
 			die "git pull --ff-only failed (local changes or diverged history)"
+		fi
+		# A pull on a branch that is ahead of its upstream says "Already up to
+		# date" without moving HEAD. Building that commit would deploy work
+		# that exists only on this host, so refuse it here too.
+		branch="$(git symbolic-ref --quiet --short HEAD || true)"
+		if [[ -n "$branch" ]]; then
+			upstream="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+			if [[ -n "$upstream" ]] && ! git merge-base --is-ancestor HEAD '@{u}'; then
+				die "refusing to deploy: $branch has commits that are not on $upstream; push or reset first"
+			fi
 		fi
 		sha="$(git rev-parse --short HEAD)"
 		export GIT_SHA="$sha"

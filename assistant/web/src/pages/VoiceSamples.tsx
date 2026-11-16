@@ -97,6 +97,10 @@ export function VoiceSamplesPage() {
                   </Tabs.Tab>
                 </Tabs.List>
               </Tabs.ListContainer>
+              {/* The take tables render below the tabs; these panels exist so
+                  each tab's aria-controls resolves to a real element. */}
+              <Tabs.Panel id="positive" className="hidden"><span /></Tabs.Panel>
+              <Tabs.Panel id="negative" className="hidden"><span /></Tabs.Panel>
             </Tabs>
             <span className="font-mono text-xs tabular-nums text-muted">
               {kind === "positive" ? `${data.PositiveCount} / ${data.MaxTakes}` : `${data.NegativeCount} / ${data.MaxTakes}`}

@@ -198,6 +198,13 @@ type Options struct {
 	// UI overrides the embedded React build (a directory holding index.html
 	// and assets/). Tests inject a small fixture; production leaves it nil.
 	UI fs.FS
+	// Fixtures, when set, serves canned page views from a fixture filesystem
+	// instead of computing them. Each file is named "<slug>.json" where the
+	// slug is the /api/ui/<slug> page name (e.g. "personas.json"). The smoke
+	// stub uses this to exercise the real page markup without wiring every
+	// production service; production leaves it nil, so the page handlers are
+	// unchanged for real deployments.
+	Fixtures fs.FS
 	// UIURL is the internal base URL of the standalone Dashboard artifact (the
 	// dashboard-web service). When set, the app tries it first and falls back
 	// to the embedded bundle on any failure, so a UI-only deploy needs no Go
@@ -283,7 +290,9 @@ type Handler struct {
 	// uiPin is the configured UI artifact pin. It is kept even when no artifact
 	// URL is configured, so the diagnostics bundle can report it.
 	uiPin string
-	mux   *http.ServeMux
+	// fixtures, when set, serves canned page views instead of computing them.
+	fixtures fs.FS
+	mux      *http.ServeMux
 }
 
 // uiBuild is the Vite output of assistant/web. The directory is committed with
@@ -392,6 +401,7 @@ func New(opts Options) (*Handler, error) {
 		ui:             ui,
 		uiArtifact:     uiArtifact,
 		uiPin:          opts.UIVersion,
+		fixtures:       opts.Fixtures,
 		mux:            http.NewServeMux(),
 	}
 	// The SSE hub is created before any route can be served; an Activity
@@ -424,19 +434,19 @@ func New(opts Options) (*Handler, error) {
 	// One read-only live stream for the whole app. Every write still uses its
 	// own Mutating route; this only carries deltas.
 	h.Handle("GET /api/ui/events", h.events)
-	h.Handle("GET /api/ui/settings", h.settingsPage)
-	h.Handle("GET /api/ui/secrets", h.secretsPage)
-	h.Handle("GET /api/ui/sounds", h.soundsPage)
-	h.Handle("GET /api/ui/voices", h.voicesPage)
-	h.Handle("GET /api/ui/personas", h.personasPage)
-	h.Handle("GET /api/ui/alerts", h.alertsPage)
-	h.Handle("GET /api/ui/notes", h.notesPage)
-	h.Handle("GET /api/ui/spotify", h.spotifyPage)
+	h.Handle("GET /api/ui/settings", h.page("settings", h.settingsPage))
+	h.Handle("GET /api/ui/secrets", h.page("secrets", h.secretsPage))
+	h.Handle("GET /api/ui/sounds", h.page("sounds", h.soundsPage))
+	h.Handle("GET /api/ui/voices", h.page("voices", h.voicesPage))
+	h.Handle("GET /api/ui/personas", h.page("personas", h.personasPage))
+	h.Handle("GET /api/ui/alerts", h.page("alerts", h.alertsPage))
+	h.Handle("GET /api/ui/notes", h.page("notes", h.notesPage))
+	h.Handle("GET /api/ui/spotify", h.page("spotify", h.spotifyPage))
 	// The wake-phrase recorder: reads the phrase view, adds or removes a
 	// phrase, uploads one take as a raw WAV body, deletes one or all, and
 	// submits the set as a bundle. Every
 	// write goes through Mutating for identity and same-origin.
-	h.Handle("GET /api/ui/voice-samples", h.voiceSamplesPage)
+	h.Handle("GET /api/ui/voice-samples", h.page("voice-samples", h.voiceSamplesPage))
 	h.Mutating("POST /voice-samples/phrases", h.voiceSamplesAddPhrase)
 	h.Mutating("POST /voice-samples/phrases/{slug}/remove", h.voiceSamplesRemovePhrase)
 	h.Mutating("POST /voice-samples/capture", h.voiceSamplesCapture)
@@ -452,11 +462,11 @@ func New(opts Options) (*Handler, error) {
 	h.Mutating("POST /api/ui/ask/audio", h.activityAskAudio)
 	// The top bar's speaker volume and mute.
 	// BLE routes share existing identity and same-origin mutation checks.
-	h.Handle("GET /api/ui/lights", h.lightsAPI)
+	h.Handle("GET /api/ui/lights", h.page("lights", h.lightsAPI))
 	h.Mutating("POST /api/ui/lights", h.lightsAPI)
 	// Monster Smart Lighting is a cloud account, not a BLE controller: the
 	// page reads the account and writes one property group per action.
-	h.Handle("GET /api/ui/monster", h.monsterAPI)
+	h.Handle("GET /api/ui/monster", h.page("monster", h.monsterAPI))
 	h.Mutating("POST /api/ui/monster", h.monsterAPI)
 	h.Handle("GET /api/ui/equalizer", h.equalizerGet)
 	h.Mutating("POST /api/ui/equalizer", h.equalizerSet)
@@ -491,7 +501,7 @@ func New(opts Options) (*Handler, error) {
 	// The Phrase book page overrides the short Fast path confirmation per
 	// Persona. Generation uses the one Agent provider and replaces every
 	// override for that Persona; each write is same-origin.
-	h.Handle("GET /api/ui/phrasebook", h.phrasebookPage)
+	h.Handle("GET /api/ui/phrasebook", h.page("phrasebook", h.phrasebookPage))
 	h.Mutating("POST /phrasebook/{persona}", h.phrasebookSave)
 	h.Mutating("POST /phrasebook/{persona}/reset", h.phrasebookReset)
 	h.Mutating("POST /phrasebook/{persona}/clear", h.phrasebookClear)
@@ -499,8 +509,8 @@ func New(opts Options) (*Handler, error) {
 	// The Routes page is a read-only explanation of what routing may choose.
 	// The Hermes page reads the MCP surface and links the accounts Hermes may
 	// use; linking writes the same write-only secrets the Tools read.
-	h.Handle("GET /api/ui/routes", h.routesPage)
-	h.Handle("GET /api/ui/hermes", h.hermesPage)
+	h.Handle("GET /api/ui/routes", h.page("routes", h.routesPage))
+	h.Handle("GET /api/ui/hermes", h.page("hermes", h.hermesPage))
 	h.Mutating("POST /hermes/integrations/{id}", h.hermesLink)
 	h.Mutating("POST /hermes/integrations/{id}/unlink", h.hermesUnlink)
 	h.Mutating("POST /hermes/integrations/{id}/grant", h.hermesGrant)
@@ -569,6 +579,27 @@ func (h *Handler) Handle(pattern string, handler http.HandlerFunc) {
 // when one is added later.
 func (h *Handler) Mutating(pattern string, handler http.HandlerFunc) {
 	h.mux.Handle(pattern, h.sameOrigin(http.HandlerFunc(handler)))
+}
+
+// page wraps a page-data GET handler so a fixture (when configured) can stand
+// in for the computed view. The fixture filesystem holds "<slug>.json" files;
+// when one matches the slug, it is served verbatim with the same headers the
+// computed view would carry. This lets the smoke stub exercise the real page
+// markup without wiring every production service; production never sets
+// Fixtures, so the page handlers are unchanged for real deployments.
+func (h *Handler) page(slug string, real http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if h.fixtures != nil {
+			if data, err := fs.ReadFile(h.fixtures, slug+".json"); err == nil {
+				w.Header().Set("Content-Type", "application/json; charset=utf-8")
+				w.Header().Set("X-Dashboard-API-Version", strconv.Itoa(APIVersion))
+				w.WriteHeader(http.StatusOK)
+				_, _ = w.Write(data)
+				return
+			}
+		}
+		real(w, r)
+	}
 }
 
 // sameOrigin wraps a handler whose methods may change state. It is the one

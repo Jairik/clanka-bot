@@ -1,0 +1,72 @@
+{
+  "Owner": "smoke@example.com",
+  "Page": "sounds",
+  "Flash": "",
+  "Error": "",
+  "HasLibrary": true,
+  "MaxUpload": "25 MB",
+  "Sounds": [
+    {
+      "Name": "chime",
+      "Duration": "1.2s",
+      "Added": "2026-11-13 09:00",
+      "Origin": "builtin",
+      "AudioURL": "/sounds/audio/chime"
+    },
+    {
+      "Name": "bell",
+      "Duration": "2.4s",
+      "Added": "2026-11-13 09:00",
+      "Origin": "uploaded",
+      "AudioURL": "/sounds/audio/bell"
+    }
+  ],
+  "Roles": [
+    {
+      "Role": "alarm",
+      "Label": "Alarm",
+      "Key": "alarm.sound",
+      "Cap": "Sound",
+      "Display": "chime",
+      "Source": "store",
+      "SourceLabel": "stored",
+      "LowerLabel": "alarm sound",
+      "Override": false,
+      "Options": [
+        { "Value": "chime", "Label": "Chime", "Selected": true },
+        { "Value": "bell", "Label": "Bell", "Selected": false }
+      ]
+    }
+  ],
+  "HasRoles": true,
+  "RingKinds": [
+    {
+      "Kind": "timer",
+      "Label": "Timer",
+      "Settings": [
+        {
+          "Key": "timer.sound",
+          "Anchor": "timer.sound",
+          "Label": "Completion sound",
+          "Description": "The sound a finished timer plays.",
+          "FormKind": "select",
+          "Value": "chime",
+          "Edit": "/sounds/roles/timer/sound",
+          "Display": "Chime",
+          "Bool": false,
+          "Source": "store",
+          "SourceLabel": "stored",
+          "LowerLabel": "timer sound",
+          "Restart": false,
+          "Override": false,
+          "SaveAction": "/sounds/values/timer.sound",
+          "ResetAction": "/sounds/values/timer.sound/reset",
+          "Target": "timer.sound",
+          "PreviewAction": "",
+          "PreviewKind": ""
+        }
+      ]
+    }
+  ],
+  "HasRing": true
+}

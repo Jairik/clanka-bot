@@ -1,0 +1,32 @@
+{
+  "Owner": "smoke@example.com",
+  "Page": "hermes",
+  "Flash": "",
+  "Error": "",
+  "HasRegistry": true,
+  "HasIntegrations": true,
+  "Surface": [
+    { "Name": "lights", "Description": "Control the home lights.", "Permission": "anyone" }
+  ],
+  "SurfaceCount": 1,
+  "LocalOnlyCount": 0,
+  "ConfirmCount": 0,
+  "Granted": 1,
+  "Rows": [
+    {
+      "ID": "spotify",
+      "Name": "Spotify",
+      "Summary": "Play music and control playback.",
+      "Docs": "https://example.com/spotify",
+      "Status": "linked",
+      "StatusKey": "linked",
+      "Hermes": true,
+      "CanGrant": false,
+      "Linkable": false,
+      "Secrets": [
+        { "Name": "SPOTIFY_CLIENT_ID", "Set": true, "Source": "store", "Last4": "", "Optional": false }
+      ],
+      "Tools": ["spotify.play"]
+    }
+  ]
+}

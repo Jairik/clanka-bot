@@ -1,0 +1,77 @@
+{
+  "Owner": "smoke@example.com",
+  "Page": "personas",
+  "Flash": "",
+  "Error": "",
+  "HasService": true,
+  "Active": {
+    "Name": "Home",
+    "Voice": "default",
+    "EffectiveVoice": "default",
+    "Exact": true,
+    "Notes": ["The active bundle matches the stored one exactly."]
+  },
+  "New": {
+    "Action": "/personas",
+    "Heading": "Create a persona",
+    "FormID": "new-persona",
+    "Name": "",
+    "NameLocked": false,
+    "Voice": "",
+    "Personality": "",
+    "Filler": "",
+    "Unavailable": "",
+    "Submit": "Create",
+    "Voices": [
+      { "Name": "default", "Label": "Default", "Selected": true },
+      { "Name": "work", "Label": "Work", "Selected": false }
+    ]
+  },
+  "Rows": [
+    {
+      "Name": "Home",
+      "Voice": "default",
+      "VoiceStatus": "ready",
+      "Active": true,
+      "SelectAction": "/personas/Home/select",
+      "Edit": {
+        "Action": "/personas/Home",
+        "Heading": "Edit Home",
+        "FormID": "edit-Home",
+        "Name": "Home",
+        "NameLocked": true,
+        "Voice": "default",
+        "Personality": "",
+        "Filler": "",
+        "Unavailable": "",
+        "Submit": "Save",
+        "Voices": [
+          { "Name": "default", "Label": "Default", "Selected": true }
+        ]
+      }
+    },
+    {
+      "Name": "Work",
+      "Voice": "work",
+      "VoiceStatus": "ready",
+      "Active": false,
+      "SelectAction": "/personas/Work/select",
+      "Edit": {
+        "Action": "/personas/Work",
+        "Heading": "Edit Work",
+        "FormID": "edit-Work",
+        "Name": "Work",
+        "NameLocked": true,
+        "Voice": "work",
+        "Personality": "",
+        "Filler": "",
+        "Unavailable": "",
+        "Submit": "Save",
+        "Voices": [
+          { "Name": "default", "Label": "Default", "Selected": false },
+          { "Name": "work", "Label": "Work", "Selected": true }
+        ]
+      }
+    }
+  ]
+}

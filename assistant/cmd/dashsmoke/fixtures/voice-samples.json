@@ -1,0 +1,79 @@
+{
+  "Owner": "smoke@example.com",
+  "Page": "voice-samples",
+  "Flash": "",
+  "Error": "",
+  "HasStore": true,
+  "PiRecordingAvailable": true,
+  "RecordingAvailable": true,
+  "Phrases": [
+    {
+      "Slug": "wake",
+      "Text": "Hey assistant",
+      "Selected": true,
+      "Builtin": true,
+      "Stored": true,
+      "Positives": 2,
+      "Negatives": 0,
+      "Model": "trained",
+      "Missing": [],
+      "NeedsAttention": false,
+      "StatusLabel": "Samples complete",
+      "CanRemove": false,
+      "RemoveAction": ""
+    }
+  ],
+  "AddPhraseAction": "/voice-samples/phrases",
+  "ModelsKnown": true,
+  "ModelNote": "Wake word model is trained.",
+  "Slug": "wake",
+  "Phrase": "Hey assistant",
+  "PositiveCount": 2,
+  "NegativeCount": 0,
+  "MinTakes": 2,
+  "MaxTakes": 4,
+  "MaxSeconds": "10s",
+  "MaxBytes": "1.5 MB",
+  "Positives": [
+    {
+      "ID": "p1",
+      "Duration": "1.1s",
+      "Size": "18 KB",
+      "Added": "2026-11-13 09:00",
+      "AudioURL": "/voice-samples/take/wake/positive/p1",
+      "DeleteAction": "/voice-samples/takes/wake/positive/p1/delete"
+    },
+    {
+      "ID": "p2",
+      "Duration": "1.3s",
+      "Size": "21 KB",
+      "Added": "2026-11-13 09:01",
+      "AudioURL": "/voice-samples/take/wake/positive/p2",
+      "DeleteAction": "/voice-samples/takes/wake/positive/p2/delete"
+    }
+  ],
+  "Negatives": [],
+  "Prompts": ["Say the wake phrase clearly.", "Use a different tone this time."],
+  "NextPrompt": "Say the wake phrase clearly.",
+  "NextNegativePrompt": "Say something that is not the wake phrase.",
+  "UploadPositive": "/voice-samples/takes/wake/positive",
+  "UploadNegative": "/voice-samples/takes/wake/negative",
+  "SubmitAction": "/voice-samples/submit/wake",
+  "ClearPositive": "/voice-samples/clear/wake/positive",
+  "ClearNegative": "/voice-samples/clear/wake/negative",
+  "CanSubmit": true,
+  "Bundles": [
+    {
+      "Name": "wake-bundle",
+      "Size": "40 KB",
+      "Created": "2026-11-13 09:02",
+      "DownloadURL": "/voice-samples/bundle/wake/wake-bundle",
+      "HostPath": "/opt/clanka/wake/wake-bundle",
+      "SCP": "scp ...",
+      "Taildrop": "taildrop ...",
+      "Positives": 2,
+      "Negatives": 0,
+      "HasCopyPath": true
+    }
+  ]
+}

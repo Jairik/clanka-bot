@@ -6,9 +6,11 @@ package main
 
 import (
 	"context"
+	"embed"
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"log"
 	"log/slog"
 	"net"
@@ -24,11 +26,22 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 )
 
+// fixtures holds canned page views served by the populated (-fixtures) mode so
+// the e2e suite exercises the real page markup without wiring every production
+// service. Each file is named "<slug>.json" for the /api/ui/<slug> page.
+//
+//go:embed all:fixtures
+var fixturesFS embed.FS
+
 func main() {
 	addr := flag.String("addr", "127.0.0.1:8099", "listen address")
 	owner := flag.String("owner", "smoke@example.com", "the Tailscale login the stub stands in for")
 	uiURL := flag.String("ui-url", "", "optional standalone Dashboard artifact base URL")
 	uiVersion := flag.String("ui-version", "smoke", "artifact pin reported in X-Dashboard-UI-Version")
+	// fixtures turns on the populated mode: the stub serves a minimal but
+	// complete view per page (one row of each kind) instead of the first-run
+	// not-configured state, so the route and axe suites see the real markup.
+	fixtures := flag.Bool("fixtures", false, "serve populated page fixtures instead of the first-run not-configured state")
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -37,7 +50,8 @@ func main() {
 	// (and never 404) instead of only the Settings page tolerating it (#297).
 	api := http.NewServeMux()
 	api.Handle("/deferred", &pipeline.DeferredQueue{})
-	handler, err := dashboard.New(dashboard.Options{
+
+	opts := dashboard.Options{
 		Owner:       *owner,
 		Logger:      logger,
 		Activity:    activity.New(50),
@@ -47,7 +61,18 @@ func main() {
 		UIURL:       *uiURL,
 		UIVersion:   *uiVersion,
 		API:         api,
-	})
+	}
+	// The populated mode only swaps the page reads for fixtures; the shell
+	// (session, activity, volume, transcriber, typed) stays exactly as the
+	// first-run mode, so both modes share one stub implementation.
+	if *fixtures {
+		sub, err := fs.Sub(fixturesFS, "fixtures")
+		if err != nil {
+			log.Fatalf("dashsmoke fixtures: %v", err)
+		}
+		opts.Fixtures = sub
+	}
+	handler, err := dashboard.New(opts)
 	if err != nil {
 		log.Fatalf("dashboard: %v", err)
 	}

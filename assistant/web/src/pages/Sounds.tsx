@@ -58,7 +58,7 @@ export function SoundsPage() {
                         </div>
                       </div>
                       <Tip>
-                        <Button size="sm" variant="ghost" isPending={actions.pending === pi} onPress={() => void actions.run(pi)} aria-label={`Play ${s.Name} on the Pi`}>
+                        <Button size="sm" variant="ghost" isPending={actions.pending === pi} onPress={() => void actions.run(pi)} aria-label={`Play ${s.Name}: On Pi`}>
                           <Speaker className="size-3.5" /> <span className="hidden sm:inline">On Pi</span>
                         </Button>
                       </Tip>

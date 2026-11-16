@@ -707,20 +707,29 @@ tokens via `ntfy token add` / `auth-tokens`).
 A missed Timer or Alarm sends one high-priority Notification with its label and
 reason (`max_ring`, `restart` or `downtime`). A Ring that reaches max_ring
 pushes at once. Startup recovery reports every open and downtime-retired row in
-one pass, so it sends **one** summary Notification naming them all — "You missed
-3 alerts: pasta timer, 7am alarm, washing machine timer." — instead of one push
-per row; a summary lists at most six names and then "and N more", while the
-count stays exact. `notify.cooldown` (default 60 s, live overridable) is the
-minimum gap between two such summaries: a second recovery inside the gap is
-dropped and logged at Debug, never queued, and the durable history rows still
-hold every alert. Quiet hours suppress a Notification before any network request
-and do not schedule a retry. A due Reminder also sends one high-priority
+one pass; those alerts are debounced for 2 s (every arrival re-arms the window),
+so the whole pass becomes **one** summary Notification naming them all — "You
+missed 3 alerts: pasta timer, 7am alarm, washing machine timer." — instead of
+one push per row, even when the pass itself runs longer than 2 s. A summary lists
+at most six names and then "and N more", while the count stays exact.
+`notify.cooldown` (default 60 s, live overridable) is the minimum gap between
+two such summaries: a recovery inside the gap is held until the gap ends and
+then pushed, never dropped, so the rate limit bounds how often the phone buzzes
+without losing an alert. Quiet hours suppress a Notification before any network
+request and do not schedule a retry. A due Reminder also sends one high-priority
 Notification with the message, alongside the spoken reminder; `notify.reminders`
 turns that off, and Quiet hours mute it the same way. A Reminder is never batched
 and never cooldown-suppressed, because the user asked for each one.
 `notify.phone` answers "Notifications are muted during quiet hours." instead.
 Requests are bounded by a 10 s HTTP timeout, redirects are refused so the bearer
 token stays on the configured host, and response bodies are never logged.
+
+A held summary is not lost on exit: the assistant drains the notify service on
+shutdown and after a failed startup, with a 10 s deadline, so a recovery push
+still inside its debounce window or cooldown gap is published before the process
+ends. This matters because the alert rows are already terminal by then — a later
+boot sees no recoverable row and cannot re-report them. A SIGTERM during boot or
+a startup error after the Timer/Alarm modules start reaches the same drain.
 
 The Dashboard is the desktop surface for a due Reminder while it is open: the
 Alerts page schedules one browser Notification per active Reminder after the

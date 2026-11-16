@@ -64,10 +64,11 @@ const (
 	DefaultReminders = true
 	// DefaultCooldown is the shipped gap between two missed-alert summaries.
 	DefaultCooldown = time.Minute
-	// recoveryHold is how long a recovered missed alert waits so the rest of
-	// the same recovery pass joins it. Timer and Alarm report their recovered
-	// rows in one synchronous pass, so the whole burst arrives well inside this
-	// window, while a lone recovered alert still reaches the phone almost at
+	// recoveryHold is the debounce window for recovered missed alerts: each
+	// arrival re-arms it, so a pass that keeps reporting stays one batch and
+	// flushes recoveryHold after the last alert. Timer and Alarm report their
+	// recovered rows in one synchronous pass, so the whole burst normally joins
+	// one summary, while a lone recovered alert reaches the phone almost at
 	// once.
 	recoveryHold = 2 * time.Second
 	// maxSummaryNames bounds the names listed in one summary. The alert count
@@ -78,6 +79,10 @@ const (
 	topicPrefix = "clanka-"
 	// requestTimeout bounds one publish, including connect and response.
 	requestTimeout = 10 * time.Second
+	// FlushTimeout bounds Close's synchronous drain. A single publish is also
+	// capped by requestTimeout; this is the ceiling callers use for the whole
+	// drain so shutdown cannot hang.
+	FlushTimeout = requestTimeout
 	// maxResponseBytes bounds the discarded response body so a hostile or
 	// broken server cannot grow memory.
 	maxResponseBytes = 4 << 10
@@ -166,7 +171,7 @@ func Definitions(cfg Config) []settings.Definition {
 		),
 		settings.Duration(CooldownKey, DefaultCooldown,
 			settings.WithValidator(validCooldown),
-			settings.WithDescription("Minimum gap between two phone Notifications for missed Timers and Alarms. Startup recovery sends one summary for the whole burst; a second summary inside this gap is dropped. A live max_ring alert is never delayed."),
+			settings.WithDescription("Minimum gap between two phone Notifications for missed Timers and Alarms. Startup recovery sends one summary for the whole burst; a second recovery inside this gap is held until the gap ends instead of being dropped, so no alert is lost. A live max_ring alert is never delayed."),
 		),
 	}
 }
@@ -252,8 +257,8 @@ type Options struct {
 	// Rand is injectable for deterministic tests. It is only used to generate
 	// the topic on first use.
 	Rand io.Reader
-	// RecoveryHold overrides how long recovered missed alerts are held so one
-	// recovery pass becomes one Notification. Zero uses recoveryHold, and a
+	// RecoveryHold overrides the debounce window for recovered missed alerts so
+	// one recovery pass becomes one Notification. Zero uses recoveryHold, and a
 	// negative value disables the hold so each alert is pushed at once.
 	RecoveryHold time.Duration
 	// Config is the effective fallback when no Reader is bound or the key is
@@ -284,10 +289,14 @@ type Service struct {
 	pushMu      sync.Mutex
 	lastSummary time.Time
 
-	// batchMu guards the held recovery batch and its one timer.
+	// batchMu guards the held recovery batch, its one timer and the closed
+	// flag. timerAt is the real-world time the timer is set to fire, so a
+	// debounce hold and a cooldown gap can both be honoured when re-arming.
 	batchMu      sync.Mutex
 	pending      []MissedAlert
 	pendingTimer *time.Timer
+	timerAt      time.Time
+	closed       bool
 }
 
 // New builds a Notify service. The config layer is validated here so a bad URL
@@ -467,8 +476,9 @@ func (s *Service) Topic(ctx context.Context) (string, error) {
 // A live alert (a Ring that just reached max_ring) is pushed at once: it is one
 // fact about one alert and the user may be standing next to the device. A
 // recovery pass reports every open and downtime-retired row in a burst, so
-// those alerts are held for recoveryHold and pushed as one summary naming them
-// instead of one push per row (#206).
+// those alerts are debounced for recoveryHold and pushed as one summary naming
+// them instead of one push per row (#206). A summary blocked by notify.cooldown
+// is held until the gap ends rather than dropped.
 func (s *Service) NotifyMissed(ctx context.Context, alert MissedAlert) {
 	if s == nil {
 		return
@@ -485,10 +495,15 @@ func (s *Service) NotifyMissed(ctx context.Context, alert MissedAlert) {
 			return
 		}
 	}
-	if isRecoveryReason(alert.Reason) && s.hold > 0 {
+	s.batchMu.Lock()
+	closed := s.closed
+	s.batchMu.Unlock()
+	if isRecoveryReason(alert.Reason) && s.hold > 0 && !closed {
 		s.queueRecovery(alert)
 		return
 	}
+	// A live alert, or a recovery after Close, cannot wait for a timer that
+	// will never flush it, so it is delivered at once.
 	s.deliver(ctx, missedNotification(alert))
 }
 
@@ -503,17 +518,37 @@ func isRecoveryReason(reason string) bool {
 	return false
 }
 
-// queueRecovery holds one recovered alert until the recovery pass settles.
+// queueRecovery holds one recovered alert until the recovery pass settles. The
+// hold is a debounce: every arrival pushes the timer out, so a pass that keeps
+// reporting stays one batch and flushes s.hold after the *last* alert rather
+// than s.hold after the first.
 func (s *Service) queueRecovery(alert MissedAlert) {
 	s.batchMu.Lock()
 	s.pending = append(s.pending, alert)
-	if s.pendingTimer == nil {
-		s.pendingTimer = time.AfterFunc(s.hold, s.flushAfterHold)
-	}
+	s.armTimerLocked(time.Now().Add(s.hold))
 	waiting := len(s.pending)
 	s.batchMu.Unlock()
 	s.logger.Debug("missed alert held for one summary",
 		"kind", alert.Kind, "reason", alert.Reason, "waiting", waiting)
+}
+
+// armTimerLocked schedules the recovery flush for the later of at and any
+// timer already running; batchMu must be held. Keeping the later deadline lets
+// a debounce hold and a cooldown remainder compose instead of one cutting the
+// other short.
+func (s *Service) armTimerLocked(at time.Time) {
+	if s.pendingTimer != nil && s.timerAt.After(at) {
+		at = s.timerAt
+	}
+	if s.pendingTimer != nil {
+		s.pendingTimer.Stop()
+	}
+	delay := time.Until(at)
+	if delay < 0 {
+		delay = 0
+	}
+	s.timerAt = at
+	s.pendingTimer = time.AfterFunc(delay, s.flushAfterHold)
 }
 
 // flushAfterHold runs on the recovery timer. The recovery pass's context is
@@ -522,50 +557,99 @@ func (s *Service) flushAfterHold() {
 	_ = s.flushPending(context.Background())
 }
 
-// flushPending pushes the held recovery alerts as one Notification. It returns
-// the publish error for a caller that wants it; the timer path only logs.
+// flushPending pushes the held recovery alerts as one Notification. A push
+// blocked by notify.cooldown returns a retry delay: the batch is kept and the
+// timer re-armed for the remainder of the gap, so the rate limit still bounds
+// the phone but no recovered alert is lost. It returns the publish error for a
+// caller that wants it; the timer path only logs.
 func (s *Service) flushPending(ctx context.Context) error {
 	s.batchMu.Lock()
 	if s.pendingTimer != nil {
 		s.pendingTimer.Stop()
 		s.pendingTimer = nil
 	}
+	s.timerAt = time.Time{}
 	batch := s.pending
 	s.pending = nil
 	s.batchMu.Unlock()
 	if len(batch) == 0 {
 		return nil
 	}
-	return s.pushSummary(ctx, batch)
+	retry, err := s.pushSummary(ctx, batch, false)
+	if retry > 0 {
+		// Cooldown deferred the push. Keep the whole batch plus anything that
+		// arrived while the cooldown was being checked, and try again when the
+		// gap ends.
+		s.batchMu.Lock()
+		s.pending = append(batch, s.pending...)
+		s.armTimerLocked(time.Now().Add(retry))
+		s.batchMu.Unlock()
+	}
+	return err
 }
 
-// pushSummary sends one Notification covering a whole recovery batch. The batch
-// is already one message, so notify.cooldown bounds how often a recovery may
-// push at all: a second batch inside the gap is dropped and logged at Debug
-// rather than queued, matching the Quiet-hours rule that a suppressed
-// Notification is not retried. The durable history rows are unaffected.
-func (s *Service) pushSummary(ctx context.Context, batch []MissedAlert) error {
+// pushSummary sends one Notification covering a whole recovery batch. It
+// returns a positive retry delay when notify.cooldown blocked the push and the
+// batch should be re-queued; zero means the batch was delivered or permanently
+// suppressed (a mute is dropped, matching the Quiet-hours rule) and must not be
+// retried. force bypasses the cooldown for Close's final drain: there is no
+// later flush, so an alert held at shutdown must go out now.
+func (s *Service) pushSummary(ctx context.Context, batch []MissedAlert, force bool) (time.Duration, error) {
 	cooldown := s.cooldown()
 	now := s.now()
 	s.pushMu.Lock()
 	defer s.pushMu.Unlock()
-	if last := s.lastSummary; cooldown > 0 && !last.IsZero() && now.Sub(last) < cooldown {
-		s.logger.Debug("missed notification skipped by cooldown",
-			"alerts", len(batch), "elapsed_ms", now.Sub(last).Milliseconds())
-		return nil
+	if !force && cooldown > 0 && !s.lastSummary.IsZero() {
+		if elapsed := now.Sub(s.lastSummary); elapsed < cooldown {
+			retry := cooldown - elapsed
+			s.logger.Debug("missed notification deferred by cooldown",
+				"alerts", len(batch), "retry_ms", retry.Milliseconds())
+			// A sub-millisecond remainder would re-arm in a tight loop before
+			// the clock can advance; one millisecond settles it.
+			if retry < time.Millisecond {
+				retry = time.Millisecond
+			}
+			return retry, nil
+		}
 	}
 	err := s.Send(ctx, missedSummaryNotification(batch))
 	if err != nil {
 		var muted *MutedError
 		if errors.As(err, &muted) {
 			s.logger.Info("missed notification muted", "alerts", len(batch), "reason", muted.Reason)
-			return nil
+			return 0, nil
 		}
 		s.logger.Warn("missed notification failed", "alerts", len(batch), "error", err.Error())
-		return err
+		return 0, err
 	}
 	s.lastSummary = now
-	return nil
+	return 0, nil
+}
+
+// Close stops the recovery timer and drains any held batch synchronously. It is
+// safe on a nil service and safe to call more than once. A cooldown does not
+// suppress the final drain, because a held alert would otherwise be lost for
+// good: the next boot sees only terminal history rows. The caller supplies the
+// deadline; a single publish is also bounded by the HTTP client's timeout.
+func (s *Service) Close(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
+	s.batchMu.Lock()
+	if s.pendingTimer != nil {
+		s.pendingTimer.Stop()
+		s.pendingTimer = nil
+	}
+	s.timerAt = time.Time{}
+	batch := s.pending
+	s.pending = nil
+	s.closed = true
+	s.batchMu.Unlock()
+	if len(batch) == 0 {
+		return nil
+	}
+	_, err := s.pushSummary(ctx, batch, true)
+	return err
 }
 
 // deliver publishes one missed Notification, logging a failure or a mute. The

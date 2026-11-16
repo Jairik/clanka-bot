@@ -535,6 +535,17 @@ func (a *Auth) Invalidate(token string) {
 // It waits for an in-flight refresh to commit before clearing, so a grant that
 // was already running cannot write the refresh token back afterwards.
 func (a *Auth) Disconnect(ctx context.Context) (secrets.Metadata, error) {
+	return a.Clear(ctx)
+}
+
+// Clear removes the stored refresh token. It is the same operation as
+// Disconnect and is the seam the Secrets page uses so an operator's clear
+// cannot be undone by a refresh grant that is already in flight.
+//
+// It takes refreshMu around the store write, so a grant that already passed
+// store.Get and is about to commit a rotated token waits for Clear to finish
+// first: Clear runs after the grant commits and leaves the secret absent.
+func (a *Auth) Clear(ctx context.Context) (secrets.Metadata, error) {
 	if a == nil || a.store == nil {
 		return secrets.Metadata{}, ErrStore
 	}
@@ -544,6 +555,38 @@ func (a *Auth) Disconnect(ctx context.Context) (secrets.Metadata, error) {
 	if err != nil {
 		return secrets.Metadata{}, err
 	}
+	a.resetCaches()
+	a.logger.Info("spotify web api disconnected")
+	return meta, nil
+}
+
+// Replace stores a new refresh token the operator supplied through the Secrets
+// page. It takes refreshMu around the store write, so a grant that is already
+// in flight and about to commit a rotated token cannot overwrite the
+// operator's value: the grant commits first, then Replace stores the new token
+// last and wins.
+//
+// The cached access token is dropped so the next Token call proves the new
+// token; the page reports the truthful stored source afterwards.
+func (a *Auth) Replace(ctx context.Context, value string) (secrets.Metadata, error) {
+	if a == nil || a.store == nil {
+		return secrets.Metadata{}, ErrStore
+	}
+	a.refreshMu.Lock()
+	defer a.refreshMu.Unlock()
+	meta, err := a.store.Set(ctx, SecretName, value)
+	if err != nil {
+		return secrets.Metadata{}, err
+	}
+	a.resetCaches()
+	return meta, nil
+}
+
+// resetCaches drops the in-memory access token, the refresh token that
+// produced it, the failure cooldown and the status, then recomputes the
+// initial status from the store. It is called after Clear or Replace. The
+// caller holds refreshMu and a.mu is taken here, never the other way around.
+func (a *Auth) resetCaches() {
 	a.mu.Lock()
 	a.access = ""
 	a.expires = time.Time{}
@@ -552,8 +595,6 @@ func (a *Auth) Disconnect(ctx context.Context) (secrets.Metadata, error) {
 	a.retryAfter = time.Time{}
 	a.status = a.initialStatus()
 	a.mu.Unlock()
-	a.logger.Info("spotify web api disconnected")
-	return meta, nil
 }
 
 // Status reports the truthful Web API state. It reads the secret metadata and

@@ -98,6 +98,14 @@ type requestView struct {
 	Stages      []timingView
 	Checkpoints []timingView
 	Calls       []callView
+	// Per-turn model token counts. Zero means unknown (the provider omitted
+	// usage, or the row predates them); the page renders that as "unknown",
+	// never as zero or free.
+	PromptTokens     int64
+	CompletionTokens int64
+	TotalTokens      int64
+	CachedTokens     int64
+	AgentSteps       int
 }
 
 type timingView struct {
@@ -368,24 +376,29 @@ func activityFilter(value string) string {
 
 func (h *Handler) requestView(entry activity.Entry) requestView {
 	view := requestView{
-		ID:          entry.ID,
-		Time:        entry.At.Format("15:04:05"),
-		TimeISO:     entry.At.Format(time.RFC3339),
-		Source:      entry.Source,
-		SourceLabel: activitySourceLabel(entry.Source),
-		Path:        entry.Path,
-		PathLabel:   pathLabel(entry.Path),
-		Tool:        entry.Tool,
-		Outcome:     entry.Outcome,
-		OutcomeText: outcomeLabel(entry.Outcome),
-		OutcomePill: outcomePill(entry.Outcome),
-		Response:    "Not measured",
-		Error:       entry.Error,
-		Transcript:  entry.Transcript,
-		Reply:       entry.Reply,
-		LocalOnly:   entry.LocalOnly,
-		Pending:     entry.Pending,
-		Summary:     entry.Summary,
+		ID:               entry.ID,
+		Time:             entry.At.Format("15:04:05"),
+		TimeISO:          entry.At.Format(time.RFC3339),
+		Source:           entry.Source,
+		SourceLabel:      activitySourceLabel(entry.Source),
+		Path:             entry.Path,
+		PathLabel:        pathLabel(entry.Path),
+		Tool:             entry.Tool,
+		Outcome:          entry.Outcome,
+		OutcomeText:      outcomeLabel(entry.Outcome),
+		OutcomePill:      outcomePill(entry.Outcome),
+		Response:         "Not measured",
+		Error:            entry.Error,
+		Transcript:       entry.Transcript,
+		Reply:            entry.Reply,
+		LocalOnly:        entry.LocalOnly,
+		Pending:          entry.Pending,
+		Summary:          entry.Summary,
+		PromptTokens:     entry.PromptTokens,
+		CompletionTokens: entry.CompletionTokens,
+		TotalTokens:      entry.TotalTokens,
+		CachedTokens:     entry.CachedTokens,
+		AgentSteps:       entry.Steps,
 	}
 	if entry.ResponseMS != nil {
 		view.Measured = true

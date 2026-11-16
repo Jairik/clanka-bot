@@ -38,6 +38,18 @@ const DefaultTimeout = 2 * time.Second
 // off the request path; a caller's shorter deadline still applies.
 const WarmTimeout = 2 * time.Minute
 
+// WarmBatchSize bounds one warm Embed call. The embed service is a single,
+// CPU-bound process that also answers request-driven 1-text embeds carrying a
+// 2 s budget, so a background warm must never hold it for a whole library at
+// once. A 1000-name warm becomes a handful of small requests instead of one
+// long one.
+const WarmBatchSize = 32
+
+// WarmBatchPause is the short yield between warm batches. It lets a pending
+// 1-text embed be served before the next chunk is submitted, and is small
+// enough that a full warm still finishes well inside WarmTimeout.
+const WarmBatchPause = 10 * time.Millisecond
+
 // Result reasons, reported in the request log rather than spoken.
 const (
 	ReasonExact          = "exact"
@@ -272,14 +284,17 @@ func (m *Matcher) Match(ctx context.Context, source Source, spoken string, candi
 	return Result{Name: indexed[best].name, Score: bestScore, Reason: ReasonSimilarity}
 }
 
-// Warm embeds and caches every candidate of one source the cache is missing. A
-// library owner calls it after a refresh so the next spoken lookup embeds only
-// the query instead of a cold batch that can exceed one lookup's budget. It
-// makes no embed request when everything is already cached. A warm never
-// evicts another source's vectors unless this source grows to be the largest
-// holder, so a warm of one library cannot discard another library's work. A
-// concurrent Warm and Match may embed the same miss once each; that is
-// harmless.
+// Warm embeds and caches every candidate of one source the cache is missing,
+// in bounded batches with a short yield between them. A library owner calls it
+// after a refresh so the next spoken lookup embeds only the query instead of a
+// cold batch that can exceed one lookup's budget. Chunking keeps the shared,
+// CPU-bound embed service available to 1-text callers: no single warm request
+// is larger than WarmBatchSize and the pause between chunks gives a pending
+// lookup a chance to run. It makes no embed request when everything is already
+// cached. A warm never evicts another source's vectors unless this source
+// grows to be the largest holder, so a warm of one library cannot discard
+// another library's work. A concurrent Warm and Match may embed the same miss
+// once each; that is harmless.
 func (m *Matcher) Warm(ctx context.Context, source Source, candidates []string) error {
 	if m == nil || m.embedder == nil {
 		// Without an embedder there is nothing to warm; exact matching still
@@ -320,14 +335,37 @@ func (m *Matcher) Warm(ctx context.Context, source Source, candidates []string) 
 
 	warmCtx, cancel := context.WithTimeout(ctx, WarmTimeout)
 	defer cancel()
-	vectors, err := m.embedder.Embed(warmCtx, misses)
-	if err != nil {
-		return err
+	for start := 0; start < len(misses); start += WarmBatchSize {
+		// Stop between batches when the caller cancels or the total bound
+		// expires; an already-stored batch stays cached.
+		if err := warmCtx.Err(); err != nil {
+			return err
+		}
+		end := start + WarmBatchSize
+		if end > len(misses) {
+			end = len(misses)
+		}
+		batch := misses[start:end]
+
+		vectors, err := m.embedder.Embed(warmCtx, batch)
+		if err != nil {
+			return err
+		}
+		if err := validateVectors(vectors, len(batch)); err != nil {
+			return err
+		}
+		m.storeCached(source, batch, vectors, len(vectors[0]))
+
+		// Yield after every chunk but the last so a 1-text lookup is never
+		// queued behind more than one small batch on the shared service.
+		if end < len(misses) {
+			select {
+			case <-time.After(WarmBatchPause):
+			case <-warmCtx.Done():
+				return warmCtx.Err()
+			}
+		}
 	}
-	if err := validateVectors(vectors, len(misses)); err != nil {
-		return err
-	}
-	m.storeCached(source, misses, vectors, len(vectors[0]))
 	return nil
 }
 

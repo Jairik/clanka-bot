@@ -367,6 +367,7 @@ func TestEqualTopScoresAreAmbiguous(t *testing.T) {
 type batchRecorder struct {
 	mu      sync.Mutex
 	batches [][]string
+	times   []time.Time
 	table   map[string][]float32
 	reply   func(texts []string) ([][]float32, error)
 }
@@ -374,6 +375,7 @@ type batchRecorder struct {
 func (r *batchRecorder) Embed(_ context.Context, texts []string) ([][]float32, error) {
 	r.mu.Lock()
 	r.batches = append(r.batches, append([]string(nil), texts...))
+	r.times = append(r.times, time.Now())
 	table, reply := r.table, r.reply
 	r.mu.Unlock()
 	if reply != nil {
@@ -406,6 +408,12 @@ func (r *batchRecorder) batch(i int) []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]string(nil), r.batches[i]...)
+}
+
+func (r *batchRecorder) timeAt(i int) time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.times[i]
 }
 
 func sameTexts(got, want []string) bool {
@@ -534,6 +542,115 @@ func TestWarmWithNoEmbedderIsANoOp(t *testing.T) {
 	matcher := namematch.New(nil, namematch.Config{Threshold: fixedThreshold(0.70)})
 	if err := matcher.Warm(context.Background(), namematch.SourceSounds, []string{"birds"}); err != nil {
 		t.Fatalf("Warm without an embedder = %v, want nil", err)
+	}
+}
+
+// warmLibrary builds a large set of normalised names and a fake vector table
+// for them, so a batching test can count exactly what reached the service.
+func warmLibrary(n int) (candidates []string, table map[string][]float32) {
+	candidates = make([]string, n)
+	table = make(map[string][]float32, n)
+	for i := range candidates {
+		candidates[i] = fmt.Sprintf("track %03d", i)
+		table[namematch.Normalize(candidates[i])] = []float32{float32(i%7) + 1, 0, 0}
+	}
+	return candidates, table
+}
+
+// TestWarmBatchesLargeLibraryAndStaysWithinBound is the reviewer's probe for
+// issue #375: a 1000-name warm must be split into bounded requests, one per
+// chunk, each text embedded exactly once, and still finish inside the bound.
+func TestWarmBatchesLargeLibraryAndStaysWithinBound(t *testing.T) {
+	const names = 1000
+	candidates, table := warmLibrary(names)
+	recorder := &batchRecorder{table: table}
+	matcher := namematch.New(recorder, namematch.Config{})
+
+	start := time.Now()
+	if err := matcher.Warm(context.Background(), namematch.SourceSounds, candidates); err != nil {
+		t.Fatalf("Warm: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > namematch.WarmTimeout {
+		t.Fatalf("Warm took %v, want within %v", elapsed, namematch.WarmTimeout)
+	}
+
+	wantCalls := (names + namematch.WarmBatchSize - 1) / namematch.WarmBatchSize
+	if got := recorder.calls(); got != wantCalls {
+		t.Fatalf("Warm made %d embed calls, want %d: one per chunk of %d", got, wantCalls, namematch.WarmBatchSize)
+	}
+	seen := make(map[string]bool, names)
+	for i := 0; i < recorder.calls(); i++ {
+		batch := recorder.batch(i)
+		if len(batch) == 0 || len(batch) > namematch.WarmBatchSize {
+			t.Fatalf("batch %d has %d texts, want between 1 and %d", i, len(batch), namematch.WarmBatchSize)
+		}
+		for _, text := range batch {
+			if seen[text] {
+				t.Fatalf("text %q was embedded in more than one batch", text)
+			}
+			seen[text] = true
+		}
+	}
+	if len(seen) != names {
+		t.Fatalf("Warm embedded %d distinct texts, want %d", len(seen), names)
+	}
+}
+
+// TestWarmYieldsBetweenBatches proves the warm pauses between chunks so a
+// 1-text embed on the shared service is never queued behind the whole library.
+func TestWarmYieldsBetweenBatches(t *testing.T) {
+	candidates, table := warmLibrary(3 * namematch.WarmBatchSize)
+	recorder := &batchRecorder{table: table}
+	matcher := namematch.New(recorder, namematch.Config{})
+
+	if err := matcher.Warm(context.Background(), namematch.SourceSounds, candidates); err != nil {
+		t.Fatalf("Warm: %v", err)
+	}
+	if recorder.calls() < 2 {
+		t.Fatalf("Warm made %d embed calls, want more than one", recorder.calls())
+	}
+	for i := 1; i < recorder.calls(); i++ {
+		gap := recorder.timeAt(i).Sub(recorder.timeAt(i - 1))
+		if gap < namematch.WarmBatchPause {
+			t.Fatalf("gap between batch %d and %d = %v, want at least the %v yield", i-1, i, gap, namematch.WarmBatchPause)
+		}
+	}
+}
+
+// cancelAfterFirstEmbed cancels the warm once its first batch has been served,
+// standing in for a caller that loses interest mid-warm.
+type cancelAfterFirstEmbed struct {
+	cancel context.CancelFunc
+	calls  int
+}
+
+func (e *cancelAfterFirstEmbed) Embed(_ context.Context, texts []string) ([][]float32, error) {
+	e.calls++
+	vectors := make([][]float32, len(texts))
+	for i := range texts {
+		vectors[i] = []float32{1, 0}
+	}
+	if e.calls == 1 {
+		e.cancel()
+	}
+	return vectors, nil
+}
+
+// A cancelled context stops the warm between batches; the remaining misses
+// are left uncached rather than embedded after the caller has gone away.
+func TestWarmStopsWhenContextIsCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	embedder := &cancelAfterFirstEmbed{cancel: cancel}
+	matcher := namematch.New(embedder, namematch.Config{})
+	candidates, _ := warmLibrary(2 * namematch.WarmBatchSize)
+
+	err := matcher.Warm(ctx, namematch.SourceSounds, candidates)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Warm with cancelled context = %v, want context.Canceled", err)
+	}
+	if embedder.calls != 1 {
+		t.Fatalf("Warm made %d embed calls after cancellation, want 1", embedder.calls)
 	}
 }
 

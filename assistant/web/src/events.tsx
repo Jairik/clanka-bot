@@ -2,7 +2,7 @@
 // Server-Sent Events connection, stops the polling fallbacks while it is open,
 // and bumps a generation on every open so each view reloads once after a drop:
 // an event missed while disconnected is recovered by that full resync.
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 
 export const LIVE_NAMES = ["activity", "volume", "alerts", "health"] as const;
 export type LiveName = (typeof LIVE_NAMES)[number];
@@ -61,6 +61,65 @@ const LiveCtx = createContext<Live>({
   resync: (_name, load) => load(),
 });
 export const useLive = () => useContext(LiveCtx);
+
+// ---------- Pi reachability (the "Reconnecting to the Pi…" strip, #301) ----------
+//
+// getJSON is a plain function, so a dropped request needs a tiny module store to
+// reach the shell. The stream is the other source: an open means we are current
+// again, a drop starts the same grace clock. One `downSince` for both means a
+// retry while already down changes nothing, so the strip announces only once.
+
+/** How long the Pi may be quiet before the strip is worth showing. */
+export const piUnreachableAfter = 10_000;
+
+type Reach = { lastUpdate: number; downSince: number | null };
+const freshReach = (): Reach => ({ lastUpdate: Date.now(), downSince: null });
+let reach: Reach = freshReach();
+const reachListeners = new Set<() => void>();
+const emitReach = () => reachListeners.forEach((fn) => fn());
+
+/** An open (the generation bump every consumer resyncs on) clears an outage. */
+export function piUpdated(now = Date.now()) {
+  if (reach.lastUpdate === now && reach.downSince === null) return;
+  reach = { lastUpdate: now, downSince: null };
+  emitReach();
+}
+
+/** A dropped stream or a request that never reached the Pi starts the clock once. */
+export function piUnreachable(now = Date.now()) {
+  if (reach.downSince !== null) return;
+  reach = { ...reach, downSince: now };
+  emitReach();
+}
+
+/** Drop reachability left over from a previous mount (tests, remounts). */
+export function resetPiStatus() {
+  reach = freshReach();
+  emitReach();
+}
+
+const reachStore = {
+  subscribe(fn: () => void) {
+    reachListeners.add(fn);
+    return () => {
+      reachListeners.delete(fn);
+    };
+  },
+  getSnapshot: () => reach,
+};
+
+/** Raw reachability; the strip applies the grace window so it can own the timer. */
+export function usePiStatus() {
+  const { live, generation } = useLive();
+  const state = useSyncExternalStore(reachStore.subscribe, reachStore.getSnapshot);
+  useEffect(() => {
+    if (generation > 0) piUpdated();
+  }, [generation]);
+  useEffect(() => {
+    if (!live) piUnreachable();
+  }, [live]);
+  return state;
+}
 
 export function LiveProvider({ children }: { children: ReactNode }) {
   const [live, setLive] = useState(false);

@@ -8,9 +8,9 @@ import {
 } from "lucide-react";
 import { APIVersionMismatch, getJSON, navigate, postForm, useLocation } from "./api";
 import { API_VERSION } from "./api-version";
-import { latestDelta, useLive } from "./events";
+import { latestDelta, piUnreachableAfter, useLive, usePiStatus } from "./events";
 import type { HealthView, Session, Volume as VolumeState } from "./types";
-import { Range, Tip, cn } from "./ui";
+import { Dot, Range, Tip, cn } from "./ui";
 import { SpeakToggle } from "./speak";
 import { prefetch } from "./routes";
 import { snapVolume, VOL_STEP } from "./volume";
@@ -121,11 +121,39 @@ function useHealthAlarm() {
   return bad;
 }
 
+/**
+ * One status line under the header once the Pi has been quiet past the grace
+ * window. It sits over the top edge of the page (absolute, fixed height) so the
+ * composer never moves, and mounts only on the outage so it is announced once.
+ */
+function PiUnreachableStrip({ lastUpdate, downSince }: { lastUpdate: number; downSince: number | null }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (downSince === null) return;
+    setNow(Date.now());
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [downSince]);
+  if (downSince === null || now - downSince < piUnreachableAfter) return null;
+  const d = new Date(lastUpdate);
+  const time = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+  return (
+    <div
+      role="status"
+      className="absolute inset-x-0 top-14 z-20 flex h-6 items-center justify-center gap-2 border-b bg-surface px-3 text-[11px] text-muted md:top-[70px]"
+    >
+      <Dot tone="warn" />
+      Reconnecting to the Pi… <span className="font-mono tabular-nums text-subtle">(last update {time})</span>
+    </div>
+  );
+}
+
 export function Shell({ children }: { children: ReactNode }) {
   const { path } = useLocation();
   const page = pageFor(path)?.id;
   const healthBad = useHealthAlarm();
   const { live } = useLive();
+  const { lastUpdate, downSince } = usePiStatus();
   return (
     // data-live is the one observable seam for the browser smoke test: it says
     // whether the stream is carrying updates or the polling fallback is.
@@ -169,7 +197,7 @@ export function Shell({ children }: { children: ReactNode }) {
         <Owner />
       </aside>
 
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className="relative flex min-w-0 flex-1 flex-col">
         <header className="pt-safe flex h-14 shrink-0 items-center gap-2 border-b px-3 md:h-[70px] md:px-6">
           <a href="/" onClick={link("/")} className="flex size-9 items-center justify-center md:hidden" aria-label="Home">
             <Logo className="size-5" />
@@ -192,6 +220,7 @@ export function Shell({ children }: { children: ReactNode }) {
           <SpeakToggle />
           <VolumeControl />
         </header>
+        <PiUnreachableStrip lastUpdate={lastUpdate} downSince={downSince} />
         <main id="main" tabIndex={-1} className="min-h-0 flex-1 outline-none">
           {children}
         </main>

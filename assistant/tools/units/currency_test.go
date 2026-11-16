@@ -252,9 +252,9 @@ func TestCurrencySpeakToday(t *testing.T) {
 // TestCurrencyExtract covers the natural word orders and the refusals.
 func TestCurrencyExtract(t *testing.T) {
 	positive := []struct {
-		utterance     string
-		value         float64
-		from, to      string
+		utterance string
+		value     float64
+		from, to  string
 	}{
 		{"how much is 50 dollars in euros", 50, "USD", "EUR"},
 		{"what is 100 euros in us dollars", 100, "EUR", "USD"},

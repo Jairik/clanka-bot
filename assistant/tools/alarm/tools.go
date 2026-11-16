@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/parse"
 	"github.com/Jairik/clanka-bot/assistant/internal/ring"
@@ -176,6 +177,34 @@ func NewUpdate(m *Manager) tool.Tool[UpdateIn, UpdateOut] {
 	}
 }
 
+// NewSnooze builds alarm.snooze. It re-arms the Alarm that is currently
+// ringing for a spoken duration, or for the live ring.alarm.snooze default
+// when the phrase carries no duration. The bare "snooze" control phrase still
+// goes straight to the ringing alert through Focus and keeps its behaviour.
+func NewSnooze(m *Manager) tool.Tool[SnoozeIn, SnoozeOut] {
+	return tool.Tool[SnoozeIn, SnoozeOut]{
+		Name:        SnoozeName,
+		Description: "Snooze the alarm that is currently ringing, optionally for a spoken duration; with no duration it uses the configured snooze time.",
+		Permission:  tool.PermissionAct,
+		LocalOnly:   tool.LocalOnlyNo,
+		Handler: func(ctx context.Context, in SnoozeIn) (SnoozeOut, error) {
+			return m.Snooze(ctx, in)
+		},
+		Speak: speakSnooze,
+		Examples: []string{
+			"snooze the alarm for ten minutes",
+			"snooze the alarm for 10 minutes",
+			"snooze my alarm for twenty minutes",
+			"snooze for five more minutes",
+			"snooze the alarm",
+			"snooze my alarm",
+			"snooze the morning alarm for 15 minutes",
+			"snooze the alarm for another ten minutes",
+		},
+		Extract: extractSnooze,
+	}
+}
+
 // Register adds every alarm Tool.
 func Register(r *tool.Registry, m *Manager) error {
 	if err := tool.Add(r, NewSet(m)); err != nil {
@@ -187,7 +216,50 @@ func Register(r *tool.Registry, m *Manager) error {
 	if err := tool.Add(r, NewCancel(m)); err != nil {
 		return err
 	}
-	return tool.Add(r, NewUpdate(m))
+	if err := tool.Add(r, NewUpdate(m)); err != nil {
+		return err
+	}
+	return tool.Add(r, NewSnooze(m))
+}
+
+// extractSnooze reads a phrased snooze request. The word "snooze" plus at
+// least one other word is required: the bare control phrase is routed to the
+// ringing alert through Focus and keeps its behaviour, while a bare duration
+// such as "give me ten more minutes" is left to the timer or Agent paths. The
+// delay uses the shared duration parser; with no spoken duration the Handler
+// applies the live ring.alarm.snooze default.
+func extractSnooze(text string) (SnoozeIn, bool) {
+	words := wordsOf(text)
+	snoozing := false
+	for _, word := range words {
+		if word == "snooze" || word == "snoozing" {
+			snoozing = true
+		}
+	}
+	if !snoozing || len(words) < 2 {
+		return SnoozeIn{}, false
+	}
+	// Drop the filler words in "five more minutes" / "another ten minutes" so
+	// the shared duration parser still reads the number and its unit.
+	delayText := strings.ReplaceAll(text, " more ", " ")
+	delayText = strings.ReplaceAll(delayText, " another ", " ")
+	in := SnoozeIn{}
+	if d, ok := parse.Duration(delayText, 0); ok && d > 0 {
+		in.DurationSeconds = int(d.Round(time.Second) / time.Second)
+	}
+	return in, true
+}
+
+// speakSnooze renders the one-line confirmation, or answers clearly when no
+// Alarm was ringing.
+func speakSnooze(out SnoozeOut) string {
+	if !out.Snoozed {
+		return "There's no alarm ringing to snooze."
+	}
+	if out.DurationSeconds > 0 {
+		return "Alarm snoozed for " + parse.HumanDuration(time.Duration(out.DurationSeconds)*time.Second) + "."
+	}
+	return SnoozeText
 }
 
 // extractSet reads the clock time, repeat rule and optional per-Alarm

@@ -1,8 +1,8 @@
-// Package alarm implements the alarm.set, alarm.list, alarm.cancel and
-// alarm.update Tools. An Alarm is a clock-time Scheduled alert that may repeat
-// daily, on weekdays, on weekends or on chosen weekdays. It Rings through the
-// shared internal/ring engine with the Alarm settings (a 30 s ramp by default)
-// and supports snooze (9 min by default). Each Alarm may override the Ring
+// Package alarm implements the alarm.set, alarm.list, alarm.cancel,
+// alarm.update and alarm.snooze Tools. An Alarm is a clock-time Scheduled
+// alert that may repeat daily, on weekdays, on weekends or on chosen weekdays.
+// It Rings through the shared internal/ring engine with the Alarm settings (a
+// 30 s ramp by default) and supports snooze (9 min by default). Each Alarm may override the Ring
 // sound, volume and ramp for itself (#57); the overrides are stored in the
 // Alarm row and applied by the Ring engine without changing the kind settings.
 // Alarms are persisted in the one SQLite store when the module receives one and
@@ -39,6 +39,7 @@ const (
 	ListName   = "alarm.list"
 	CancelName = "alarm.cancel"
 	UpdateName = "alarm.update"
+	SnoozeName = "alarm.snooze"
 )
 
 // SnoozeText is the line spoken by the turn that snoozes a ringing Alarm.
@@ -159,6 +160,24 @@ type CancelOut struct {
 	Cancelled int `json:"cancelled"`
 }
 
+// SnoozeIn is one alarm.snooze request. DurationSeconds is the spoken delay;
+// zero uses the live ring.alarm.snooze setting, matching the bare "snooze"
+// control phrase. A positive value re-arms the ringing Alarm after exactly
+// that many seconds.
+type SnoozeIn struct {
+	DurationSeconds int `json:"duration_seconds,omitempty"`
+}
+
+// SnoozeOut reports whether an Alarm was snoozed and for how long. Snoozed is
+// false when nothing is ringing, so the reply can answer clearly instead of
+// silently doing nothing. DurationSeconds is the effective delay, including
+// the default when the request carried no duration.
+type SnoozeOut struct {
+	Snoozed         bool   `json:"snoozed"`
+	DurationSeconds int    `json:"duration_seconds,omitempty"`
+	Label           string `json:"label,omitempty"`
+}
+
 // ListIn has no arguments.
 type ListIn struct{}
 
@@ -254,6 +273,10 @@ type Manager struct {
 	// and it is filled from the Ring engine's OnStart so an Alarm still waiting
 	// behind another alert is not marked ringing early.
 	ringing map[string]Alarm
+	// pendingSnooze carries a per-snooze delay from alarm.snooze to the finishRing
+	// that unwinds the cancelled Ring. It is a one-shot override: finishRing
+	// consumes it so the spoken delay, not the live default, sets the re-ring.
+	pendingSnooze map[string]time.Duration
 }
 
 // NewManager builds an empty manager.
@@ -283,6 +306,7 @@ func NewManager(opts Options) *Manager {
 		cancelled:     make(map[string]bool),
 		active:        make(map[string]context.CancelFunc),
 		ringing:       make(map[string]Alarm),
+		pendingSnooze: make(map[string]time.Duration),
 	}
 	manager.fireTx = manager.beginFire
 	manager.advanceFire = manager.advanceFailedFire
@@ -839,6 +863,60 @@ func (m *Manager) cancelWhere(ctx context.Context, match func(Alarm) bool) (int,
 	return len(ids), nil
 }
 
+// Snooze ends the Alarm that is currently ringing and re-arms it after the
+// requested delay. A zero DurationSeconds uses the live ring.alarm.snooze
+// setting, matching the bare "snooze" control phrase. When nothing is ringing
+// it reports Snoozed=false so the reply can answer clearly instead of going
+// quiet. The ended_by="snooze" history row and the re-ring are written by the
+// ordinary finishRing path once the cancelled Ring unwinds.
+func (m *Manager) Snooze(_ context.Context, in SnoozeIn) (SnoozeOut, error) {
+	delay := time.Duration(in.DurationSeconds) * time.Second
+	if delay <= 0 {
+		delay = m.snoozeDuration()
+	}
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return SnoozeOut{}, nil
+	}
+	target, ok := ringingTarget(m.ringing)
+	if !ok {
+		m.mu.Unlock()
+		return SnoozeOut{}, nil
+	}
+	if m.pendingSnooze == nil {
+		m.pendingSnooze = make(map[string]time.Duration)
+	}
+	m.pendingSnooze[target.ID] = delay
+	cancel := m.active[target.ID]
+	m.mu.Unlock()
+	// Cancel after unlocking: the engine unwinds on the Ring goroutine and
+	// finishRing consumes the override set above.
+	if cancel != nil {
+		cancel()
+	}
+	return SnoozeOut{
+		Snoozed:         true,
+		DurationSeconds: int(delay.Round(time.Second) / time.Second),
+		Label:           target.Label,
+	}, nil
+}
+
+// ringingTarget picks the Alarm to snooze. Only one Alert can own the speaker
+// at a time because Focus is exclusive, but the choice is made deterministic
+// so an overlapping handoff cannot make the reply name an arbitrary Alarm.
+func ringingTarget(ringing map[string]Alarm) (Alarm, bool) {
+	ids := make([]string, 0, len(ringing))
+	for id := range ringing {
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return Alarm{}, false
+	}
+	sort.Strings(ids)
+	return ringing[ids[0]], true
+}
+
 // Close stops every callback and cancels an active Ring without deleting the
 // persisted rows. It waits for an in-flight fire to record its outcome, so the
 // caller may close the database afterwards. Pending Alarms are recovered on the
@@ -1038,6 +1116,27 @@ func (m *Manager) finishRing(id string, state fireState, result ring.Result) {
 	if !result.Played && recorded == alertstore.StateStopped {
 		endedBy = "unavailable"
 	}
+
+	// alarm.snooze ends the Ring by cancelling its context, which looks like a
+	// shutdown to the engine. Translate it into the same stopped/snooze outcome
+	// the Focus path produces, and carry the requested delay through to the
+	// re-ring instead of falling back to the live default.
+	var requested *time.Duration
+	m.mu.Lock()
+	if d, ok := m.pendingSnooze[id]; ok {
+		delete(m.pendingSnooze, id)
+		if !cancelled {
+			v := d
+			requested = &v
+		}
+	}
+	m.mu.Unlock()
+	if requested != nil {
+		outcome = ring.OutcomeStopped
+		recorded = alertstore.StateStopped
+		endedBy = "snooze"
+	}
+
 	m.closeEvent(state, recorded, endedBy)
 	if recorded == alertstore.StateMissed {
 		m.notifyMissed(state.alarm, state.occurrence, "max_ring")
@@ -1046,7 +1145,7 @@ func (m *Manager) finishRing(id string, state fireState, result ring.Result) {
 		return
 	}
 	if endedBy == "snooze" {
-		m.scheduleSnooze(state.alarm)
+		m.scheduleSnooze(state.alarm, requested)
 		return
 	}
 	m.afterFire(state)
@@ -1063,10 +1162,15 @@ func (m *Manager) afterFire(state fireState) {
 	}
 }
 
-// scheduleSnooze persists and schedules one re-ring after the live snooze
-// delay. It keeps the row, so a restart during the snooze still re-rings.
-func (m *Manager) scheduleSnooze(alarm Alarm) {
-	target := m.now().Add(m.snoozeDuration())
+// scheduleSnooze persists and schedules one re-ring. The delay is the spoken
+// request when one was given, otherwise the live ring.alarm.snooze setting. It
+// keeps the row, so a restart during the snooze still re-rings.
+func (m *Manager) scheduleSnooze(alarm Alarm, requested *time.Duration) {
+	delay := m.snoozeDuration()
+	if requested != nil && *requested > 0 {
+		delay = *requested
+	}
+	target := m.now().Add(delay)
 	if m.db != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), storeTimeout)
 		result, err := m.db.ExecContext(ctx,

@@ -218,7 +218,7 @@ Media chosen for one Timer or Alarm: a Spotify song, album or shuffled playlist,
 _Avoid_: Alarm music mode, notification soundtrack
 
 **Snooze**:
-The request to silence a ringing Alarm and ring it again after `ring.alarm.snooze` (default 9 minutes). On a Timer it acts as stop.
+The request to silence a ringing Alarm and ring it again after `ring.alarm.snooze` (default 9 minutes), or after a spoken delay through `alarm.snooze`. On a Timer it acts as stop.
 _Avoid_: Nap, delay
 
 **Reminder**:

@@ -23,6 +23,7 @@ func (*Module) ConformanceSamples() map[string]any {
 			NextFiresAt: next,
 		}}},
 		CancelName: CancelOut{Cancelled: 1},
+		SnoozeName: SnoozeOut{Snoozed: true, DurationSeconds: 600},
 		UpdateName: UpdateOut{
 			Alarm: Alarm{
 				ID:          "1",

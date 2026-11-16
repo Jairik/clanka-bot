@@ -129,6 +129,31 @@ positives:
     - "can you change lights mode to strobe"
     - "can you lights rainbow mode"
     - "can you set lights mode to pulse"
+  lights.list:
+    - "what lights are saved"
+    - "list my saved lights"
+    - "which lights are saved"
+    - "show me the saved lights"
+    - "what saved lights do I have"
+    - "list the saved lights"
+    - "which lights do I have saved"
+    - "what lights do you have saved"
+    - "tell me which lights are saved"
+    - "read out my saved lights"
+    - "show me my saved lights"
+    - "what saved lights do you know about"
+    - "which light devices are saved"
+    - "list the light devices I saved"
+    - "what BLE lights are saved"
+    - "which BLE lights are configured"
+    - "what lights are configured"
+    - "do I have any saved lights"
+    - "tell me the lights I have saved"
+    - "what saved lights are there"
+    - "can you list my lights"
+    - "show me the lights I saved"
+    - "read me the saved lights"
+    - "which lights are set up"
   time.now:
     - what time is it
     - what's the time
@@ -1684,6 +1709,9 @@ negatives:
   - why are my lights flickering
   - explain Bluetooth light protocols
   - what does rainbow light mode mean
+  - what's the difference between BLE and Wi-Fi lights
+  - how much electricity do LED lights use
+  - tell me a joke about desk lamps
   - what's a good running playlist for a marathon
   - recommend a playlist for studying
   - create a new playlist called road trip
@@ -2046,6 +2074,7 @@ negatives:
 # the evaluation can report compound handling on its own.
 compounds:
   - turn the lights on and tell me the weather
+  - list my saved lights and turn them off
   - set a timer for 15 minutes and play Here Comes the Sun when it finishes
   - set an alarm for 7 and play my running playlist when it rings
   - what time is it and set a timer for five minutes

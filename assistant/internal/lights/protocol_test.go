@@ -66,14 +66,14 @@ func TestService(t *testing.T) {
 	if _, err := ss.SetJSON(ctx, "lights.devices", []byte(`"[{\"address\":\"AA:BB:CC:DD:EE:FF\",\"name\":\"Desk\",\"protocol\":\"happy\"}]"`)); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Apply(ctx, "", "power", "on"); err != nil || calls != 1 {
+	if _, err := s.Apply(ctx, "", "power", "on"); err != nil || calls != 1 {
 		t.Fatal(err, calls)
 	}
-	if err := s.Apply(ctx, "other", "power", "on"); err == nil || calls != 1 {
+	if _, err := s.Apply(ctx, "other", "power", "on"); err == nil || calls != 1 {
 		t.Fatal("unknown device wrote")
 	}
 	s.Run = func(context.Context, ...string) ([]byte, error) { return nil, errors.New("offline") }
-	if err := s.Apply(ctx, "Desk", "power", "off"); err == nil {
+	if _, err := s.Apply(ctx, "Desk", "power", "off"); err == nil {
 		t.Fatal("offline succeeded")
 	}
 }

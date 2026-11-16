@@ -11,11 +11,19 @@ strips and bulbs) are not BLE-controlled: their Bluetooth radio only hands
 over Wi-Fi credentials during onboarding. They live on the separate Monster
 lights page; see `docs/monster-lights.md`.
 
-The four `lights.*` Tools accept a saved device name/address and a value. An
-omitted device is accepted only with exactly one saved light. Fast path commands
-currently target that single light; use the Agent path for a named device when
-several are saved. Colours accept #RRGGBB; voice extraction also knows red,
-green, blue and white. Modes are rainbow, red pulse and strobe.
+The four `lights.*` Tools accept a saved device name, an address, or `all`. An
+omitted device targets the only saved light, or every saved light when several
+are saved. Names resolve through the shared name matcher, so case, punctuation
+and mild speech-to-text slips need no exact spelling; an ambiguous name is
+refused rather than guessed. `lights.list` returns saved names and protocols
+(never addresses) so the Agent can choose a device. Fast path commands fill the
+device from the utterance: a saved name selects that light, plural "lights"
+targets all of them, and a singular unnamed light with several saved controllers
+stays on the Agent path. A batch shares one fourteen-second write budget, so the
+static Tool timeout does not grow with the device count; a partial failure
+reports "Done for 2 of 3 lights" and Health names the controller that did not
+answer. Colours accept #RRGGBB; voice extraction also knows red, green, blue and
+white. Modes are rainbow, red pulse and strobe.
 
 ## Protocol references and limits
 

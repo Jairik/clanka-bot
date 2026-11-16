@@ -1,6 +1,6 @@
 # Map 2 spec
 
-Status: **grilled, ready for `/to-tickets`** (2026-11-11). Built from [map-2-brief.md](./map-2-brief.md). Terms follow [GLOSSARY.md](../../GLOSSARY.md).
+Status: **grilled, ready for `/to-tickets`** (2026-11-11). Built from [map-2-brief.md](./map-2-brief.md). Terms follow [the glossary](../guides/glossary.md).
 
 ## Scope
 

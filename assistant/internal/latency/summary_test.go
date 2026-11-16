@@ -134,3 +134,46 @@ func TestBudgetForRoutesControlAndConfirmationToFastPath(t *testing.T) {
 		t.Error("unrouted requests got a budget")
 	}
 }
+
+func TestBudgetForFocusIntentUsesFastPath(t *testing.T) {
+	budget, ok := latency.BudgetFor("focus_intent")
+	if !ok || budget != latency.BudgetFast {
+		t.Errorf("BudgetFor(%q) = %+v, %v; want Fast path budget", "focus_intent", budget, ok)
+	}
+}
+
+func TestStageBudgetExcludesNetworkBoundStages(t *testing.T) {
+	if _, ok := latency.StageBudget[latency.StageToolExecute]; ok {
+		t.Error("tool_execute should have no per-stage budget (network-bound)")
+	}
+	if _, ok := latency.StageBudget[latency.StageAgentFirstToken]; ok {
+		t.Error("agent_first_token is flagged separately and should not be in StageBudget")
+	}
+}
+
+func TestOverStageFlagsRoutingAboveP95(t *testing.T) {
+	summary := latency.PathSummary{
+		ResponseCount: 3,
+		Stages: map[string]latency.Stat{
+			// p50 40 (within), p95 200 (above the 100 ms routing p95 budget).
+			"routing_ms": {N: 3, P50: 40, P95: 200},
+		},
+	}
+	overP50, overP95, measured := summary.OverStage("routing", latency.StageBudget[latency.StageRouting])
+	if !measured {
+		t.Fatal("routing should be measured")
+	}
+	if overP50 {
+		t.Error("routing p50 is within budget but was flagged")
+	}
+	if !overP95 {
+		t.Error("routing p95 is above budget but was not flagged")
+	}
+}
+
+func TestOverStageReportsUnmeasuredAsNotFlagged(t *testing.T) {
+	summary := latency.PathSummary{ResponseCount: 0, Stages: map[string]latency.Stat{}}
+	if overP50, overP95, measured := summary.OverStage("routing", latency.StageBudget[latency.StageRouting]); overP50 || overP95 || measured {
+		t.Errorf("absent stage reported overP50=%v overP95=%v measured=%v, want all false", overP50, overP95, measured)
+	}
+}

@@ -137,7 +137,7 @@ The number of whole calendar days from today to a fixed date such as Christmas, 
 _Avoid_: Timer, elapsed time
 
 **Note**:
-A short personal fact kept on the Pi and found later by meaning, not by an exact key. Notes are `LocalOnlyNo` by the owner's decision: the Agent path and Hermes may read and add them through the single prompt builder ([ADR-0005](docs/adr/0005-notes-and-lists-are-agent-visible.md)); deleting one is a confirm action.
+A short personal fact kept on the Pi and found later by meaning, not by an exact key. Notes are `LocalOnlyNo` by the owner's decision: the Agent path and Hermes may read and add them through the single prompt builder ([ADR-0005](../adr/0005-notes-and-lists-are-agent-visible.md)); deleting one is a confirm action.
 _Avoid_: Memory, memo, reminder
 
 **List**:
@@ -273,7 +273,7 @@ The Authorization Code with PKCE grant whose refresh token is stored in the writ
 _Avoid_: Spotify login, API key, client secret
 
 **Soloist**:
-The Spotify Connect receiver: Spotify's official proprietary binary, run by the `soloist` container. It advertises a device over mDNS on the host network, plays into the Assistant's Pulse sink ([ADR-0004](docs/adr/0004-spotify-plays-through-the-pi.md)), and expires periodically; the operator refreshes it with `make soloist-update`.
+The Spotify Connect receiver: Spotify's official proprietary binary, run by the `soloist` container. It advertises a device over mDNS on the host network, plays into the Assistant's Pulse sink ([ADR-0004](../adr/0004-spotify-plays-through-the-pi.md)), and expires periodically; the operator refreshes it with `make soloist-update`.
 _Avoid_: Spotify player, Spotify daemon, librespot
 
 **Command chain**:

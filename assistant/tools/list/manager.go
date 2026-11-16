@@ -264,6 +264,54 @@ func (m *Manager) RemoveWithNear(ctx context.Context, key, spoken string) (Item,
 	return match, "", nil
 }
 
+// DoneWithNear ticks the one row a spoken item resolves to, exactly like
+// RemoveWithNear resolves, and returns the single near-miss candidate. On a
+// no-match the item is zero, near names the closest library spelling (if any),
+// and no row is changed. An empty key searches both fixed lists and ticks only
+// when exactly one row matches; the shared name matcher is the fallback after
+// exact and substring matching and never forces a guess.
+func (m *Manager) DoneWithNear(ctx context.Context, key, spoken string) (Item, string, error) {
+	if key == "" {
+		shopping, err := m.Items(ctx, KeyShopping)
+		if err != nil {
+			return Item{}, "", err
+		}
+		todo, err := m.Items(ctx, KeyTodo)
+		if err != nil {
+			return Item{}, "", err
+		}
+		items := append(append([]Item{}, shopping...), todo...)
+		match, ok, near := m.resolveItem(ctx, spoken, items)
+		if !ok {
+			return Item{}, near, ErrItemNotFound
+		}
+		item, err := m.SetDone(ctx, match.List, match.ID, true)
+		if err != nil {
+			return Item{}, "", err
+		}
+		return item, "", nil
+	}
+	items, err := m.Items(ctx, key)
+	if err != nil {
+		return Item{}, "", err
+	}
+	match, ok, near := m.resolveItem(ctx, spoken, items)
+	if !ok {
+		return Item{}, near, ErrItemNotFound
+	}
+	item, err := m.SetDone(ctx, key, match.ID, true)
+	if err != nil {
+		return Item{}, "", err
+	}
+	return item, "", nil
+}
+
+// Done ticks the spoken item and discards the near candidate.
+func (m *Manager) Done(ctx context.Context, key, spoken string) (Item, error) {
+	item, _, err := m.DoneWithNear(ctx, key, spoken)
+	return item, err
+}
+
 // resolveItem finds exactly one row for a spoken item. It never forces a guess:
 // two equally plausible rows are no match. The third return is the single
 // near-miss candidate for a no-match, used only to speak a clarifying question.

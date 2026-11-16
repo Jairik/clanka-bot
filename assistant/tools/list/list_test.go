@@ -325,3 +325,127 @@ func TestRemoveNearMissArmsNoPendingConfirmation(t *testing.T) {
 		t.Fatal("a near-miss question must not arm a pending confirmation")
 	}
 }
+
+func TestDoneTicksByExactSubstringAndNameMatcher(t *testing.T) {
+	ctx := context.Background()
+
+	// Exact match ticks the one open row whose text equals the spoken item.
+	m := testManager(t, openListStore(t), nil)
+	if _, _, err := m.Add(ctx, KeyShopping, "milk"); err != nil {
+		t.Fatalf("add milk: %v", err)
+	}
+	got, err := m.Done(ctx, KeyShopping, "milk")
+	if err != nil || got.Text != "milk" || !got.Done {
+		t.Fatalf("Done exact = %+v, %v; want milk ticked", got, err)
+	}
+
+	// Substring match ticks "whole milk" when the spoken item is "milk".
+	m2 := testManager(t, openListStore(t), nil)
+	if _, _, err := m2.Add(ctx, KeyShopping, "whole milk"); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	got2, err := m2.Done(ctx, KeyShopping, "milk")
+	if err != nil || got2.Text != "whole milk" || !got2.Done {
+		t.Fatalf("Done substring = %+v, %v; want whole milk ticked", got2, err)
+	}
+
+	// The shared name matcher is the fallback when no exact or substring match exists.
+	embed := &fakeEmbedder{table: map[string][]float32{
+		"eggs": {1, 0},
+		"milk": {0, 1},
+		"egg":  {0.9, 0.435},
+	}}
+	m3 := testManager(t, openListStore(t), embed)
+	if _, _, err := m3.Add(ctx, KeyShopping, "eggs"); err != nil {
+		t.Fatalf("add eggs: %v", err)
+	}
+	if _, _, err := m3.Add(ctx, KeyShopping, "milk"); err != nil {
+		t.Fatalf("add milk: %v", err)
+	}
+	got3, err := m3.Done(ctx, KeyShopping, "the egg")
+	if err != nil || got3.Text != "eggs" || !got3.Done {
+		t.Fatalf("Done name match = %+v, %v; want eggs ticked", got3, err)
+	}
+}
+
+func TestDoneRefusesUnknownAndAmbiguousWithoutWriting(t *testing.T) {
+	ctx := context.Background()
+
+	// An unknown item is a spoken refusal and changes nothing.
+	m := testManager(t, openListStore(t), nil)
+	if _, _, err := m.Add(ctx, KeyShopping, "milk"); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if _, err := m.Done(ctx, KeyShopping, "bread"); !errors.Is(err, ErrItemNotFound) {
+		t.Fatalf("unknown Done = %v, want ErrItemNotFound and no write", err)
+	}
+	if lists, err := m.Read(ctx, KeyShopping); err != nil || len(lists[0].Items) != 1 {
+		t.Fatalf("unknown Done changed the list: %+v, %v", lists, err)
+	}
+
+	// Two plausible rows are ambiguous: no forced guess, no write.
+	m2 := testManager(t, openListStore(t), nil)
+	for _, item := range []string{"whole milk", "oat milk"} {
+		if _, _, err := m2.Add(ctx, KeyShopping, item); err != nil {
+			t.Fatalf("add %q: %v", item, err)
+		}
+	}
+	if _, err := m2.Done(ctx, KeyShopping, "milk"); !errors.Is(err, ErrItemNotFound) {
+		t.Fatalf("ambiguous Done = %v, want ErrItemNotFound and no write", err)
+	}
+	if lists, err := m2.Read(ctx, KeyShopping); err != nil || len(lists[0].Items) != 2 {
+		t.Fatalf("ambiguous Done changed the list: %+v, %v", lists, err)
+	}
+}
+
+func TestDoneDisappearsFromReadKeepsRowForDashboard(t *testing.T) {
+	ctx := context.Background()
+	m := testManager(t, openListStore(t), nil)
+	if _, _, err := m.Add(ctx, KeyShopping, "milk"); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	if _, err := m.Done(ctx, KeyShopping, "milk"); err != nil {
+		t.Fatalf("Done: %v", err)
+	}
+	// The Fast-path read filters done rows...
+	if lists, err := m.Read(ctx, KeyShopping); err != nil || len(lists[0].Items) != 0 {
+		t.Fatalf("done row still read out: %+v, %v", lists, err)
+	}
+	// ...but the Dashboard keeps the row so the tick is not a delete.
+	if all, err := m.All(ctx); err != nil || len(all[0].Items) != 1 || !all[0].Items[0].Done {
+		t.Fatalf("Dashboard lost the done row: %+v, %v", all, err)
+	}
+}
+
+func TestDoneToolSpeaksAndRefuses(t *testing.T) {
+	ctx := context.Background()
+	embed := &fakeEmbedder{table: map[string][]float32{
+		"oat milk": {1, 0, 0},
+		"zat milk": {0.55, 0.8351646544245033, 0},
+		"novel":    {0, 1, 0},
+	}}
+	m := testManager(t, openListStore(t), embed)
+	if _, _, err := m.Add(ctx, KeyShopping, "oat milk"); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+
+	doneTool := NewDone(m)
+	// A successful tick speaks the list's display name.
+	out, err := doneTool.Handler(ctx, DoneIn{List: "shopping", Item: "oat milk"})
+	if err != nil {
+		t.Fatalf("Done handler: %v", err)
+	}
+	if got := doneTool.Speak(out); got != "Ticked oat milk off the shopping list." {
+		t.Fatalf("Speak = %q, want %q", got, "Ticked oat milk off the shopping list.")
+	}
+	// A far miss is a spoken refusal and writes nothing.
+	_, err = doneTool.Handler(ctx, DoneIn{List: "shopping", Item: "novel"})
+	te, ok := err.(*tool.ToolError)
+	if !ok || !strings.Contains(te.Say, "couldn't find that on the shopping list") {
+		t.Fatalf("far miss err = %v, want the plain not-found sentence", err)
+	}
+	// The only row (ticked above) is still present: the far miss wrote nothing.
+	if all, err := m.All(ctx); err != nil || len(all[0].Items) != 1 {
+		t.Fatalf("far miss changed the list: %+v, %v", all, err)
+	}
+}

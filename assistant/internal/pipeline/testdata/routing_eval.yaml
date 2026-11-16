@@ -1457,6 +1457,28 @@ positives:
     - cross off the salt from the shopping list
     - delete the flour from the shopping list
     - take the washing up liquid off the shopping list
+  list.done:
+    - I got the milk
+    - I got the eggs
+    - I got the parcel
+    - I've got the bins
+    - I got the bread
+    - I finished the milk
+    - I finished the eggs
+    - I've finished the parcel
+    - I completed the bins
+    - I've done the laundry
+    - I did the tax return
+    - the eggs are done
+    - I'm done with the bins
+    - ticked off the eggs
+    - got the milk
+    - got the parcel
+    - tick the bins off my to-do list
+    - the parcel is done
+    - I finished the bread
+    - I've done the bins
+    - ticked off the parcel
   note.remember:
     - remember that I parked on level 3
     - remember I left my bike in the shed
@@ -1799,6 +1821,13 @@ negatives:
   - what does my day look like
   - brief me
   - morning briefing
+  # List-shaped but not a Fast path request: no Tool reorders, sorts, archives or
+  # summarises a list, and "what's left to do" is a read, not a tick. They must
+  # not reach list.done (or any list Tool).
+  - reorder my shopping list by aisle
+  - sort the to-do list by priority
+  - archive my shopping list
+  - what's left to do on my list
 
 # Compound requests ask for more than one thing. They are kept separate so
 # the evaluation can report compound handling on its own.

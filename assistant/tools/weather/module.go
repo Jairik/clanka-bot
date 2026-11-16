@@ -75,8 +75,9 @@ type Module struct {
 	// temperature unit from it per reply. Nil means the code default applies.
 	settings func() *settings.Service
 	// now is the module's clock for health ages; nil uses time.Now.
-	now    func() time.Time
-	health healthMemo
+	now             func() time.Time
+	health          healthMemo
+	weatherAPIOutcome weatherAPIMemo
 }
 
 // NewModule builds the weather module with its code defaults.
@@ -182,7 +183,82 @@ func (m *Module) deps() Deps {
 		Budget:        m.cfg.Budget.Duration(),
 		Location:      m.location,
 		Settings:      m.settings,
+		RecordWeatherAPIOutcome: m.recordWeatherAPIStatus,
 	}
+}
+
+// weatherAPIOutcomeTTL is how long a remembered WeatherAPI probe stands in for a
+// fresh one in AuxHealth. The module only probes on real usage, so a recent
+// answer is a faithful signal without a dedicated request.
+const weatherAPIOutcomeTTL = 15 * time.Minute
+
+// weatherAPIMemo remembers the last WeatherAPI HTTP status so AuxHealth can show
+// a dead or rate-limited key without failing the module's own Health check.
+type weatherAPIMemo struct {
+	mu     sync.Mutex
+	set    bool
+	at     time.Time
+	status int
+}
+
+func (o *weatherAPIMemo) record(now time.Time, status int) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.set, o.at, o.status = true, now, status
+}
+
+func (o *weatherAPIMemo) fresh(now time.Time, ttl time.Duration) (int, bool) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if !o.set {
+		return 0, false
+	}
+	if now.Sub(o.at) >= ttl {
+		return 0, false
+	}
+	return o.status, true
+}
+
+// recordWeatherAPIStatus records the last WeatherAPI outcome for AuxHealth.
+func (m *Module) recordWeatherAPIStatus(status int) {
+	m.weatherAPIOutcome.record(m.clock(), status)
+}
+
+// AuxHealth reports the optional WeatherAPI key separately from the module's own
+// Health: a rejected (401/403) or rate-limited (429) key is an error the owner
+// should fix, but the keyless Open-Meteo and wttr.in providers still answer, so
+// the module's Health stays green. A key that was never used since the last
+// start is reported as no-check rather than invented.
+func (m *Module) AuxHealth(ctx context.Context) []tool.AuxHealth {
+	const name = "WeatherAPI key"
+	if _, ok := m.apiKey(); !ok {
+		return []tool.AuxHealth{{
+			Name:   name,
+			State:  tool.StatusNotConfigured,
+			Detail: "WEATHERAPI_API_KEY is not configured; Open-Meteo and wttr.in still answer.",
+		}}
+	}
+	status := tool.AuxHealth{Name: name}
+	if s, ok := m.weatherAPIOutcome.fresh(m.clock(), weatherAPIOutcomeTTL); ok {
+		switch s {
+		case http.StatusOK:
+			status.State = tool.StatusOK
+			status.Detail = "WeatherAPI key accepted."
+		case http.StatusUnauthorized, http.StatusForbidden:
+			status.State = tool.StatusError
+			status.Detail = fmt.Sprintf("WeatherAPI key rejected (HTTP %d).", s)
+		case http.StatusTooManyRequests:
+			status.State = tool.StatusError
+			status.Detail = "WeatherAPI key rate-limited (HTTP 429); every answer pays the fallback delay."
+		default:
+			status.State = tool.StatusError
+			status.Detail = fmt.Sprintf("WeatherAPI request failed (HTTP %d); the keyless providers answered instead.", s)
+		}
+	} else {
+		status.State = tool.StatusNoCheck
+		status.Detail = "WeatherAPI key has not been used since the last start; ask for weather to probe it."
+	}
+	return []tool.AuxHealth{status}
 }
 
 // apiKey reads the declared secret on every request, so a Dashboard rotation

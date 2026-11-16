@@ -824,6 +824,15 @@ positives:
     - what services can you offer
     - what are the things you can do
     - give me a list of your tools
+    # Topic forms: "what can you do with <area>" must reach help, not the area's
+    # own Tool. These also prove weather.current, alarm.list and timer.list do
+    # not capture the topic form (if they did, they would take the False
+    # Positive and drop below the 0.95 floor). The unknown-topic case must
+    # still reach help rather than inventing a capability.
+    - what can you do with timers
+    - what can you do with the weather
+    - what can you do with the lights
+    - what can you do with cooking
   assistant.forget:
     # Drop the shared conversation history on the Pi, not a note, timer or
     # list. "forget everything I told you" now has a Fast path home here.

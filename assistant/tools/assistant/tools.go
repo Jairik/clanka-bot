@@ -3,8 +3,10 @@ package assistant
 import (
 	"context"
 	"math"
+	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/lastreply"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
@@ -92,8 +94,11 @@ func NewForget(history tool.HistoryResetter) tool.Tool[ForgetIn, ForgetOut] {
 // successful Execute. Zero means "use the setting".
 func (o RepeatOut) SpeechRate() float64 { return o.Rate }
 
-// HelpIn has no fields.
-type HelpIn struct{}
+// HelpIn optionally names a topic. A non-empty Topic narrows the spoken answer
+// to the one area that matches, or names the areas when the topic is unknown.
+type HelpIn struct {
+	Topic string `json:"topic,omitempty"`
+}
 
 // HelpTool describes one enabled Tool. The help result is Local-only, so it
 // may name Local-only Tools without exposing them to the Agent path.
@@ -250,38 +255,38 @@ func extractRepeatRate(text string) (RepeatIn, bool) {
 func NewHelp(registry *tool.Registry) tool.Tool[HelpIn, HelpOut] {
 	return tool.Tool[HelpIn, HelpOut]{
 		Name:        HelpName,
-		Description: "List the Tools that are enabled right now.",
+		Description: "List the Tools that are enabled right now, or what I can do with one area.",
 		Permission:  tool.PermissionRead,
 		// The list would name Local-only Tools, which the Agent path and the
 		// MCP surface must not learn. Keeping the whole result on the Pi is
 		// simpler and stricter than filtering the list per caller.
 		LocalOnly: tool.LocalOnlyYes,
-		Handler: func(context.Context, HelpIn) (HelpOut, error) {
+		Handler: func(_ context.Context, in HelpIn) (HelpOut, error) {
 			if registry == nil {
 				return HelpOut{Text: "I don't have any tools enabled right now."}, nil
 			}
 			names := registry.Names()
 			out := HelpOut{Tools: make([]HelpTool, 0, len(names))}
-			descriptions := make([]string, 0, len(names))
+			enabled := make([]HelpTool, 0, len(names))
 			for _, name := range names {
 				info, ok := registry.Info(name)
 				if !ok || !info.Enabled {
 					continue
 				}
-				out.Tools = append(out.Tools, HelpTool{
+				ht := HelpTool{
 					Name:        info.Name,
 					Description: info.Description,
 					Permission:  string(info.Permission),
 					LocalOnly:   info.LocalOnly,
-				})
-				if text := strings.TrimSpace(info.Description); text != "" {
-					descriptions = append(descriptions, text)
 				}
+				out.Tools = append(out.Tools, ht)
+				enabled = append(enabled, ht)
 			}
-			out.Text = helpText(descriptions)
+			out.Text = helpText(enabled, in.Topic)
 			return out, nil
 		},
 		Speak: func(out HelpOut) string { return out.Text },
+		Extract: extractHelpTopic,
 		Examples: []string{
 			"what can you do",
 			"what can you help with",
@@ -291,16 +296,285 @@ func NewHelp(registry *tool.Registry) tool.Tool[HelpIn, HelpOut] {
 			"what tools do you have",
 			"help",
 			"tell me what you can do",
+			"what can you do with timers",
+			"what can you do with the weather",
 		},
 	}
 }
 
-// helpText joins the enabled Tools' own descriptions. It is deliberately
-// generated from the registry, so a new module appears without editing this
-// package.
-func helpText(descriptions []string) string {
-	if len(descriptions) == 0 {
+// helpRuneBudget is the hard upper bound on the spoken "what can you do" reply.
+// A clause that would cross it is dropped whole; the text is never truncated
+// mid-word. The full list stays on the Dashboard Routes page, so the spoken
+// answer only has to point at the areas.
+const (
+	helpRuneBudget     = 400
+	helpMaxAreas       = 6
+	helpTopicInvitation = "Ask what I can do with one of them."
+	helpTopicBudget    = 300
+)
+
+// moduleArea maps a module name to a short spoken clause. It is presentation
+// only, not a feature list: a module not in the map falls back to its own name,
+// so adding a module needs no edit here.
+var moduleArea = map[string]string{
+	"timer":    "set timers, alarms and reminders",
+	"alarm":    "set timers, alarms and reminders",
+	"reminder": "set timers, alarms and reminders",
+	"weather":  "check the weather",
+	"list":     "keep lists and notes",
+	"note":     "keep lists and notes",
+	"music":    "play music",
+	"lights":   "control the lights",
+	"github":   "search the web and GitHub",
+	"web":      "search the web and GitHub",
+}
+
+// areaPriority fixes the spoken order of the known areas. Areas outside this list
+// follow alphabetically so the answer is stable without editing this package.
+var areaPriority = []string{
+	"set timers, alarms and reminders",
+	"check the weather",
+	"keep lists and notes",
+	"play music",
+	"control the lights",
+	"search the web and GitHub",
+}
+
+// helpText is the bounded, grouped spoken capability answer. A known topic lists
+// only that area's Tools; an unknown topic or no topic names the areas.
+func helpText(tools []HelpTool, topic string) string {
+	if len(tools) == 0 {
 		return "I don't have any tools enabled right now."
 	}
-	return "Here's what I can do: " + strings.Join(descriptions, " ")
+	if topic != "" {
+		if text, ok := helpForTopic(tools, topic); ok {
+			return text
+		}
+	}
+	return helpSummary(tools)
+}
+
+// helpSummary names the capability areas in priority order, at most helpMaxAreas
+// clauses, finishing with the topic invitation and never exceeding the budget.
+func helpSummary(tools []HelpTool) string {
+	clauses := areaClauses(distinctAreas(tools))
+	for {
+		text := renderClauses(clauses)
+		if len([]rune(text)) <= helpRuneBudget || len(clauses) <= 1 {
+			return text
+		}
+		clauses = clauses[:len(clauses)-1]
+	}
+}
+
+// renderClauses turns the chosen area clauses into the spoken sentence.
+func renderClauses(clauses []string) string {
+	if len(clauses) == 0 {
+		return helpTopicInvitation
+	}
+	body := strings.Join(clauses, ", ")
+	last := clauses[len(clauses)-1]
+	if last == "and more" {
+		// The marker already begins with "and"; a plain list separator keeps it
+		// from reading as a doubled "and and more".
+		return "I can " + body + ". " + helpTopicInvitation
+	}
+	// Oxford-comma the final join so the list reads as a list, not a run-on.
+	if i := strings.LastIndex(body, ", "); i >= 0 {
+		body = body[:i] + ", and " + body[i+2:]
+	}
+	return "I can " + body + ". " + helpTopicInvitation
+}
+
+// areaClauses returns up to helpMaxAreas clauses, reserving the last slot for an
+// "and more" marker when there are more areas than fit.
+func areaClauses(areas []string) []string {
+	if len(areas) <= helpMaxAreas {
+		return append([]string(nil), areas...)
+	}
+	clauses := append([]string(nil), areas[:helpMaxAreas-1]...)
+	clauses = append(clauses, "and more")
+	return clauses
+}
+
+// distinctAreas returns the present area clauses in fixed priority order, then
+// alphabetically for any area outside the known set.
+func distinctAreas(tools []HelpTool) []string {
+	seen := make(map[string]bool)
+	var areas []string
+	for _, tool := range tools {
+		area := areaClauseFor(tool)
+		if !seen[area] {
+			seen[area] = true
+			areas = append(areas, area)
+		}
+	}
+	sort.SliceStable(areas, func(i, j int) bool {
+		pi, pj := areaOrder(areas[i]), areaOrder(areas[j])
+		if pi != pj {
+			return pi < pj
+		}
+		return areas[i] < areas[j]
+	})
+	return areas
+}
+
+// areaClauseFor turns one Tool into its spoken area clause.
+func areaClauseFor(tool HelpTool) string {
+	if phrase, ok := moduleArea[moduleOf(tool.Name)]; ok {
+		return phrase
+	}
+	return moduleOf(tool.Name)
+}
+
+// areaOrder is the priority rank of an area clause; known areas come first.
+func areaOrder(clause string) int {
+	for i, known := range areaPriority {
+		if known == clause {
+			return i
+		}
+	}
+	return len(areaPriority)
+}
+
+// moduleOf returns the module name (the part of a canonical name before the
+// first dot), so timer.list, alarm.set and reminder.set all group together.
+func moduleOf(name string) string {
+	if i := strings.Index(name, "."); i >= 0 {
+		return name[:i]
+	}
+	return name
+}
+
+// helpForTopic answers a known topic by listing only the matching area's Tools
+// with their own descriptions, capped at helpTopicBudget runes. An unknown topic
+// returns ok=false so the caller names the areas instead.
+func helpForTopic(tools []HelpTool, topic string) (string, bool) {
+	norm := normalizeTopic(topic)
+	if norm == "" {
+		return "", false
+	}
+	var b strings.Builder
+	total := 0
+	matched := false
+	for _, tool := range tools {
+		if !topicMatches(norm, tool) {
+			continue
+		}
+		matched = true
+		description := strings.TrimSpace(tool.Description)
+		if description == "" {
+			continue
+		}
+		if total+len([]rune(description)) > helpTopicBudget {
+			break
+		}
+		if b.Len() > 0 {
+			b.WriteString(" ")
+		}
+		b.WriteString(description)
+		total += len([]rune(description))
+	}
+	if !matched || b.Len() == 0 {
+		return "", false
+	}
+	return b.String(), true
+}
+
+// topicMatches reports whether a normalized topic refers to a Tool's area,
+// module, canonical domain prefix or name. Matching is case-insensitive and
+// token-based after shared normalisation, so "timers" finds the timer area and
+// "weather" finds the weather module without inventing a match.
+func topicMatches(norm string, tool HelpTool) bool {
+	topicTokens := tokenize(norm)
+	if len(topicTokens) == 0 {
+		return false
+	}
+	targets := []string{
+		moduleOf(tool.Name),
+		tool.Name,
+		areaClauseFor(tool),
+	}
+	for _, token := range topicTokens {
+		for _, target := range targets {
+			for _, targetToken := range tokenize(target) {
+				if targetToken == token {
+					return true
+				}
+				// Tolerate singular/plural drift for non-trivial tokens so
+				// "light" still finds the lights area without matching "e".
+				if len(token) >= 4 && strings.HasPrefix(targetToken, token) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// normalizeTopic lowercases, trims punctuation and drops a leading article.
+func normalizeTopic(topic string) string {
+	t := strings.ToLower(strings.TrimSpace(topic))
+	t = strings.Trim(t, " .,!?;:")
+	t = strings.TrimPrefix(t, "the ")
+	t = strings.TrimPrefix(t, "a ")
+	t = strings.TrimPrefix(t, "an ")
+	return strings.TrimSpace(t)
+}
+
+// tokenize splits text into lowercase letter/number words.
+func tokenize(s string) []string {
+	return strings.FieldsFunc(strings.ToLower(s), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
+	})
+}
+
+// extractHelpTopic is the Fast-path argument filler. It claims only help-style
+// utterances so a topic such as "what can you do with the weather" still reaches
+// the help Tool; a topic phrase after with/for/about narrows the answer.
+func extractHelpTopic(text string) (HelpIn, bool) {
+	lower := strings.ToLower(text)
+	if !isHelpUtterance(lower) {
+		return HelpIn{}, false
+	}
+	return HelpIn{Topic: extractTopicPhrase(lower)}, true
+}
+
+// isHelpUtterance recognises the capability-discovery phrasing the help Tool
+// owns. It deliberately does not match tool-specific verbs, so "set a timer"
+// never resolves here.
+func isHelpUtterance(lower string) bool {
+	anchors := []string{
+		"what can you do",
+		"what can you help",
+		"what are your capabilities",
+		"what are you able",
+		"what are you capable",
+		"list your tools",
+		"what tools do you",
+		"tell me what you can",
+		"what do you do",
+		"what can i ask",
+		"what kind of things",
+		"what functions",
+		"show me your tools",
+		"give me a list of your tools",
+		"help",
+	}
+	for _, anchor := range anchors {
+		if strings.Contains(lower, anchor) {
+			return true
+		}
+	}
+	return false
+}
+
+// extractTopicPhrase pulls the words after with/for/about as the topic.
+func extractTopicPhrase(lower string) string {
+	for _, marker := range []string{" with ", " for ", " about "} {
+		if i := strings.Index(lower, marker); i >= 0 {
+			return strings.TrimSpace(lower[i+len(marker):])
+		}
+	}
+	return ""
 }

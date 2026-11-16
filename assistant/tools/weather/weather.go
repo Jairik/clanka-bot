@@ -193,6 +193,10 @@ type Deps struct {
 	// Budget bounds all providers together; zero uses 1s.
 	FallbackDelay time.Duration
 	Budget        time.Duration
+	// RecordWeatherAPIOutcome reports the last WeatherAPI HTTP status so the
+	// module can surface a rejected or rate-limited key in AuxHealth. It is nil
+	// for callers that do not wire the module (for example direct tool tests).
+	RecordWeatherAPIOutcome func(status int)
 }
 
 // New builds the weather.current Tool.
@@ -333,9 +337,7 @@ func current(ctx context.Context, deps Deps, in In, cache *cache) (Out, error) {
 	if err != nil {
 		return Out{}, userFacing(err)
 	}
-	cache.mu.Lock()
-	cache.forecasts[key] = cacheEntry[Out]{value: out, at: time.Now()}
-	cache.mu.Unlock()
+	cache.setForecast(key, out, time.Now())
 	return out, nil
 }
 
@@ -444,7 +446,10 @@ func unknownLocation() error {
 }
 
 // resolveCity uses the named city, then city, region and timezone from the
-// current location, so an incomplete lookup still gives a geocodable name.
+// current location, so an incomplete lookup still gives a geocodable name. The
+// timezone fallback is converted to a city name (America/New_York -> New York)
+// so a plain "what's the weather" can still resolve instead of geocoding an
+// IANA identifier that finds nothing.
 func resolveCity(in In, deps Deps) (string, error) {
 	if city := strings.TrimSpace(in.City); city != "" {
 		return city, nil
@@ -456,12 +461,53 @@ func resolveCity(in In, deps Deps) (string, error) {
 	if !ok {
 		return "", unknownLocation()
 	}
-	for _, candidate := range []string{loc.City, loc.Region, loc.Timezone} {
-		if city := strings.TrimSpace(candidate); city != "" {
-			return city, nil
+	for _, candidate := range []struct {
+		value string
+		kind  string
+	}{
+		{loc.City, "city"},
+		{loc.Region, "region"},
+		{loc.Timezone, "timezone"},
+	} {
+		value := strings.TrimSpace(candidate.value)
+		if value == "" {
+			continue
 		}
+		if candidate.kind == "timezone" {
+			// A timezone that is not a usable city name (UTC, Etc/*) cannot be
+			// geocoded, so keep looking; there are no later candidates, so this
+			// falls through to unknownLocation below.
+			if city, ok := timezoneToCity(value); ok {
+				return city, nil
+			}
+			continue
+		}
+		return value, nil
 	}
 	return "", unknownLocation()
+}
+
+// timezoneToCity turns an IANA timezone fallback into a geocodable city name so
+// a plain "what's the weather" still resolves. It takes the last path segment
+// and replaces underscores with spaces ("America/New_York" -> "New York"), and
+// skips the zones that have no city meaning (UTC, GMT and Etc/*).
+func timezoneToCity(tz string) (string, bool) {
+	segment := tz
+	if i := strings.LastIndex(tz, "/"); i >= 0 {
+		segment = tz[i+1:]
+	}
+	segment = strings.TrimSpace(segment)
+	if segment == "" {
+		return "", false
+	}
+	lower := strings.ToLower(tz)
+	if lower == "utc" || lower == "gmt" || strings.HasPrefix(lower, "etc/") {
+		return "", false
+	}
+	if strings.EqualFold(segment, "utc") || strings.EqualFold(segment, "gmt") {
+		return "", false
+	}
+	return strings.ReplaceAll(segment, "_", " "), true
 }
 
 // userFacing keeps a specific ToolError (unknown place, unknown location) but
@@ -480,6 +526,10 @@ type cacheEntry[T any] struct {
 	at    time.Time
 }
 
+// cacheCap bounds each answer cache so a long uptime of Agent calls cannot grow
+// the maps without limit. Older entries are evicted first, after expired ones.
+const cacheCap = 64
+
 // cache is a tiny in-process TTL cache. It is not persistence: a restart just
 // starts empty, and the prototype stays within its single-process scope (#35).
 type cache struct {
@@ -493,6 +543,46 @@ func newCache() *cache {
 		places:    make(map[string]cacheEntry[place]),
 		forecasts: make(map[string]cacheEntry[Out]),
 	}
+}
+
+// setForecast stores one answer, evicting expired then oldest entries to stay
+// within cacheCap.
+func (c *cache) setForecast(key string, value Out, now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	insertCapped(c.forecasts, key, cacheEntry[Out]{value: value, at: now}, forecastTTL, now, cacheCap)
+}
+
+// setPlace stores one geocoded place, evicting expired then oldest entries to
+// stay within cacheCap.
+func (c *cache) setPlace(key string, value place, now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	insertCapped(c.places, key, cacheEntry[place]{value: value, at: now}, geocodeTTL, now, cacheCap)
+}
+
+// insertCapped writes value under key and keeps the map within cap by first
+// dropping expired entries (older than ttl), then the oldest remaining entry.
+// The just-written entry is the newest, so it is never the one evicted.
+func insertCapped[K comparable, V any](m map[K]cacheEntry[V], key K, value cacheEntry[V], ttl time.Duration, now time.Time, cap int) {
+	for k, e := range m {
+		if now.Sub(e.at) >= ttl {
+			delete(m, k)
+		}
+	}
+	m[key] = value
+	if len(m) <= cap {
+		return
+	}
+	var oldestK K
+	var oldestAt time.Time
+	first := true
+	for k, e := range m {
+		if first || e.at.Before(oldestAt) {
+			oldestK, oldestAt, first = k, e.at, false
+		}
+	}
+	delete(m, oldestK)
 }
 
 func cacheKey(city string) string { return strings.ToLower(strings.TrimSpace(city)) }
@@ -512,9 +602,7 @@ func cachedGeocode(ctx context.Context, deps Deps, c *cache, city string) (place
 		return place{}, err
 	}
 	if c != nil {
-		c.mu.Lock()
-		c.places[key] = cacheEntry[place]{value: value, at: time.Now()}
-		c.mu.Unlock()
+		c.setPlace(key, value, time.Now())
 	}
 	return value, nil
 }
@@ -575,6 +663,17 @@ func forecast(ctx context.Context, deps Deps, latitude, longitude float64) (fore
 	return body, nil
 }
 
+// statusError carries only an HTTP status code from an upstream. It never
+// includes the URL, query string, credentials or response body, so it is safe
+// to surface and to inspect (for example to classify a rejected WeatherAPI key).
+type statusError struct {
+	status int
+}
+
+func (e *statusError) Error() string {
+	return fmt.Sprintf("weather: upstream returned status %d", e.status)
+}
+
 func getJSON(ctx context.Context, client *http.Client, target string, out any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
 	if err != nil {
@@ -588,7 +687,7 @@ func getJSON(ctx context.Context, client *http.Client, target string, out any) e
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		return fmt.Errorf("weather: status %d", resp.StatusCode)
+		return &statusError{status: resp.StatusCode}
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(out); err != nil {
 		return fmt.Errorf("weather: decode response: %w", err)

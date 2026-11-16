@@ -691,6 +691,9 @@ positives:
     - can you say that again please
     - what were you saying
     - run that by me again
+    # Repeat at a modified rate (issue #306).
+    - say that again slower
+    - again but slower
   assistant.help:
     # Generated from the enabled registry; the wording asks for capabilities,
     # not a specific Tool.

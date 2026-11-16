@@ -82,9 +82,13 @@ func (c *Confirmation) Resolve(ctx context.Context, req tool.Request, transcript
 			spoken = DoneReply
 		}
 		c.logger.Info("confirmation accepted", "request_id", req.ID, "tool", done.Tool)
+		confirmReply := Reply{Text: spoken, Tool: done.Tool, Path: tool.PathConfirmation}
+		// A confirmed Tool whose result carries a one-utterance rate keeps it
+		// on the Reply, so it is spoken and stored exactly like a Fast path one.
+		confirmReply.SpeechRate = rateOf(result)
 		return ConfirmationResult{
 			Handled: true,
-			Reply:   Reply{Text: spoken, Tool: done.Tool, Path: tool.PathConfirmation},
+			Reply:   confirmReply,
 			Call:    confirmedCall(c.registry, done, result),
 		}
 	}

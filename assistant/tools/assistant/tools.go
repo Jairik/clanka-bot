@@ -2,24 +2,43 @@ package assistant
 
 import (
 	"context"
+	"math"
 	"strings"
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/lastreply"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
+	"github.com/Jairik/clanka-bot/assistant/internal/wyoming"
 )
 
-// RepeatIn has no fields: "say that again" repeats whatever was last said,
-// rather than taking the current utterance as its input.
-type RepeatIn struct{}
+// RepeatIn carries an optional speech-rate direction. "say that again" has no
+// direction and repeats at the setting; "say that again slower" steps down.
+type RepeatIn struct {
+	Rate string `json:"rate,omitempty"`
+}
 
-// RepeatOut is the previous completed reply with its provenance.
+// Rate directions Extract recognises. An empty string keeps the setting.
+const (
+	RepeatSlower = "slower"
+	RepeatFaster = "faster"
+	RepeatHalf   = "half"
+	RepeatDouble = "double"
+)
+
+// repeatStep is the fraction of the previous rate one "slower"/"faster" step
+// changes. 20% keeps the change audible without overshooting the setting.
+const repeatStep = 0.20
+
+// RepeatOut is the previous completed reply with its provenance. Rate, when
+// non-zero, is the per-utterance TTS multiplier to speak this replay at; it is
+// not a change to the persistent voice.rate setting.
 type RepeatOut struct {
 	Text      string    `json:"text"`
 	Tool      string    `json:"tool,omitempty"`
 	Path      string    `json:"path,omitempty"`
 	LocalOnly bool      `json:"local_only,omitempty"`
 	At        time.Time `json:"at,omitempty"`
+	Rate      float64   `json:"rate,omitempty"`
 }
 
 // ForgetIn has no fields: "forget the conversation" clears whatever is stored,
@@ -69,6 +88,10 @@ func NewForget(history tool.HistoryResetter) tool.Tool[ForgetIn, ForgetOut] {
 	}
 }
 
+// SpeechRate implements the per-result rate hook the pipeline reads after a
+// successful Execute. Zero means "use the setting".
+func (o RepeatOut) SpeechRate() float64 { return o.Rate }
+
 // HelpIn has no fields.
 type HelpIn struct{}
 
@@ -89,11 +112,26 @@ type HelpOut struct {
 
 // NewRepeat builds assistant.repeat. It reads the shared last-reply store at
 // call time; a nil store or an empty history is a clear failure, never a
-// repeated echo of the request itself.
-func NewRepeat(store *lastreply.Store) tool.Tool[RepeatIn, RepeatOut] {
+// repeated echo of the request itself. The optional rateSource returns the
+// live voice.rate setting, used as the base when the last reply had no
+// override; the variadic form keeps older callers source-compatible.
+func NewRepeat(store *lastreply.Store, rateSource ...func() float64) tool.Tool[RepeatIn, RepeatOut] {
+	var current func() float64
+	if len(rateSource) > 0 {
+		current = rateSource[0]
+	}
+	currentRate := func() float64 {
+		if current == nil {
+			return 1.0
+		}
+		if rate := current(); rate > 0 {
+			return rate
+		}
+		return 1.0
+	}
 	return tool.Tool[RepeatIn, RepeatOut]{
 		Name:        RepeatName,
-		Description: "Repeat the last reply the Assistant gave.",
+		Description: "Repeat the last reply the Assistant gave, optionally slower or faster.",
 		Permission:  tool.PermissionRead,
 		// The previous reply may be a Local-only result, and the Agent path
 		// must never see it as Tool output. Declaring the repeat Tool itself
@@ -104,7 +142,7 @@ func NewRepeat(store *lastreply.Store) tool.Tool[RepeatIn, RepeatOut] {
 		// it is reviewed with the privacy decision; it reports only the text
 		// repeat replays, never new text of its own.
 		Provenance: func(out RepeatOut) (bool, bool) { return out.LocalOnly, true },
-		Handler: func(context.Context, RepeatIn) (RepeatOut, error) {
+		Handler: func(_ context.Context, in RepeatIn) (RepeatOut, error) {
 			reply, ok := store.Last()
 			if !ok || strings.TrimSpace(reply.Text) == "" {
 				return RepeatOut{}, &tool.ToolError{Say: "I haven't said anything yet."}
@@ -115,6 +153,7 @@ func NewRepeat(store *lastreply.Store) tool.Tool[RepeatIn, RepeatOut] {
 				Path:      reply.Path,
 				LocalOnly: reply.LocalOnly,
 				At:        reply.At,
+				Rate:      repeatRate(in.Rate, reply.SpeechRate, currentRate),
 			}, nil
 		},
 		Speak: func(out RepeatOut) string { return out.Text },
@@ -127,7 +166,81 @@ func NewRepeat(store *lastreply.Store) tool.Tool[RepeatIn, RepeatOut] {
 			"what was that",
 			"I missed that",
 			"come again",
+			"say that again slower",
+			"say that again faster",
+			"again but slower",
+			"again but faster",
+			"a bit slower",
+			"say it again more slowly",
+			"repeat that faster please",
+			"at half speed",
+			"at double speed",
 		},
+		Extract: extractRepeatRate,
+	}
+}
+
+// repeatRate computes the per-utterance multiplier for one replay. An empty
+// direction keeps the setting (0). A step is 20% of the rate the previous reply
+// actually used, falling back to the current setting when it had no override.
+// "half"/"double" are absolute. The result is clamped to the shared TTS range
+// and rounded so repeated steps do not accumulate float noise; the persistent
+// voice.rate setting is never touched.
+func repeatRate(direction string, previous float64, current func() float64) float64 {
+	if direction == "" {
+		return 0
+	}
+	base := previous
+	if base <= 0 && current != nil {
+		base = current()
+	}
+	if base <= 0 {
+		base = 1.0
+	}
+	var rate float64
+	switch direction {
+	case RepeatHalf:
+		rate = wyoming.MinRate
+	case RepeatDouble:
+		rate = wyoming.MaxRate
+	case RepeatSlower:
+		rate = base * (1 - repeatStep)
+	case RepeatFaster:
+		rate = base * (1 + repeatStep)
+	default:
+		return 0
+	}
+	if rate < wyoming.MinRate {
+		rate = wyoming.MinRate
+	}
+	if rate > wyoming.MaxRate {
+		rate = wyoming.MaxRate
+	}
+	return math.Round(rate*100) / 100
+}
+
+// extractRepeatRate reads a speech-rate direction from a repeat utterance. Any
+// repeat utterance is a match (an absent direction keeps the setting), so the
+// semantic Fast path can still route a plain "say that again". It deliberately
+// does not match music/playback speed, which belongs to other Tools.
+func extractRepeatRate(text string) (RepeatIn, bool) {
+	lower := strings.ToLower(text)
+	for _, other := range []string{"music", "song", "playlist", "volume", "fan", "video"} {
+		if strings.Contains(lower, other) {
+			return RepeatIn{}, false
+		}
+	}
+	switch {
+	case strings.Contains(lower, "half speed"), strings.Contains(lower, "half as fast"), strings.Contains(lower, "half the speed"):
+		return RepeatIn{Rate: RepeatHalf}, true
+	case strings.Contains(lower, "double speed"), strings.Contains(lower, "twice as fast"), strings.Contains(lower, "double the speed"):
+		return RepeatIn{Rate: RepeatDouble}, true
+	case strings.Contains(lower, "slower"), strings.Contains(lower, "more slowly"), strings.Contains(lower, "slowly"):
+		return RepeatIn{Rate: RepeatSlower}, true
+	case strings.Contains(lower, "faster"), strings.Contains(lower, "more quickly"), strings.Contains(lower, "quicker"):
+		return RepeatIn{Rate: RepeatFaster}, true
+	default:
+		return RepeatIn{}, true
 	}
 }
 

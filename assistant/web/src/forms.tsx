@@ -1,7 +1,7 @@
 // Write plumbing shared by every settings-like page. A write posts to the
 // server-supplied action URL and the response is the whole refreshed view, so
 // the page simply swaps it in: the server stays the only source of truth.
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Button, Input, ListBox, Select, Switch, TextArea } from "@heroui/react";
 import { RotateCcw } from "lucide-react";
 import { postForm } from "./api";
@@ -12,9 +12,19 @@ import { ChevronDown } from "lucide-react";
 export type Actions<T> = {
   /** Action URL currently in flight, if any. */
   pending: string;
+  /** UI key of the in-flight write (the call's `key`, falling back to the
+   * action URL). Two rows that post to the same URL stay distinguishable. */
+  pendingKey: string;
   /** `init` lets a page override the method, headers or credentials — for
-   * example to send a JSON body instead of the default form encoding. */
-  run: (action: string, body?: Record<string, string> | FormData | Blob | string, init?: RequestInit) => Promise<boolean>;
+   * example to send a JSON body instead of the default form encoding. `key`
+   * lets a caller name the pending write so rows that share a URL (and so an
+   * action) can each show their own spinner. */
+  run: (
+    action: string,
+    body?: Record<string, string> | FormData | Blob | string,
+    init?: RequestInit,
+    key?: string,
+  ) => Promise<boolean>;
   flash: string;
   error: string;
   clear: () => void;
@@ -26,8 +36,13 @@ export type Actions<T> = {
  */
 export function useActions<T>(set: (v: T) => void): Actions<T> {
   const [pending, setPending] = useState("");
+  const [pendingKey, setPendingKey] = useState("");
   const [flash, setFlash] = useState("");
   const [error, setError] = useState("");
+  // Bumped per write; a late answer from an older write must not replace the
+  // view or clear the spinner a newer write is still using. The newest write
+  // wins, so same-target writes resolve in order.
+  const seq = useRef(0);
 
   useEffect(() => {
     if (!flash) return;
@@ -35,12 +50,23 @@ export function useActions<T>(set: (v: T) => void): Actions<T> {
     return () => clearTimeout(id);
   }, [flash]);
 
-  const run = async (action: string, body?: Record<string, string> | FormData | Blob | string, init?: RequestInit) => {
+  const run = async (
+    action: string,
+    body?: Record<string, string> | FormData | Blob | string,
+    init?: RequestInit,
+    key?: string,
+  ) => {
+    const mine = ++seq.current;
     setPending(action);
+    setPendingKey(key ?? action);
     setError("");
     setFlash("");
+    // A newer write has started: this reply is stale and a newer one owns the
+    // view and the spinner, so drop it without touching state.
+    const stale = () => mine !== seq.current;
     try {
       const res = await postForm<T>(action, body, init);
+      if (stale()) return res.ok;
       if (res.view) {
         set(res.view);
         // Not every view carries the flash/error fields; read them defensively
@@ -53,13 +79,17 @@ export function useActions<T>(set: (v: T) => void): Actions<T> {
       }
       return res.ok;
     } catch (e) {
+      if (stale()) return false;
       setError(e instanceof Error ? e.message : String(e));
       return false;
     } finally {
-      setPending("");
+      if (!stale()) {
+        setPending("");
+        setPendingKey("");
+      }
     }
   };
-  return { pending, run, flash, error, clear: () => (setFlash(""), setError("")) };
+  return { pending, pendingKey, run, flash, error, clear: () => (setFlash(""), setError("")) };
 }
 
 // ---------- fields ----------

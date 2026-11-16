@@ -270,9 +270,11 @@ func (s *Service) credentials() (string, string, bool) {
 		return "", "", false
 	}
 	email, password, ok := s.cred()
-	// Only the email is trimmed. A password may legitimately start or end
-	// with a space, and trimming it would make that account unable to sign in
-	// while the Secrets page and the module's own check still call it set.
+	// Only the email is trimmed. The password goes into the Copilot login body
+	// exactly as the Credentials closure supplies it: the Secrets page keeps
+	// surrounding spaces (stripping only pasted \r, \n and tabs) and .env
+	// values are returned verbatim, so a password that starts or ends with a
+	// space still signs in.
 	email = strings.TrimSpace(email)
 	return email, password, ok && email != "" && password != ""
 }

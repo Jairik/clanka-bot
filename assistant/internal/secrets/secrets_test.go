@@ -130,6 +130,31 @@ func TestMetadataNeverExposesTheValueAndHidesShortLastFour(t *testing.T) {
 	}
 }
 
+func TestSetKeepsSurroundingSpacesButStripsLineBreaks(t *testing.T) {
+	const name = "SECRETS_TEST_PADDED"
+	t.Setenv(name, "")
+	svc, _ := openService(t, name)
+	ctx := context.Background()
+
+	// A password may legitimately begin or end with a space. The stored value
+	// reaches the Copilot login body unchanged, so Set must not trim it away.
+	if _, err := svc.Set(ctx, name, " hunter2 "); err != nil {
+		t.Fatalf("Set padded value: %v", err)
+	}
+	if value, ok := svc.Get(name); !ok || value != " hunter2 " {
+		t.Fatalf("Get padded value = %q, %v; want %q", value, ok, " hunter2 ")
+	}
+
+	// A pasted value may carry a trailing newline/tab; those artifacts are
+	// stripped while the surrounding spaces are kept.
+	if _, err := svc.Set(ctx, name, " hunter2 \r\n\t"); err != nil {
+		t.Fatalf("Set pasted value: %v", err)
+	}
+	if value, ok := svc.Get(name); !ok || value != " hunter2 " {
+		t.Fatalf("Get pasted value = %q, %v; want %q", value, ok, " hunter2 ")
+	}
+}
+
 func TestSetRejectsEmptyAndUndeclaredSecrets(t *testing.T) {
 	const name = "SECRETS_TEST_DECLARED"
 	t.Setenv(name, "")

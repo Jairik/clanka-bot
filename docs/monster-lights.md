@@ -21,13 +21,15 @@ the 2.4 GHz network. Then:
 1. Open the Dashboard's **Secrets** page.
 2. Set `MONSTER_EMAIL` and `MONSTER_PASSWORD` to the same account the Monster
    app uses. Both are write-only: the API reports only set/last-four/source,
-   and neither appears in a setting, log line or error.
+   and neither appears in a setting, log line or error. The password is kept
+   exactly as entered, including leading and trailing spaces; only pasted line
+   breaks and tabs are stripped.
 3. Open **Monster lights**. The account's devices are listed with their last
    cloud state.
 
-`MONSTER_EMAIL` and `MONSTER_PASSWORD` can also be bootstrapped from `.env`;
-a value stored on the Secrets page wins, matching every other secret in the
-assistant.
+`MONSTER_EMAIL` and `MONSTER_PASSWORD` can also be bootstrapped from `.env`,
+where they are used verbatim; a value stored on the Secrets page wins, matching
+every other secret in the assistant.
 
 ## What the page controls
 
@@ -67,8 +69,15 @@ repeated failures.
 The sign-in runs on its own deadline, not the caller's. A health poll that runs
 out of its shared budget returns its timeout while the three POSTs keep going
 and cache the token for the next poll, so a slow but working account is not
-stuck reporting "did not answer in time". The password is sent exactly as
-stored; only the email is trimmed.
+stuck reporting "did not answer in time".
+
+The password in the Copilot login body is the resolved secret unchanged, along
+the whole path: the Secrets page stores it with surrounding spaces intact
+(stripping only pasted `\r`, `\n` and tabs) and an `.env` value is used
+verbatim; the module's `Credentials` closure returns the stored value
+untouched; and `Service.credentials` trims only the email before both values
+go into the login request. A password that starts or ends with a space
+therefore signs in, whichever source supplied it.
 
 Endpoints, the sign-in chain and the property names follow the
 [MIT-licensed `Aareon/monster-rgbic-ha` integration](https://github.com/Aareon/monster-rgbic-ha),

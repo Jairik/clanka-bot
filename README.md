@@ -157,6 +157,19 @@ follow-up. The extraction uses the maintained Readability.js port
 `codeberg.org/readeck/go-readability/v2`. It is Agent-only and never routes on
 the Fast path.
 
+### News headlines
+
+The voice Fast path can read `news.headlines`: the owner configures up to ten
+https RSS or Atom feeds under `tools.web.feeds`, and the Tool fetches them
+through the same SSRF-guarded reader as `web.fetch` (public addresses only,
+DNS pinned, every redirect checked), parses the titles and links, caches the
+result for 15 minutes, and speaks the top five with the source name. Say "what's
+the news", "read me the headlines" or "headlines from the BBC" — naming a feed
+reads just that one. A feed link a headlines readout surfaces is recorded in the
+shared provenance cache, so a later `web.fetch` can open it. With no feeds
+configured the Tool refuses honestly, and an unknown or ambiguous feed name is a
+spoken refusal, never a guess.
+
 ### GitHub
 
 The Agent can answer "any PRs waiting on me", read "what are my GitHub

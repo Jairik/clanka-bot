@@ -149,6 +149,15 @@ tools:
       # Lists through its query string. Set false only to restore the old open
       # reader.
       require_provenance: true
+    # Voice Fast-path news headlines. Owner-configured RSS/Atom feeds the
+    # news.headlines Tool reads aloud. Empty by default, which makes the Tool
+    # refuse until at least one feed is set. Each feed needs a name and an https
+    # URL; a non-https, duplicate or empty entry fails startup. Up to 10 feeds.
+    # feeds:
+    #   - name: "BBC"
+    #     url: "https://feeds.bbci.co.uk/news/rss.xml"
+    #   - name: "Reuters"
+    #     url: "https://feeds.reuters.com/reuters/topNews"
   github:
     # GitHub Tools. The token is a write-only secret, never here.
     # issue_create, pr_list and checks use the fine-grained GITHUB_TOKEN;

@@ -278,9 +278,10 @@ router at least twice, so no Tool clears the floor only because the Control
 phrase table happened to cover its positives. The twelve Agent-only web
 negatives cover open-ended lookups and page reads, and the six GitHub negatives
 cover issue writes, review-requested pull requests and notification reads.
-`web.search`, `web.fetch` and every `github.*` Tool are Agent-only, so their
-coverage is negative direct routing plus the Agent integration tests
-(`internal/agent` for web search/fetch and
+`web.search` and `web.fetch` are Agent-only, while `news.headlines` is the one
+Fast-path eligible web Tool (covered by Fast-path positives instead). Every
+`github.*` Tool is Agent-only, so their coverage is negative direct routing plus
+the Agent integration tests (`internal/agent` for web search/fetch and
 `internal/pipeline/github_confirmation_test.go` for the GitHub confirmation
 journey), never a Fast path positive. The timer and list confusions are
 the main reason recall is conservative; those requests go to the Agent path

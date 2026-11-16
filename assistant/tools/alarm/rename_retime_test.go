@@ -332,4 +332,14 @@ func TestUpdateExtractKeepsOverridePhrasing(t *testing.T) {
 	if call.Time != "07:00" || call.NewLabel == nil || *call.NewLabel != "work" {
 		t.Fatalf("call request = %+v", call)
 	}
+	for _, utterance := range []string{"retitle the alarm as gym", "relabel the alarm as gym"} {
+		in := extractUpdateIn(t, reg, utterance)
+		if in.NewLabel == nil || *in.NewLabel != "gym" || in.NewTime != "" || in.Sound != "" {
+			t.Fatalf("Extract(%q) = %+v; want a rename to gym", utterance, in)
+		}
+	}
+	retime := extractUpdateIn(t, reg, "retime the alarm to 8")
+	if retime.NewTime != "08:00" || retime.NewLabel != nil {
+		t.Fatalf("retime request = %+v", retime)
+	}
 }

@@ -216,7 +216,8 @@ func looksLikeAlarmUpdate(lower string) bool {
 	// Extract functions.
 	for _, verb := range []string{
 		"change", "update", "switch", "modify", "adjust", "edit", "reset",
-		"rename", "call", "name", "label", "move", "retime", "shift", "reschedule",
+		"rename", "call", "name", "label", "retitle", "relabel",
+		"move", "retime", "shift", "reschedule",
 	} {
 		if containsWord(lower, verb) {
 			return true

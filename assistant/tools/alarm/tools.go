@@ -156,30 +156,29 @@ func NewUpdate(m *Manager) tool.Tool[UpdateIn, UpdateOut] {
 			return m.Update(ctx, in)
 		},
 		Speak: speakUpdate,
+		// Keep the wording out of alarm.set's "set an alarm for ..." and
+		// alarm.cancel's "cancel my ... alarm" territory: the Fast path scores
+		// every Example against every Tool and needs a 0.23 margin (#303).
 		Examples: []string{
-			"change my 7 am alarm to the birds sound",
-			"change my 7 am alarm to birds",
-			"change my alarm sound to the birds sound",
-			"change my alarm's sound to birds",
-			"update my 7 am alarm to the birds sound",
-			"switch my 7 am alarm to the birds sound",
-			"make my 7 am alarm use the birds sound",
-			"use the birds sound for my 7 am alarm",
-			"set my alarm sound to birds",
+			"rename my alarm to gym",
+			"rename this alarm to gym",
+			"rename my alarm to work",
+			"rename the alarm to work",
+			"retitle the alarm as gym",
+			"relabel the alarm as gym",
+			"retime the alarm to 8",
+			"change the sound of my alarm to birds",
+			"change my alarm sound to birds",
+			"use the birds sound for my alarm",
+			"switch my alarm to birds",
+			"make my alarm use birds",
 			"set my alarm volume to 40",
-			"update my alarm volume to 30",
 			"change my alarm volume to 40",
+			"update my alarm volume to 30",
 			"change my alarm ramp to 10 seconds",
-			"change my 7 am alarm ramp to 5 seconds",
 			"clear my alarm sound",
 			"reset my alarm volume",
 			"use the default sound for my alarm",
-			"rename my 7 am alarm to gym",
-			"call my 7 am alarm work",
-			"move my gym alarm to 6:30",
-			"change my 7 am alarm to 6:30",
-			"rename my alarm to gym",
-			"move my work alarm to 8",
 		},
 		Extract: extractUpdate,
 	}
@@ -374,7 +373,8 @@ func formatTimeValue(value string) string {
 // belongs to the sound parser, so existing override requests keep working.
 func renameVerb(lower string) bool {
 	return containsWord(lower, "rename") || containsWord(lower, "call") ||
-		containsWord(lower, "name") || containsWord(lower, "label")
+		containsWord(lower, "name") || containsWord(lower, "label") ||
+		containsWord(lower, "retitle") || containsWord(lower, "relabel")
 }
 
 func retimeVerb(lower string) bool {

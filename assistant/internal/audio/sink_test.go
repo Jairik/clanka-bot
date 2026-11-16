@@ -367,8 +367,12 @@ func TestPulseSinkAdjustVolumeCapsAtTheCeiling(t *testing.T) {
 			pacat, logPath := fakePactlAtLevel(t, test.start)
 			sink := audio.NewPulseSink(pacat, "")
 
-			if err := sink.AdjustVolume(context.Background(), test.delta); err != nil {
+			applied, err := sink.AdjustVolume(context.Background(), test.delta)
+			if err != nil {
 				t.Fatalf("AdjustVolume: %v", err)
+			}
+			if wantApplied := test.want != ""; applied != wantApplied {
+				t.Errorf("applied = %v, want %v (write %q)", applied, wantApplied, test.want)
 			}
 			calls := pactlCalls(t, logPath)
 			if first := calls[0]; first != "get-sink-volume @DEFAULT_SINK@" {

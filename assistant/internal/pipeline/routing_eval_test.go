@@ -327,11 +327,11 @@ func TestRoutingEvalBaselineShape(t *testing.T) {
 // evalAudio records audio Tool calls without touching a real sink.
 type evalAudio struct{}
 
-func (*evalAudio) SetVolume(context.Context, int) error    { return nil }
-func (*evalAudio) AdjustVolume(context.Context, int) error { return nil }
-func (*evalAudio) Level(context.Context) (int, error)      { return 40, nil }
-func (*evalAudio) SetMute(context.Context, bool) error     { return nil }
-func (*evalAudio) Stop(context.Context) error              { return nil }
+func (*evalAudio) SetVolume(context.Context, int) error            { return nil }
+func (*evalAudio) AdjustVolume(context.Context, int) (bool, error) { return true, nil }
+func (*evalAudio) Level(context.Context) (int, error)              { return 40, nil }
+func (*evalAudio) SetMute(context.Context, bool) error             { return nil }
+func (*evalAudio) Stop(context.Context) error                      { return nil }
 
 // evalNotifyReader supplies the notify settings without a second settings
 // service; the corpus only needs the fake ntfy URL.

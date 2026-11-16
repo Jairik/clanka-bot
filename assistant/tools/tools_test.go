@@ -31,9 +31,9 @@ type stubControls struct {
 }
 
 func (s *stubControls) SetVolume(context.Context, int) error { return nil }
-func (s *stubControls) AdjustVolume(_ context.Context, delta int) error {
+func (s *stubControls) AdjustVolume(_ context.Context, delta int) (bool, error) {
 	s.delta = delta
-	return nil
+	return true, nil
 }
 func (s *stubControls) Level(context.Context) (int, error)  { return 40, nil }
 func (s *stubControls) SetMute(context.Context, bool) error { return nil }

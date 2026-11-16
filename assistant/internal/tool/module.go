@@ -177,7 +177,10 @@ type Speaker interface {
 // AudioControls is the speaker-control seam the audio Tools drive.
 type AudioControls interface {
 	SetVolume(ctx context.Context, percent int) error
-	AdjustVolume(ctx context.Context, delta int) error
+	// AdjustVolume steps the level by delta and reports whether it wrote a
+	// new level. A false applied means the step hit the ceiling or floor and
+	// made no change, so callers can answer without claiming a change.
+	AdjustVolume(ctx context.Context, delta int) (applied bool, err error)
 	// Level reads the sink level alone, so a step never depends on the mute query.
 	Level(ctx context.Context) (int, error)
 	// SetMute mutes or unmutes the sink without changing its level.

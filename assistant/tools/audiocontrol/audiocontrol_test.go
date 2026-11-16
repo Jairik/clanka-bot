@@ -21,6 +21,9 @@ type fakeControls struct {
 	levelCalls int
 	muteCalls  int
 	muted      bool
+	// adjustNoop makes a step report that it hit the ceiling or floor and
+	// wrote nothing, without the fake touching a device.
+	adjustNoop bool
 }
 
 func (f *fakeControls) SetVolume(_ context.Context, percent int) error {
@@ -29,10 +32,10 @@ func (f *fakeControls) SetVolume(_ context.Context, percent int) error {
 	return nil
 }
 
-func (f *fakeControls) AdjustVolume(_ context.Context, delta int) error {
+func (f *fakeControls) AdjustVolume(_ context.Context, delta int) (bool, error) {
 	f.delta = delta
 	f.adjCalls++
-	return nil
+	return !f.adjustNoop, nil
 }
 
 func (f *fakeControls) Level(context.Context) (int, error) {
@@ -169,6 +172,40 @@ func TestVolumeSetExtractsQuieterAsANegativeStep(t *testing.T) {
 		t.Fatalf("AdjustVolume calls = %d delta = %d, want one call at -10", controls.adjCalls, controls.delta)
 	}
 	if want := "Volume down."; spoken != want {
+		t.Fatalf("Speak = %q, want %q", spoken, want)
+	}
+}
+
+func TestVolumeLouderAtTheCeilingReportsNoChange(t *testing.T) {
+	controls := &fakeControls{adjustNoop: true}
+	reg := newRegistry(t, controls)
+
+	spoken := runTool(t, reg, audiocontrol.VolumeName, "louder")
+	if controls.adjCalls != 1 || controls.delta != 10 {
+		t.Fatalf("AdjustVolume calls = %d delta = %d, want one call at +10", controls.adjCalls, controls.delta)
+	}
+	// A step that hit the ceiling must not fall back to an absolute write or a
+	// mute change; the level was left alone.
+	if controls.setCalls != 0 || controls.muteCalls != 0 {
+		t.Fatalf("set calls = %d mute calls = %d, want no write", controls.setCalls, controls.muteCalls)
+	}
+	if want := "Volume is already at 100 percent."; spoken != want {
+		t.Fatalf("Speak = %q, want %q", spoken, want)
+	}
+}
+
+func TestVolumeQuieterAtTheFloorReportsNoChange(t *testing.T) {
+	controls := &fakeControls{adjustNoop: true}
+	reg := newRegistry(t, controls)
+
+	spoken := runTool(t, reg, audiocontrol.VolumeName, "quieter")
+	if controls.adjCalls != 1 || controls.delta != -10 {
+		t.Fatalf("AdjustVolume calls = %d delta = %d, want one call at -10", controls.adjCalls, controls.delta)
+	}
+	if controls.setCalls != 0 || controls.muteCalls != 0 {
+		t.Fatalf("set calls = %d mute calls = %d, want no write", controls.setCalls, controls.muteCalls)
+	}
+	if want := "Volume is already at 0 percent."; spoken != want {
 		t.Fatalf("Speak = %q, want %q", spoken, want)
 	}
 }

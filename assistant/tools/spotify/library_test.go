@@ -2,8 +2,10 @@ package spotify_test
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/namematch"
@@ -40,6 +42,43 @@ func (e *keywordEmbedder) Embed(_ context.Context, texts []string) ([][]float32,
 		out[i] = v
 	}
 	return out, nil
+}
+
+// tableEmbedder returns one fixed vector per normalised text, so a test can
+// place a query a chosen cosine distance from a library name.
+type tableEmbedder struct{ vectors map[string][]float32 }
+
+func (e tableEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
+	out := make([][]float32, len(texts))
+	for i, text := range texts {
+		vec, ok := e.vectors[text]
+		if !ok {
+			return nil, fmt.Errorf("no fake vector for %q", text)
+		}
+		out[i] = vec
+	}
+	return out, nil
+}
+
+// newNearRig builds a playlist Service whose "jogging" query sits at cosine
+// 0.55 from "Running" (below the 0.60 floor but within NearMargin) and
+// orthogonal to the other playlists.
+func newNearRig(t *testing.T) *libRig {
+	t.Helper()
+	base := newRig(t, 0)
+	base.api.lists = userPlaylists
+	player := spotify.NewPlayer(directAPI{base.api.server.URL}, "Clanka", func() int { return base.cap })
+	cache := spotify.NewPlaylistCache(spotify.PlaylistCacheOptions{API: directAPI{base.api.server.URL}})
+	emb := tableEmbedder{vectors: map[string][]float32{
+		"running":     {1, 0, 0},
+		"chill vibes": {0, 0, 1},
+		"focus flow":  {0, 0, 1},
+		"jogging":     {0.55, 0.8351646544245033, 0}, // cosine 0.55 with "running"
+		"polka march": {0, 1, 0},
+	}}
+	base.svc = spotifytools.NewService(player, base.focus).
+		WithLibrary(player, cache, namematch.New(emb, namematch.Config{}))
+	return &libRig{rig: base, cache: cache}
 }
 
 type libRig struct {
@@ -111,6 +150,56 @@ func TestPlayPlaylistNeverForcesAGuess(t *testing.T) {
 	}
 	if r.api.calledWith("/me/player/play") || r.focus.Held(focus.Music) {
 		t.Fatal("a non-match started playback or claimed Focus")
+	}
+}
+
+func TestPlayPlaylistNearMissAsksWithoutCallingATool(t *testing.T) {
+	r := newNearRig(t)
+	if err := r.cache.Refresh(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	_, err := spotifytools.NewPlayPlaylist(r.svc).Handler(t.Context(), spotifytools.PlayPlaylistIn{Name: "jogging"})
+	te, ok := err.(*tool.ToolError)
+	if !ok {
+		t.Fatalf("err = %T %v, want a spoken near-miss ToolError", err, err)
+	}
+	if want := "I couldn't find that. Did you mean the Running playlist?"; te.Say != want {
+		t.Fatalf("Say = %q, want %q", te.Say, want)
+	}
+	if r.api.calledWith("/me/player/play") || r.focus.Held(focus.Music) {
+		t.Fatal("a near miss started playback or claimed Focus")
+	}
+	if _, isConfirm := err.(*tool.ConfirmationRequiredError); isConfirm {
+		t.Fatal("a near miss must not arm a confirmation")
+	}
+}
+
+func TestPlayPlaylistFarMissKeepsTheNotFoundSentence(t *testing.T) {
+	r := newNearRig(t)
+	if err := r.cache.Refresh(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	_, err := spotifytools.NewPlayPlaylist(r.svc).Handler(t.Context(), spotifytools.PlayPlaylistIn{Name: "polka march"})
+	te, ok := err.(*tool.ToolError)
+	if !ok || !strings.Contains(te.Say, "polka march") || strings.Contains(te.Say, "Did you mean") {
+		t.Fatalf("err = %v, want the plain not-found sentence", err)
+	}
+}
+
+func TestPlayPlaylistNearMissArmsNoPendingConfirmation(t *testing.T) {
+	r := newNearRig(t)
+	if err := r.cache.Refresh(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	reg := tool.NewRegistry(time.Second)
+	if err := spotifytools.RegisterTools(reg, r.svc); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reg.Execute(t.Context(), spotifytools.PlayPlaylistName, []byte(`{"name":"jogging"}`)); err == nil {
+		t.Fatal("near miss should not execute a play")
+	}
+	if _, ok := reg.Pending(); ok {
+		t.Fatal("a near-miss question must not arm a pending confirmation")
 	}
 }
 

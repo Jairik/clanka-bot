@@ -80,13 +80,18 @@ func (m *Module) newSwitch(deps tool.Deps) tool.Tool[SwitchIn, SwitchOut] {
 			if spoken == "" {
 				return SwitchOut{}, &tool.ToolError{Say: "Which persona should I use?"}
 			}
-			name, ok := resolvePersonaName(ctx, deps, service, spoken)
-			if !ok {
+			res := resolvePersonaName(ctx, deps, service, spoken)
+			if !res.Matched() {
+				// A near miss is one spoken question, not a selected persona:
+				// no selection changes and no state is kept.
+				if res.Near != "" {
+					return SwitchOut{}, &tool.ToolError{Say: namematch.NearQuestion(res.Near, "persona")}
+				}
 				return SwitchOut{}, &tool.ToolError{Say: fmt.Sprintf("I couldn't find a persona called %s.", spoken)}
 			}
-			p, err := service.Select(ctx, name)
+			p, err := service.Select(ctx, res.Name)
 			if err != nil {
-				return SwitchOut{}, personaFailure(name, err)
+				return SwitchOut{}, personaFailure(res.Name, err)
 			}
 			return SwitchOut{Persona: p.Name, Voice: p.Voice}, nil
 		},
@@ -316,19 +321,19 @@ func speakCurrent(out CurrentOut) string {
 
 // resolvePersonaName uses the one shared name matcher. Exact and normalised
 // spellings work without an embedding call; a near miss needs the live
-// threshold and never becomes a forced guess.
-func resolvePersonaName(ctx context.Context, deps tool.Deps, service *personacore.Service, spoken string) (string, bool) {
+// threshold and never becomes a forced guess. The full Result carries a Near
+// candidate so the Tool can ask one question without selecting a persona.
+func resolvePersonaName(ctx context.Context, deps tool.Deps, service *personacore.Service, spoken string) namematch.Result {
 	candidates := service.Names()
 	if deps.Names != nil {
-		result := deps.Names.Match(ctx, namematch.SourcePersonas, spoken, candidates)
-		return result.Name, result.Matched()
+		return deps.Names.Match(ctx, namematch.SourcePersonas, spoken, candidates)
 	}
 	for _, candidate := range candidates {
 		if strings.EqualFold(spoken, candidate) {
-			return candidate, true
+			return namematch.Result{Name: candidate, Score: 1, Exact: true, Reason: namematch.ReasonExact}
 		}
 	}
-	return "", false
+	return namematch.Result{}
 }
 
 // personaFailure maps a library rejection to one user-safe spoken line.

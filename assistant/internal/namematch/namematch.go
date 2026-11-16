@@ -29,6 +29,12 @@ type Embedder interface {
 // 0.85 after normalisation, while unrelated requests stay below 0.45.
 const DefaultThreshold = 0.60
 
+// NearMargin is how far below the threshold a single best candidate may sit
+// and still be offered as a near miss. It is a fixed margin, not a setting:
+// name_match.threshold stays the only tuning knob. A far miss, an ambiguous
+// tie and an exact tie expose no Near candidate.
+const NearMargin = 0.10
+
 // DefaultTimeout bounds one lookup, including embedding any candidate vector
 // that is not cached yet. Callers with a shorter context deadline keep their
 // own deadline.
@@ -65,17 +71,30 @@ const (
 // Result is one name resolution. Name is empty whenever the lookup did not
 // match. Score is 1 for an exact or normalised match and the best cosine
 // otherwise; it stays set for a below-threshold or ambiguous result so the
-// caller can log how close the attempt was.
+// caller can log how close the attempt was. Near names the single closest
+// library candidate on a genuine no-match; it is empty when a name matched,
+// when candidates tie and when the best candidate is too far below the
+// threshold. Near is information for the caller, never a match: callers must
+// not act on it as if the user had spoken that name.
 type Result struct {
 	Name   string
 	Score  float64
 	Exact  bool
 	Reason string
+	Near   string
 	Err    error
 }
 
 // Matched reports whether a candidate name was resolved.
 func (r Result) Matched() bool { return r.Name != "" }
+
+// NearQuestion speaks one clarifying question for a near miss. medium is the
+// library noun ("sound", "voice", "playlist", "item"), so a caller can share
+// the wording without inventing its own. It does not choose or act on the
+// candidate: answering the question is the caller's decision.
+func NearQuestion(near, medium string) string {
+	return fmt.Sprintf("I couldn't find that. Did you mean the %s %s?", near, medium)
+}
 
 // Config tunes one Matcher.
 type Config struct {
@@ -275,8 +294,17 @@ func (m *Matcher) Match(ctx context.Context, source Source, spoken string, candi
 	if best < 0 || math.IsNaN(bestScore) {
 		return Result{Reason: ReasonInvalidVectors, Err: fmt.Errorf("namematch: no finite score")}
 	}
-	if bestScore < m.thresholdValue() {
-		return Result{Score: bestScore, Reason: ReasonBelowThreshold}
+	threshold := m.thresholdValue()
+	if bestScore < threshold {
+		// A genuine no-match can still name one closest candidate, but only
+		// when it is unambiguous and within NearMargin of the floor. Exact
+		// ties, ambiguous ties and far misses keep Near empty so no question
+		// can be asked about a name the matcher cannot stand behind.
+		var near string
+		if ties == 1 && bestScore >= threshold-NearMargin {
+			near = indexed[best].name
+		}
+		return Result{Score: bestScore, Reason: ReasonBelowThreshold, Near: near}
 	}
 	if ties > 1 {
 		return Result{Score: bestScore, Reason: ReasonAmbiguous}

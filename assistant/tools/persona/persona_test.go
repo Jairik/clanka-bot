@@ -3,6 +3,8 @@ package persona_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -31,7 +33,7 @@ type fixture struct {
 
 // newFixture wires the real Persona service and settings service over a real
 // SQLite database, with the library's built-in voices (no TTS or files).
-func newFixture(t *testing.T) *fixture {
+func newFixture(t *testing.T, embedders ...namematch.Embedder) *fixture {
 	t.Helper()
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -67,10 +69,14 @@ func newFixture(t *testing.T) *fixture {
 	voices.Bind(svc)
 	service.Bind(svc)
 
+	var names *namematch.Matcher
+	if len(embedders) > 0 && embedders[0] != nil {
+		names = namematch.New(embedders[0], namematch.Config{Threshold: func() float64 { return 0.6 }})
+	}
 	registry := tool.NewRegistry(time.Second)
 	module := personatools.NewModule()
 	module.Bind(service)
-	if err := module.Register(registry, tool.Deps{Voices: voices}); err != nil {
+	if err := module.Register(registry, tool.Deps{Voices: voices, Names: names}); err != nil {
 		t.Fatalf("Register: %v", err)
 	}
 	return &fixture{t: t, ctx: ctx, settings: svc, service: service, module: module, registry: registry}
@@ -393,4 +399,63 @@ func (f *staleFixture) execute(t *testing.T, name string, args any) (any, error)
 		t.Fatalf("marshal args: %v", err)
 	}
 	return f.registry.Execute(f.ctx, name, raw)
+}
+
+// nearEmbedder places one spoken query a chosen cosine distance from a persona
+// name so the near-miss path can be exercised without the real embed service.
+type nearEmbedder struct{ vectors map[string][]float32 }
+
+func (e nearEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
+	out := make([][]float32, len(texts))
+	for i, text := range texts {
+		vec, ok := e.vectors[text]
+		if !ok {
+			return nil, fmt.Errorf("no fake vector for %q", text)
+		}
+		out[i] = vec
+	}
+	return out, nil
+}
+
+func nearPersonaEmbedder() nearEmbedder {
+	return nearEmbedder{vectors: map[string][]float32{
+		"glados": {1, 0, 0},
+		"gladys": {0.55, 0.8351646544245033, 0}, // cosine 0.55 with "glados"
+		"nobody": {0, 1, 0},
+	}}
+}
+
+func TestPersonaSwitchNearMissAsksWithoutSelecting(t *testing.T) {
+	f := newFixture(t, nearPersonaEmbedder())
+	f.create(t, "GLaDOS", "jarvis")
+
+	_, err := f.execute(t, personatools.SwitchName, personatools.SwitchIn{Name: "gladys"})
+	var toolErr *tool.ToolError
+	if !errors.As(err, &toolErr) {
+		t.Fatalf("err = %T %v, want a spoken ToolError", err, err)
+	}
+	if want := "I couldn't find that. Did you mean the GLaDOS persona?"; toolErr.Say != want {
+		t.Fatalf("Say = %q, want %q", toolErr.Say, want)
+	}
+	if _, ok := f.registry.Pending(); ok {
+		t.Fatal("a near-miss question must not arm a pending confirmation")
+	}
+	listResult, err := f.execute(t, personatools.ListName, personatools.ListIn{})
+	if err != nil {
+		t.Fatalf("persona.list: %v", err)
+	}
+	if active := listResult.(personatools.ListOut).Active; active != "" {
+		t.Fatalf("near miss selected persona %q", active)
+	}
+}
+
+func TestPersonaSwitchFarMissKeepsTheNotFoundSentence(t *testing.T) {
+	f := newFixture(t, nearPersonaEmbedder())
+	f.create(t, "GLaDOS", "jarvis")
+
+	_, err := f.execute(t, personatools.SwitchName, personatools.SwitchIn{Name: "nobody"})
+	var toolErr *tool.ToolError
+	if !errors.As(err, &toolErr) || !strings.Contains(toolErr.Say, "couldn't find a persona called nobody") || strings.Contains(toolErr.Say, "Did you mean") {
+		t.Fatalf("err = %v, want the plain not-found sentence", err)
+	}
 }

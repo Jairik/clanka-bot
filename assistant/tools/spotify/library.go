@@ -118,6 +118,11 @@ func (s *Service) resolvePlaylist(ctx context.Context, spoken string) (spotify.P
 	case namematch.ReasonEmbedFailed, namematch.ReasonInvalidVectors:
 		return spotify.Playlist{}, &tool.ToolError{Say: "I couldn't check your playlists right now."}
 	}
+	// A near miss is spoken back as one question. It runs no Tool and keeps no
+	// state: nothing plays unless the user asks again by the library name.
+	if res.Near != "" {
+		return spotify.Playlist{}, &tool.ToolError{Say: namematch.NearQuestion(res.Near, "playlist")}
+	}
 	return spotify.Playlist{}, &tool.ToolError{Say: fmt.Sprintf("I couldn't find a playlist called %s.", strings.TrimSpace(spoken))}
 }
 

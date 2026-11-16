@@ -237,27 +237,37 @@ func (m *Manager) SetDone(ctx context.Context, key, id string, done bool) (Item,
 // Remove deletes the one row a spoken item resolves to. The shared name matcher
 // is the fallback after exact and substring matching.
 func (m *Manager) Remove(ctx context.Context, key, spoken string) (Item, error) {
+	item, _, err := m.RemoveWithNear(ctx, key, spoken)
+	return item, err
+}
+
+// RemoveWithNear is Remove plus the single near-miss candidate from the shared
+// matcher. On a no-match the item is zero and near names the closest library
+// spelling, if any, so the Tool can speak one question without removing a row
+// or keeping any state.
+func (m *Manager) RemoveWithNear(ctx context.Context, key, spoken string) (Item, string, error) {
 	spoken = strings.TrimSpace(spoken)
 	if spoken == "" {
-		return Item{}, ErrItemNotFound
+		return Item{}, "", ErrItemNotFound
 	}
 	items, err := m.Items(ctx, key)
 	if err != nil {
-		return Item{}, err
+		return Item{}, "", err
 	}
-	match, ok := m.resolveItem(ctx, spoken, items)
+	match, ok, near := m.resolveItem(ctx, spoken, items)
 	if !ok {
-		return Item{}, ErrItemNotFound
+		return Item{}, near, ErrItemNotFound
 	}
 	if err := m.RemoveByID(ctx, key, match.ID); err != nil {
-		return Item{}, err
+		return Item{}, "", err
 	}
-	return match, nil
+	return match, "", nil
 }
 
 // resolveItem finds exactly one row for a spoken item. It never forces a guess:
-// two equally plausible rows are no match.
-func (m *Manager) resolveItem(ctx context.Context, spoken string, items []Item) (Item, bool) {
+// two equally plausible rows are no match. The third return is the single
+// near-miss candidate for a no-match, used only to speak a clarifying question.
+func (m *Manager) resolveItem(ctx context.Context, spoken string, items []Item) (Item, bool, string) {
 	var exact, contains []Item
 	lower := strings.ToLower(spoken)
 	for _, item := range items {
@@ -269,19 +279,19 @@ func (m *Manager) resolveItem(ctx context.Context, spoken string, items []Item) 
 		}
 	}
 	if len(exact) == 1 {
-		return exact[0], true
+		return exact[0], true, ""
 	}
 	if len(exact) > 1 {
-		return Item{}, false
+		return Item{}, false, ""
 	}
 	if len(contains) == 1 {
-		return contains[0], true
+		return contains[0], true, ""
 	}
 	if len(contains) > 1 {
-		return Item{}, false
+		return Item{}, false, ""
 	}
 	if m.names == nil {
-		return Item{}, false
+		return Item{}, false, ""
 	}
 	texts := make([]string, 0, len(items))
 	for _, item := range items {
@@ -289,14 +299,14 @@ func (m *Manager) resolveItem(ctx context.Context, spoken string, items []Item) 
 	}
 	result := m.names.Match(ctx, namematch.SourceListItems, spoken, texts)
 	if !result.Matched() {
-		return Item{}, false
+		return Item{}, false, result.Near
 	}
 	for _, item := range items {
 		if item.Text == result.Name {
-			return item, true
+			return item, true, ""
 		}
 	}
-	return Item{}, false
+	return Item{}, false, ""
 }
 
 // RemoveByID deletes one row.

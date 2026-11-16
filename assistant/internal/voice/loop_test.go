@@ -244,6 +244,11 @@ type fakeSTT struct {
 	// onWrite, when set, runs after each frame with its 1-based Open number, so
 	// a test can synchronize on a capture session starting to record audio.
 	onWrite func(stream int)
+	// onOpen, when set, runs when a stream opens with its 1-based Open number, so
+	// a test can synchronize on a session opening its STT stream (the loop now
+	// writes to STT only once speech is heard, so onWrite no longer marks the
+	// start of a silent capture).
+	onOpen func(stream int)
 
 	mu      sync.Mutex
 	frames  [][]byte
@@ -264,6 +269,9 @@ func (f *fakeSTT) Open(ctx context.Context) (voice.STTStream, error) {
 	f.mu.Unlock()
 	if f.openErr != nil {
 		return nil, f.openErr
+	}
+	if hook := f.onOpen; hook != nil {
+		hook(stream)
 	}
 	return &fakeSTTStream{owner: f, stream: stream, refused: make(chan error, 1)}, nil
 }
@@ -757,6 +765,9 @@ func TestLoopDoesNotEndpointOnTheChime(t *testing.T) {
 	// The chime comes back through the mic, so audio while it plays must not
 	// count as the question. With a slow player a buggy loop ends the request
 	// during the chime; the correct loop waits for it and then its utterance cap.
+	// The loud frames are captured while the chime plays and are dropped as its
+	// echo, so the turn is silent and (after #213) streams nothing and asks for
+	// no transcript.
 	source := &scriptSource{frames: append(repeat(loudFrame(), 8), repeat(silentFrame(), 100)...)}
 	wake := &fakeWake{afterWords: 3}
 	stt := &fakeSTT{text: "hello"}
@@ -777,13 +788,35 @@ func TestLoopDoesNotEndpointOnTheChime(t *testing.T) {
 
 	started := time.Now()
 	runLoop(t, loop)
-	select {
-	case <-responder.calls:
-	case <-time.After(5 * time.Second):
-		t.Fatal("no reply")
+
+	// A buggy loop ends the request during the chime and reopens the wake
+	// stream early; the correct loop waits for the chime to finish and then its
+	// 600 ms cap, so the wake stream does not reopen for at least ~500 ms.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if streams, _, _ := wake.snapshot(); streams >= 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the loop never returned to listening after the chime")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 	if elapsed := time.Since(started); elapsed < 450*time.Millisecond {
 		t.Fatalf("request ended after %v, during the chime", elapsed)
+	}
+	// The 8 loud frames were the chime echo and must not open an utterance, so
+	// a silent turn streams nothing and asks for no transcript (#213).
+	if got := len(stt.received()); got > 0 {
+		t.Fatalf("STT received %d frames on the chime echo, want 0", got)
+	}
+	if got := stt.finishCount(); got != 0 {
+		t.Fatalf("STT Finish called %d times on a silent turn, want 0", got)
+	}
+	select {
+	case <-responder.calls:
+		t.Fatal("the loop produced a reply on chime echo")
+	default:
 	}
 }
 
@@ -997,7 +1030,7 @@ func TestLoopStagesCorrelateUnderOneRequestID(t *testing.T) {
 	stt := &fakeSTT{text: "what time is it"}
 	recording := make(chan struct{})
 	var once sync.Once
-	stt.onWrite = func(stream int) {
+	stt.onOpen = func(stream int) {
 		if stream == 1 {
 			once.Do(func() { close(recording) })
 		}
@@ -1186,7 +1219,7 @@ func newFollowUpFixture(t *testing.T, window time.Duration) *followUpFixture {
 		wakeWaiting: make(chan struct{}),
 	}
 	var capturing, waiting sync.Once
-	fixture.stt = &fakeSTT{text: "what time is it", onWrite: func(stream int) {
+	fixture.stt = &fakeSTT{text: "what time is it", onOpen: func(stream int) {
 		if stream == 2 {
 			capturing.Do(func() { close(fixture.capturing) })
 		}
@@ -1269,6 +1302,13 @@ func TestFollowUpWithoutWakeAndDisable(t *testing.T) {
 				t.Fatalf("STT opens before the second utterance = %d, want %d", got, test.wantSTTOpens)
 			}
 
+			// The no-wake session drops the first 300 ms of capture (the TTS tail of
+			// the reply) before it starts listening, so stage the utterance after
+			// that gate or its voiced frames are discarded and the turn ends silently
+			// (#213 makes a silent turn stream nothing and ask for no transcript).
+			if test.accepts {
+				time.Sleep(400 * time.Millisecond)
+			}
 			fixture.source.stage(utteranceFrames())
 			if test.accepts {
 				transcript := waitForReply(t, fixture.responder.calls, "no-wake follow-up missing")
@@ -1300,5 +1340,94 @@ func TestFollowUpWithoutWakeAndDisable(t *testing.T) {
 				t.Fatalf("STT opens after the staged speech = %d, want %d", got, test.wantSTTOpens)
 			}
 		})
+	}
+}
+
+// TestLoopSilentFalseWakeDoesNotStreamToSTT is #213's core case: a wake word
+// with no following speech must not stream the long silent pre-utterance to STT
+// or finalise it. The loop holds a bounded pre-roll, never starts the STT write
+// (so nothing reaches the service), and returns a no-audio outcome at the
+// MaxUtterance cap without calling Finish.
+func TestLoopSilentFalseWakeDoesNotStreamToSTT(t *testing.T) {
+	const maxUtterance = 15 * time.Second
+	source := &scriptSource{frames: repeat(silentFrame(), 600)} // ~19 s of silence
+	wake := &fakeWake{afterWords: 5, maxFires: 1}
+	stt := &fakeSTT{text: "should not be routed"}
+	responder := &fakeResponder{calls: make(chan string, 1)}
+
+	loop := newLoop(t, voice.Config{
+		FrameBytes: frameBytes,
+		Endpoint: voice.EndpointConfig{
+			Rate:          16000,
+			Silence:       500 * time.Millisecond,
+			ThresholdDBFS: -38,
+			MaxUtterance:  maxUtterance,
+		},
+	}, voice.Deps{Source: source, Wake: wake, STT: stt, Responder: responder})
+	runLoop(t, loop)
+
+	// The silent turn ends on the MaxUtterance cap and the loop returns to
+	// listening for the next wake word: it opened a second wake stream.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if streams, _, _ := wake.snapshot(); streams >= 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the loop never returned to listening after the silent turn")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// No audio was streamed: a false wake streams at most the bounded pre-roll,
+	// and with no speech the pre-roll is never flushed, so nothing reaches STT.
+	if got := len(stt.received()); got > voice.PrerollFrameCount(frameBytes, 16000) {
+		t.Fatalf("STT received %d frames, want at most the pre-roll bound %d", got, voice.PrerollFrameCount(frameBytes, 16000))
+	}
+	// Finish is never called on a silent turn: the loop drops the stream via the
+	// deferred Close instead of finalising a 15 s silent clip.
+	if got := stt.finishCount(); got != 0 {
+		t.Fatalf("STT Finish called %d times, want 0 for a silent turn", got)
+	}
+	select {
+	case <-responder.calls:
+		t.Fatal("the silent false wake routed a transcript")
+	default:
+	}
+}
+
+// TestLoopStreamsFromSpeechOnset proves the pre-roll delivers the onset of the
+// phrase (including the first word) to STT, not just the frames after the
+// endpointer reports speech. A staged utterance is delivered once the session is
+// recording; every voiced frame must reach STT and the full transcript is used.
+func TestLoopStreamsFromSpeechOnset(t *testing.T) {
+	source := &stagedSource{}
+	wake := &fakeWake{afterWords: 5}
+	stt := &fakeSTT{text: "what time is it"}
+	recording := make(chan struct{})
+	var once sync.Once
+	stt.onOpen = func(stream int) {
+		if stream == 1 {
+			once.Do(func() { close(recording) })
+		}
+	}
+	responder := &fakeResponder{calls: make(chan string, 1)}
+
+	loop := newLoop(t, voice.Config{
+		FrameBytes: frameBytes,
+		Endpoint:   endpointConfig(500 * time.Millisecond),
+	}, voice.Deps{Source: source, Wake: wake, STT: stt, Responder: responder})
+	runLoop(t, loop)
+
+	waitForSignal(t, recording, "the session never opened its STT stream")
+	source.stage(utteranceFrames())
+	transcript := waitForReply(t, responder.calls, "no reply")
+
+	if transcript != "what time is it" {
+		t.Fatalf("transcript = %q, want the full utterance", transcript)
+	}
+	// All 40 voiced frames of the staged utterance reached STT: the pre-roll
+	// flush includes the first word, so none of the question is clipped.
+	if got := stt.loudFramesForStream(1); got != 40 {
+		t.Fatalf("loud frames at STT = %d, want 40 (the whole question, first word included)", got)
 	}
 }

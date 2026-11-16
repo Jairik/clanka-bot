@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -180,6 +181,27 @@ type micFrame struct {
 // as busy. It is clearer than the generic "unavailable" line because the model
 // is simply held by another session and will free up (#368).
 const DefaultBusyMessage = "Speech recognition is busy. Try again in a moment."
+
+// PrerollFrameCount is the fixed number of captured frames the loop holds before
+// it has heard speech, so the onset of the phrase reaches STT without streaming
+// the silent pre-utterance of a false wake (#213). It is a hard bound derived
+// from FrameBytes and the sample rate, never the utterance length: MinSpeech is
+// 200 ms, so the endpointer does not report speech until that much above-
+// threshold audio has accumulated, and a zero pre-roll would clip the first word.
+// At the production frame size (1024 bytes, 32 ms at 16 kHz) the bound is 16
+// frames, about 512 ms.
+func PrerollFrameCount(frameBytes, rate int) int {
+	if rate <= 0 || frameBytes < 2 {
+		return 0
+	}
+	frameDur := float64(frameBytes/2) / float64(rate) // seconds per frame
+	const target = 0.5                                  // 500 ms
+	n := int(math.Ceil(target / frameDur))
+	if n < 1 {
+		n = 1
+	}
+	return n
+}
 
 // Loop is the microphone state machine. Run is called once; it is safe for the
 // capture goroutine and the session code to share the frame channel.
@@ -479,6 +501,12 @@ func (l *Loop) session(ctx context.Context, wakeWord string) (bool, string, erro
 		captureAfter = captureAfter.Add(300 * time.Millisecond)
 	}
 	var chimeEnd time.Time
+	// preroll holds a fixed window of captured frames after the chime filter
+	// until the endpointer first reports speech; sttStarted is set once those
+	// frames are flushed to STT. The bound never grows with the utterance.
+	prerollMax := PrerollFrameCount(l.cfg.FrameBytes, l.cfg.Endpoint.Rate)
+	var preroll [][]byte
+	sttStarted := false
 	for ended := false; !ended; {
 		select {
 		case <-ctx.Done():
@@ -502,10 +530,32 @@ func (l *Loop) session(ctx context.Context, wakeWord string) (bool, string, erro
 			if !chimeEnd.IsZero() && fr.at.Before(chimeEnd) {
 				continue // captured during the chime, delivered after it
 			}
-			if err := stt.Write(fr.pcm); err != nil {
-				return false, "", err
-			}
+			// After the chime/echo filter: hold a bounded pre-roll until the
+			// endpointer first reports speech, so the onset of the phrase
+			// reaches STT without streaming the silent pre-utterance of a
+			// false wake (#213). The pre-roll starts here, after the chime, so
+			// the echo is not replayed.
 			ended = endpointer.Add(fr.pcm)
+			if sttStarted {
+				if err := stt.Write(fr.pcm); err != nil {
+					return false, "", err
+				}
+			} else {
+				preroll = append(preroll, append([]byte(nil), fr.pcm...))
+				if endpointer.SpeechHeard() {
+					// Speech just began: flush the pre-roll oldest-to-newest,
+					// including the current frame, so the first word is heard.
+					for _, p := range preroll {
+						if err := stt.Write(p); err != nil {
+							return false, "", err
+						}
+					}
+					preroll = nil
+					sttStarted = true
+				} else if len(preroll) > prerollMax {
+					preroll = preroll[1:]
+				}
+			}
 		case err := <-stt.Refused():
 			// The speech-to-text service refused the turn (most often because
 			// another session holds the model). A busy refusal is the expected
@@ -523,6 +573,7 @@ func (l *Loop) session(ctx context.Context, wakeWord string) (bool, string, erro
 	// playback (#27). It starts at the user's last voiced frame, not the end
 	// of the silence window; the same instant is the Filler clock (#25).
 	ended := time.Now()
+	heard := endpointer.SpeechHeard()
 	timeline := latency.New(tool.NewRequestID(), latency.SourceVoice, latency.WithObserver(l.deps.Observer))
 	timeline.SetLastVoice(endpointer.LastSpeech())
 	if last := endpointer.LastSpeech(); !last.IsZero() {
@@ -532,15 +583,29 @@ func (l *Loop) session(ctx context.Context, wakeWord string) (bool, string, erro
 
 	endpointAttrs := []any{
 		"request_id", timeline.ID(),
-		"speech", endpointer.SpeechHeard(),
+		"speech", heard,
 		"silence_ms", endpointer.Silence().Milliseconds(),
+	}
+	if wakeWord != "" {
+		endpointAttrs = append(endpointAttrs, "wake_word", wakeWord)
 	}
 	if d, ok := timeline.Duration(latency.StageEndpointing); ok {
 		endpointAttrs = append(endpointAttrs, "endpointing_ms", d.Milliseconds())
 	}
 	l.deps.Logger.Info("voice: endpoint", endpointAttrs...)
 
-	started := time.Now()
+	// A false wake: the utterance ended on the MaxUtterance cap without any
+	// speech. Do not finalise a silent clip (which would pay a 15 s STT
+	// finalisation and can hallucinate a transcript); drop the stream via the
+	// deferred Close and record the no-audio outcome (#213).
+	if !heard {
+		l.deps.Logger.Info("voice: no speech", "request_id", timeline.ID(), "wake_word", wakeWord)
+		l.deps.Stats.NoSpeech(wakeWord)
+		timeline.Complete(l.deps.Logger, latency.OutcomeNoAudio, nil)
+		return false, "", nil
+	}
+
+	finishStarted := time.Now()
 	transcript, err := stt.Finish()
 	if err != nil {
 		// Same busy refusal can also arrive at Finish when the service only
@@ -554,7 +619,7 @@ func (l *Loop) session(ctx context.Context, wakeWord string) (bool, string, erro
 		timeline.Complete(l.deps.Logger, latency.OutcomeFailed, err)
 		return false, "", err
 	}
-	timeline.Set(latency.StageSTTFinalize, time.Since(started))
+	timeline.Set(latency.StageSTTFinalize, time.Since(finishStarted))
 	transcript = strings.TrimSpace(transcript)
 	if transcript == "" {
 		l.deps.Logger.Info("voice: no speech", "request_id", timeline.ID(), "wake_word", wakeWord)
@@ -569,7 +634,7 @@ func (l *Loop) session(ctx context.Context, wakeWord string) (bool, string, erro
 		"request_id", timeline.ID(),
 		"wake_word", wakeWord,
 		"text", transcript,
-		"stt_ms", time.Since(started).Milliseconds(),
+		"stt_ms", time.Since(finishStarted).Milliseconds(),
 	)
 
 	// Wake detection stays live while the reply plays, so the user can cut in.

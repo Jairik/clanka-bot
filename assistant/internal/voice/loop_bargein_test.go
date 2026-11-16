@@ -73,7 +73,11 @@ func (r *bargeResponder) Respond(ctx context.Context, req voice.Request) error {
 }
 
 func TestBargeInStopsTheReplyDropsThePendingAndStartsAFreshTurn(t *testing.T) {
-	source := &scriptSource{frames: append(repeat(loudFrame(), 8), repeat(silentFrame(), 400)...)}
+	// All-loud so the fresh turn opened by the barge-in still hears the
+	// question and produces a transcript. The fake STT returns a fixed text
+	// regardless of audio, but #213 makes a silent turn skip Finish, so the
+	// fresh turn must actually carry speech (#213).
+	source := &scriptSource{frames: repeat(loudFrame(), 600)}
 	// Two firings only: the first opens the request, the second is the barge-in.
 	// The third turn's watch stream stays silent so the loop settles.
 	wake := &fakeWake{afterWords: 4, maxFires: 2}

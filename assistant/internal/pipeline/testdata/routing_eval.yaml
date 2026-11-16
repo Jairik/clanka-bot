@@ -733,6 +733,7 @@ positives:
     - is the system running
     - how are things running
     - are you still healthy
+    - is anything broken
     - is the system healthy
     - do you have any issues
     - how's the system doing
@@ -743,7 +744,6 @@ positives:
     - what's wrong
     - what's wrong with you
     - what's broken
-    - is anything broken
     - what exactly is broken
     - why are you slow
     - why are you so slow

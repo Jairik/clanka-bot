@@ -101,6 +101,7 @@ func New(run func(context.Context) tool.StatusReport) tool.Tool[In, Out] {
 			"are you healthy",
 			"is everything working",
 			"is everything okay",
+			"is anything broken",
 			"any problems",
 		},
 	}

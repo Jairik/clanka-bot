@@ -84,7 +84,22 @@ func write(out io.Writer, summary latency.Summary, source string) {
 			if path.ResponseCount > 0 && stage.N < path.ResponseCount {
 				missing = fmt.Sprintf("(missing on %d)", path.ResponseCount-stage.N)
 			}
-			fmt.Fprintf(writer, "  %s\t%d samples\t%s\t%s\n", trimStage(name), stage.N, stat(stage), missing)
+			flag := ""
+			if budget, ok := latency.StageBudget[latency.Stage(trimStage(name))]; ok {
+				overP50, overP95, measured := path.OverStage(trimStage(name), budget)
+				if measured && (overP50 || overP95) {
+					flag = stageOverFlag(trimStage(name), overP50, overP95)
+				}
+			}
+			note := missing
+			if flag != "" {
+				if note != "" {
+					note = flag + "  " + note
+				} else {
+					note = flag
+				}
+			}
+			fmt.Fprintf(writer, "  %s\t%d samples\t%s\t%s\n", trimStage(name), stage.N, stat(stage), note)
 		}
 		if path.FirstChunk.N > 0 {
 			fmt.Fprintf(writer, "  first_chunk\t%d samples\t%s\tincluded in response\n",
@@ -142,6 +157,22 @@ func overFlags(overP50, overP95 bool) string {
 		return "OVER p95"
 	default:
 		return "within budget"
+	}
+}
+
+// stageOverFlag builds the per-stage over-budget note, naming the stage and the
+// percentile(s) that breached its budget. A stage with no budget configured is
+// never passed here, so it prints no flag.
+func stageOverFlag(stage string, overP50, overP95 bool) string {
+	switch {
+	case overP50 && overP95:
+		return fmt.Sprintf("OVER %s p50 and p95", stage)
+	case overP50:
+		return fmt.Sprintf("OVER %s p50", stage)
+	case overP95:
+		return fmt.Sprintf("OVER %s p95", stage)
+	default:
+		return ""
 	}
 }
 

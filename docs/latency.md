@@ -84,6 +84,29 @@ the oldest entries beyond 100.
 If Agent `agent_first_token_ms` p50 is above 1.2 s, question the model choice
 first; the report flags it automatically.
 
+### Stage budgets
+
+Each stage has its own p50/p95 budget (#218) so a regression that moves time
+from one stage into another stays visible even when the overall Response is
+within budget. The report flags any stage whose nearest-rank p50 or p95 exceeds
+its budget; `tool_execute` and `agent_first_token` are intentionally not in this
+map — `tool_execute` is network-bound and conditional on the Tool's own latency
+(see the weather Tool note in the dev-box report), and `agent_first_token` is
+flagged separately against `AgentFirstTokenP50`. The numbers below are the
+dev-box expectations recorded in `docs/latency-dev-box.md`; a guessed threshold
+that fails on that saved run is ignored.
+
+| Stage | p50 | p95 | Basis |
+| --- | --- | --- | --- |
+| `endpointing` | 550 ms | 600 ms | fixed ~500 ms silence window plus one frame |
+| `stt_finalize` | 200 ms | 250 ms | local STT finalisation |
+| `routing` | 50 ms | 100 ms | transcript → chosen path |
+| `tts_first_audio` | 150 ms | 200 ms | first reply text → first PCM sample |
+| `tool_execute` | — | — | network-bound; not budgeted |
+| `agent_first_token` | — | — | flagged separately against `AgentFirstTokenP50` |
+
+`focus_intent` is routed to the Fast-path budget.
+
 ## Reading the logs
 
 The stack's logs go to stdout as JSON. Summarize the running stack:

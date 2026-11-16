@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -72,6 +73,16 @@ type Tool[In, Out any] struct {
 	Timeout     time.Duration // zero uses the registry default
 	Handler     func(ctx context.Context, in In) (Out, error)
 
+	// Provenance is the one declared exception to the static LocalOnly flag.
+	// When set, it reports the provenance of text a result is *replaying* (for
+	// example assistant.repeat echoing the previous reply): ok=false falls back
+	// to LocalOnly, and ok=true lets the reported flag stand for that one text.
+	// It must never describe text the Tool created itself. Declaring it on a
+	// LocalOnlyNo Tool is rejected at registration — there is nothing to
+	// downgrade there — so the hook stays an auditable choice next to LocalOnly
+	// rather than something a result value can opt into by implementing a method.
+	Provenance func(out Out) (localOnly bool, ok bool)
+
 	// AgentOnly marks a Tool the semantic router must never choose: it is
 	// offered to the Agent path only. Examples and Extract exist for the Fast
 	// path and are rejected here, so the exclusion is deliberate rather than a
@@ -122,12 +133,13 @@ type Policy interface {
 }
 
 type entry struct {
-	info    Info
-	schema  *jsonschema.Resolved
-	run     func(ctx context.Context, args json.RawMessage) (any, error)
-	speak   func(result any) (string, bool)
-	extract func(text string) (json.RawMessage, bool)
-	summary func(args json.RawMessage) string
+	info       Info
+	schema     *jsonschema.Resolved
+	run        func(ctx context.Context, args json.RawMessage) (any, error)
+	speak      func(result any) (string, bool)
+	provenance func(result any) (localOnly bool, ok bool)
+	extract    func(text string) (json.RawMessage, bool)
+	summary    func(args json.RawMessage) string
 }
 
 // Registry holds Tools registered at compile time and executes them, plus the
@@ -212,6 +224,13 @@ func Add[In, Out any](r *Registry, t Tool[In, Out]) error {
 	case LocalOnlyYes, LocalOnlyNo:
 	default:
 		return fmt.Errorf("tool %q: local-only flag is required (LocalOnlyYes or LocalOnlyNo)", t.Name)
+	}
+	// A per-result provenance hook exists to let a Local-only Tool report that
+	// one text it replays was public. A LocalOnlyNo Tool has nothing to
+	// downgrade, so accepting the hook there would only create an unauditable
+	// second way to change a public Tool's egress decision.
+	if t.Provenance != nil && t.LocalOnly == LocalOnlyNo {
+		return fmt.Errorf("tool %q: Provenance requires LocalOnlyYes (a public Tool has no flag to downgrade)", t.Name)
 	}
 	if t.Handler == nil {
 		return fmt.Errorf("tool %q: handler is required", t.Name)
@@ -301,6 +320,23 @@ func Add[In, Out any](r *Registry, t Tool[In, Out]) error {
 				return "", false
 			}
 			return t.Speak(out), true
+		},
+		provenance: func(result any) (bool, bool) {
+			if t.Provenance == nil {
+				return false, false
+			}
+			out, ok := result.(Out)
+			if !ok {
+				return false, false
+			}
+			// A typed nil satisfies a pointer Out (or an interface Out it
+			// implements); calling the author's hook on it would panic inside
+			// callTool. Report no provenance so the static flag stands.
+			v := reflect.ValueOf(out)
+			if v.Kind() == reflect.Pointer && v.IsNil() {
+				return false, false
+			}
+			return t.Provenance(out)
 		},
 		extract: func(text string) (json.RawMessage, bool) {
 			if t.Extract == nil {
@@ -447,6 +483,23 @@ func (r *Registry) Info(name string) (Info, bool) {
 	info := r.effective(e)
 	info.Examples = append([]string(nil), e.info.Examples...)
 	return info, true
+}
+
+// Provenance resolves one result's Local-only flag for egress and history. It
+// returns the Tool's static declaration unless that Tool declared a
+// Provenance hook and the hook reports a known value for this result. Only the
+// registration-time declaration can change the static flag; a result value's
+// own methods are never consulted, so a LocalOnlyYes Tool cannot silently make
+// its text forwardable. An unknown Tool falls back to false conservatively.
+func (r *Registry) Provenance(name string, result any) bool {
+	e, ok := r.lookup(name)
+	if !ok {
+		return false
+	}
+	if localOnly, known := e.provenance(result); known {
+		return localOnly
+	}
+	return e.info.LocalOnly
 }
 
 // Names returns registered canonical names in sorted order.

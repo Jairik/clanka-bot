@@ -108,9 +108,10 @@ func (c *Confirmation) DropPending() (tool.PendingConfirmation, bool) {
 // confirmedCall records the executed call for the shared history.
 func confirmedCall(reg *tool.Registry, pending tool.PendingConfirmation, result any) *agent.ToolCall {
 	call := &agent.ToolCall{Name: pending.Tool, Args: pending.Args}
-	if info, ok := reg.Info(pending.Tool); ok {
-		// A confirmed result keeps its own provenance, exactly like the Fast path.
-		call.LocalOnly = resultLocalOnly(info.LocalOnly, result)
+	if reg != nil {
+		// A confirmed result keeps its declared provenance, exactly like the
+		// Fast path: a result value cannot override its Tool's static flag.
+		call.LocalOnly = reg.Provenance(pending.Tool, result)
 	}
 	if payload, err := json.Marshal(result); err == nil {
 		call.Result = payload

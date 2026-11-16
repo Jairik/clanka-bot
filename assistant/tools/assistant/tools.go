@@ -22,11 +22,6 @@ type RepeatOut struct {
 	At        time.Time `json:"at,omitempty"`
 }
 
-// LocalOnlyProvenance reports that the repeated text keeps the flag it had when
-// it was spoken. The repeat Tool stays Local-only so the Agent path never sees
-// it; only the provenance of this one result follows the text it repeats.
-func (o RepeatOut) LocalOnlyProvenance() (bool, bool) { return o.LocalOnly, true }
-
 // HelpIn has no fields.
 type HelpIn struct{}
 
@@ -57,6 +52,11 @@ func NewRepeat(store *lastreply.Store) tool.Tool[RepeatIn, RepeatOut] {
 		// must never see it as Tool output. Declaring the repeat Tool itself
 		// Local-only is the explicit, safe choice.
 		LocalOnly: tool.LocalOnlyYes,
+		// The repeated text keeps the flag it had when it was spoken. This is
+		// the one declared per-result exception, sitting next to LocalOnly so
+		// it is reviewed with the privacy decision; it reports only the text
+		// repeat replays, never new text of its own.
+		Provenance: func(out RepeatOut) (bool, bool) { return out.LocalOnly, true },
 		Handler: func(context.Context, RepeatIn) (RepeatOut, error) {
 			reply, ok := store.Last()
 			if !ok || strings.TrimSpace(reply.Text) == "" {

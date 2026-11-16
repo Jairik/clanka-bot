@@ -1611,7 +1611,6 @@ positives:
     - "read me the BBC headlines"
     - "what's happening in the world"
     - "catch me up on the news"
-    - "give me a news briefing"
     - "what's the latest"
     - "top stories"
     - "the day's headlines"
@@ -1619,11 +1618,8 @@ positives:
     - "what's making the news"
     - "headlines on technology"
     - "news update"
-    - "brief me on the news"
     - "what are the headlines today"
     - "read out the news"
-    - "switch to the news"
-    - "brief me"
 negatives:
   - "what's my next alarm"
   - "when does my next alarm go off"
@@ -1824,9 +1820,8 @@ negatives:
   - change the music
   - activate the kitchen lights
   - use the force
-  # "switch to the news" moved to positives:news.headlines, which is the only
-  # Fast path that reads headlines; it is no longer a persona/Spotify-shaped
-  # fall-through now that a news Tool exists.
+  # "switch to the news" is a legitimate news.headlines request now that the
+  # Tool exists; it is a positives entry above, not a fall-through.
   # Repeat and self-description shaped, but a request for another action or
   # another kind of repeat.
   - repeat the alarm tomorrow
@@ -1939,9 +1934,7 @@ negatives:
   - good morning
   - what's my day
   - what does my day look like
-  # "brief me" moved to positives:news.headlines: the morning-briefing stage
-  # intercepts it in production before the semantic router, but with a news Tool
-  # it is legitimately the headlines readout. It is no longer a fall-through.
+  - brief me
   - morning briefing
   # List-shaped but not a Fast path request: no Tool reorders, sorts, archives or
   # summarises a list, and "what's left to do" is a read, not a tick. They must

@@ -69,7 +69,6 @@ var headlinesExamples = []string{
 	"read me the BBC headlines",
 	"what's happening in the world",
 	"catch me up on the news",
-	"give me a news briefing",
 	"what's the latest",
 	"top stories",
 	"the day's headlines",
@@ -77,7 +76,6 @@ var headlinesExamples = []string{
 	"what's making the news",
 	"headlines on technology",
 	"news update",
-	"brief me on the news",
 	"what are the headlines today",
 	"read out the news",
 }

@@ -279,9 +279,9 @@ type wikiSearchResponse struct {
 // wikiSummaryResponse is the REST v1 page summary payload. Only the fields the
 // Tool returns are decoded.
 type wikiSummaryResponse struct {
-	Title   string `json:"title"`
-	Extract string `json:"extract"`
-	Type    string `json:"type"`
+	Title       string `json:"title"`
+	Extract     string `json:"extract"`
+	Type        string `json:"type"`
 	ContentURLs struct {
 		Desktop struct {
 			Page string `json:"page"`

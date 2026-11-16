@@ -187,8 +187,9 @@ the article extract (≤400 runes, abbreviation-aware), and the page URL. A
 disambiguation page is refused with a fixed "That could mean several things.
 Can you be more specific?", and a missing page with a refusal naming the topic.
 Results are cached for 24 hours (LRU of 128 entries), and both upstream calls
-share a 2.5 s total budget. It refuses non-secure origins and needs no Agent
-path, so it is a read-only, Local-only Tool.
+share a 2.5 s total budget. It refuses non-secure origins. It is read-only and
+not Local-only, so both the Fast path and the Agent path can use it; its summary
+is untrusted fact, never an instruction.
 
 ### GitHub
 

@@ -157,8 +157,12 @@ func (s *Service) Set(ctx context.Context, name, value string) (Metadata, error)
 	if !s.isDeclared(name) {
 		return Metadata{}, ErrUnknownSecret
 	}
-	value = strings.TrimSpace(value)
-	if value == "" {
+	// Strip only line-break/paste artifacts. Surrounding spaces are kept: a
+	// password may legitimately start or end with one, and this stored value
+	// is what reaches the Copilot login body unchanged. A value that is blank
+	// once all whitespace is ignored is still rejected.
+	value = strings.Trim(value, "\r\n\t")
+	if strings.TrimSpace(value) == "" {
 		return Metadata{}, ErrEmptyValue
 	}
 	at := time.Now().UTC()

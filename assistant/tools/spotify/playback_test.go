@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/namematch"
@@ -32,6 +33,8 @@ type webAPI struct {
 	status  int    // non-zero fails the control calls whose path contains failOn
 	reason  string // the Spotify error reason in the failure body
 	failOn  string // empty fails every control call
+	delay   time.Duration // how long each control call takes to answer
+	hang    bool          // when true, the handler blocks until the request context ends
 	server  *httptest.Server
 }
 
@@ -39,6 +42,15 @@ func newWebAPI(t *testing.T) *webAPI {
 	t.Helper()
 	f := &webAPI{devices: `{"devices":[{"id":"pi","name":"Clanka","volume_percent":70}]}`}
 	f.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if f.hang {
+			// Block until the client gives up (its context deadline fires),
+			// so a Tool's timeout can be exercised end to end.
+			<-r.Context().Done()
+			return
+		}
+		if f.delay > 0 {
+			time.Sleep(f.delay)
+		}
 		body, _ := io.ReadAll(r.Body)
 		f.mu.Lock()
 		defer f.mu.Unlock()

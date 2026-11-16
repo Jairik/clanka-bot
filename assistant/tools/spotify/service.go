@@ -237,6 +237,8 @@ func failureText(err error) string {
 		return "Spotify needs a Premium account for that."
 	case status == http.StatusTooManyRequests, errors.Is(err, spotify.ErrUnavailable):
 		return "Spotify is busy. Try again in a moment."
+	case errors.Is(err, context.DeadlineExceeded):
+		return "Spotify is taking too long to answer."
 	default:
 		return "I couldn't reach Spotify."
 	}

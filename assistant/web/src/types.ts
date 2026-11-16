@@ -81,6 +81,15 @@ export type AlertsView = {
   DesktopNotify: boolean;
 };
 
+export type AnnounceSnapshot = {
+  // Waiting is the number of announcements queued behind the current turn.
+  waiting: number;
+  // Held is true while a hold (Quiet hours) keeps announcements queued.
+  held: boolean;
+  // Playing is true while one announcement is speaking.
+  playing: boolean;
+};
+
 export type Call = {
   Name: string;
   LocalOnly: boolean;
@@ -117,6 +126,18 @@ export type FalseWake = {
   NoSpeech: number;
   Unroutable: number;
   Rate: string;
+};
+
+export type FocusView = {
+  // Ring is true while a ringing Scheduled alert holds Focus.
+  ring: boolean;
+  // Reply is true while a spoken reply holds Focus.
+  reply: boolean;
+  // Music is true while music holds Focus.
+  music: boolean;
+  // Announcements reports the queue without any text: how many are waiting,
+  // whether a hold (Quiet hours) is on, and whether one is playing now.
+  announcements: AnnounceSnapshot;
 };
 
 export type HealthView = {

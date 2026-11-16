@@ -4,7 +4,7 @@ import { ChatProvider } from "../chat";
 import { SessionProvider } from "../shell";
 import { SpeakProvider } from "../speak";
 import { API_VERSION } from "../api-version";
-import type { ActivityView, Request, Session } from "../types";
+import type { ActivityView, FocusView, Request, Session } from "../types";
 
 export const session = (over: Partial<Session> = {}): Session => ({
   Owner: "owner@example.com",
@@ -17,6 +17,13 @@ export const session = (over: Partial<Session> = {}): Session => ({
   CanPlayReplies: true,
   APIVersion: API_VERSION,
   ...over,
+});
+
+export const emptyFocus = (): FocusView => ({
+  ring: false,
+  reply: false,
+  music: false,
+  announcements: { waiting: 0, held: false, playing: false },
 });
 
 export const emptyActivity = (requests: Request[] = []): ActivityView => ({
@@ -84,7 +91,14 @@ export function stubFetch(routes: Record<string, Route>) {
     const url = String(input);
     const path = new URL(url, "http://localhost").pathname + new URL(url, "http://localhost").search;
     const route = routes[path] ?? routes[new URL(url, "http://localhost").pathname];
-    if (!route) throw new Error(`unexpected fetch: ${init?.method ?? "GET"} ${path}`);
+    if (!route) {
+      // The Activity header fetches the focus view; tests that don't care about
+      // it get the empty state instead of a hard failure.
+      if (new URL(url, "http://localhost").pathname === "/api/ui/focus") {
+        return json(emptyFocus());
+      }
+      throw new Error(`unexpected fetch: ${init?.method ?? "GET"} ${path}`);
+    }
     return route(init);
   };
   globalThis.fetch = fetch as typeof fetch;

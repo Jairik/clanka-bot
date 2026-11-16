@@ -4,6 +4,7 @@ import type {
   ActivityView,
   AlertsView,
   EqualizerView,
+  FocusView,
   HealthView,
   HermesView,
   LightsView,
@@ -29,6 +30,7 @@ export type Flashable = { Flash?: string; Error?: string };
 /** The page name each view belongs to; `usePageData` reads /api/ui/<page>. */
 export type PageViews = {
   activity: ActivityView;
+  focus: FocusView;
   "voice-samples": VoiceSamplesView;
   equalizer: EqualizerView;
   health: HealthView;

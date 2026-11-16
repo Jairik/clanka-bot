@@ -164,3 +164,15 @@ describe("ActivityPage durable history", () => {
     expect(screen.queryByRole("button", { name: "Load older" })).toBeNull();
   });
 });
+
+it("renders the Focus strip from the focus route", async () => {
+  stubFetch(routes());
+  render(
+    <Providers>
+      <ActivityPage />
+    </Providers>,
+  );
+  await screen.findByText("spoken at the pi");
+  // The Activity header reads /api/ui/focus and shows the idle state.
+  expect(await screen.findByText("Listening")).toBeTruthy();
+});

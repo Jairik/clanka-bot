@@ -4,10 +4,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { Button, SearchField, ToggleButton, ToggleButtonGroup } from "@heroui/react";
 import { ChevronDown, Info, X } from "lucide-react";
-import { getJSON, useQueryParam } from "../api";
+import { getJSON, usePageData, useQueryParam } from "../api";
 import { activityQuery, asFilter, bucketActivity, filterActivity, FILTERS, FILTER_LABEL } from "../activity";
 import { OutcomeBadge, RequestDetail, fmtClock, isFailed, sourceIcon, useChat } from "../chat";
 import { PageFrame } from "../shell";
+import { FocusStatus, emptyFocus } from "../focus";
 import type { ActivityView, Request } from "../types";
 import { Badge, Empty, Fold, Notice, Section, cn, foldOpen } from "../ui";
 
@@ -15,6 +16,8 @@ type Page = { key: string; list: Request[]; next: string };
 
 export function ActivityPage() {
   const { view, requests, loadError } = useChat();
+  // The focus and announcement state, refreshed live by the "focus" SSE delta.
+  const { data: focus } = usePageData("focus");
   const [q, setQ] = useQueryParam("q");
   const [f, setF] = useQueryParam("filter", "all");
   const filter = asFilter(f);
@@ -113,6 +116,9 @@ export function ActivityPage() {
             </ToggleButton>
           ))}
         </ToggleButtonGroup>
+        <div className="w-full">
+          <FocusStatus view={focus ?? emptyFocus()} />
+        </div>
       </div>
 
       <div className="space-y-3" aria-busy={searching || loadingOlder}>

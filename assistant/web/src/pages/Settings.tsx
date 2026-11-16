@@ -20,7 +20,7 @@ export function SettingsPage() {
   const list = (items: Setting[] | null) => (
     <ul className="divide-y divide-separator">
       {(items ?? []).map((s) => (
-        <li key={s.Key} id={s.Anchor}>
+        <li key={s.Key} id={s.Anchor} tabIndex={-1}>
           <SettingRow s={s} actions={actions} />
         </li>
       ))}
@@ -110,7 +110,7 @@ export function SettingsPage() {
               // their own mapping; `list` stays shared by every other section.
               <ul className="divide-y divide-separator">
                 {data.Agent.map((s) => (
-                  <li key={s.Key} id={s.Anchor}>
+                  <li key={s.Key} id={s.Anchor} tabIndex={-1}>
                     <SettingRow
                       s={s}
                       actions={actions}
@@ -137,7 +137,7 @@ export function SettingsPage() {
             {data.ToolWording?.length ? (
               <div className="divide-y divide-separator">
                 {data.ToolWording.map((w) => (
-                  <div key={w.Name} id={w.Anchor}>
+                  <div key={w.Name} id={w.Anchor} tabIndex={-1}>
                     <div className="bg-surface-secondary px-3.5 py-1.5 font-mono text-xs text-muted">{w.Name}</div>
                     {list([w.Control, w.Examples].filter(Boolean) as Setting[])}
                   </div>

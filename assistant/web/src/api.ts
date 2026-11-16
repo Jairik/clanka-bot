@@ -186,10 +186,29 @@ export function usePageData<P extends DataPage>(page: P, opts: { poll?: number; 
 
 const listeners = new Set<() => void>();
 const notify = () => listeners.forEach((l) => l());
-addEventListener("popstate", notify);
+
+/** The full address, hash included: two hash states are two history entries. */
+const address = () => location.pathname + location.search + location.hash;
+
+/**
+ * Which entry a Back/Forward press landed on. PageFrame restores a scroll
+ * position only for that entry; navigate() clears it so a fresh visit starts
+ * at the top. Exposed through restoreKey rather than a consume-once flag so a
+ * page without a PageFrame (Home) cannot swallow it for the next page.
+ */
+let poppedTo: string | null = null;
+addEventListener("popstate", () => {
+  poppedTo = address();
+  notify();
+});
+// A same-document hash jump fires hashchange without popstate. Deep links must
+// still react to it, but it is not a Back/Forward restore.
+addEventListener("hashchange", notify);
+export const restoreKey = () => poppedTo;
 
 export function navigate(to: string, opts: { replace?: boolean } = {}) {
-  if (to === location.pathname + location.search) return;
+  if (to === address()) return;
+  poppedTo = null;
   if (opts.replace) history.replaceState(null, "", to);
   else history.pushState(null, "", to);
   notify();
@@ -203,11 +222,20 @@ const subscribe = (l: () => void) => {
 export function useLocation() {
   const href = useSyncExternalStore(subscribe, () => location.pathname + location.search);
   const url = new URL(href, location.origin);
-  return { path: url.pathname, params: url.searchParams };
+  return { path: url.pathname, params: url.searchParams, href };
 }
 
-/** One query param as state; replaces history so filters don't pile up Back entries. */
-export function useQueryParam(name: string, fallback = ""): [string, (v: string) => void] {
+/** The hash as state, so a deep link re-runs the page's anchor effect. */
+export function useHash() {
+  return useSyncExternalStore(subscribe, () => location.hash);
+}
+
+/**
+ * One query param as state. By default it replaces history so filters don't
+ * pile up Back entries; a view switch can opt into a real entry so Back/Forward
+ * move between the views the link names.
+ */
+export function useQueryParam(name: string, fallback = "", opts: { push?: boolean } = {}): [string, (v: string) => void] {
   const { params } = useLocation();
   const value = params.get(name) ?? fallback;
   const set = useCallback(
@@ -215,9 +243,9 @@ export function useQueryParam(name: string, fallback = ""): [string, (v: string)
       const u = new URL(location.href);
       if (v && v !== fallback) u.searchParams.set(name, v);
       else u.searchParams.delete(name);
-      navigate(u.pathname + u.search, { replace: true });
+      navigate(u.pathname + u.search, { replace: !opts.push });
     },
-    [name, fallback],
+    [name, fallback, opts.push],
   );
   return [value, set];
 }

@@ -166,6 +166,12 @@ body {
   outline-offset: 2px;
 }
 
+/* A hash deep link moves focus with script; keep the ring visible too (#300). */
+.deep-link-target:focus {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+
 /* A new reply arriving while the reader is up the thread (#293). */
 @keyframes new-reply-in {
   from { opacity: 0; transform: translateY(4px); }

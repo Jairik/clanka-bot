@@ -2,10 +2,11 @@
 // flips to the conversation; the History button flips back.
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Button, ToggleButton, ToggleButtonGroup } from "@heroui/react";
-import { AlarmClock, CloudSun, Gauge, HeartPulse, History, KeyRound, Music, ScrollText, Timer, Volume2, Zap } from "lucide-react";
+import { AlarmClock, CloudSun, Gauge, HeartPulse, History, Hourglass, KeyRound, Music, ScrollText, Timer, Volume2, Zap } from "lucide-react";
 import { getJSON, navigate, useQueryParam } from "../api";
 import { latestDelta, useLive, type LiveName } from "../events";
 import { Composer, Exchange, PendingExchange, fmtMS, isFailed, isTyped, parseMS, totalMS, useChat } from "../chat";
+import { DeferredRows, useDeferredQueue } from "../queued-actions";
 import { useSession } from "../shell";
 import type { AlertsView, HealthView, SecretsView, SpotifyView } from "../types";
 import { Dot, cn, Tip } from "../ui";
@@ -149,6 +150,22 @@ function Card({
   );
 }
 
+/** The pipeline's waiting requests, promoted out of Settings (#297). */
+export function QueuedActionsCard() {
+  const { items, limit, error, pending, cancel } = useDeferredQueue();
+  return (
+    <Card
+      icon={Hourglass}
+      label="Queued actions"
+      right={<span className="tabular-nums">{items.length}/{limit}</span>}
+    >
+      <div className="min-h-0 flex-1 overflow-y-auto">
+        <DeferredRows items={items} error={error} pending={pending} cancel={cancel} />
+      </div>
+    </Card>
+  );
+}
+
 function usePolled<T>(path: string, every = 60_000, name?: LiveName) {
   const [v, setV] = useState<T | null>(null);
   const { live, generation, subscribe, resync } = useLive();
@@ -285,6 +302,8 @@ function Overview() {
         </Say>
         {next && <div className="mt-auto truncate text-2xl tabular-nums">{next.Next}</div>}
       </Card>
+
+      <QueuedActionsCard />
 
       <Card icon={Gauge} label="Response time" footer="See activity" to="/activity">
         <Say>{measured.length ? `Median from **end of speech** to **first audio** over the last ${plural(measured.length, "voice reply", "voice replies")}` : "No measured **voice replies** yet. Typed requests have no speech to time."}</Say>

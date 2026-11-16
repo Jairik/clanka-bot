@@ -160,7 +160,7 @@ describe("Settings deferred queue poll", () => {
   it("makes no deferred request while hidden and one on return", async () => {
     vi.useFakeTimers();
     setVisibility("hidden");
-    const deferred = vi.fn(() => json([]));
+    const deferred = vi.fn(() => json({ items: [], limit: 8 }));
     stubFetch({
       "/api/ui/settings": () => json(settingsView()),
       "/api/ui/equalizer": () =>

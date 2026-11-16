@@ -595,6 +595,8 @@ positives:
     - set nightly quiet hours from 10:30 to 7
     - quiet hours from 9 in the evening to 6 in the morning
     - quiet hours from 10:30 in the evening to 7 in the morning
+    # #363: a bare "quiet from <clock> to <clock>" is still the daily window.
+    - quiet from 22:00 to 07:00
   quiet.off:
     - turn off quiet hours
     - disable quiet hours
@@ -638,6 +640,12 @@ positives:
     - give me two hours of quiet
     - mute the house for an hour
     - do not disturb for 20 minutes
+    # #363: the plain "quiet for <duration>" family must reach quiet.dnd
+    # on the semantic Fast path, not fall through to the Agent path.
+    - quiet for 0.5 hours
+    - quiet for half an hour
+    - quiet for 15 minutes
+    - quiet for 2 hours
   quiet.awake:
     # Ending only the current window, not the schedule.
     - I'm awake

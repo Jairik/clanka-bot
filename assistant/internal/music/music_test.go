@@ -107,6 +107,69 @@ func TestNilDuckerIsANoOp(t *testing.T) {
 	restore()
 }
 
+// A stream that opens after the duck has started must be lowered before the
+// reply that follows "play" is spoken. Reapply ignores the applied cache, so
+// it issues the duck level again even though nothing changed since the Duck.
+func TestReapplyLowersStreamThatAppearsMidDuck(t *testing.T) {
+	f := &fakeStreams{}
+	d := music.NewDucker(f, 25, nil)
+	restore, _ := d.Duck(t.Context()) // 25, applied 25
+	// The "play" opens a fresh sink-input at full volume while the turn still
+	// holds the duck.
+	if err := d.Reapply(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.got(); !equal(got, []int{25, 25}) {
+		t.Fatalf("after Reapply sets = %v, want the duck level 25 re-issued", got)
+	}
+	if last := f.got()[len(f.got())-1]; last != 25 {
+		t.Fatalf("last level = %d, want 25 (mid-duck stream lowered)", last)
+	}
+	restore()
+	if got := f.got(); !equal(got, []int{25, 25, 100}) {
+		t.Fatalf("after release sets = %v, want restore 100", got)
+	}
+}
+
+// Reapply when nothing is ducked restores full volume, so a late stream that
+// appears after the turn ended is not left ducked.
+func TestReapplyWhenNotDuckedSetsFull(t *testing.T) {
+	f := &fakeStreams{}
+	d := music.NewDucker(f, 25, nil)
+	if err := d.Reapply(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.got(); !equal(got, []int{100}) {
+		t.Fatalf("Reapply with no duck sets = %v, want full 100", got)
+	}
+}
+
+// The final release must always re-issue SetPercent(100), even when the cache
+// already believes the stream is full (for example, after a Reset mid-duck or
+// Pulse's stream-restore leaving applied at 100). Trusting the cache would let
+// a remembered low level survive the release.
+func TestReleaseAlwaysRestoresFullEvenWhenAppliedFull(t *testing.T) {
+	f := &fakeStreams{}
+	d := music.NewDucker(f, 25, nil)
+	restore, _ := d.Duck(t.Context()) // 25, applied 25
+	// Something else (a startup Reset, or a prior restore) reports full while
+	// the duck is still held, so applied becomes 100 without leaving the duck.
+	if err := d.Reset(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.got(); !equal(got, []int{25, 100}) {
+		t.Fatalf("after Reset sets = %v", got)
+	}
+	restore()
+	// The release must send 100 again despite applied already being 100.
+	if got := f.got(); !equal(got, []int{25, 100, 100}) {
+		t.Fatalf("after release sets = %v, want a forced 100 even though applied was 100", got)
+	}
+	if last := f.got()[len(f.got())-1]; last != 100 {
+		t.Fatalf("last level = %d, want 100", last)
+	}
+}
+
 // fakePactl lists three sink inputs (Soloist, the assistant's reply and a
 // browser playing the Spotify web player) and records every
 // set-sink-input-volume call.

@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
+	"github.com/Jairik/clanka-bot/assistant/internal/namematch"
 	"github.com/Jairik/clanka-bot/assistant/internal/spotify"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	spotifytools "github.com/Jairik/clanka-bot/assistant/tools/spotify"
@@ -158,6 +159,79 @@ func newRig(t *testing.T, cap int) *rig {
 }
 
 const radiohead = `{"artists":{"items":[{"name":"Radiohead","uri":"spotify:artist:rh"}]},"tracks":{"items":[]}}`
+
+// fakeDucker records every Reapply so the play Tools can prove they re-duck a
+// stream that opens mid-turn. It never errors.
+type fakeDucker struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (f *fakeDucker) Reapply(_ context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	return nil
+}
+
+func (f *fakeDucker) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls
+}
+
+// TestPlayReappliesTheDuckForTheStreamItStarts proves spotify.play re-ducks a
+// stream that opens while the turn still holds the duck, so the reply is not
+// spoken over full-volume music. A failed play must not re-duck.
+func TestPlayReappliesTheDuckForTheStreamItStarts(t *testing.T) {
+	r := newRig(t, 0)
+	r.api.search = radiohead
+	duck := &fakeDucker{}
+	r.svc.WithDucker(duck)
+
+	play := spotifytools.NewPlay(r.svc)
+	if _, err := play.Handler(t.Context(), spotifytools.PlayIn{Query: "Radiohead"}); err != nil {
+		t.Fatalf("play: %v", err)
+	}
+	if got := duck.count(); got < 1 {
+		t.Fatalf("Reapply calls = %d, want at least 1 (the duck is re-applied for the new stream)", got)
+	}
+
+	// A failed play must not re-duck: the turn is not starting music.
+	r.api.failOn = "play"
+	r.api.status = http.StatusForbidden
+	r.api.reason = "UNKNOWN"
+	duckBefore := duck.count()
+	if _, err := play.Handler(t.Context(), spotifytools.PlayIn{Query: "Radiohead"}); err == nil {
+		t.Fatal("expected a failed play to return an error")
+	}
+	if got := duck.count(); got != duckBefore {
+		t.Fatalf("Reapply calls = %d after a failed play, want %d (no re-duck on failure)", got, duckBefore)
+	}
+}
+
+// TestPlayPlaylistReappliesTheDuck proves spotify.play_playlist re-ducks the
+// stream it starts, matching spotify.play.
+func TestPlayPlaylistReappliesTheDuck(t *testing.T) {
+	r := newRig(t, 0)
+	r.api.lists = `{"items":[{"name":"Running","uri":"spotify:playlist:run"}]}`
+	// The playlist Tools need the library seam wired, like RegisterTools does.
+	r.svc.WithLibrary(
+		spotify.NewPlayer(directAPI{r.api.server.URL}, "Clanka", func() int { return 0 }),
+		spotify.NewPlaylistCache(spotify.PlaylistCacheOptions{API: directAPI{r.api.server.URL}}),
+		namematch.New(nil, namematch.Config{}),
+	)
+	duck := &fakeDucker{}
+	r.svc.WithDucker(duck)
+
+	play := spotifytools.NewPlayPlaylist(r.svc)
+	if _, err := play.Handler(t.Context(), spotifytools.PlayPlaylistIn{Name: "Running"}); err != nil {
+		t.Fatalf("play_playlist: %v", err)
+	}
+	if got := duck.count(); got < 1 {
+		t.Fatalf("Reapply calls = %d, want at least 1", got)
+	}
+}
 
 func TestPlayRadioheadClaimsMusicFocusAndSpeaks(t *testing.T) {
 	r := newRig(t, 0)

@@ -72,9 +72,41 @@ func (d *Ducker) Duck(ctx context.Context) (func(), error) {
 	d.depth++
 	d.mu.Unlock()
 
-	err := d.apply(ctx)
+	err := d.apply(ctx, false)
 	var once sync.Once
 	return func() { once.Do(d.release) }, err
+}
+
+// Reapply sets the level implied by the current depth, ignoring the applied
+// cache. The Spotify Service calls it after a successful play/resume/play_playlist,
+// when a new sink-input is expected to have appeared mid-duck: the track a
+// "play" starts would otherwise open at full volume and the reply that follows
+// would be spoken over it. Reapply is best-effort and never blocks on a holder;
+// a nil Ducker or one with no streams is a no-op.
+func (d *Ducker) Reapply(ctx context.Context) error {
+	if d == nil || d.streams == nil {
+		return nil
+	}
+	d.mu.Lock()
+	want := normalPercent
+	ducked := d.depth > 0
+	if ducked {
+		want = d.percent
+	}
+	d.mu.Unlock()
+	d.opMu.Lock()
+	defer d.opMu.Unlock()
+	if ducked {
+		d.logger.Info("music reapply", "reason", "stream appeared mid-duck", "percent", want)
+	}
+	ctx, cancel := context.WithTimeout(ctx, pactlTimeout)
+	defer cancel()
+	if err := d.streams.SetPercent(ctx, want); err != nil {
+		d.applied = -1 // a partial failure leaves the real level unknown
+		return err
+	}
+	d.applied = want
+	return nil
 }
 
 // Reset sets the stream to full volume. The Assistant calls it once at startup
@@ -99,18 +131,22 @@ func (d *Ducker) Reset(ctx context.Context) error {
 func (d *Ducker) release() {
 	d.mu.Lock()
 	d.depth--
+	last := d.depth == 0
 	d.mu.Unlock()
 	// The holder's context may already be cancelled (a stopped Ring), and a
 	// stuck duck would leave the music quiet, so the restore has its own clock.
-	if err := d.apply(context.Background()); err != nil {
+	// The final release (depth 0) always re-issues SetPercent(100) rather than
+	// trusting applied: Pulse's stream-restore may have remembered a ducked
+	// level for the receiver, so the cache must not suppress the restore.
+	if err := d.apply(context.Background(), last); err != nil {
 		d.logger.Warn("music restore", "error", err.Error())
 	}
 }
 
 // apply sets the level implied by the current depth, once it holds the pactl
-// lock. A level already applied is skipped; a failure forgets it, so the next
-// call retries.
-func (d *Ducker) apply(ctx context.Context) error {
+// lock. A level already applied is skipped unless force is set; a failure
+// forgets it, so the next call retries.
+func (d *Ducker) apply(ctx context.Context, force bool) error {
 	d.opMu.Lock()
 	defer d.opMu.Unlock()
 	d.mu.Lock()
@@ -119,7 +155,7 @@ func (d *Ducker) apply(ctx context.Context) error {
 		want = d.percent
 	}
 	d.mu.Unlock()
-	if want == d.applied {
+	if want == d.applied && !force {
 		return nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, pactlTimeout)

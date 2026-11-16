@@ -135,7 +135,11 @@ function IntegrationEditor({ row, actions }: { row: Integration; actions: Action
   const unlinkAction = `${base}/unlink`;
   const grantAction = `${base}/grant`;
   const ready = row.StatusKey === "linked" || row.StatusKey === "environment";
-  const missing = secrets.some((s) => !s.Optional && !(drafts[s.Name] ?? "").trim());
+  // Blank is fine when the account already stores a value; only a truly missing
+  // one blocks. The server skips a blank value when the account already has one
+  // (integrations.go), so an owner can re-save after a partial failure or set
+  // only an optional secret without retyping the required, stored one.
+  const missing = secrets.some((s) => !s.Optional && !s.Set && !(drafts[s.Name] ?? "").trim());
   const anythingSet = secrets.some((s) => s.Set);
 
   const link = async () => {

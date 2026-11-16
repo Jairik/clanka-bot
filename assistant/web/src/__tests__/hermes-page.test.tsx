@@ -176,3 +176,43 @@ it("shows a refused link as an error", async () => {
   const alert = await screen.findByRole("alert");
   expect(alert.textContent).toContain("Fill every required field before saving.");
 });
+
+it("keeps the link button enabled when a required secret is already stored but left blank", async () => {
+  const calls: Call[] = [];
+  const route = (path: string) => (init?: RequestInit) => {
+    calls.push({ path, body: new URLSearchParams(String(init?.body ?? "")) });
+    return json(view());
+  };
+  stubFetch({
+    "/api/ui/hermes": () => json(view()),
+    "/hermes/integrations/openrouter": route("/hermes/integrations/openrouter"),
+  });
+  const user = userEvent.setup();
+  render(<HermesPage />);
+  await screen.findByText("Agent model");
+
+  // The account already stores a required secret (Set: true). Leaving the field
+  // blank must not disable the button, and the POST must still carry the blank.
+  await user.click(screen.getByRole("button", { name: /Agent model/ }));
+  const replace = await screen.findByRole("button", { name: "Replace values" });
+  expect((replace as HTMLButtonElement).disabled).toBe(false);
+
+  await user.click(replace);
+  await waitFor(() => expect(calls).toHaveLength(1));
+  expect(calls[0].path).toBe("/hermes/integrations/openrouter");
+  expect(calls[0].body.get("OPENROUTER_API_KEY")).toBe("");
+});
+
+it("disables the link button when a required secret is not set and left blank", async () => {
+  stub(() => view());
+  const user = userEvent.setup();
+  render(<HermesPage />);
+  await screen.findByText("GitHub");
+
+  // The required secret is not stored (Set: false) and is left blank, so the
+  // account cannot be linked and the save hint says so.
+  await user.click(screen.getByRole("button", { name: /GitHub/ }));
+  const link = await screen.findByRole("button", { name: "Link account" });
+  expect((link as HTMLButtonElement).disabled).toBe(true);
+  expect(screen.getByText("Fill every required field to save.")).toBeTruthy();
+});

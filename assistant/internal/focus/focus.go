@@ -92,9 +92,13 @@ type holderEntry struct {
 type Registry struct {
 	// OnReleased is installed before use and observes completed music/reply lifetimes.
 	OnReleased func(Priority)
-	mu         sync.Mutex
-	seq        uint64
-	holders    [3]holderEntry
+	// OnClaimed observes a new holder taking Focus at a priority. The Dashboard
+	// wires it to push a live delta; it is read under the lock and run after it,
+	// so a callback may not re-enter the registry.
+	OnClaimed func(Priority)
+	mu        sync.Mutex
+	seq       uint64
+	holders   [3]holderEntry
 }
 
 // New returns an empty Focus registry. The zero value works too; this exists
@@ -109,10 +113,15 @@ func (r *Registry) Claim(p Priority, holder Holder) *Claim {
 		return nil
 	}
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.seq++
-	r.holders[p] = holderEntry{holder: holder, token: r.seq}
-	return &Claim{registry: r, priority: p, token: r.seq}
+	token := r.seq
+	r.holders[p] = holderEntry{holder: holder, token: token}
+	onClaimed := r.OnClaimed
+	r.mu.Unlock()
+	if onClaimed != nil {
+		onClaimed(p)
+	}
+	return &Claim{registry: r, priority: p, token: token}
 }
 
 // Held reports whether anything currently holds Focus at priority p. The
@@ -125,6 +134,22 @@ func (r *Registry) Held(p Priority) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.holders[p].holder != nil
+}
+
+// Snapshot reports which priority currently holds Focus, taken under the
+// existing lock. Every priority is present so a view can show all three
+// (Ring, Reply, Music) and whether each is held (#217).
+func (r *Registry) Snapshot() map[Priority]bool {
+	out := map[Priority]bool{}
+	if r == nil {
+		return out
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for p := Ring; p <= Music; p++ {
+		out[p] = r.holders[p].holder != nil
+	}
+	return out
 }
 
 // HandleIntent offers intent to the holders in fixed priority order and

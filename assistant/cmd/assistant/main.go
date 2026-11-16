@@ -1181,6 +1181,10 @@ func run() error {
 			// the pipeline, registry and settings of the voice path.
 			Activity: activityStore,
 			Typed:    typedSession,
+			// The live Focus registry and Announcement queue feed the Dashboard's
+			// "what holds Focus / what is waiting" view and its SSE delta (#217).
+			Focus:        focusRegistry,
+			Announcements: announcements,
 			Spoken:   spokenSession,
 			// The mic button reuses the voice loop's STT service; the top bar
 			// volume drives the same Pulse sink as replies and audio.volume_set.

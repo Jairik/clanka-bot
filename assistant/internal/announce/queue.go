@@ -80,6 +80,11 @@ type Queue struct {
 	audio bool
 	// summarize collapses held text announcements on Release (WithHoldSummary).
 	summarize bool
+	// OnChange is called after any queue-state change the Dashboard cares
+	// about: an item queued, a hold taken or lifted, and an item starting or
+	// finishing playback. It is read under the lock and run after it, so a
+	// callback may call Snapshot but must not re-enter a mutating method.
+	OnChange func()
 
 	mu      sync.Mutex
 	items   []item
@@ -146,6 +151,7 @@ func (q *Queue) Enqueue(text string) bool {
 	q.items = append(q.items, item{text: text})
 	q.mu.Unlock()
 	q.notify()
+	q.notifyChange()
 	return true
 }
 
@@ -164,6 +170,7 @@ func (q *Queue) EnqueuePlay(play func(context.Context) error) bool {
 	q.items = append(q.items, item{play: play})
 	q.mu.Unlock()
 	q.notify()
+	q.notifyChange()
 	return true
 }
 
@@ -184,6 +191,7 @@ func (q *Queue) EnqueueAlert(play func(context.Context) error) bool {
 	q.items = append(q.items, item{play: play, urgent: true})
 	q.mu.Unlock()
 	q.notify()
+	q.notifyChange()
 	return true
 }
 
@@ -224,6 +232,7 @@ func (q *Queue) Hold() {
 	q.mu.Lock()
 	q.held = true
 	q.mu.Unlock()
+	q.notifyChange()
 }
 
 // Release lifts a hold and lets the queued announcements play. With
@@ -242,6 +251,7 @@ func (q *Queue) Release() {
 	}
 	q.mu.Unlock()
 	q.notify()
+	q.notifyChange()
 }
 
 // collapseTextLocked replaces every pending text item with one summary. The
@@ -310,6 +320,44 @@ func (q *Queue) Len() int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	return len(q.items)
+}
+
+// Snapshot is the queue state with no message content, taken under the lock.
+// The Dashboard uses the counts and flags to show what is waiting and whether
+// a hold is on, without ever receiving announcement text (#217).
+func (q *Queue) Snapshot() struct {
+	Len     int
+	Held    bool
+	Playing bool
+} {
+	if q == nil {
+		return struct {
+			Len     int
+			Held    bool
+			Playing bool
+		}{}
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	return struct {
+		Len     int
+		Held    bool
+		Playing bool
+	}{Len: len(q.items), Held: q.held, Playing: q.playing}
+}
+
+// notifyChange runs OnChange after a state change. It is always called without
+// q.mu held so a callback may read the queue without deadlocking.
+func (q *Queue) notifyChange() {
+	if q == nil {
+		return
+	}
+	q.mu.Lock()
+	cb := q.OnChange
+	q.mu.Unlock()
+	if cb != nil {
+		cb()
+	}
 }
 
 // Close stops the queue, cancels any announcement playing and drops the rest.
@@ -391,11 +439,12 @@ func (q *Queue) hasUrgentLocked() bool {
 // cannot delay a Reminder.
 func (q *Queue) next() (item, bool) {
 	q.mu.Lock()
-	defer q.mu.Unlock()
 	if q.closed || q.turns > 0 || q.playing || len(q.items) == 0 {
+		q.mu.Unlock()
 		return item{}, false
 	}
 	if q.blocked != nil && q.blocked() {
+		q.mu.Unlock()
 		return item{}, false
 	}
 	index := 0
@@ -408,6 +457,7 @@ func (q *Queue) next() (item, bool) {
 			}
 		}
 		if index < 0 {
+			q.mu.Unlock()
 			return item{}, false
 		}
 	}
@@ -417,6 +467,8 @@ func (q *Queue) next() (item, bool) {
 	q.items = q.items[:len(q.items)-1]
 	q.playing = true
 	q.play, q.cancelPlay = context.WithCancel(q.ctx)
+	q.mu.Unlock()
+	q.notifyChange()
 	return next, true
 }
 
@@ -442,6 +494,7 @@ func (q *Queue) playItem(next item) {
 	q.play, q.cancelPlay = nil, nil
 	q.playing = false
 	q.mu.Unlock()
+	q.notifyChange()
 
 	switch {
 	case err == nil && next.play != nil:

@@ -1187,6 +1187,9 @@ func run() error {
 			Transcriber: dashboardTranscriber(cfg),
 			Volume:      sink,
 			API:         apiHandler,
+			// The one database handle backs the authenticated backup route,
+			// which runs VACUUM INTO on this same connection.
+			Store: st,
 			// The standalone dashboard-web artifact; the embedded bundle stays
 			// the fallback, so a stopped service still serves the Dashboard.
 			UIURL:     cfg.Dashboard.UIURL,

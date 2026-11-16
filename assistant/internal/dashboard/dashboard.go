@@ -24,6 +24,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/secrets"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 	"github.com/Jairik/clanka-bot/assistant/internal/sound"
+	"github.com/Jairik/clanka-bot/assistant/internal/store"
 	"github.com/Jairik/clanka-bot/assistant/internal/spotify"
 	"github.com/Jairik/clanka-bot/assistant/internal/status"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
@@ -73,6 +74,10 @@ type Options struct {
 	// the Dashboard identity and same-origin checks. #40's settings handler is
 	// mounted here; secrets and uploads can use the same seam.
 	API http.Handler
+	// Store is the one SQLite handle, used by the authenticated backup route
+	// (POST /api/ui/backup) to run VACUUM INTO on the live connection. Nil
+	// makes the route report unavailable rather than fail at runtime.
+	Store *store.Store
 	// Settings and ToolPolicy back the Settings page. They are the same
 	// services the API and the voice Tools write, so the page needs no second
 	// store or validation copy. The page is explanatory and read-only when
@@ -247,6 +252,10 @@ type Handler struct {
 	// voice loop is already single-turn; this gives the Dashboard the same
 	// one-request-at-a-time behaviour and one pending Confirmation at a time.
 	askLock chan struct{}
+	// backupLock admits one SQLite backup at a time (see backup.go).
+	backupLock chan struct{}
+	// store is the one SQLite handle, used by the authenticated backup route.
+	store *store.Store
 	// micLock admits one Dashboard mic upload at a time (see mic.go).
 	micLock      chan struct{}
 	hosts        httpguard.Hosts
@@ -355,6 +364,8 @@ func New(opts Options) (*Handler, error) {
 		wakeModels:     wakeModels,
 		askLock:        make(chan struct{}, 1),
 		micLock:        make(chan struct{}, 1),
+		backupLock:     newBackupLock(),
+		store:          opts.Store,
 		hosts:          hosts,
 		proxyAllowed:   opts.ProxyAllowed,
 		ui:             ui,
@@ -502,6 +513,9 @@ func New(opts Options) (*Handler, error) {
 	h.Mutating("POST /secrets/{name}/clear", h.secretsClear)
 	// The top-bar opt-in is a same-origin write like every other setting.
 	h.Mutating("POST /api/ui/speak", h.speakToggle)
+	// The database backup is a same-origin POST: it is a state change and a
+	// large body, so it is never a GET, and it streams the live file back.
+	h.Mutating("POST /api/ui/backup", h.backup)
 	// Spotify Connect pairing and Web API auth are separate surfaces. The
 	// callback is a cross-site top-level GET from accounts.spotify.com, so it
 	// uses its own state/owner/cookie validation rather than Mutating. Connect

@@ -1,7 +1,7 @@
 import { Button, Checkbox } from "@heroui/react";
 import { Download, RefreshCw } from "lucide-react";
 import { Fragment, useState } from "react";
-import { downloadDiagnostics, usePageData } from "../api";
+import { downloadBackup, downloadDiagnostics, usePageData } from "../api";
 import { PageFrame } from "../shell";
 import type { Check } from "../types";
 import { Dot, Empty, Notice, Section, cn, type Tone } from "../ui";
@@ -15,6 +15,8 @@ export function HealthPage() {
   const [includeRequests, setIncludeRequests] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState("");
+  const [backingUp, setBackingUp] = useState(false);
+  const [backupError, setBackupError] = useState("");
   const groups: [string, Check[], string?][] = data
     ? [
         ["Compose services", data.Services ?? []],
@@ -39,6 +41,18 @@ export function HealthPage() {
     }
   };
 
+  const backup = async () => {
+    setBackingUp(true);
+    setBackupError("");
+    try {
+      await downloadBackup();
+    } catch (e) {
+      setBackupError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBackingUp(false);
+    }
+  };
+
   return (
     <PageFrame
       id="health"
@@ -54,10 +68,20 @@ export function HealthPage() {
         </div>
       }
     >
-      <Notice error={downloadError || error} />
+      <Notice error={downloadError || backupError || error} />
       <p className="mb-2.5 text-xs text-subtle">
         The diagnostics file is for support: it contains the health snapshot, effective settings with secrets redacted, versions and Tool policy. Nothing is uploaded.
       </p>
+      <Section title="Backups" tone="neutral" defaultOpen flush summary="One authenticated download">
+        <div className="px-3.5 py-3">
+          <p className="mb-3 text-xs text-muted">
+            Download a consistent copy of the assistant's SQLite database. The file contains the secrets table — store it like the secrets database, not in a shared or cloud-synced folder.
+          </p>
+          <Button size="sm" variant="secondary" onPress={() => void backup()} isPending={backingUp} isDisabled={!data}>
+            <Download className="size-3.5" /> Download database backup
+          </Button>
+        </div>
+      </Section>
       <Checkbox isSelected={includeRequests} onChange={setIncludeRequests} className="mb-3">
         <Checkbox.Content className="text-xs text-muted">
           <Checkbox.Control>

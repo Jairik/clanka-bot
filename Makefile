@@ -4,7 +4,7 @@ SHELL := /bin/bash
 GIT_SHA ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
 export GIT_SHA
 
-.PHONY: web web-dev web-image build up down logs deploy rollback prune-images build-arm64 test tts-test stt-test check routing-eval latency-report new-tool wakeword-test soloist soloist-update deploy-watch-install
+.PHONY: web web-dev web-image build up down logs deploy rollback prune-images build-arm64 test tts-test stt-test check routing-eval latency-report new-tool wakeword-test soloist soloist-update deploy-watch-install backup
 
 build: ## Build every service image for this host.
 	docker compose build
@@ -41,6 +41,14 @@ soloist-update: ## Replace the receiver binary with the current official build.
 
 build-arm64: ## Build all images for the Pi under QEMU (not for latency work).
 	DOCKER_DEFAULT_PLATFORM=linux/arm64 docker compose build
+
+backup: ## Download an authenticated SQLite backup of the assistant database.
+	@mkdir -p backups
+	@test -n "$$OWNER" || { echo "usage: make backup OWNER=you@tailnet.example.com" >&2; exit 2; }
+	@out=backups/assistant-$$(date +%Y%m%d-%H%M%S).db; \
+	curl -fsS -X POST -H "Tailscale-User-Login: $$OWNER" -H 'Sec-Fetch-Site: same-origin' http://127.0.0.1:8082/api/ui/backup -o "$$out"; \
+	echo "Wrote $$out ($$(wc -c < "$$out") bytes)"; \
+	ls -lh "$$out"
 
 web: ## Build the Dashboard React app into the Go embed directory.
 	cd assistant && go run ./cmd/gentypes

@@ -74,6 +74,39 @@ export async function postForm<T>(action: string, body?: Record<string, string> 
 }
 
 /**
+ * Download one authenticated SQLite backup. The route is a same-origin POST (it
+ * is a state change and a large body), so fetch carries Sec-Fetch-Site, which
+ * the Dashboard's CSRF guard accepts. The response is the live database file
+ * and becomes a local download without navigating away.
+ */
+export async function downloadBackup(): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetch("/api/ui/backup", {
+      method: "POST",
+      credentials: "same-origin",
+    });
+  } catch {
+    piUnreachable();
+    throw new Error("Could not reach the assistant for a backup download.");
+  }
+  if (!res.ok) throw new HttpError(res.status, (await res.text()).trim() || res.statusText);
+  const objectURL = URL.createObjectURL(await res.blob());
+  try {
+    const anchor = document.createElement("a");
+    anchor.href = objectURL;
+    const disposition = res.headers.get("Content-Disposition") ?? "";
+    const filename = /filename="?([^";]+)"?/i.exec(disposition)?.[1];
+    anchor.download = filename || `assistant-${new Date().toISOString().replace(/[:.]/g, "-")}.db`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+  } finally {
+    URL.revokeObjectURL(objectURL);
+  }
+}
+
+/**
  * Download one support bundle. The route is an authenticated read, so fetch
  * keeps the same-origin identity on it; the response becomes a local file
  * without navigating away from the Dashboard.

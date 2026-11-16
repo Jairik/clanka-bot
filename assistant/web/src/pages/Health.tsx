@@ -11,7 +11,7 @@ const failing = (c: Check) => TONE[c.Status] === "bad";
 
 export function HealthPage() {
   // A minute is frequent enough for a status page without hammering the checks.
-  const { data, error, loading, reload } = usePageData("health", { poll: 60_000 });
+  const { data, error, refreshing, reload } = usePageData("health", { poll: 60_000 });
   const [includeRequests, setIncludeRequests] = useState(false);
   const [downloading, setDownloading] = useState(false);
   const [downloadError, setDownloadError] = useState("");
@@ -44,11 +44,21 @@ export function HealthPage() {
       id="health"
       right={
         <div className="flex items-center gap-3 text-xs text-muted">
-          {data && <span>Checked {data.CheckedAt}</span>}
+          {data && (
+            <span aria-live="polite">
+              {refreshing ? "Checking…" : `Checked ${data.CheckedAt}`}
+            </span>
+          )}
           <Button size="sm" variant="secondary" onPress={() => void download()} isPending={downloading} isDisabled={!data}>
             <Download className="size-3.5" /> Download diagnostics
           </Button>
-          <Button size="sm" variant="secondary" onPress={() => void reload()} isPending={loading}>
+          <Button
+            size="sm"
+            variant="secondary"
+            onPress={() => void reload()}
+            isPending={refreshing}
+            isDisabled={!data || refreshing}
+          >
             <RefreshCw className="size-3.5" /> Refresh
           </Button>
         </div>

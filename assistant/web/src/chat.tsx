@@ -359,10 +359,15 @@ export function Exchange({ r }: { r: Request }) {
 export function PendingExchange({ p }: { p: PendingAsk }) {
   const { retry, dismiss } = useChat();
   const mic = p.source === "dashboard_mic";
+  // A failed take has no transcript; the error line below says what happened,
+  // so the bubble is left empty instead of showing "Recording", which would
+  // read as the user's own utterance. Only a pending (not yet transcribed) mic
+  // take shows the "Transcribing…" placeholder.
+  const placeholder = mic && !p.error ? "Transcribing…" : "";
   return (
     <div className="space-y-3">
       <UserBubble
-        text={p.text || <span className="text-muted italic">{mic ? (p.error ? "Recording" : "Transcribing…") : ""}</span>}
+        text={p.text || (placeholder ? <span className="text-muted italic">{placeholder}</span> : "")}
         source={p.source}
         label={mic ? "Dashboard mic" : "Dashboard typed"}
         at={p.at}

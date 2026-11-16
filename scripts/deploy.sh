@@ -99,14 +99,16 @@ diagnose() {
 	done
 }
 
-# Wait for every service in the checked-out compose file, not a hard-coded
-# list. --remove-orphans above removes containers from a newer compose set, so
-# a rollback leaves the host running only the services that commit defines.
+# Wait for every service Compose actually started, not a hard-coded list.
+# `docker compose ps --services` lists only running containers, so a service
+# behind an inactive profile (the Spotify receiver) is excluded automatically,
+# whereas `config --services` would still name it and hang the health wait.
 wait_for_health() {
 	local services count start deadline svc cid status
 	local -a service_list failing pending
-	services="$(docker compose config --services)"
-	[[ -n "$services" ]] || die "docker compose config reported no services"
+	services="$(docker compose ps --services 2>/dev/null)" ||
+		die "could not list the running services"
+	[[ -n "$services" ]] || die "docker compose ps reported no running services"
 	mapfile -t service_list <<<"$services"
 	count=${#service_list[@]}
 
@@ -146,9 +148,20 @@ wait_for_health() {
 	done
 }
 
-# The Soloist receiver's proprietary binary is not in the image. Provision it
-# (and its private directories) on this host before Compose starts. A rollback
-# to a commit without the service skips this.
+# The Soloist receiver is opt-in: only provision and start it when a key is
+# configured. A key is either imported via SOLOIST_API_KEY_FILE or already
+# present in the private directory. The receiver sits behind the `spotify`
+# Compose profile, so when no key is present the profile stays inactive and the
+# rest of the stack deploys without it.
+receiver_key_present() {
+	[[ -n "${SOLOIST_API_KEY_FILE:-}" ]] && return 0
+	local key="${SOLOIST_DIR:-$HOME/.cache/clanka/soloist}/api-key"
+	[[ -s "$key" ]]
+}
+
+# Provision the receiver (and its private directories) on this host before
+# Compose starts. Only called when a key is present; a rollback to a commit
+# without the service is a no-op.
 ensure_receiver() {
 	local services
 	services="$(docker compose config --services 2>/dev/null || true)"
@@ -233,7 +246,10 @@ main() {
 		done <<<"$(docker compose config --images)"
 		((missing == 0)) || exit 1
 
-		ensure_receiver
+		if receiver_key_present; then
+			export COMPOSE_PROFILES=spotify
+			ensure_receiver
+		fi
 		if ! docker compose up -d --no-build --remove-orphans; then
 			printf -- '--- docker compose ps ---\n' >&2
 			docker compose ps >&2 || true
@@ -256,7 +272,10 @@ main() {
 		fi
 		sha="$(git rev-parse --short HEAD)"
 		export GIT_SHA="$sha"
-		ensure_receiver
+		if receiver_key_present; then
+			export COMPOSE_PROFILES=spotify
+			ensure_receiver
+		fi
 		log "building and starting clanka/<service>:$sha"
 		if ! docker compose up -d --build --remove-orphans; then
 			printf -- '--- docker compose ps ---\n' >&2

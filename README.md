@@ -19,6 +19,12 @@ mkdir -p exports
 docker compose up --build
 ```
 
+Spotify (`soloist`) is opt-in: it sits behind the `spotify` Compose profile, so a
+fresh checkout with no Spotify key brings up the rest of the stack and never
+crash-loops. To run the receiver, add a Soloist API key and start it explicitly
+with `make spotify-up`. The Web API pairing (`SPOTIFY_CLIENT_ID`/refresh token)
+is independent and works without the profile.
+
 `exports/` holds the voice-sample bundles the Dashboard writes; creating it
 before `docker compose up` makes the bind mount owned by your user instead of
 root, so the assistant can write bundles without a manual `chown`. If a fresh
@@ -256,7 +262,8 @@ so later restarts reconnect without pairing again. Soloist uses host networking
 because Docker's bridge network hides mDNS from the LAN; no port is published.
 It handles discovery itself, so the host needs no Avahi or D-Bus mount. The
 proprietary binary is downloaded on the deployment host by
-`scripts/soloist-setup.sh` (deploy runs it) and mounted read-only; it is never
+`scripts/soloist-setup.sh` (deploy runs it automatically when an API key is
+configured) and mounted read-only; it is never
 committed or baked into an image. Re-run `make soloist-update` before the
 official build expires; Health warns first and reports an expired build as an
 error.

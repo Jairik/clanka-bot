@@ -4,12 +4,22 @@ SHELL := /bin/bash
 GIT_SHA ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
 export GIT_SHA
 
-.PHONY: web web-dev web-image build up down logs deploy rollback prune-images build-arm64 test tts-test stt-test check routing-eval latency-report new-tool wakeword-test soloist soloist-update deploy-watch-install backup
+.PHONY: web web-dev web-image build up down logs deploy rollback prune-images build-arm64 test tts-test stt-test check routing-eval latency-report new-tool wakeword-test soloist soloist-update spotify-up deploy-watch-install backup
 
 build: ## Build every service image for this host.
 	docker compose build
 
-up: ## Start the stack in the background.
+up: ## Start the stack in the background (Spotify receiver is opt-in).
+	mkdir -p exports
+	@if [ ! -w exports ]; then \
+		echo "error: ./exports is not writable (likely owned by root from a previous docker compose up)." >&2; \
+		echo "fix it with: sudo chown -R $$(id -u):$$(id -g) exports" >&2; \
+		exit 1; \
+	fi
+	bash scripts/soloist-setup.sh --optional
+	docker compose up -d
+
+spotify-up: ## Start the stack plus the Spotify receiver (requires a Soloist key).
 	mkdir -p exports
 	@if [ ! -w exports ]; then \
 		echo "error: ./exports is not writable (likely owned by root from a previous docker compose up)." >&2; \
@@ -17,7 +27,7 @@ up: ## Start the stack in the background.
 		exit 1; \
 	fi
 	bash scripts/soloist-setup.sh
-	docker compose up -d
+	COMPOSE_PROFILES=spotify docker compose up -d
 
 down: ## Stop the stack.
 	docker compose down

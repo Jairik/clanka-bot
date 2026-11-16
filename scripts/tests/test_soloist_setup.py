@@ -39,9 +39,9 @@ class SoloistSetupTest(unittest.TestCase):
     def tearDown(self) -> None:
         self.tmp.cleanup()
 
-    def run_setup(self, **extra: str) -> subprocess.CompletedProcess[str]:
+    def run_setup(self, *args: str, **extra: str) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            ["bash", str(SETUP)],
+            ["bash", str(SETUP), *args],
             env={**self.env, **extra},
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -116,6 +116,20 @@ class SoloistSetupTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("no Soloist API key", result.stderr)
         self.assertIn("developer.spotify.com/documentation/soloist", result.stderr)
+
+    def test_optional_skips_without_key(self) -> None:
+        # With --optional and no key (and no binary to reuse), the script logs
+        # one skip line and exits 0 instead of failing. Used by `make up`.
+        result = self.run_setup("--optional")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Spotify receiver not configured; skipping", result.stdout)
+
+    def test_optional_still_fails_on_other_errors(self) -> None:
+        # --optional only softens a missing key; an unknown argument is still
+        # a hard failure.
+        result = self.run_setup("--optional", "--bogus")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unknown argument", result.stderr)
 
     def test_unsupported_architecture_is_rejected(self) -> None:
         result = self.run_setup(SOLOIST_ARCH="riscv64")

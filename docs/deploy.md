@@ -50,6 +50,16 @@ sudo bash scripts/install-deploy-watch.sh  # opt in to the auto-deploy timer (au
 8. Because the service list comes from Compose, the script keeps working as the
    stack grows from `assistant` alone to all eight services.
 
+**The Spotify `soloist` receiver is opt-in.** It lives behind the `spotify`
+Compose profile, so a keyless deploy brings up the rest of the stack and waits
+on only those services — the receiver never starts or crash-loops. When a
+Soloist API key is present (`SOLOIST_API_KEY_FILE` set, or
+`~/.cache/clanka/soloist/api-key` non-empty), `deploy.sh` exports
+`COMPOSE_PROFILES=spotify`, runs `soloist-setup.sh`, and includes the receiver
+in the health wait. For a local Spotify setup without `deploy.sh`, use
+`make spotify-up`. `make up` runs the setup with `--optional`, so it skips the
+receiver cleanly when there is no key.
+
 **With a commit — rollback without rebuilding**
 
 ```sh
@@ -455,7 +465,8 @@ without the other.
       `SOLOIST_API_KEY_FILE=/path/to/key scripts/soloist-setup.sh`. The script
       downloads the archive for this host's architecture; `make soloist-update`
       refreshes it before the build expires. `scripts/deploy.sh` runs the setup
-      automatically.
+      automatically when an API key is configured (otherwise the `soloist`
+      service is skipped via the `spotify` profile).
 - [ ] `soloist` uses **host networking**. Spotify Connect discovery is mDNS; a
       Docker bridge network hides the multicast from the LAN. No port is
       published. Allow UDP 5353 on the LAN. Soloist advertises the device

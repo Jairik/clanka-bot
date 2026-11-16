@@ -14,6 +14,16 @@ die() {
     exit 1
 }
 
+# --optional turns a missing API key into a clean skip (used by `make up`),
+# not a hard failure (the default, used by `make soloist`).
+SOLOIST_OPTIONAL=0
+for arg in "$@"; do
+    case "$arg" in
+        --optional) SOLOIST_OPTIONAL=1 ;;
+        *) die "unknown argument: $arg" ;;
+    esac
+done
+
 SOLOIST_DIR="${SOLOIST_DIR:-$HOME/.cache/clanka/soloist}"
 SOLOIST_BINARY="${SOLOIST_BINARY:-$SOLOIST_DIR/soloist}"
 LEGACY_DIR="${SOLOIST_LEGACY_DIR:-$HOME/.cache/clanka/soloist-compat}"
@@ -41,6 +51,9 @@ if [ ! -s "$api_key" ]; then
     elif [ -s "$LEGACY_DIR/private/api-key" ]; then
         install -m 600 "$LEGACY_DIR/private/api-key" "$api_key"
         log "migrated the API key from the previous receiver"
+    elif [ "${SOLOIST_OPTIONAL:-0}" = "1" ]; then
+        log "Spotify receiver not configured; skipping"
+        exit 0
     else
         die "no Soloist API key. Get one from https://developer.spotify.com/documentation/soloist and either place it at $api_key (mode 0600) or set SOLOIST_API_KEY_FILE to an existing private file. Never commit it."
     fi

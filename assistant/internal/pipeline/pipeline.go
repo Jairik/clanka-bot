@@ -537,6 +537,9 @@ func (p *Pipeline) callAgent(ctx context.Context, req tool.Request, transcript s
 	reply.Pending = result.Pending
 	reply.Unavailable = result.Unavailable
 	reply.TextNotStreamed = result.TextNotStreamed
+	// The single provider retry, when it happened, is visible on the request
+	// line so a slow turn can be explained without reading the debug log.
+	latency.SetAttr(ctx, "agent_retries", result.Retries)
 	// A spoken Unavailable message is still a reply, but the model call
 	// failed; the raw request line must say so rather than look like success.
 	switch {

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math/rand/v2"
 	"strings"
 	"sync"
 	"time"
@@ -83,6 +84,9 @@ type Result struct {
 	TextNotStreamed bool
 	Unavailable     bool
 	TimedOut        bool
+	// Retries is the number of attempted provider retries in this turn (0 or
+	// 1). It is published on the request line as agent_retries.
+	Retries int
 	// MaxSteps is the step-limit stop, which is a failed request rather than a
 	// successful answer.
 	MaxSteps bool
@@ -195,10 +199,38 @@ func (a *Agent) Run(ctx context.Context, req tool.Request, utterance string, onD
 	tools := a.prompt.Tools(a.registry)
 
 	var recorded []ToolCall
+	var retries int
 	for step := 0; step < a.maxSteps; step++ {
-		reply, err := a.provider.stream(ctx, messages, tools, onDelta)
+		// stream returns an empty completion on every error, so the caller
+		// cannot tell from the result whether anything was already spoken.
+		// Track it at the only place that knows: the delta callback. A retry
+		// is safe only while this flag is false, because repeating content
+		// would speak the same sentence twice.
+		streamed := false
+		trackedDelta := func(text string) {
+			streamed = true
+			if onDelta != nil {
+				onDelta(text)
+			}
+		}
+		reply, err := a.provider.stream(ctx, messages, tools, trackedDelta)
+		// One retry, only on the first step and only before any output: a
+		// later step already spoke a preamble, and no Tool has run yet because
+		// execute happens only after a successful stream. That makes a Tool
+		// side effect impossible to duplicate here.
+		if err != nil && step == 0 && !streamed && ctx.Err() == nil && retryableFailure(err) {
+			retries++
+			a.logger.Info("agent retry", "request_id", req.ID, "status", providerStatus(err))
+			// Bounded by the caller's context; a cancellation during the
+			// wait leaves the error to failure() as a normal cancellation.
+			waitRetry(ctx)
+			streamed = false
+			reply, err = a.provider.stream(ctx, messages, tools, trackedDelta)
+		}
 		if err != nil {
-			return a.failure(ctx, req, err)
+			result := a.failure(ctx, req, err)
+			result.Retries = retries
+			return result
 		}
 		if len(reply.Calls) == 0 {
 			text := strings.TrimSpace(reply.Content)
@@ -214,7 +246,7 @@ func (a *Agent) Run(ctx context.Context, req tool.Request, utterance string, onD
 				"tools", callNames(recorded),
 				"duration_ms", time.Since(started).Milliseconds(),
 			)
-			return Result{Text: text, Calls: recorded, TextNotStreamed: notStreamed}
+			return Result{Text: text, Calls: recorded, TextNotStreamed: notStreamed, Retries: retries}
 		}
 
 		// A confirm Tool never runs here. The registry arms the single pending
@@ -234,7 +266,7 @@ func (a *Agent) Run(ctx context.Context, req tool.Request, utterance string, onD
 				if text == "" {
 					text = ConfirmPrompt
 				}
-				return Result{Text: text, Calls: recorded, Pending: &pending}
+				return Result{Text: text, Calls: recorded, Pending: &pending, Retries: retries}
 			}
 			// The proposal was invalid (for example unparsable arguments).
 			// Report every call back to the model and keep the loop honest
@@ -260,7 +292,7 @@ func (a *Agent) Run(ctx context.Context, req tool.Request, utterance string, onD
 	a.history.Add(Turn{Utterance: utterance, Reply: MaxStepsMessage, Calls: recorded})
 	a.logger.Warn("agent stopped at step limit", "request_id", req.ID, "steps", a.maxSteps)
 	// The step-limit line is a fixed fallback no delta carried.
-	return Result{Text: MaxStepsMessage, Calls: recorded, MaxSteps: true, TextNotStreamed: true}
+	return Result{Text: MaxStepsMessage, Calls: recorded, MaxSteps: true, TextNotStreamed: true, Retries: retries}
 }
 
 // firstConfirm returns the index of the first runnable confirm call in one
@@ -384,6 +416,53 @@ func (a *Agent) runOne(ctx context.Context, req tool.Request, call CallRef, info
 		return outcome{Name: info.Name, Payload: errorPayload(tool.DefaultFailureMessage), LocalOnly: info.LocalOnly}
 	}
 	return outcome{Name: info.Name, Payload: payload, LocalOnly: info.LocalOnly}
+}
+
+// retryBase is the base wait before the one provider retry. A small jitter
+// keeps simultaneous retries from landing on the provider together.
+const retryBase = 250 * time.Millisecond
+
+// waitRetry waits the bounded backoff, or returns early when the caller's
+// context is cancelled. The retry never outlives the request budget.
+func waitRetry(ctx context.Context) {
+	wait := retryBase + time.Duration(rand.Int64N(int64(retryBase/2)))
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+	case <-ctx.Done():
+	}
+}
+
+// retryableFailure reports whether err is a transient provider failure worth
+// one retry. Only a transport error (no HTTP status) or status 408/425/429/5xx
+// qualifies. Timeouts we own, caller cancellations and every other 4xx are
+// terminal: a timeout means the user already waited, a 4xx will not change on
+// a second identical request.
+func retryableFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, errFirstTokenTimeout) || errors.Is(err, errRequestTimeout) ||
+		errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	status := providerStatus(err)
+	if status == 0 {
+		var providerErr *providerError
+		return errors.As(err, &providerErr)
+	}
+	return status == 408 || status == 425 || status == 429 || (status >= 500 && status < 600)
+}
+
+// providerStatus returns the HTTP status carried by a providerError, or 0 for
+// a transport error that never produced an HTTP response.
+func providerStatus(err error) int {
+	var providerErr *providerError
+	if errors.As(err, &providerErr) {
+		return providerErr.Status
+	}
+	return 0
 }
 
 func (a *Agent) failure(ctx context.Context, req tool.Request, err error) Result {

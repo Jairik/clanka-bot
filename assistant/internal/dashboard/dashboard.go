@@ -26,9 +26,9 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/secrets"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 	"github.com/Jairik/clanka-bot/assistant/internal/sound"
-	"github.com/Jairik/clanka-bot/assistant/internal/store"
 	"github.com/Jairik/clanka-bot/assistant/internal/spotify"
 	"github.com/Jairik/clanka-bot/assistant/internal/status"
+	"github.com/Jairik/clanka-bot/assistant/internal/store"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/internal/toolpolicy"
 	"github.com/Jairik/clanka-bot/assistant/internal/tz"
@@ -241,8 +241,8 @@ type Handler struct {
 	verifier       *integrations.Verifier
 	// focusReg and announceQueue feed the focus view and its live delta. Either
 	// may be nil, which hides the view.
-	focusReg     *focus.Registry
-	announceQueue *announce.Queue
+	focusReg       *focus.Registry
+	announceQueue  *announce.Queue
 	spotify        *spotify.Auth
 	spotifyPairing *spotify.PairingReader
 	activity       *activity.Store
@@ -284,6 +284,29 @@ type Handler struct {
 	// URL is configured, so the diagnostics bundle can report it.
 	uiPin string
 	mux   *http.ServeMux
+	// routes records every registration made through Handle and Mutating at New
+	// time, so a test can prove the same-origin guard wraps every
+	// state-changing pattern without re-listing the handlers. guarded reports
+	// whether Mutating (the one CSRF policy) wraps the pattern. The mounted API
+	// is guarded too but registered directly, so it is not in this slice.
+	routes []route
+}
+
+// route is one registration recorded at New time. Pattern is the exact string
+// passed to Handle or Mutating; Guarded is true only for Mutating routes. Both
+// are exported so the external test package can read the table.
+type route struct {
+	Pattern string
+	Guarded bool
+}
+
+// Routes returns a copy of the route table recorded at New time. It exists so
+// tests can assert the same-origin guard covers every write without
+// re-implementing the registration list or guessing at handlers.
+func (h *Handler) Routes() []route {
+	out := make([]route, len(h.routes))
+	copy(out, h.routes)
+	return out
 }
 
 // uiBuild is the Vite output of assistant/web. The directory is committed with
@@ -559,15 +582,19 @@ func New(opts Options) (*Handler, error) {
 }
 
 // Handle registers an authenticated page or API route. The handler is
-// responsible for its own method handling.
+// responsible for its own method handling. Registrations are recorded for the
+// guard-invariant tests; a state-changing route must use Mutating instead.
 func (h *Handler) Handle(pattern string, handler http.HandlerFunc) {
+	h.routes = append(h.routes, route{Pattern: pattern, Guarded: false})
 	h.mux.HandleFunc(pattern, handler)
 }
 
 // Mutating registers a route that changes state. SameOrigin rejects requests a
 // browser could have made from another origin; pair it with a same-site cookie
-// when one is added later.
+// when one is added later. Registrations are recorded for the guard-invariant
+// tests, so the guard is proven rather than assumed.
 func (h *Handler) Mutating(pattern string, handler http.HandlerFunc) {
+	h.routes = append(h.routes, route{Pattern: pattern, Guarded: true})
 	h.mux.Handle(pattern, h.sameOrigin(http.HandlerFunc(handler)))
 }
 

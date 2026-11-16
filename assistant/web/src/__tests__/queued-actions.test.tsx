@@ -93,7 +93,9 @@ describe("Alerts queued actions section", () => {
     stubFetch(alertRoutes(queueRoutes([{ id: 42, text: "turn the lights off", event: "music", expires }])));
     render(<Providers><AlertsPage /></Providers>);
     const section = await screen.findByRole("button", { name: /Queued actions/ });
-    expect(within(section).getByText("1/8")).toBeTruthy();
+    // The section renders before the queue fetch resolves, so wait for the cap
+    // instead of racing it (the button exists from the first render).
+    expect(await within(section).findByText("1/8")).toBeTruthy();
     expect(screen.getByText("turn the lights off")).toBeTruthy();
     expect(screen.getByText(/after music/).textContent).toContain("43 min");
   });

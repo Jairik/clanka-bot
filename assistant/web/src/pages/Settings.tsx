@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Button } from "@heroui/react";
 import { getJSON, postForm } from "../api";
 // Settings shares the global equalizer with every Pi audio client.
@@ -10,6 +10,7 @@ import { PageFrame } from "../shell";
 import type { Setting, SettingTool, SettingsView } from "../types";
 import { Badge, Empty, Lede, Notice, Section, SourceBadge } from "../ui";
 import { useWordingPlayer, WordingPreview } from "../wording-preview";
+import { useVisiblePolling } from "../visibility";
 
 export function SettingsPage() {
   const { data, error, set } = usePageData("settings");
@@ -217,15 +218,21 @@ function ToolRow({ t, actions }: { t: SettingTool; actions: ReturnType<typeof us
 }
 
 // Pending orchestration shares the authenticated API and stays cancellable from Settings.
+type Deferred = { id: number; event: string; text: string; expires: string };
+
 function QueuedActions() {
-  const [items, setItems] = useState<{ id: number; event: string; text: string; expires: string }[]>([]);
+  const [items, setItems] = useState<Deferred[]>([]);
   const [error, setError] = useState("");
-  const refresh = () => getJSON<typeof items>("/api/deferred").then(setItems).catch((e) => setError(String(e)));
+  const refresh = useCallback(
+    () => getJSON<Deferred[]>("/api/deferred").then(setItems).catch((e) => setError(String(e))),
+    [],
+  );
   useEffect(() => {
     void refresh();
-    const timer = setInterval(refresh, 3000);
-    return () => clearInterval(timer);
-  }, []);
+  }, [refresh]);
+  // The queue is not on the stream yet, so a poll is still needed. A hidden tab
+  // must not ask the Pi for it; one reload on return closes the gap (#281).
+  useVisiblePolling(refresh, 10_000);
   return (
     <div className="p-3.5 space-y-2">
       <p>Queued actions · {items.length}/8</p>

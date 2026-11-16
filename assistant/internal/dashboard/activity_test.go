@@ -39,6 +39,30 @@ type activityModel struct {
 	mu      sync.Mutex
 	replies []string
 	bodies  []string
+	// block, when set, holds every model request open (no [DONE]) until the
+	// channel is closed or the request is cancelled. The cancel test uses it to
+	// keep an Agent request in flight so it can prove a client disconnect
+	// cancels the pipeline.
+	block chan struct{}
+	// received is closed when the server next receives a request, so a test can
+	// wait until the pipeline is in flight before acting.
+	received chan struct{}
+}
+
+// blockUntil makes every later model request hold open until ch is closed.
+func (m *activityModel) blockUntil(ch chan struct{}) {
+	m.mu.Lock()
+	m.block = ch
+	m.mu.Unlock()
+}
+
+// receivedCh returns a channel closed when the server next receives a request.
+func (m *activityModel) receivedCh() <-chan struct{} {
+	ch := make(chan struct{})
+	m.mu.Lock()
+	m.received = ch
+	m.mu.Unlock()
+	return ch
 }
 
 func (m *activityModel) start(t *testing.T) *httptest.Server {
@@ -47,15 +71,36 @@ func (m *activityModel) start(t *testing.T) *httptest.Server {
 		body, _ := io.ReadAll(r.Body)
 		m.mu.Lock()
 		m.bodies = append(m.bodies, string(body))
+		block := m.block
 		reply := ""
 		if len(m.replies) > 0 {
 			reply = m.replies[0]
 			m.replies = m.replies[1:]
 		}
+		rcv := m.received
+		m.received = nil
 		m.mu.Unlock()
+		if rcv != nil {
+			close(rcv)
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		_, _ = io.WriteString(w, reply)
+		// Hold the stream open until unblocked or the client goes away, so a
+		// connected Agent request stays in flight for the cancel test. When
+		// block is nil the request answers immediately, as before.
+		if block != nil {
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			select {
+			case <-block:
+			case <-r.Context().Done():
+				return
+			}
+		}
+		if reply != "" {
+			_, _ = io.WriteString(w, reply)
+		}
 	}))
 	t.Cleanup(server.Close)
 	return server
@@ -793,5 +838,116 @@ func TestActivityHostileUserAndToolTextRoundTripsInertly(t *testing.T) {
 	}
 	if strings.Contains(body, "<b>") {
 		t.Errorf("body carries a raw tag: %s", body)
+	}
+}
+
+// TestActivityTypedCancelAbortsPipelineOnDisconnect proves the acceptance
+// criterion directly: a client that disconnects mid-flight cancels the
+// per-request context, the in-flight Agent pipeline stops, the handler returns
+// without a view, and the request is recorded as cancelled (not ok or failed).
+func TestActivityTypedCancelAbortsPipelineOnDisconnect(t *testing.T) {
+	f := newActivityFixture(t)
+	// Keep the model stream open so the Agent request stays in flight.
+	block := make(chan struct{})
+	f.model.blockUntil(block)
+	received := f.model.receivedCh()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	req := f.form("ask the agent what is for lunch").WithContext(ctx)
+	recCh := make(chan *httptest.ResponseRecorder, 1)
+	go func() { recCh <- serve(f.handler, req) }()
+
+	// Wait until the Agent request has reached the model (pipeline in flight).
+	select {
+	case <-received:
+	case <-time.After(5 * time.Second):
+		t.Fatal("model request never started")
+	}
+
+	// Disconnect the client; the in-flight pipeline must be cancelled.
+	cancel()
+
+	select {
+	case rec := <-recCh:
+		// The handler returns promptly and writes no refreshed view: a
+		// disconnected client has nothing to display.
+		if rec.Body.Len() != 0 {
+			t.Errorf("handler wrote a body on disconnect: %q", rec.Body.String())
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("handler did not return after client disconnect")
+	}
+	close(block)
+
+	// The cancelled request is recorded as cancelled, never ok or failed.
+	waitForEntry(t, f.store, "ask the agent what is for lunch", latency.OutcomeCancelled)
+}
+
+// TestActivityTypedCancelDoesNotAffectConcurrentRequest proves the abort is
+// per-request: cancelling one in-flight request leaves a separate queued request
+// free to run to completion. No global kill, no shared cancellation.
+func TestActivityTypedCancelDoesNotAffectConcurrentRequest(t *testing.T) {
+	f := newActivityFixture(t)
+	block := make(chan struct{})
+	f.model.blockUntil(block)
+	received := f.model.receivedCh()
+
+	// A goes first and holds the one request slot in flight.
+	ctxA, cancelA := context.WithCancel(context.Background())
+	reqA := f.form("ask the agent alpha").WithContext(ctxA)
+	recACh := make(chan *httptest.ResponseRecorder, 1)
+	go func() { recACh <- serve(f.handler, reqA) }()
+
+	select {
+	case <-received:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first model request never started")
+	}
+
+	// B is submitted while A holds the slot; it waits for the lock.
+	ctxB, cancelB := context.WithCancel(context.Background())
+	reqB := f.form("ask the agent bravo").WithContext(ctxB)
+	recBCh := make(chan *httptest.ResponseRecorder, 1)
+	go func() { recBCh <- serve(f.handler, reqB) }()
+
+	// Cancel A's client; its pipeline is cancelled and the slot frees.
+	cancelA()
+	select {
+	case <-recACh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("first handler did not return after cancel")
+	}
+	waitForEntry(t, f.store, "ask the agent alpha", latency.OutcomeCancelled)
+
+	// B now takes the slot and runs to completion once the model is unblocked.
+	close(block)
+	select {
+	case <-recBCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("second handler never returned")
+	}
+	waitForEntry(t, f.store, "ask the agent bravo", latency.OutcomeNoAudio)
+	cancelB()
+}
+
+// waitForEntry polls the store until an entry with the given transcript carries
+// the expected outcome, failing the test on a timeout.
+func waitForEntry(t *testing.T, store *activity.Store, transcript string, outcome latency.Outcome) {
+	t.Helper()
+	deadline := time.After(3 * time.Second)
+	for {
+		for _, e := range store.Recent(0) {
+			if e.Transcript == transcript {
+				if e.Outcome != string(outcome) {
+					t.Fatalf("entry %q outcome = %q, want %q", transcript, e.Outcome, outcome)
+				}
+				return
+			}
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("no entry with transcript %q and outcome %q within timeout", transcript, outcome)
+		case <-time.After(20 * time.Millisecond):
+		}
 	}
 }

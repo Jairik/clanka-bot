@@ -45,11 +45,13 @@ type PlaylistCacheOptions struct {
 	NewTicker func(d time.Duration) (<-chan time.Time, func())
 	// Now is the clock for Updated; nil uses time.Now.
 	Now func() time.Time
-	// OnRefresh is called with the loaded names after a successful background
-	// refresh, in the refresh goroutine and with the context Close cancels. A
-	// failed refresh never calls it, and it has no error return: a warm that
-	// fails must not fail the refresh. Nil means no hook. It is the seam the
-	// library owner uses to warm the name matcher off the request path.
+	// OnRefresh is called with the loaded names after any successful refresh:
+	// the background loop calls it inline in its goroutine, while a direct
+	// Refresh calls it from a detached warm goroutine. Either way it is off the
+	// request path and the context Close cancels. A failed refresh never calls
+	// it, and it has no error return: a warm that fails must not fail the
+	// refresh. Nil means no hook. It is the seam the library owner uses to warm
+	// the name matcher off the request path.
 	OnRefresh func(ctx context.Context, names []string)
 }
 
@@ -71,22 +73,28 @@ type PlaylistCache struct {
 	loaded  bool
 	updated time.Time
 
-	runMu  sync.Mutex
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	runMu      sync.Mutex
+	closed     bool
+	life       context.Context    // cancelled by Close; parent of detached warms
+	lifeCancel context.CancelFunc // cancels life, so Close joins every warm
+	cancel     context.CancelFunc // cancels the Start loop
+	wg         sync.WaitGroup
 }
 
 // NewPlaylistCache builds an empty cache; call Start to fill and refresh it.
 func NewPlaylistCache(opts PlaylistCacheOptions) *PlaylistCache {
+	life, lifeCancel := context.WithCancel(context.Background())
 	c := &PlaylistCache{
-		api:       opts.API,
-		logger:    opts.Logger,
-		interval:  opts.Interval,
-		maxPages:  opts.MaxPages,
-		pageSize:  opts.PageSize,
-		newTicker: opts.NewTicker,
-		now:       opts.Now,
-		onRefresh: opts.OnRefresh,
+		api:        opts.API,
+		logger:     opts.Logger,
+		interval:   opts.Interval,
+		maxPages:   opts.MaxPages,
+		pageSize:   opts.PageSize,
+		newTicker:  opts.NewTicker,
+		now:        opts.Now,
+		onRefresh:  opts.OnRefresh,
+		life:       life,
+		lifeCancel: lifeCancel,
 	}
 	if c.logger == nil {
 		c.logger = slog.Default()
@@ -118,7 +126,7 @@ func NewPlaylistCache(opts PlaylistCacheOptions) *PlaylistCache {
 func (c *PlaylistCache) Start(ctx context.Context) {
 	c.runMu.Lock()
 	defer c.runMu.Unlock()
-	if c.cancel != nil {
+	if c.cancel != nil || c.closed {
 		return
 	}
 	ctx, c.cancel = context.WithCancel(ctx)
@@ -143,11 +151,15 @@ func (c *PlaylistCache) Start(ctx context.Context) {
 // safe to call more than once.
 func (c *PlaylistCache) Close() {
 	c.runMu.Lock()
+	c.closed = true
 	cancel := c.cancel
 	c.runMu.Unlock()
 	if cancel != nil {
 		cancel()
 	}
+	// Stop any detached warms a direct refresh kicked off, then join them and
+	// the refresh loop. Close is safe to call more than once.
+	c.lifeCancel()
 	c.wg.Wait()
 }
 
@@ -156,7 +168,7 @@ func (c *PlaylistCache) Close() {
 // Only a successful refresh reaches the warm hook, so a failed refresh keeps
 // the previous list and does not touch the matcher.
 func (c *PlaylistCache) refreshLogged(ctx context.Context) {
-	if err := c.Refresh(ctx); err != nil {
+	if err := c.refresh(ctx); err != nil {
 		if ctx.Err() == nil {
 			c.logger.Warn("spotify playlist refresh failed; keeping the previous list", "error", safeError(err))
 		}
@@ -178,6 +190,39 @@ func (c *PlaylistCache) warm(ctx context.Context) {
 	c.onRefresh(ctx, c.Names())
 }
 
+// warmAsync starts the warm hook off the caller's path for a refresh a caller
+// drove itself (the lazy first load after a runtime Connect). The hook gets a
+// context detached from the request's cancellation and deadline via
+// WithoutCancel, so finishing the request does not stop the warm, but still
+// owned by the cache: Close cancels it and joins it. The caller never waits on
+// an embed. As with the loop's warm, a failed warm is invisible to the caller.
+func (c *PlaylistCache) warmAsync(ctx context.Context) {
+	if c.onRefresh == nil {
+		return
+	}
+	names := c.Names()
+	c.runMu.Lock()
+	if c.closed {
+		c.runMu.Unlock()
+		return
+	}
+	c.wg.Add(1)
+	life := c.life
+	c.runMu.Unlock()
+	go func() {
+		defer c.wg.Done()
+		warmCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
+		defer cancel()
+		stop := context.AfterFunc(life, cancel)
+		defer stop()
+		if warmCtx.Err() != nil {
+			// Close landed between Add and the AfterFunc registration.
+			return
+		}
+		c.onRefresh(warmCtx, names)
+	}()
+}
+
 // safeError reduces an error to what is safe to log: the API status and reason
 // when there are any, otherwise a fixed phrase.
 func safeError(err error) string {
@@ -197,8 +242,21 @@ func safeError(err error) string {
 }
 
 // Refresh reads every page of /me/playlists and replaces the cache. On any
-// error the previous cache stays in place.
+// error the previous cache stays in place. A successful refresh also warms the
+// name matcher off the caller's path: the request that loaded the cache after a
+// runtime Connect must not wait on an embed, but the library still warms within
+// a few seconds. refreshLogged drives the same API read for the loop and warms
+// inline there, so it calls refresh directly rather than double-warming.
 func (c *PlaylistCache) Refresh(ctx context.Context) error {
+	if err := c.refresh(ctx); err != nil {
+		return err
+	}
+	c.warmAsync(ctx)
+	return nil
+}
+
+// refresh is the API part of Refresh; it never warms.
+func (c *PlaylistCache) refresh(ctx context.Context) error {
 	var all []Playlist
 	offset := 0
 	for page := 0; page < c.maxPages; page++ {

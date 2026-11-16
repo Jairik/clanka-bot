@@ -344,20 +344,68 @@ func TestFailedRefreshDoesNotCallTheWarmHook(t *testing.T) {
 	}
 }
 
-// A refresh a caller drives itself runs on the request path, so it must not
-// hand the names to the warm hook: the caller's own lookup follows at once and
-// the embed budget is that lookup's, not a warm's.
-func TestDirectRefreshDoesNotCallTheWarmHook(t *testing.T) {
+// TestDirectRefreshWarmsOffTheRequestPath replaces the old
+// TestDirectRefreshDoesNotCallTheWarmHook. That test encoded the bug: a refresh
+// a caller drives (the lazy first load after a runtime Connect) never warmed at
+// all, so the library stayed cold until the six-hour tick. The intent that
+// survived is the important one: the caller must never block on an embed. The
+// warm now runs, but off the request path, on a context detached from the
+// caller's cancellation and still joined by Close.
+func TestDirectRefreshWarmsOffTheRequestPath(t *testing.T) {
 	api := &scriptedAPI{pages: map[string]string{"0": pageTwo}}
-	hooks := &hookRecorder{}
-	cache := spotify.NewPlaylistCache(spotify.PlaylistCacheOptions{API: api, OnRefresh: hooks.hook})
-	if err := cache.Refresh(t.Context()); err != nil {
+	entered := make(chan context.Context, 1)
+	release := make(chan struct{})
+	var gotNames []string
+	cache := spotify.NewPlaylistCache(spotify.PlaylistCacheOptions{
+		API: api,
+		OnRefresh: func(ctx context.Context, names []string) {
+			gotNames = append([]string(nil), names...)
+			entered <- ctx
+			<-release
+		},
+	})
+
+	callCtx, cancelCall := context.WithCancel(context.Background())
+	if err := cache.Refresh(callCtx); err != nil {
 		t.Fatalf("Refresh: %v", err)
-	}
-	if n := hooks.count(); n != 0 {
-		t.Fatalf("hook calls after a direct refresh = %d, want 0", n)
 	}
 	if !cache.Loaded() {
 		t.Fatal("direct refresh did not load the cache")
+	}
+	// The hook is parked on release, so Refresh returning already proves the
+	// caller did not wait on the warm.
+	var warmCtx context.Context
+	select {
+	case warmCtx = <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("the direct refresh never called the warm hook")
+	}
+	if warmCtx == callCtx {
+		t.Fatal("the warm reused the request context")
+	}
+	if got, want := strings.Join(gotNames, ","), "Focus"; got != want {
+		t.Fatalf("hook names = %q, want %q", got, want)
+	}
+
+	// Detached from the request: cancelling the caller does not stop the warm.
+	cancelCall()
+	if err := warmCtx.Err(); err != nil {
+		t.Fatalf("the warm inherited the request's cancellation: %v", err)
+	}
+
+	// Still owned by the cache: Close cancels the warm and joins it.
+	closed := make(chan struct{})
+	go func() { cache.Close(); close(closed) }()
+	eventually(t, "Close cancelling the warm", func() bool { return warmCtx.Err() != nil })
+	select {
+	case <-closed:
+		t.Fatal("Close returned while the warm was still parked")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Close did not join the warm")
 	}
 }

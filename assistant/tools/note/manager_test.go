@@ -244,3 +244,107 @@ func TestForgetQueryDeletesOnlyTheClosestNote(t *testing.T) {
 		t.Fatalf("ForgetQuery miss = %d, %v; want 0, nil", deleted, err)
 	}
 }
+
+// TestRecallExactDoesNotDecodeVectors proves the exact-substring pass reads
+// notes without touching their embeddings. The stored vector is replaced with
+// an oversized blob: if the exact path decoded embeddings it would come back
+// carrying hundreds of floats (and pay the allocation cost on every recall).
+func TestRecallExactDoesNotDecodeVectors(t *testing.T) {
+	st := openNoteStore(t)
+	embed := &fakeEmbedder{table: map[string][]float32{
+		"the boiler is serviced on Tuesday": {1, 0, 0},
+	}}
+	m := testManager(t, st, embed, Config{MinScore: 0.35, MaxResults: 3, MaxText: 500, MaxNotes: 100})
+	ctx := context.Background()
+	if _, err := m.Remember(ctx, "the boiler is serviced on Tuesday"); err != nil {
+		t.Fatalf("Remember: %v", err)
+	}
+
+	// A valid 384-dimension blob, written directly so decode would succeed if
+	// (wrongly) attempted on the exact path.
+	oversized := make([]byte, 384*4)
+	if _, err := st.DB().ExecContext(ctx,
+		`UPDATE notes SET embedding = ? WHERE text = ?`, oversized, "the boiler is serviced on Tuesday"); err != nil {
+		t.Fatalf("seed oversized embedding: %v", err)
+	}
+	embed.calls = 0
+
+	matches, err := m.Recall(ctx, "boiler")
+	if err != nil {
+		t.Fatalf("Recall: %v", err)
+	}
+	if len(matches) != 1 || matches[0].Score != 1 || !strings.Contains(matches[0].Text, "boiler") {
+		t.Fatalf("matches = %+v", matches)
+	}
+	if embed.calls != 0 {
+		t.Fatalf("embed calls = %d, want 0 for an exact substring", embed.calls)
+	}
+	if got := len(matches[0].embedding); got != 0 {
+		t.Fatalf("exact match decoded %d floats, want 0", got)
+	}
+}
+
+// TestRecallSemanticFallbackLoadsVectors proves the fuzzy path still works and
+// that it is the one that decodes stored embeddings.
+func TestRecallSemanticFallbackLoadsVectors(t *testing.T) {
+	st := openNoteStore(t)
+	embed := &fakeEmbedder{table: map[string][]float32{
+		"the boiler is serviced on Tuesday": {1, 0, 0},
+		"buy milk":                          {0, 1, 0},
+		"when is the plumber coming":        {0.92, 0.2, 0},
+	}}
+	m := testManager(t, st, embed, Config{MinScore: 0.35, MaxResults: 3, MaxText: 500, MaxNotes: 100})
+	ctx := context.Background()
+	for _, text := range []string{"the boiler is serviced on Tuesday", "buy milk"} {
+		if _, err := m.Remember(ctx, text); err != nil {
+			t.Fatalf("Remember(%q): %v", text, err)
+		}
+	}
+
+	matches, err := m.Recall(ctx, "when is the plumber coming")
+	if err != nil {
+		t.Fatalf("Recall: %v", err)
+	}
+	if len(matches) != 1 || !strings.Contains(matches[0].Text, "boiler") {
+		t.Fatalf("matches = %+v, want the boiler note only", matches)
+	}
+	if matches[0].Score < 0.35 {
+		t.Fatalf("score = %.3f, want at or above the floor", matches[0].Score)
+	}
+	if got := len(matches[0].embedding); got != 3 {
+		t.Fatalf("semantic match decoded %d floats, want 3", got)
+	}
+	if embed.calls == 0 {
+		t.Fatal("semantic fallback did not embed the query")
+	}
+}
+
+// TestListReturnsNotesWithoutVectors proves the Dashboard read stays light:
+// notes come back with their fields intact but no decoded embedding.
+func TestListReturnsNotesWithoutVectors(t *testing.T) {
+	st := openNoteStore(t)
+	embed := &fakeEmbedder{table: map[string][]float32{
+		"the boiler is serviced on Tuesday": {1, 0, 0},
+	}}
+	m := testManager(t, st, embed, Config{MinScore: 0.35, MaxResults: 3, MaxText: 500, MaxNotes: 100})
+	ctx := context.Background()
+	want, err := m.Remember(ctx, "the boiler is serviced on Tuesday")
+	if err != nil {
+		t.Fatalf("Remember: %v", err)
+	}
+
+	notes, err := m.List(ctx)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(notes) != 1 {
+		t.Fatalf("List returned %d notes, want 1", len(notes))
+	}
+	got := notes[0]
+	if got.ID != want.ID || got.Text != want.Text || !got.CreatedAt.Equal(want.CreatedAt) || !got.UpdatedAt.Equal(want.UpdatedAt) {
+		t.Fatalf("List note = %+v, want fields of %+v", got, want)
+	}
+	if len(got.embedding) != 0 {
+		t.Fatalf("List decoded %d floats, want 0", len(got.embedding))
+	}
+}

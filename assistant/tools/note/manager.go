@@ -124,23 +124,50 @@ func (m *Manager) Remember(ctx context.Context, text string) (Note, error) {
 }
 
 // List returns the newest notes first, bounded by max_notes. It is the
-// Dashboard read seam and the candidate set for recall.
+// Dashboard read seam. It never loads embeddings: neither the Dashboard nor
+// the exact-substring pass needs the stored vector.
 func (m *Manager) List(ctx context.Context) ([]Note, error) {
+	return m.listText(ctx)
+}
+
+// listText is the light read for the exact-substring pass. It selects no
+// embedding column, so no stored vector is transferred or decoded.
+func (m *Manager) listText(ctx context.Context) ([]Note, error) {
+	return m.queryNotes(ctx,
+		`SELECT id, text, created_at, updated_at FROM notes ORDER BY updated_at DESC, id DESC LIMIT ?`,
+		scanNoteText)
+}
+
+// listWithVectors runs only on semantic fallback: the exact pass found nothing
+// and an embedder exists. The inner query keeps the identical bounded,
+// newest-first candidate set as listText, so an older note cannot slip into
+// recall merely because a newer one has no vector. Only then is each stored
+// embedding decoded.
+func (m *Manager) listWithVectors(ctx context.Context) ([]Note, error) {
+	return m.queryNotes(ctx,
+		`SELECT id, text, embedding, created_at, updated_at FROM (
+			SELECT id, text, embedding, created_at, updated_at FROM notes
+			ORDER BY updated_at DESC, id DESC LIMIT ?
+		) ORDER BY updated_at DESC, id DESC`,
+		scanNote)
+}
+
+// queryNotes runs one bounded note query and scans each row with scan. Every
+// note read shares the same timeout and error wrapping.
+func (m *Manager) queryNotes(ctx context.Context, query string, scan func(*sql.Rows) (Note, error)) ([]Note, error) {
 	if m.db == nil {
 		return nil, ErrUnavailable
 	}
 	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
 	defer cancel()
-	rows, err := m.db.QueryContext(ctx,
-		`SELECT id, text, embedding, created_at, updated_at FROM notes ORDER BY updated_at DESC, id DESC LIMIT ?`,
-		m.cfg.MaxNotes)
+	rows, err := m.db.QueryContext(ctx, query, m.cfg.MaxNotes)
 	if err != nil {
 		return nil, fmt.Errorf("note: list notes: %w", err)
 	}
 	defer rows.Close()
 	var notes []Note
 	for rows.Next() {
-		note, err := scanNote(rows)
+		note, err := scan(rows)
 		if err != nil {
 			return nil, err
 		}
@@ -231,7 +258,10 @@ func (m *Manager) Recall(ctx context.Context, query string) ([]Match, error) {
 	if query == "" {
 		return nil, nil
 	}
-	notes, err := m.List(ctx)
+	// The exact pass needs only text. Loading embeddings here would decode up
+	// to max_notes vectors on every recall, including the common literal-hit
+	// case where no vector is used at all.
+	notes, err := m.listText(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -269,6 +299,13 @@ func (m *Manager) Recall(ctx context.Context, query string) ([]Match, error) {
 		return nil, err
 	}
 
+	// Only the semantic path pays for decoding stored embeddings, and only
+	// after the embed call has succeeded.
+	notes, err = m.listWithVectors(ctx)
+	if err != nil {
+		return nil, err
+	}
+
 	queryVector := vectors[0]
 	matches := make([]Match, 0, len(notes))
 	for _, note := range notes {
@@ -292,7 +329,23 @@ func (m *Manager) Recall(ctx context.Context, query string) ([]Match, error) {
 	return limitMatches(matches, m.cfg.MaxResults), nil
 }
 
-// scanNote reads one row in the shared id/text/embedding/created/updated order.
+// scanNoteText reads one light row without an embedding column. The exact pass
+// and the Dashboard never touch the stored vector.
+func scanNoteText(rows *sql.Rows) (Note, error) {
+	var (
+		id        int64
+		text      string
+		createdMS int64
+		updatedMS int64
+	)
+	if err := rows.Scan(&id, &text, &createdMS, &updatedMS); err != nil {
+		return Note{}, fmt.Errorf("note: read note: %w", err)
+	}
+	return noteFromRow(id, text, createdMS, updatedMS, nil), nil
+}
+
+// scanNote reads one row in the shared id/text/embedding/created/updated order,
+// decoding the stored vector. Only the semantic fallback pays this cost.
 func scanNote(rows *sql.Rows) (Note, error) {
 	var (
 		id        int64
@@ -304,13 +357,18 @@ func scanNote(rows *sql.Rows) (Note, error) {
 	if err := rows.Scan(&id, &text, &embedding, &createdMS, &updatedMS); err != nil {
 		return Note{}, fmt.Errorf("note: read note: %w", err)
 	}
+	return noteFromRow(id, text, createdMS, updatedMS, decodeVector(embedding)), nil
+}
+
+// noteFromRow builds a Note from one scanned row.
+func noteFromRow(id int64, text string, createdMS, updatedMS int64, embedding []float32) Note {
 	return Note{
 		ID:        strconv.FormatInt(id, 10),
 		Text:      text,
 		CreatedAt: time.UnixMilli(createdMS),
 		UpdatedAt: time.UnixMilli(updatedMS),
-		embedding: decodeVector(embedding),
-	}, nil
+		embedding: embedding,
+	}
 }
 
 // embedText captures one note's vector at write time. A failure is logged and

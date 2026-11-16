@@ -13,18 +13,20 @@ import (
 
 	"github.com/Jairik/clanka-bot/assistant/internal/config"
 	"github.com/Jairik/clanka-bot/assistant/internal/dashboard"
+	"github.com/Jairik/clanka-bot/assistant/internal/status"
 )
 
 // fakeWakewordServer answers every describe with the given model names.
 func fakeWakewordServer(t *testing.T, models ...string) string {
 	t.Helper()
-	addr, _ := countingWakewordServer(t, models...)
+	addr, _, _ := countingWakewordServer(t, models...)
 	return addr
 }
 
 // countingWakewordServer also counts describes, so a test can prove one render
-// asks the service once.
-func countingWakewordServer(t *testing.T, models ...string) (string, *atomic.Int32) {
+// asks the service once. The returned stop func closes the listener so a test
+// can prove a stopped service is reported as an error rather than a cached ok.
+func countingWakewordServer(t *testing.T, models ...string) (string, *atomic.Int32, func()) {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -64,7 +66,7 @@ func countingWakewordServer(t *testing.T, models ...string) (string, *atomic.Int
 			}(conn)
 		}
 	}()
-	return ln.Addr().String(), &describes
+	return ln.Addr().String(), &describes, func() { _ = ln.Close() }
 }
 
 func HealthWakewordRows(t *testing.T, handler *dashboard.Handler) []struct{ Name, Status, StatusLabel, Detail string } {
@@ -276,7 +278,7 @@ func TestHealthShowsCommandModelsAndTheirEnabledState(t *testing.T) {
 // test: the Compose wakeword row and the model rows share one describe, so a
 // page render asks the service once instead of twice.
 func TestOneHealthRenderDescribesTheWakewordServiceOnce(t *testing.T) {
-	addr, describes := countingWakewordServer(t, "clanker")
+	addr, describes, _ := countingWakewordServer(t, "clanker")
 	cfg := config.Default()
 	cfg.Wakeword.Addr = addr
 	cache := dashboard.NewWakeModelCache(addr, nil)
@@ -306,5 +308,99 @@ func TestOneHealthRenderDescribesTheWakewordServiceOnce(t *testing.T) {
 	}
 	if got := describes.Load(); got != 1 {
 		t.Fatalf("describes = %d for one Health render, want 1", got)
+	}
+}
+
+// manualClock is a controllable time source so a test can advance past the shared
+// snapshot TTL without sleeping.
+type manualClock struct {
+	ptr atomic.Pointer[time.Time]
+}
+
+func newManualClock(start time.Time) *manualClock {
+	c := &manualClock{}
+	c.ptr.Store(&start)
+	return c
+}
+
+func (c *manualClock) Now() time.Time { return *c.ptr.Load() }
+
+func (c *manualClock) advance(d time.Duration) {
+	t := c.Now().Add(d)
+	c.ptr.Store(&t)
+}
+
+// healthServiceRow reads the Compose `Services` section of the Health JSON and
+// returns the named row.
+func healthServiceRow(t *testing.T, handler *dashboard.Handler, name string) struct {
+	Name, Status, StatusLabel, Detail string
+} {
+	t.Helper()
+	var view struct {
+		Services []struct {
+			Name, Status, StatusLabel, Detail string
+		}
+	}
+	getJSON(t, handler, "/api/ui/health", &view)
+	for _, s := range view.Services {
+		if s.Name == name {
+			return s
+		}
+	}
+	t.Fatalf("health Services has no row named %q: %+v", name, view.Services)
+	return struct{ Name, Status, StatusLabel, Detail string }{}
+}
+
+// TestHealthWakewordRowProbesFreshNotCached is the #359 acceptance test: the
+// Compose wakeword row is a fresh endpoint probe, so a stopped service is
+// reported as an error on the next render (not a cached ok), and the row's
+// Detail is the measured round trip, never a cache-hit time.
+func TestHealthWakewordRowProbesFreshNotCached(t *testing.T) {
+	addr, describes, stop := countingWakewordServer(t, "clanker")
+	clock := newManualClock(time.Now())
+	cfg := config.Default()
+	cfg.Wakeword.Addr = addr
+	cache := dashboard.NewWakeModelCache(addr, clock.Now)
+
+	var wakeCheck dashboard.ServiceCheck
+	for _, link := range dashboard.ComposeServiceChecks(cfg, cache) {
+		if link.Name == "wakeword" {
+			wakeCheck = link
+		}
+	}
+	if wakeCheck.Check == nil {
+		t.Fatal("the wakeword Compose row is not wired for a configured address")
+	}
+	handler := newHandler(t, dashboard.Options{
+		Now:        clock.Now,
+		Services:   []dashboard.ServiceCheck{wakeCheck},
+		WakeModels: cache,
+		Wakeword: dashboard.WakewordInfo{
+			Addr:   addr,
+			Models: []dashboard.WakewordModel{{Name: "clanker", Threshold: 0.6}},
+		},
+	})
+
+	// First render with the service up: the row is ok, its Detail is the real
+	// probe round trip, and exactly one describe happened.
+	first := healthServiceRow(t, handler, "wakeword")
+	if first.Status != "ok" {
+		t.Fatalf("first wakeword row = %+v, want ok", first)
+	}
+	if !strings.Contains(first.Detail, "responded in") {
+		t.Fatalf("first wakeword detail = %q, want the measured round trip", first.Detail)
+	}
+	if got := describes.Load(); got != 1 {
+		t.Fatalf("describes = %d after one render, want 1", got)
+	}
+
+	// Stop the service and advance the clock past the shared snapshot TTL so the
+	// next render re-probes instead of reusing the cached ok.
+	stop()
+	clock.advance(status.SharedSnapshotTTL + time.Second)
+
+	second := healthServiceRow(t, handler, "wakeword")
+	if second.Status == "ok" {
+		t.Fatalf("second wakeword row = %+v, want an error after the service stopped", second)
 	}
 }

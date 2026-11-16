@@ -390,11 +390,26 @@ func (c *WakeModelCache) models(ctx context.Context) (map[string]bool, error) {
 	return c.advertised, c.err
 }
 
-// HealthCheck is the Compose wakeword row: whether the service answered, read
-// from the same cached describe the model rows use.
+// modelsFresh describes the service now and stores the answer, ignoring the
+// cache TTL. The Compose wakeword row uses it so the Health page reports a real
+// endpoint probe and its measured round trip, never a cached describe's hit
+// time. The model rows and Voice samples page read the value it just refreshed
+// through models(), so one render still describes the service once.
+func (c *WakeModelCache) modelsFresh(ctx context.Context) (map[string]bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.advertised, c.err = describeWakeModels(ctx, c.addr)
+	c.at, c.checked = c.now(), true
+	return c.advertised, c.err
+}
+
+// HealthCheck is the Compose wakeword row: a fresh describe of the service, so
+// the Health page reports a real endpoint probe and its measured round trip.
+// The Health page's model rows and the Voice samples view read the value this
+// row just refreshed via models(), so one render describes the service once.
 func (c *WakeModelCache) HealthCheck(name string) ServiceCheck {
 	return ServiceCheck{Name: name, Check: func(ctx context.Context) error {
-		_, err := c.models(ctx)
+		_, err := c.modelsFresh(ctx)
 		return err
 	}}
 }

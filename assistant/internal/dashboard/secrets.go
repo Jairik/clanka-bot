@@ -6,6 +6,7 @@ import (
 	"net/url"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/secrets"
+	"github.com/Jairik/clanka-bot/assistant/internal/spotify"
 )
 
 // Flash values are a small closed set, so a redirect can never reflect
@@ -58,6 +59,11 @@ func (h *Handler) secretsPage(w http.ResponseWriter, r *http.Request) {
 
 // secretsSet stores one replacement value. The submitted value is handed
 // straight to the service and never enters the view, a log line or a redirect.
+//
+// The Spotify Web API refresh token is owned by Auth, so its write is routed
+// through Auth.Replace, which serialises with the in-flight refresh grant: a
+// stalled refresh cannot overwrite the operator's new token. Every other
+// secret goes straight to the service.
 func (h *Handler) secretsSet(w http.ResponseWriter, r *http.Request) {
 	if !h.secretsReady(w, r) {
 		return
@@ -66,6 +72,14 @@ func (h *Handler) secretsSet(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxSecretFormBytes)
 	if err := r.ParseForm(); err != nil {
 		h.secretsFail(w, r, http.StatusBadRequest, "Could not read the form.")
+		return
+	}
+	if h.secretsOwnedBySpotify(name) {
+		if _, err := h.spotify.Replace(r.Context(), r.FormValue("value")); err != nil {
+			h.secretsError(w, r, "set", name, "The secret could not be stored.", err)
+			return
+		}
+		h.secretsSuccess(w, r, flashSecretSaved)
 		return
 	}
 	if _, err := h.secrets.Set(r.Context(), name, r.FormValue("value")); err != nil {
@@ -78,6 +92,11 @@ func (h *Handler) secretsSet(w http.ResponseWriter, r *http.Request) {
 // secretsClear removes one stored value. The service returns the metadata
 // after the delete, so the page can say whether .env took over or the secret
 // became unset.
+//
+// The Spotify Web API refresh token is owned by Auth, so its clear is routed
+// through Auth.Clear, which serialises with the in-flight refresh grant: a
+// stalled refresh cannot write the old token back after the operator cleared
+// it. Every other secret goes straight to the service.
 func (h *Handler) secretsClear(w http.ResponseWriter, r *http.Request) {
 	if !h.secretsReady(w, r) {
 		return
@@ -86,6 +105,19 @@ func (h *Handler) secretsClear(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxSecretFormBytes)
 	if err := r.ParseForm(); err != nil {
 		h.secretsFail(w, r, http.StatusBadRequest, "Could not read the form.")
+		return
+	}
+	if h.secretsOwnedBySpotify(name) {
+		meta, err := h.spotify.Clear(r.Context())
+		if err != nil {
+			h.secretsError(w, r, "clear", name, "The secret could not be cleared.", err)
+			return
+		}
+		flash := flashSecretClearedNone
+		if meta.Source == secrets.SourceEnv {
+			flash = flashSecretClearedEnv
+		}
+		h.secretsSuccess(w, r, flash)
 		return
 	}
 	meta, err := h.secrets.Clear(r.Context(), name)
@@ -98,6 +130,15 @@ func (h *Handler) secretsClear(w http.ResponseWriter, r *http.Request) {
 		flash = flashSecretClearedEnv
 	}
 	h.secretsSuccess(w, r, flash)
+}
+
+// secretsOwnedBySpotify reports whether the named secret is the Spotify Web
+// API refresh token and the shared auth seam is wired, so its writes must go
+// through Auth rather than the service directly. When Auth is not wired the
+// page falls back to the service, which only happens when no refresh grant can
+// be in flight.
+func (h *Handler) secretsOwnedBySpotify(name string) bool {
+	return h.spotify != nil && name == spotify.SecretName
 }
 
 // secretsReady guards the write routes against an unwired service.

@@ -41,6 +41,9 @@ type spotifyTokenServer struct {
 	refreshCalls   int
 	accessSeq      int
 	currentRefresh string
+	rotate         bool
+	blockRefresh   chan struct{}
+	startedRefresh chan struct{}
 }
 
 func newSpotifyTokenServer(t *testing.T) *spotifyTokenServer {
@@ -78,11 +81,33 @@ func (f *spotifyTokenServer) handle(w http.ResponseWriter, r *http.Request) {
 		_, _ = io.WriteString(w, `{"access_token":"dash-access-1","token_type":"Bearer","expires_in":3600,"refresh_token":"dash-refresh-1"}`)
 	case "refresh_token":
 		f.mu.Lock()
+		block := f.blockRefresh
+		started := f.startedRefresh
+		f.mu.Unlock()
+		if block != nil {
+			if started != nil {
+				select {
+				case started <- struct{}{}:
+				default:
+				}
+			}
+			<-block
+		}
+		f.mu.Lock()
 		f.refreshCalls++
 		f.accessSeq++
 		seq := f.accessSeq + 1
+		nextRefresh := f.currentRefresh
+		if f.rotate {
+			nextRefresh = "dash-refresh-" + itoa(seq)
+		}
 		f.mu.Unlock()
-		_, _ = io.WriteString(w, `{"access_token":"dash-access-`+string(rune('0'+seq))+`","token_type":"Bearer","expires_in":3600}`)
+		body := `{"access_token":"dash-access-` + itoa(seq) + `","token_type":"Bearer","expires_in":3600`
+		if f.rotate {
+			body += `,"refresh_token":"` + nextRefresh + `"`
+		}
+		body += `}`
+		_, _ = io.WriteString(w, body)
 	default:
 		w.WriteHeader(http.StatusBadRequest)
 		_, _ = io.WriteString(w, `{"error":"unsupported_grant_type"}`)
@@ -93,6 +118,53 @@ func (f *spotifyTokenServer) counts() (exchange, refresh int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.exchangeCalls, f.refreshCalls
+}
+
+// itoa is a tiny local helper so the dashed fake can name rotated tokens.
+func itoa(n int) string {
+	if n == 0 {
+		return "0"
+	}
+	neg := n < 0
+	if neg {
+		n = -n
+	}
+	var b [20]byte
+	i := len(b)
+	for n > 0 {
+		i--
+		b[i] = byte('0' + n%10)
+		n /= 10
+	}
+	if neg {
+		i--
+		b[i] = '-'
+	}
+	return string(b[i:])
+}
+
+// stallRefresh makes the next refresh grant block at the token endpoint and
+// reports when it has arrived, so a test can act while a grant is genuinely in
+// flight. Rotate controls whether the grant returns a rotated refresh token.
+// Release is idempotent.
+func (f *spotifyTokenServer) stallRefresh(t *testing.T, rotate bool) (release func(), started <-chan struct{}) {
+	t.Helper()
+	f.mu.Lock()
+	f.rotate = rotate
+	f.blockRefresh = make(chan struct{})
+	f.startedRefresh = make(chan struct{}, 1)
+	f.mu.Unlock()
+	var once sync.Once
+	release = func() { once.Do(func() {
+		f.mu.Lock()
+		ch := f.blockRefresh
+		f.mu.Unlock()
+		if ch != nil {
+			close(ch)
+		}
+	}) }
+	t.Cleanup(release)
+	return release, f.startedRefresh
 }
 
 type spotifyFixture struct {
@@ -441,5 +513,139 @@ func TestSpotifyPageCSPKeepsFormActionSelf(t *testing.T) {
 		if !strings.HasSuffix(other, "form-action 'self'") {
 			t.Errorf("%s must keep form-action 'self', got %q", target, other)
 		}
+	}
+}
+
+// awaitRefreshStarted waits for the stall signal without racing the request.
+func awaitRefreshStarted(t *testing.T, started <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the refresh never reached the token endpoint")
+	}
+}
+
+// TestSecretsClearDuringAnInFlightRefreshStaysCleared is the end-to-end
+// regression for issue #365: a Clear on the Secrets page routed through
+// Auth.Clear must win against a refresh grant that is already in flight. The
+// grant read the old token and would otherwise commit a rotated value after the
+// operator cleared it, resurrecting the connection.
+func TestSecretsClearDuringAnInFlightRefreshStaysCleared(t *testing.T) {
+	f := newSpotifyFixture(t)
+	state, binding := f.startConnect(t)
+	f.callback(state, binding, "code="+spotifyTestCode)
+	if stored, ok := f.secrets.Get(spotify.SecretName); !ok || stored != "dash-refresh-1" {
+		t.Fatalf("precondition: stored token = %q, %v", stored, ok)
+	}
+
+	release, started := f.fake.stallRefresh(t, true)
+
+	refreshed := make(chan error, 1)
+	go func() {
+		_, err := f.auth.Refresh(context.Background())
+		refreshed <- err
+	}()
+	awaitRefreshStarted(t, started)
+
+	// The Secrets page Clear must block behind the in-flight grant.
+	clearDone := make(chan int, 1)
+	go func() {
+		rec := f.post("/secrets/" + spotify.SecretName + "/clear")
+		clearDone <- rec.Code
+	}()
+	select {
+	case code := <-clearDone:
+		t.Fatalf("Secrets clear returned while a refresh held the grant (code %d)", code)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	release()
+	if err := <-refreshed; err != nil {
+		t.Fatalf("in-flight refresh: %v", err)
+	}
+	var clearCode int
+	select {
+	case clearCode = <-clearDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Secrets clear never completed after the refresh released")
+	}
+	if clearCode != http.StatusOK {
+		t.Fatalf("Secrets clear = %d, want 200", clearCode)
+	}
+
+	if stored, ok := f.secrets.Get(spotify.SecretName); ok {
+		t.Fatalf("the in-flight refresh reinstalled the token %q after the Secrets clear", stored)
+	}
+	if status := f.auth.Status(); status.State != spotify.WebAPINotConfigured {
+		t.Fatalf("status = %+v, want not_configured", status)
+	}
+	// The Secrets page must report the truthful source afterwards.
+	var view secretsResp
+	getJSON(t, f.handler, "/api/ui/secrets", &view)
+	if view.secret(t, spotify.SecretName).Set {
+		t.Errorf("Secrets page still reports %s as set after a clear", spotify.SecretName)
+	}
+}
+
+// TestSecretsReplaceDuringAnInFlightRefreshKeepsNewToken is the mirror
+// regression for issue #365: a replace on the Secrets page routed through
+// Auth.Replace must keep the operator's new token; the rotated write the
+// in-flight refresh would otherwise commit cannot overwrite it.
+func TestSecretsReplaceDuringAnInFlightRefreshKeepsNewToken(t *testing.T) {
+	f := newSpotifyFixture(t)
+	state, binding := f.startConnect(t)
+	f.callback(state, binding, "code="+spotifyTestCode)
+
+	release, started := f.fake.stallRefresh(t, true)
+
+	refreshed := make(chan error, 1)
+	go func() {
+		_, err := f.auth.Refresh(context.Background())
+		refreshed <- err
+	}()
+	awaitRefreshStarted(t, started)
+
+	const replacement = "operator-replacement-token-abcdefghijkl"
+	replaceDone := make(chan int, 1)
+	go func() {
+		req := request(http.MethodPost, "/secrets/"+spotify.SecretName, owner)
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Body = io.NopCloser(strings.NewReader("value=" + url.QueryEscape(replacement)))
+		rec := serve(f.handler, req)
+		replaceDone <- rec.Code
+	}()
+	select {
+	case code := <-replaceDone:
+		t.Fatalf("Secrets replace returned while a refresh held the grant (code %d)", code)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	release()
+	if err := <-refreshed; err != nil {
+		t.Fatalf("in-flight refresh: %v", err)
+	}
+	var replaceCode int
+	select {
+	case replaceCode = <-replaceDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("Secrets replace never completed after the refresh released")
+	}
+	if replaceCode != http.StatusOK {
+		t.Fatalf("Secrets replace = %d, want 200", replaceCode)
+	}
+
+	stored, ok := f.secrets.Get(spotify.SecretName)
+	if !ok || stored != replacement {
+		t.Fatalf("stored token = %q, %v; the operator's replacement was lost to the refresh", stored, ok)
+	}
+	if status := f.auth.Status(); status.State != spotify.WebAPIConfigured {
+		t.Fatalf("status = %+v, want configured (not yet verified)", status)
+	}
+	var view secretsResp
+	getJSON(t, f.handler, "/api/ui/secrets", &view)
+	if !view.secret(t, spotify.SecretName).Set {
+		t.Errorf("Secrets page reports %s as unset after a replace", spotify.SecretName)
 	}
 }

@@ -704,6 +704,99 @@ func TestDisconnectDuringAnInFlightRefreshWins(t *testing.T) {
 	}
 }
 
+// Clear during an in-flight refresh must win the same way Disconnect does: it
+// waits for the grant to commit, then clears the secret, so a grant that was
+// already past store.Get cannot write the token back afterwards. Regression
+// test for issue #365 (the Secrets page Clear path).
+func TestClearDuringAnInFlightRefreshStaysCleared(t *testing.T) {
+	f := newAuthFixture(t)
+	f.beginAndComplete(t)
+	f.clock.Advance(2 * time.Hour)
+
+	release, started := f.stallRefresh(true)
+
+	refreshed := make(chan refreshOutcome, 1)
+	go func() {
+		token, err := f.auth.Token(context.Background())
+		refreshed <- refreshOutcome{token: token, err: err}
+	}()
+	awaitGrant(t, started)
+
+	cleared := make(chan error, 1)
+	go func() {
+		_, err := f.auth.Clear(context.Background())
+		cleared <- err
+	}()
+	select {
+	case err := <-cleared:
+		t.Fatalf("Clear returned while a refresh held the grant (err = %v)", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	release()
+	if outcome := <-refreshed; outcome.err != nil || outcome.token != "access-2" {
+		t.Fatalf("in-flight Token = %q, %v", outcome.token, outcome.err)
+	}
+	if err := <-cleared; err != nil {
+		t.Fatalf("Clear: %v", err)
+	}
+
+	if stored, ok := f.secrets.Get(spotify.SecretName); ok {
+		t.Fatalf("an in-flight refresh reinstalled the refresh token %q after Clear", stored)
+	}
+	if status := f.auth.Status(); status.State != spotify.WebAPINotConfigured {
+		t.Fatalf("status = %+v, want not_configured", status)
+	}
+}
+
+// Replace during an in-flight refresh must keep the operator's new token: the
+// grant commits its rotated value first, then Replace stores last and wins.
+// Regression test for issue #365 (the Secrets page Set path).
+func TestReplaceDuringAnInFlightRefreshKeepsNewToken(t *testing.T) {
+	f := newAuthFixture(t)
+	f.beginAndComplete(t)
+	f.clock.Advance(2 * time.Hour)
+
+	release, started := f.stallRefresh(true)
+
+	refreshed := make(chan refreshOutcome, 1)
+	go func() {
+		token, err := f.auth.Token(context.Background())
+		refreshed <- refreshOutcome{token: token, err: err}
+	}()
+	awaitGrant(t, started)
+
+	const replacement = "operator-replacement-token-abcdefghijkl"
+	replaced := make(chan error, 1)
+	go func() {
+		_, err := f.auth.Replace(context.Background(), replacement)
+		replaced <- err
+	}()
+	select {
+	case err := <-replaced:
+		t.Fatalf("Replace returned while a refresh held the grant (err = %v)", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	release()
+	if outcome := <-refreshed; outcome.err != nil || outcome.token != "access-2" {
+		t.Fatalf("in-flight Token = %q, %v", outcome.token, outcome.err)
+	}
+	if err := <-replaced; err != nil {
+		t.Fatalf("Replace: %v", err)
+	}
+
+	stored, ok := f.secrets.Get(spotify.SecretName)
+	if !ok || stored != replacement {
+		t.Fatalf("stored refresh token = %q, %v; the operator's replacement was lost", stored, ok)
+	}
+	// The cached access token was dropped, so the page reports the token as
+	// stored but not yet verified.
+	if status := f.auth.Status(); status.State != spotify.WebAPIConfigured {
+		t.Fatalf("status = %+v, want configured (not yet verified)", status)
+	}
+}
+
 // A sign-in that completes during an in-flight refresh must keep its newly
 // exchanged token: the refresh read the old value and must not overwrite it.
 func TestCompleteDuringAnInFlightRefreshKeepsTheNewToken(t *testing.T) {

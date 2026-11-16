@@ -32,6 +32,14 @@ from pcm import to_pcm16
 _LOGGER = logging.getLogger("tts")
 
 _SENTENCE_END = ".?!"
+_CLOSERS = frozenset("\"')]}")
+_ABBREVIATIONS = frozenset(
+    {
+        "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "vs", "etc",
+        "e.g", "i.e", "a.m", "p.m", "approx", "dept", "est", "inc", "ltd",
+        "fig", "al", "rd", "ave", "blvd", "u.s", "u.k",
+    }
+)
 _WIDTH = 2
 _CHANNELS = 1
 
@@ -316,16 +324,75 @@ class _Session:
         )
 
 
+def _last_token(prefix: str) -> str:
+    """Final whitespace-delimited word, lowercased, minus wrapping punctuation."""
+    fields = prefix.split()
+    return fields[-1].strip("\"'()[]{}").lower() if fields else ""
+
+
+def _is_number(token: str) -> bool:
+    return bool(token) and all(char in "0123456789" for char in token)
+
+
+def _is_list_marker(text: str, index: int) -> bool:
+    """Whether the dot belongs to a leading "1." or "a." list marker."""
+    token = _last_token(text[:index])
+    if not token:
+        return False
+    numeric = _is_number(token)
+    if not numeric and (len(token) != 1 or not "a" <= token <= "z"):
+        return False
+    return text[: max(0, index - len(token))].strip() == ""
+
+
+def _dot_ends_sentence(text: str, index: int) -> bool:
+    """Whether the dot at index closes a sentence, mirroring Go's endsSentence."""
+    length = len(text)
+    if index + 1 >= length:
+        # A trailing dot may still grow into a decimal or an abbreviation once
+        # the next chunk arrives ("3." -> "3.14", "Dr." -> "Dr. Smith"), so
+        # hold it unless the token before is a plain word.
+        token = _last_token(text[:index])
+        return bool(token) and not _is_number(token) and token not in _ABBREVIATIONS
+
+    following = text[index + 1]
+    if following.isalnum() or following == ".":
+        return False  # decimals, prices, versions, URLs and ellipses
+    if not (following.isspace() or following in _CLOSERS):
+        return False
+    if _is_list_marker(text, index):
+        return False
+    return _last_token(text[:index]) not in _ABBREVIATIONS
+
+
 def split_complete_sentences(text: str) -> tuple[list[str], str]:
-    """Split off complete sentences, returning (segments, remainder)."""
+    """Split off complete sentences, returning (segments, remainder).
+
+    Mirrors the Go speech chunker so a streaming TTS path would not re-cut
+    decimals, prices, abbreviations or ellipses: a dot closes a sentence only
+    at whitespace, a closer or the end of the buffer, and never between two
+    digits or after an abbreviation. Exclamation marks and question marks are
+    unconditional. A segment needs at least one letter, so stray punctuation
+    is dropped. The unspoken tail is returned unchanged for the next chunk.
+    """
     segments: list[str] = []
     start = 0
-    for index, char in enumerate(text):
-        if char in _SENTENCE_END:
-            segment = text[start : index + 1].strip()
-            if segment:
-                segments.append(segment)
-            start = index + 1
+    index = 0
+    length = len(text)
+    while index < length:
+        char = text[index]
+        if char not in _SENTENCE_END or (char == "." and not _dot_ends_sentence(text, index)):
+            index += 1
+            continue
+
+        end = index
+        while end + 1 < length and text[end + 1] in _CLOSERS:
+            end += 1  # keep trailing quotes and brackets with the sentence
+        segment = text[start : end + 1].strip()
+        if any(character.isalpha() for character in segment):
+            segments.append(segment)
+        start = end + 1
+        index = end + 1
     return segments, text[start:]
 
 

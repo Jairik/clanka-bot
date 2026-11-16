@@ -414,3 +414,75 @@ def test_describe_advertises_the_catalogue_not_only_the_warm_set():
 def test_voice_info_reports_the_catalogue():
     srv = server.TtsServer(CatalogueEngine())
     assert srv.voice_info_event().data["voices"] == ["alba", "marius", "vera"]
+
+
+def test_split_two_normal_sentences():
+    assert server.split_complete_sentences("The sky is blue. The grass is green.") == (
+        ["The sky is blue.", "The grass is green."],
+        "",
+    )
+
+
+def test_split_ellipsis_does_not_emit_dot_fragments():
+    assert server.split_complete_sentences("Hello... what now?") == (
+        ["Hello...", "what now?"],
+        "",
+    )
+
+
+def test_split_keeps_a_decimal_together():
+    assert server.split_complete_sentences("It is 21.5 degrees outside.") == (
+        ["It is 21.5 degrees outside."],
+        "",
+    )
+
+
+def test_split_keeps_abbreviations_together():
+    assert server.split_complete_sentences("Dr. Smith is here. He left.") == (
+        ["Dr. Smith is here.", "He left."],
+        "",
+    )
+
+
+def test_split_keeps_a_price_together():
+    assert server.split_complete_sentences("Cost is $4.50 today!") == (
+        ["Cost is $4.50 today!"],
+        "",
+    )
+
+
+def test_split_holds_a_buffer_that_ends_mid_decimal():
+    assert server.split_complete_sentences("The value is 21.") == (
+        [],
+        "The value is 21.",
+    )
+    # The held dot joins the next chunk into one sentence instead of a fragment.
+    assert server.split_complete_sentences("The value is 21.5 exactly.") == (
+        ["The value is 21.5 exactly."],
+        "",
+    )
+
+
+def test_split_returns_a_stream_with_no_sentence_end_as_remainder():
+    assert server.split_complete_sentences("This clause has no sentence end") == (
+        [],
+        "This clause has no sentence end",
+    )
+
+
+def test_streaming_decimal_and_following_sentence_are_two_segments():
+    engine = FakeEngine((b"\x09",))
+
+    async def body(port):
+        async with AsyncTcpClient("127.0.0.1", port, connect_timeout=2, read_timeout=2) as client:
+            await client.write_event(SynthesizeStart(voice=SynthesizeVoice(name="alba")).event())
+            await client.write_event(SynthesizeChunk(text="It is 21.5 degrees. Nice.").event())
+            await client.write_event(SynthesizeStop().event())
+            while True:
+                event = await client.read_event()
+                assert event is not None
+                if SynthesizeStopped.is_type(event.type):
+                    break
+
+    run(engine, body)
+    assert engine.texts == ["It is 21.5 degrees.", "Nice."]

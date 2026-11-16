@@ -34,7 +34,14 @@ func (*Module) Name() string { return "assistant" }
 // re-registration. The forget handler closes over the shared history seam that
 // main binds before this module registers.
 func (*Module) Register(r *tool.Registry, deps tool.Deps) error {
-	if err := tool.Add(r, NewRepeat(deps.LastReply)); err != nil {
+	// The repeat's speed step falls back to the live voice.rate when the last
+	// reply carried no per-utterance override. Voices is nil in conformance and
+	// some tests; NewRepeat then uses 1.0 as the neutral base.
+	var rate func() float64
+	if deps.Voices != nil {
+		rate = deps.Voices.Rate
+	}
+	if err := tool.Add(r, NewRepeat(deps.LastReply, rate)); err != nil {
 		return err
 	}
 	if err := tool.Add(r, NewForget(deps.History)); err != nil {

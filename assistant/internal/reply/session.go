@@ -294,7 +294,9 @@ func (s *Session) ask(ctx context.Context, req tool.Request, transcript string, 
 		}
 		if text != "" {
 			claimFocus()
-			player.play(item{text: text, sentenceEnd: true})
+			// A faster/slower replay carries a one-utterance rate. It is set on
+			// this item only: the Prefix, Filler and any Ring keep the setting.
+			player.play(item{text: text, sentenceEnd: true, rate: reply.SpeechRate})
 		}
 	}
 	err := player.finish()
@@ -445,6 +447,9 @@ type item struct {
 	text   string
 	filler *speech.Filler
 	cue    *sound.Clip
+	// rate is a per-utterance TTS multiplier for this text item. Zero uses the
+	// live setting; Filler and Cue items never carry one.
+	rate float64
 	// sentenceEnd tells the Gate that this unit finishes the current sentence,
 	// so a waiting Ring may take the floor after it.
 	sentenceEnd bool
@@ -530,9 +535,15 @@ func (p *player) run() {
 		case next.filler != nil:
 			err = next.filler.Play(p.ctx, p.sink)
 		default:
-			// The first reply text unit handed to TTS, after any Filler.
+			// The first reply text unit handed to TTS, after any Filler. A
+			// per-item rate is scoped to this one Say via a child context, so a
+			// Filler, Confirmation prefix or Ring keeps the voice.rate setting.
 			latency.Checkpoint(p.ctx, latency.CheckpointFirstChunk)
-			err = p.speaker.SayText(p.ctx, next.text)
+			ctx := p.ctx
+			if next.rate != 0 {
+				ctx = speech.WithRate(ctx, next.rate)
+			}
+			err = p.speaker.SayText(ctx, next.text)
 		}
 		done(next.sentenceEnd)
 		if err != nil {

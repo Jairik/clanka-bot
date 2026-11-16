@@ -93,6 +93,27 @@ type Reply struct {
 	// TextNotStreamed marks an Agent fallback line that no delta carried, so
 	// the reply session must speak it even after a streamed preamble.
 	TextNotStreamed bool
+	// SpeechRate is a per-utterance TTS multiplier for this reply. Zero means
+	// "use the live voice.rate setting"; a non-zero value (set by a Tool whose
+	// result implements speechRater, e.g. a faster/slower repeat) applies to
+	// this one spoken reply only and is stored with it so a follow-up can step.
+	SpeechRate float64
+}
+
+// speechRater is implemented by a Tool result that carries a one-utterance TTS
+// rate override. It is a per-Out method, so no Tool interface or registry
+// change is needed; a result that does not implement it keeps the setting.
+type speechRater interface {
+	SpeechRate() float64
+}
+
+// rateOf returns the per-utterance rate a Tool result requests, or 0 for none.
+func rateOf(result any) float64 {
+	rater, ok := result.(speechRater)
+	if !ok {
+		return 0
+	}
+	return rater.SpeechRate()
 }
 
 // Option configures a Pipeline without changing the constructor signature.
@@ -446,7 +467,7 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 					args = extracted
 				}
 			}
-			reply.Text, record.failure, reply.Pending, reply.LocalOnly = p.callTool(ctx, req, transcript, name, tool.PathControlPhrase, args)
+			reply.Text, record.failure, reply.Pending, reply.LocalOnly, reply.SpeechRate = p.callTool(ctx, req, transcript, name, tool.PathControlPhrase, args)
 			return reply
 		}
 	}
@@ -470,7 +491,7 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 				record.reason = ""
 				reply.Path = tool.PathFast
 				reply.Tool = match.Tool
-				reply.Text, record.failure, reply.Pending, reply.LocalOnly = p.callTool(ctx, req, transcript, match.Tool, tool.PathFast, match.Args)
+				reply.Text, record.failure, reply.Pending, reply.LocalOnly, reply.SpeechRate = p.callTool(ctx, req, transcript, match.Tool, tool.PathFast, match.Args)
 				return reply
 			}
 		}
@@ -555,7 +576,7 @@ func (p *Pipeline) callAgent(ctx context.Context, req tool.Request, transcript s
 	reply.Tool = strings.Join(names, ",")
 }
 
-func (p *Pipeline) callTool(ctx context.Context, req tool.Request, transcript, name string, path tool.Path, args json.RawMessage) (string, string, *tool.PendingConfirmation, bool) {
+func (p *Pipeline) callTool(ctx context.Context, req tool.Request, transcript, name string, path tool.Path, args json.RawMessage) (string, string, *tool.PendingConfirmation, bool, float64) {
 	toolStarted := time.Now()
 	defer func() { latency.AddStage(ctx, latency.StageToolExecute, time.Since(toolStarted)) }()
 
@@ -576,7 +597,7 @@ func (p *Pipeline) callTool(ctx context.Context, req tool.Request, transcript, n
 					LocalOnly: info.LocalOnly,
 					Result:    "Confirmation required.",
 				})
-				return pending.Summary, "", &pending, info.LocalOnly
+				return pending.Summary, "", &pending, info.LocalOnly, 0
 			}
 			err = proposeErr
 		}
@@ -586,7 +607,7 @@ func (p *Pipeline) callTool(ctx context.Context, req tool.Request, transcript, n
 			LocalOnly: info.LocalOnly,
 			Result:    message,
 		})
-		return message, err.Error(), nil, info.LocalOnly
+		return message, err.Error(), nil, info.LocalOnly, 0
 	}
 	// A declared Provenance hook can give one replayed text different provenance
 	// from its Tool's static flag: assistant.repeat is Local-only so the Agent
@@ -601,7 +622,7 @@ func (p *Pipeline) callTool(ctx context.Context, req tool.Request, transcript, n
 			LocalOnly: localOnly,
 			Result:    tool.DefaultFailureMessage,
 		})
-		return tool.DefaultFailureMessage, err.Error(), nil, localOnly
+		return tool.DefaultFailureMessage, err.Error(), nil, localOnly, 0
 	}
 	latency.AddToolCall(ctx, latency.ToolCallDetail{
 		Name:      name,
@@ -609,7 +630,7 @@ func (p *Pipeline) callTool(ctx context.Context, req tool.Request, transcript, n
 		Result:    spoken,
 	})
 	p.recordToolTurn(transcript, spoken, name, result, localOnly)
-	return spoken, "", nil, localOnly
+	return spoken, "", nil, localOnly, rateOf(result)
 }
 
 // recordToolTurn keeps a successful Fast path turn in the shared history,
@@ -643,10 +664,11 @@ func (p *Pipeline) finish(ctx context.Context, started time.Time, req tool.Reque
 	// actually heard; an error or Unavailable reply was spoken, so it counts.
 	if p.lastReply != nil && ctx.Err() == nil && strings.TrimSpace(reply.Text) != "" {
 		p.lastReply.Record(lastreply.Reply{
-			Text:      reply.Text,
-			Tool:      reply.Tool,
-			Path:      string(reply.Path),
-			LocalOnly: reply.LocalOnly,
+			Text:       reply.Text,
+			Tool:       reply.Tool,
+			Path:       string(reply.Path),
+			LocalOnly:  reply.LocalOnly,
+			SpeechRate: reply.SpeechRate,
 		})
 	}
 	// The reply text and its provenance are display-only: the timeline keeps

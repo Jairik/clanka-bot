@@ -26,6 +26,11 @@ type Reply struct {
 	// off the Pi, including by a follow-up Tool. It follows the text's own
 	// provenance rather than only the Tool that produced the final call.
 	LocalOnly bool
+	// SpeechRate is the per-utterance TTS multiplier this reply actually used.
+	// Zero means the reply used the persistent voice.rate setting. A follow-up
+	// such as "say that again slower" steps from this value, so two repeats in
+	// a row step twice; it never writes the setting itself.
+	SpeechRate float64
 	// At is when the reply was recorded.
 	At time.Time
 }

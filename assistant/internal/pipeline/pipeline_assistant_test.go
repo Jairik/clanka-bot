@@ -473,3 +473,100 @@ func mustLogger(t *testing.T) *slog.Logger {
 	logger, _ := testLogger()
 	return logger
 }
+
+// TestRepeatRateStepsAndResets covers the per-utterance replay rate through the
+// whole pipeline: a slower step uses the previous applied rate (so two in a row
+// step twice), a plain repeat keeps the setting, and the next ordinary reply is
+// back at the setting's rate with no stored override.
+func TestRepeatRateStepsAndResets(t *testing.T) {
+	fixed := time.Date(2026, 11, 11, 15, 4, 0, 0, time.UTC)
+	reg := tool.NewRegistry(time.Second)
+	if err := clock.Register(reg, func() time.Time { return fixed }); err != nil {
+		t.Fatalf("register clock: %v", err)
+	}
+	store := lastreply.New()
+	// No Voices seam: NewRepeat falls back to the neutral 1.0 setting.
+	if err := assistant.NewModule().Register(reg, tool.Deps{LastReply: store}); err != nil {
+		t.Fatalf("register assistant: %v", err)
+	}
+	p, _ := newComposedPipeline(t, reg, map[string]string{
+		"what time is it":       clock.Name,
+		"say that again slower": assistant.RepeatName,
+		"say that again":        assistant.RepeatName,
+	}, pipeline.WithLastReply(store))
+
+	first := p.Handle(context.Background(), request(), "what time is it")
+	if first.SpeechRate != 0 {
+		t.Fatalf("ordinary reply rate = %v, want 0 (the setting)", first.SpeechRate)
+	}
+	if got, _ := store.Last(); got.SpeechRate != 0 {
+		t.Fatalf("stored rate after ordinary reply = %v, want 0", got.SpeechRate)
+	}
+
+	slow1 := p.Handle(context.Background(), request(), "say that again slower")
+	if slow1.SpeechRate != 0.8 {
+		t.Fatalf("first slower rate = %v, want 0.8 (one step from 1.0)", slow1.SpeechRate)
+	}
+	if got, _ := store.Last(); got.SpeechRate != 0.8 {
+		t.Fatalf("stored rate after first slower = %v, want 0.8", got.SpeechRate)
+	}
+
+	// Two "slower" requests in a row step from the previously applied rate.
+	slow2 := p.Handle(context.Background(), request(), "say that again slower")
+	if slow2.SpeechRate != 0.64 {
+		t.Fatalf("second slower rate = %v, want 0.64 (a second step from 0.8)", slow2.SpeechRate)
+	}
+	if slow2.Text != first.Text || slow2.LocalOnly {
+		t.Fatalf("slower replay = %+v, want the same public text", slow2)
+	}
+	if got, _ := store.Last(); got.SpeechRate != 0.64 {
+		t.Fatalf("stored rate after second slower = %v, want 0.64", got.SpeechRate)
+	}
+
+	// A plain repeat keeps the setting; it does not inherit the last override.
+	plain := p.Handle(context.Background(), request(), "say that again")
+	if plain.SpeechRate != 0 {
+		t.Fatalf("plain repeat rate = %v, want 0", plain.SpeechRate)
+	}
+	if got, _ := store.Last(); got.SpeechRate != 0 {
+		t.Fatalf("stored rate after plain repeat = %v, want 0", got.SpeechRate)
+	}
+
+	// The next ordinary reply is back at the setting's rate with nothing stored.
+	next := p.Handle(context.Background(), request(), "what time is it")
+	if next.SpeechRate != 0 {
+		t.Fatalf("next ordinary reply rate = %v, want 0", next.SpeechRate)
+	}
+	if got, _ := store.Last(); got.SpeechRate != 0 {
+		t.Fatalf("stored rate after next ordinary reply = %v, want 0", got.SpeechRate)
+	}
+}
+
+// TestCancelledRepeatStoresNoRateOrReply proves a stopped turn cannot leave a
+// replay rate (or a changed last reply) behind for the next request.
+func TestCancelledRepeatStoresNoRateOrReply(t *testing.T) {
+	fixed := time.Date(2026, 11, 11, 15, 4, 0, 0, time.UTC)
+	reg := tool.NewRegistry(time.Second)
+	if err := clock.Register(reg, func() time.Time { return fixed }); err != nil {
+		t.Fatalf("register clock: %v", err)
+	}
+	store := lastreply.New()
+	store.Record(lastreply.Reply{Text: "original answer", Tool: clock.Name})
+	if err := assistant.NewModule().Register(reg, tool.Deps{LastReply: store}); err != nil {
+		t.Fatalf("register assistant: %v", err)
+	}
+	p, _ := newComposedPipeline(t, reg, map[string]string{
+		"say that again slower": assistant.RepeatName,
+	}, pipeline.WithLastReply(store))
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	reply := p.Handle(cancelled, request(), "say that again slower")
+	if reply.SpeechRate != 0 {
+		t.Fatalf("cancelled turn replay rate = %v, want 0 (no override)", reply.SpeechRate)
+	}
+	got, ok := store.Last()
+	if !ok || got.Text != "original answer" || got.SpeechRate != 0 {
+		t.Fatalf("store after cancelled repeat = %+v/%v, want the unchanged original", got, ok)
+	}
+}

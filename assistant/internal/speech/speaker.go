@@ -108,7 +108,15 @@ func (s *Speaker) SayText(ctx context.Context, text string) error {
 func (s *Speaker) Say(ctx context.Context, text string) (Result, error) {
 	started := time.Now()
 	choice := s.synthesis()
-	stream, err := s.client.Synthesize(ctx, text, choice.Voice, wyoming.WithRate(choice.Rate))
+	// A per-utterance override (a replay at a different speed) wins for this
+	// one call. The live voice.rate setting is untouched, so the next synthesis
+	// reads it again. This is per Say, not per Speaker or per turn: a Filler,
+	// Confirmation prefix and Ring keep the setting's rate.
+	rate := choice.Rate
+	if override := RateFrom(ctx); override > 0 {
+		rate = override
+	}
+	stream, err := s.client.Synthesize(ctx, text, choice.Voice, wyoming.WithRate(rate))
 	if err != nil {
 		return Result{}, err
 	}

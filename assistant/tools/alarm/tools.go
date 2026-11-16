@@ -78,20 +78,24 @@ func NewList(m *Manager) tool.Tool[ListIn, ListOut] {
 				}
 				return describeAlarm(out.Alarms[0])
 			default:
-				switch ringing {
-				case 0:
-					next := out.Alarms[0]
-					return fmt.Sprintf("You have %d alarms. The next is at %s.",
-						len(out.Alarms), formatClock(next.Hour, next.Minute))
-				case 1:
+				// A sounding Alarm owns the answer: the user can hear it, so
+				// name it instead of listing the rest.
+				switch {
+				case ringing > 1:
+					return fmt.Sprintf("You have %d alarms. %d are ringing.", len(out.Alarms), ringing)
+				case ringing == 1:
 					if label := out.Alarms[ringingIndex].Label; label != "" {
 						return fmt.Sprintf("You have %d alarms. The %s alarm is ringing.",
 							len(out.Alarms), label)
 					}
 					return fmt.Sprintf("You have %d alarms. One is ringing.", len(out.Alarms))
-				default:
-					return fmt.Sprintf("You have %d alarms. %d are ringing.", len(out.Alarms), ringing)
 				}
+				// Nothing is ringing: name every scheduled Alarm, bounded.
+				if len(out.Alarms) <= listNamedMax {
+					return fmt.Sprintf("You have %d alarms: %s.", len(out.Alarms), joinAlarmItems(out.Alarms))
+				}
+				return fmt.Sprintf("You have %d alarms. The next two are %s, and %d more.",
+					len(out.Alarms), joinAlarmItems(out.Alarms[:2]), len(out.Alarms)-2)
 			}
 		},
 		Examples: []string{
@@ -489,6 +493,15 @@ func speakUpdate(out UpdateOut) string {
 			} else {
 				parts = append(parts, rampPhrase(*out.Alarm.RampSeconds))
 			}
+		// The audio case renders the completion-audio change the Dashboard can
+		// write (and the Agent path): it replaces the spoken completion, so an
+		// audio-only update must not fall through to "Nothing changed".
+		case "audio":
+			if out.Alarm.Audio == "" {
+				parts = append(parts, "no completion audio")
+			} else {
+				parts = append(parts, "the completion audio")
+			}
 		}
 	}
 	fallback := ""
@@ -606,6 +619,31 @@ func weekdayMaskOf(names []string) uint8 {
 		return 0
 	}
 	return mask
+}
+
+// listNamedMax is the most scheduled Alarms the list reply names one by one.
+// Beyond it the reply gives the count, the next two, and "and N more", so a
+// long list never becomes an unending spoken paragraph (#245).
+const listNamedMax = 5
+
+// alarmItemText is the compact one-line form used to name an Alarm inside the
+// list reply: "work at 6:30 on weekdays", or "8:00 on weekends" unlabelled.
+func alarmItemText(alarm Alarm) string {
+	clock := formatClock(alarm.Hour, alarm.Minute)
+	repeat := describeSchedule(scheduleSpec{schedule: alarm.Schedule, days: weekdayMaskOf(alarm.Weekdays)}, alarm.Weekdays)
+	if alarm.Label != "" {
+		return alarm.Label + " at " + clock + repeat
+	}
+	return clock + repeat
+}
+
+// joinAlarmItems renders "a, b and c" from a slice of Alarms.
+func joinAlarmItems(alarms []Alarm) string {
+	parts := make([]string, 0, len(alarms))
+	for _, alarm := range alarms {
+		parts = append(parts, alarmItemText(alarm))
+	}
+	return joinPhrases(parts)
 }
 
 // describeAlarm renders one Alarm for the list reply.

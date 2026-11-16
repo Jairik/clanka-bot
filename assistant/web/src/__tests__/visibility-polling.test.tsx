@@ -97,6 +97,7 @@ describe("shell health poll", () => {
         Location: { Name: "pi", Status: "ok", StatusLabel: "OK", Detail: "" },
         Wakeword: [],
         Spotify: [],
+        DiagnosticsURL: "/api/ui/diagnostics",
       } satisfies HealthView),
     );
     stubFetch({ "/api/ui/health": health });

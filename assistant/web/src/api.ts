@@ -73,6 +73,36 @@ export async function postForm<T>(action: string, body?: Record<string, string> 
   return { ok: res.ok, status: res.status, view: null, text: (await res.text()).trim() };
 }
 
+/**
+ * Download one support bundle. The route is an authenticated read, so fetch
+ * keeps the same-origin identity on it; the response becomes a local file
+ * without navigating away from the Dashboard.
+ */
+export async function downloadDiagnostics(path: string, includeRequests: boolean): Promise<void> {
+  const url = includeRequests ? `${path}?requests=1` : path;
+  let res: Response;
+  try {
+    res = await fetch(url, { credentials: "same-origin" });
+  } catch {
+    piUnreachable();
+    throw new Error("Could not reach the assistant for a diagnostics download.");
+  }
+  if (!res.ok) throw new HttpError(res.status, (await res.text()).trim() || res.statusText);
+  const objectURL = URL.createObjectURL(await res.blob());
+  try {
+    const anchor = document.createElement("a");
+    anchor.href = objectURL;
+    const disposition = res.headers.get("Content-Disposition") ?? "";
+    const filename = /filename="?([^";]+)"?/i.exec(disposition)?.[1];
+    anchor.download = filename || "clanka-diagnostics.json";
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+  } finally {
+    URL.revokeObjectURL(objectURL);
+  }
+}
+
 // ---------- page data ----------
 
 type Load<T> = {

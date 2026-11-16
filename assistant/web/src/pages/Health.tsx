@@ -1,6 +1,7 @@
-import { Button } from "@heroui/react";
-import { RefreshCw } from "lucide-react";
-import { usePageData } from "../api";
+import { Button, Checkbox } from "@heroui/react";
+import { Download, RefreshCw } from "lucide-react";
+import { useState } from "react";
+import { downloadDiagnostics, usePageData } from "../api";
 import { PageFrame } from "../shell";
 import type { Check } from "../types";
 import { Dot, Empty, Notice, Section, cn, type Tone } from "../ui";
@@ -11,6 +12,9 @@ const failing = (c: Check) => TONE[c.Status] === "bad";
 export function HealthPage() {
   // A minute is frequent enough for a status page without hammering the checks.
   const { data, error, loading, reload } = usePageData("health", { poll: 60_000 });
+  const [includeRequests, setIncludeRequests] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [downloadError, setDownloadError] = useState("");
   const groups: [string, Check[], string?][] = data
     ? [
         ["Compose services", data.Services ?? []],
@@ -21,19 +25,47 @@ export function HealthPage() {
       ]
     : [];
 
+  const download = async () => {
+    if (!data) return;
+    setDownloading(true);
+    setDownloadError("");
+    try {
+      await downloadDiagnostics(data.DiagnosticsURL, includeRequests);
+    } catch (e) {
+      setDownloadError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setDownloading(false);
+    }
+  };
+
   return (
     <PageFrame
       id="health"
       right={
         <div className="flex items-center gap-3 text-xs text-muted">
           {data && <span>Checked {data.CheckedAt}</span>}
+          <Button size="sm" variant="secondary" onPress={() => void download()} isPending={downloading} isDisabled={!data}>
+            <Download className="size-3.5" /> Download diagnostics
+          </Button>
           <Button size="sm" variant="secondary" onPress={() => void reload()} isPending={loading}>
             <RefreshCw className="size-3.5" /> Refresh
           </Button>
         </div>
       }
     >
-      <Notice error={error} />
+      <Notice error={downloadError || error} />
+      <p className="mb-2.5 text-xs text-subtle">
+        The diagnostics file is for support: it contains the health snapshot, effective settings with secrets redacted, versions and Tool policy. Nothing is uploaded.
+      </p>
+      <Checkbox isSelected={includeRequests} onChange={setIncludeRequests} className="mb-3">
+        <Checkbox.Content className="text-xs text-muted">
+          <Checkbox.Control>
+            <Checkbox.Indicator />
+          </Checkbox.Control>
+          Include the last 50 requests in the file
+        </Checkbox.Content>
+      </Checkbox>
+      <p className="mb-3 text-xs text-subtle">Including requests adds private transcript and reply text to the file. Review it before sharing.</p>
       {!data && !error && <Empty>Checking every service… this can take up to the health timeout.</Empty>}
       <div className="space-y-2.5">
         {groups.map(([title, checks, note]) => {

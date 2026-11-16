@@ -96,6 +96,7 @@ func TestRemindersAndEveryOtherTableShareOneDatabase(t *testing.T) {
 		10: "notes_and_lists",
 		11: "activity_history", 12: "completion_audio",
 		13: "persona_phrases",
+		14: "activity_tokens",
 	}
 	if len(applied) != len(want) {
 		t.Fatalf("fresh migrations = %v, want %v", applied, want)

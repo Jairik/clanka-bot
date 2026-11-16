@@ -76,7 +76,7 @@ func TestWeatherAnswersOnTheFastPath(t *testing.T) {
 	if reply.Tool != weather.Name {
 		t.Fatalf("tool = %q, want %q", reply.Tool, weather.Name)
 	}
-	if want := "It's 4 degrees and overcast in Berlin."; reply.Text != want {
+	if want := "It's 4 degrees Celsius and overcast in Berlin."; reply.Text != want {
 		t.Fatalf("reply = %q, want %q", reply.Text, want)
 	}
 }

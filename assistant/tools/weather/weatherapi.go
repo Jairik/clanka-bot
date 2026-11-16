@@ -41,12 +41,12 @@ func weatherAPICurrent(ctx context.Context, deps Deps, key, city string) (Out, e
 	if *current.Wind < 0 || *current.Humidity < 0 || *current.Humidity > 100 {
 		return Out{}, fmt.Errorf("weather: WeatherAPI returned invalid current conditions")
 	}
-	return Out{
+	return withConversions(Out{
 		City:         strings.TrimSpace(body.Location.Name),
 		Condition:    strings.ToLower(strings.TrimSpace(current.Condition.Text)),
 		TemperatureC: *current.Temperature,
 		ApparentC:    *current.Apparent,
 		WindKph:      *current.Wind,
 		Humidity:     *current.Humidity,
-	}, nil
+	}), nil
 }

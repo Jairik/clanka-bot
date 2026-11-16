@@ -48,10 +48,10 @@ func fallbackForecast(ctx context.Context, deps Deps, city string) (Out, error) 
 	if *current.Humidity < 0 || *current.Humidity > 100 || *current.Wind < 0 {
 		return Out{}, fmt.Errorf("weather: fallback has invalid current conditions")
 	}
-	return Out{
+	return withConversions(Out{
 		City:         strings.TrimSpace(body.Places[0].Names[0].Value),
 		TemperatureC: *current.Temperature, ApparentC: *current.Apparent,
 		Humidity: *current.Humidity, WindKph: *current.Wind,
 		Condition: strings.ToLower(strings.TrimSpace(current.Description[0].Value)),
-	}, nil
+	}), nil
 }

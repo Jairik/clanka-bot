@@ -38,7 +38,11 @@ func TestWeatherAPIPreferredAndCached(t *testing.T) {
 		GeocodingURL: fallback.URL, ForecastURL: fallback.URL, FallbackURL: fallback.URL,
 	})
 	first := execute(t, def, weather.In{City: "Berlin"})
-	want := weather.Out{City: "Berlin", TemperatureC: 4.5, ApparentC: 1.2, WindKph: 5.2, Humidity: 85, Condition: "partly cloudy"}
+	want := weather.Out{
+		City: "Berlin", Condition: "partly cloudy", Humidity: 85,
+		TemperatureC: 4.5, ApparentC: 1.2, WindKph: 5.2,
+		TemperatureF: weather.ToFahrenheit(4.5), ApparentF: weather.ToFahrenheit(1.2), WindMph: weather.ToMph(5.2),
+	}
 	if first != want {
 		t.Fatalf("WeatherAPI result = %+v, want %+v", first, want)
 	}

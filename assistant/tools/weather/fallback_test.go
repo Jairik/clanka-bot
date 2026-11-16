@@ -53,7 +53,11 @@ func TestWeatherFallbackRecoversAndCaches(t *testing.T) {
 			if elapsed := time.Since(started); elapsed > 750*time.Millisecond {
 				t.Fatalf("fallback took %v, want time left for the voice reply", elapsed)
 			}
-			want := weather.Out{City: "Berlin", Condition: "partly cloudy", TemperatureC: 4, ApparentC: 1, WindKph: 5.2, Humidity: 85}
+			want := weather.Out{
+				City: "Berlin", Condition: "partly cloudy", Humidity: 85,
+				TemperatureC: 4, ApparentC: 1, WindKph: 5.2,
+				TemperatureF: weather.ToFahrenheit(4), ApparentF: weather.ToFahrenheit(1), WindMph: weather.ToMph(5.2),
+			}
 			if first != want {
 				t.Fatalf("fallback = %+v, want %+v", first, want)
 			}

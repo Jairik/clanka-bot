@@ -24,6 +24,23 @@ and `kyutai/tts-voices`. Nothing is downloaded on start, so `tts` comes up
 offline; the health check only passes once the model and default voice are warm.
 Rebuild `tts` (not just restart it) if you change `TTS_LANGUAGE` or `TTS_VOICE`.
 
+Several deployment values are baked into their image at build time while the
+service runs offline, so changing one needs `docker compose build <service>`,
+not just a restart. Compose passes most of them as both a build arg and a
+runtime env: a runtime-only change leaves the image advertising something it
+never prefetched (for `TTS_CATALOGUE`, voices with no baked embedding).
+
+| Env value | Service | Change requires |
+| --- | --- | --- |
+| `TTS_LANGUAGE` | `tts` | `docker compose build tts` |
+| `TTS_VOICES` | `tts` | `docker compose build tts` |
+| `TTS_VOICE` | `tts` | `docker compose build tts` |
+| `TTS_CATALOGUE` | `tts` | `docker compose build tts` (a runtime-only change advertises voices the image never prefetched) |
+| `STT_MODELS` | `stt` | `docker compose build stt` |
+| `STT_MODEL` | `stt` | `docker compose build stt` |
+| `EMBED_MODEL` | `embed` | `docker compose build embed` (see `docs/embeddings.md`) |
+| `WAKEWORD_MODELS` | `wakeword` | restart only; rebuild `wakeword` if you change the baked `.tflite` files |
+
 Check it and ask the time:
 
 ```sh

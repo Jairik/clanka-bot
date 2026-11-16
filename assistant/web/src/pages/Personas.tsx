@@ -71,30 +71,22 @@ export function PersonasPage() {
                               {r.VoiceStatus !== "ready" && r.VoiceStatus !== "builtin" && <Badge tone="warn">voice {r.VoiceStatus}</Badge>}
                             </div>
                           </div>
-                          {!r.Active && (
-                            <span
-                              role="button"
-                              tabIndex={0}
-                              className="border px-2.5 py-1 text-xs hover:bg-default"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                void actions.run(r.SelectAction);
-                              }}
-                              onKeyDown={(e) => {
-                                if (e.key === "Enter" || e.key === " ") {
-                                  e.preventDefault();
-                                  e.stopPropagation();
-                                  void actions.run(r.SelectAction);
-                                }
-                              }}
-                            >
-                              {actions.pending === r.SelectAction ? "Selecting…" : "Select"}
-                            </span>
-                          )}
                           <ChevronDown className={cn("size-4 shrink-0 text-muted", foldOpen)} />
                         </>
                       }
                     >
+                      {!r.Active && (
+                        <div className="mb-3 flex flex-wrap items-center gap-2">
+                          <Button
+                            size="sm"
+                            isPending={actions.pending === r.SelectAction}
+                            onPress={() => void actions.run(r.SelectAction)}
+                          >
+                            Use this persona
+                          </Button>
+                          <span className="text-[11px] text-subtle">Selecting copies the voice and wording into the live settings in one step.</span>
+                        </div>
+                      )}
                       <PersonaEditor form={r.Edit} actions={actions} />
                     </Fold>
                   </li>

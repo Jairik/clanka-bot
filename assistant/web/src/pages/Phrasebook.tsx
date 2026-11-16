@@ -195,6 +195,10 @@ function PhraseRow({
   const usable = trimmed !== "" && Array.from(trimmed).length <= 80;
   const saveAction = baseAction(persona);
   const resetAction = `${saveAction}/reset`;
+  // Every row posts to the same URL, so the URL cannot tell rows apart. Key the
+  // pending state on the Tool so only the row the owner touched shows a spinner.
+  const saving = actions.pendingKey === slot.Tool;
+  const resetting = actions.pendingKey === slot.Tool;
 
   return (
     <li className="px-3.5 py-2.5">
@@ -231,8 +235,8 @@ function PhraseRow({
               <Button
                 size="sm"
                 isDisabled={!usable}
-                isPending={actions.pending === saveAction}
-                onPress={() => void actions.run(saveAction, { tool: slot.Tool, phrase: draft })}
+                isPending={saving}
+                onPress={() => void actions.run(saveAction, { tool: slot.Tool, phrase: draft }, undefined, slot.Tool)}
               >
                 Save
               </Button>
@@ -240,8 +244,8 @@ function PhraseRow({
             {slot.Overridden && (
               <ResetButton
                 label="Reset"
-                isPending={actions.pending === resetAction}
-                onPress={() => void actions.run(resetAction, { tool: slot.Tool })}
+                isPending={resetting}
+                onPress={() => void actions.run(resetAction, { tool: slot.Tool }, undefined, slot.Tool)}
               />
             )}
           </div>

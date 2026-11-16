@@ -146,7 +146,7 @@ func (h *History) Add(entry Entry) error {
 		INSERT INTO activity (request_id, at, source, path, tool, outcome, error,
 		transcript, reply, local_only, response_ms, stages, checkpoints, calls, search,
 		prompt_tokens, completion_tokens, total_tokens, cached_tokens, agent_steps)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	haystack := searchText(entry)
 	insertArgs := []any{
 		entry.ID, at.UnixMilli(), entry.Source, entry.Path, entry.Tool, entry.Outcome,
@@ -591,7 +591,8 @@ func summarizeCalls(raw string) string {
 // entryColumns is the one SELECT list for a full history row; scanEntry reads
 // exactly these columns in this order.
 const entryColumns = `id, request_id, at, source, path, tool, outcome, error,
-	transcript, reply, local_only, response_ms, stages, checkpoints, calls, summary`
+	transcript, reply, local_only, response_ms, stages, checkpoints, calls, summary,
+	prompt_tokens, completion_tokens, total_tokens, cached_tokens, agent_steps`
 
 // scanResult is one scanned row: the integer id keys the windowed page's
 // ordered id list, the cursor is what the page hands the client, and the entry
@@ -618,7 +619,8 @@ func scanEntry(rows *sql.Rows) (scanResult, error) {
 	)
 	if err := rows.Scan(&id, &requestID, &at, &entry.Source, &entry.Path, &entry.Tool,
 		&entry.Outcome, &entry.Error, &entry.Transcript, &entry.Reply, &localOnly,
-		&response, &stages, &checkpoints, &calls, &summary); err != nil {
+		&response, &stages, &checkpoints, &calls, &summary,
+		&prompt, &completion, &total, &cached, &agentSteps); err != nil {
 		return scanResult{}, fmt.Errorf("activity history: scan: %w", err)
 	}
 	entry.ID = requestID

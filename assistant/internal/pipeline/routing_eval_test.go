@@ -127,6 +127,10 @@ var routingEvalTools = []string{
 	listtools.RemoveName,
 	listtools.DoneName,
 	web.HeadlinesName,
+	// wiki.summary is the one factual-lookup Fast path Tool. Its grammar
+	// Extract keeps open-ended "what is the capital of France" questions on the
+	// Agent path, so only strict "who/what is X" phrasing is indexed here.
+	web.WikiName,
 }
 
 const (
@@ -759,7 +763,11 @@ func evalRegistry(t *testing.T) (*tool.Registry, *timer.Manager, *alarm.Manager,
 	// web.search and web.fetch are AgentOnly and must never be indexed by the
 	// semantic router; registering the module proves the ToolCount check below
 	// is scoped to the Fast path rather than to every Agent-visible Tool.
-	if err := web.NewModule().Register(reg, tool.Deps{}); err != nil {
+	// wiki.summary runs against a fake Wikipedia origin so the routing corpus
+	// never reaches the live site during evaluation.
+	wikiFake := httptest.NewServer(evalWikiHandler())
+	t.Cleanup(wikiFake.Close)
+	if err := webModuleWithFakeWiki(wikiFake.URL).Register(reg, tool.Deps{}); err != nil {
 		t.Fatalf("register web: %v", err)
 	}
 	// The GitHub Tools are AgentOnly for the same reason. The empty Deps means
@@ -786,6 +794,44 @@ func evalRegistry(t *testing.T) (*tool.Registry, *timer.Manager, *alarm.Manager,
 	}
 	lm.Service.Run = func(context.Context, ...string) ([]byte, error) { return nil, nil }
 	return reg, manager, alarmManager, reminderModule.Manager()
+}
+
+// evalWikiHandler is a fake Wikipedia REST API: it returns one canned page for
+// any search title or page summary request, so wiki.summary's positives in the
+// routing corpus exercise the handler without leaving the machine.
+func evalWikiHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(r.URL.Path, "/search/title"):
+			_, _ = io.WriteString(w, `{"pages":[{"title":"Sample Topic"}]}`)
+		case strings.Contains(r.URL.Path, "/page/summary/"):
+			_, _ = io.WriteString(w, `{"title":"Sample Topic","extract":"Sample Topic is a test subject. It is used for the routing corpus only.","type":"standard","content_urls":{"desktop":{"page":"https://en.wikipedia.org/wiki/Sample_Topic"}}}`)
+		default:
+			http.NotFound(w, r)
+		}
+	})
+}
+
+// webModuleWithFakeWiki configures the web module against a fake Wikipedia
+// origin so the routing evaluation never contacts the live site.
+func webModuleWithFakeWiki(baseURL string) *web.Module {
+	raw, err := yaml.Marshal(map[string]any{"wiki": map[string]any{"base_url": baseURL}})
+	if err != nil {
+		panic(err)
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(raw, &doc); err != nil {
+		panic(err)
+	}
+	mod := web.NewModule()
+	if len(doc.Content) == 0 {
+		panic("empty wiki config document")
+	}
+	if err := mod.Configure(doc.Content[0]); err != nil {
+		panic(err)
+	}
+	return mod
 }
 
 // evalSpotifyPlayer is a successful in-memory Player for the routing corpus.

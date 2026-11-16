@@ -1646,6 +1646,31 @@ positives:
     - "news update"
     - "what are the headlines today"
     - "read out the news"
+  wiki.summary:
+    - "who was Ada Lovelace"
+    - "who is Marie Curie"
+    - "who was Albert Einstein"
+    - "who is Isaac Newton"
+    - "who was Leonardo da Vinci"
+    - "who is Cleopatra"
+    - "who was Wolfgang Amadeus Mozart"
+    - "who is Charles Darwin"
+    - "who was William Shakespeare"
+    - "who is Nikola Tesla"
+    - "who was Frida Kahlo"
+    - "who is Greta Thunberg"
+    - "what is a capybara"
+    - "what is an axiom"
+    - "what is a quasar"
+    - "what is an estuary"
+    - "what is a glacier"
+    - "what is an isotope"
+    - "what is a photon"
+    - "what is an enzyme"
+    - "what is a mitochondrion"
+    - "what is an algorithm"
+    - "what is a black hole"
+    - "what is a red fox"
 negatives:
   - "what's my next alarm"
   - "when does my next alarm go off"
@@ -1949,6 +1974,33 @@ negatives:
   - forget the shopping list
   - clear all my notes
   - clear the kitchen timer
+  # wiki.summary negatives: open-ended factual questions that must stay on the
+  # Agent path. They are semantically close to "who/what is X" but either fail
+  # wikiExtract's strict grammar (extra words after the noun phrase) or ask for
+  # more than a one-line summary, so the semantic router must not claim them.
+  - "what is the capital of France"
+  - "who is the president of the United States"
+  - "what is a capybara's habitat"
+  - "what was the cause of the first world war"
+  - "who wrote the novel 1984"
+  - "what are the health benefits of green tea"
+  - "when did the roman empire fall"
+  - "how tall is mount everest"
+  - "what movies did stanley kubrick direct"
+  - "why is the sky blue"
+  - "where is the amazon river located"
+  - "what language is spoken in brazil"
+  - "who discovered penicillin"
+  - "what year did the titanic sink"
+  - "what is the population of tokyo"
+  - "what does dna stand for"
+  - "which planet is the largest"
+  - "what is the speed of light"
+  - "who painted the mona lisa"
+  - "what is the meaning of life"
+  - "how many countries are there in the world"
+  - "what is the longest river in africa"
+  - "who won the world cup in 2022"
   - forget the alarm I set for 7
   - clear my reminders before bed
   # "what's wrong / broken / failed / slow" about the wider world, not this

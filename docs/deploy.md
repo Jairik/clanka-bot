@@ -518,6 +518,16 @@ without the other.
       survives container restarts and image rebuilds. `assistant` is its only
       mounter. It holds settings overrides and unencrypted secrets (API keys,
       tokens) in a file mode 0600; treat a backup like the secrets it contains.
+- [ ] Back up and restore the database. `make backup OWNER=<your-tailnet-login>`
+      downloads an authenticated copy of the live SQLite file to `backups/`
+      (`POST /api/ui/backup`; owner-only and same-origin, never a GET). The file
+      contains the secrets table, so store it like the secrets database, not in a
+      shared or cloud-synced folder. To restore, stop the assistant
+      (`docker compose stop assistant`), replace `assistant-data/assistant.db`
+      (and its `-wal`/`-shm` siblings if present) with the backup on the same
+      volume, start it (`docker compose start assistant`) and check the migration
+      log in `docker compose logs assistant` for a clean startup and no failed
+      migrations.
 - [ ] The `web-search` (SearXNG) service is internal-only: Compose publishes no
       host port for it, runs no valkey and keeps no data volume. It reads
       `searxng/config/settings.yml` (JSON output, limiter off, three engines,

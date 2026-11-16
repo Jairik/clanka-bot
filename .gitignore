@@ -8,6 +8,10 @@ scripts/prototype-run/.run/
 # Local SQLite database when running the assistant outside Compose.
 assistant/data/
 
+# Authenticated SQLite backups downloaded with `make backup`. They contain the
+# secrets table, so they are never committed.
+backups/
+
 # Recorded voice takes live in the training work dir (~/.cache/clanka/...), never
 # in the checkout. This guard catches someone pointing record.py at a relative
 # path: the only WAVs git tracks are the synthesized detection fixtures.

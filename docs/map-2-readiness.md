@@ -39,6 +39,11 @@ remain open.
 - **AgentOnly Control phrases are refused.** `pipeline.New`, `wording.Build`
   and the shipped-control-phrase conformance check reject an AgentOnly target.
   A custom AgentOnly+Speak Tool remains unreachable from the Fast/Control path.
+  A shared `FastPathRoutable` guard (enabled, not AgentOnly, not confirm) now
+  covers chain leaves and deferred actions, while the single Control phrase
+  keeps its own AgentOnly check and fall-through reason. A live or
+  caller-supplied phrase table therefore cannot reintroduce the Tool through a
+  compound or queued request.
 - **Shipped policy defaults.** The code default is now 0.71/0.23, matching
   `config.yaml`; a config that omits the `semantic` block can no longer weaken
   the margin. The `.95` per-Tool floor and the Map 1 baseline are untouched.

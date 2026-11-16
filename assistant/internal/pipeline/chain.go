@@ -55,7 +55,11 @@ func (p *Pipeline) chainPlan(ctx context.Context, text string, phrases map[strin
 			step.name, step.args = match.Tool, match.Args
 		}
 		info, ok := p.registry.Info(step.name)
-		if !ok || info.Permission == tool.PermissionConfirm {
+		if !ok || !FastPathRoutable(info) {
+			// One ineligible leaf disqualifies the whole plan: dropping just
+			// that step would silently lose the intent and run the rest, so
+			// the entire utterance goes to the Agent path. This is the same
+			// floor the Control-phrase and deferred routes apply.
 			return nil
 		}
 		steps = append(steps, step)

@@ -411,6 +411,26 @@ func FastPathEligible(info tool.Info) bool {
 	return fastPathEligible(info, info.Examples)
 }
 
+// fastPathPermissionOK is the core Fast-path routing exclusion shared by
+// CanUseFastPath and FastPathRoutable: an AgentOnly Tool is never routed by the
+// Fast path, and a confirm Tool is never executed there without a spoken yes.
+// This is built on the effective Info, so a live policy that raises a Tool to
+// confirm (or one that declares AgentOnly) is refused on the next request.
+func fastPathPermissionOK(info tool.Info) bool {
+	// AgentOnly is an explicit exclusion even if a future edit adds the hooks.
+	return !info.AgentOnly && (info.Permission == tool.PermissionRead || info.Permission == tool.PermissionAct)
+}
+
+// FastPathRoutable is the eligibility floor every Fast-path execution site
+// shares: a Tool must be enabled, must not be AgentOnly and must not need a
+// confirmation. It is CanUseFastPath without the index-only requirements for
+// Examples, a Speak renderer and Extract, because a Control phrase or deferred
+// action may name a Tool whose arguments are filled elsewhere. The semantic
+// match still applies the stricter FastPathEligible on top.
+func FastPathRoutable(info tool.Info) bool {
+	return info.Enabled && fastPathPermissionOK(info)
+}
+
 // CanUseFastPath is FastPathEligible without the current Examples and enabled
 // state. It answers whether a Tool could ever be routed by meaning: never for
 // an AgentOnly or Local-only-style exclusion, and otherwise only with a Speak
@@ -418,14 +438,10 @@ func FastPathEligible(info tool.Info) bool {
 // The wording settings use it to know which Tools can carry overridable
 // Examples.
 func CanUseFastPath(info tool.Info) bool {
-	// AgentOnly is an explicit exclusion even if a future edit adds the hooks.
-	if info.AgentOnly {
+	if !fastPathPermissionOK(info) {
 		return false
 	}
 	if !info.HasSpeak {
-		return false
-	}
-	if info.Permission != tool.PermissionRead && info.Permission != tool.PermissionAct {
 		return false
 	}
 	if info.HasExtract {

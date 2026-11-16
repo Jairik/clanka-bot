@@ -12,5 +12,9 @@ func (*Module) ConformanceSamples() map[string]any {
 			Services:  []Check{{Name: "embed", State: "ok"}},
 			Summary:   "I'm OK. Everything I can check is responding.",
 		},
+		DiagnoseName: DiagnoseOut{
+			Checks: []DiagnoseCheck{{Name: "tts", State: "error", Detail: "No response within 3s."}},
+			Text:   "Here's what's wrong: tts: No response within 3s.",
+		},
 	}
 }

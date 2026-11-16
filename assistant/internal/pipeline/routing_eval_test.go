@@ -92,6 +92,7 @@ var routingEvalTools = []string{
 	assistant.RepeatName,
 	assistant.HelpName,
 	system.Name,
+	system.DiagnoseName,
 	notifytools.Name,
 	calc.Name,
 	units.Name,

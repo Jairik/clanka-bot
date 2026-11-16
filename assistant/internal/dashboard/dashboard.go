@@ -26,9 +26,9 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/secrets"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 	"github.com/Jairik/clanka-bot/assistant/internal/sound"
-	"github.com/Jairik/clanka-bot/assistant/internal/store"
 	"github.com/Jairik/clanka-bot/assistant/internal/spotify"
 	"github.com/Jairik/clanka-bot/assistant/internal/status"
+	"github.com/Jairik/clanka-bot/assistant/internal/store"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/internal/toolpolicy"
 	"github.com/Jairik/clanka-bot/assistant/internal/tz"
@@ -241,8 +241,8 @@ type Handler struct {
 	verifier       *integrations.Verifier
 	// focusReg and announceQueue feed the focus view and its live delta. Either
 	// may be nil, which hides the view.
-	focusReg     *focus.Registry
-	announceQueue *announce.Queue
+	focusReg       *focus.Registry
+	announceQueue  *announce.Queue
 	spotify        *spotify.Auth
 	spotifyPairing *spotify.PairingReader
 	activity       *activity.Store

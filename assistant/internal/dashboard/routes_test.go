@@ -45,11 +45,11 @@ func routeMethod(pattern string) (string, bool) {
 // Spotify callback into Mutating.
 var allowGetRoutes = map[string]string{
 	// Authenticated GETs that stream bytes and never mutate.
-	"/sounds/audio/{name}":                "authenticated GET streams one stored sound file; never mutates",
-	"/voices/audio/{name}":                "authenticated GET synthesizes a bounded WAV and never changes the active voice",
+	"/sounds/audio/{name}":                   "authenticated GET streams one stored sound file; never mutates",
+	"/voices/audio/{name}":                   "authenticated GET synthesizes a bounded WAV and never changes the active voice",
 	"/voice-samples/take/{slug}/{kind}/{id}": "authenticated GET serves one recorded take; never mutates",
-	"/voice-samples/bundle/{slug}/{name}": "authenticated GET serves a submitted bundle export; never mutates",
-	"/": "the React app document, served read-only",
+	"/voice-samples/bundle/{slug}/{name}":    "authenticated GET serves a submitted bundle export; never mutates",
+	"/":                                      "the React app document, served read-only",
 	// Deliberate cross-site exceptions: a browser reaches these from
 	// accounts.spotify.com, so the same-origin policy cannot apply.
 	"GET /spotify/callback": "cross-site top-level GET from Spotify: one-use state plus a binding cookie; validated, not same-origin",

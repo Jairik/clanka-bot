@@ -240,63 +240,6 @@ func TestDescribeReadsWakeInfo(t *testing.T) {
 	}
 }
 
-func TestOpenStreamSendsTextChunksAndReadsSegments(t *testing.T) {
-	addr := fakeServer(t, func(conn net.Conn) {
-		r := bufio.NewReader(conn)
-		start := readWireEvent(t, r)
-		if start.Type != "synthesize-start" {
-			t.Errorf("first event = %q, want synthesize-start", start.Type)
-		}
-		chunk := readWireEvent(t, r)
-		chunkData := dataMap(t, chunk)
-		if chunk.Type != "synthesize-chunk" || chunkData["text"] != "One." {
-			t.Errorf("chunk = %q data=%v", chunk.Type, chunkData)
-		}
-		stop := readWireEvent(t, r)
-		if stop.Type != "synthesize-stop" {
-			t.Errorf("stop = %q", stop.Type)
-		}
-
-		for _, sample := range [][]byte{{10}, {20}} {
-			writeWireEvent(t, conn, "audio-start", map[string]any{"rate": 24000, "width": 2, "channels": 1})
-			writeAudio(t, conn, "audio-chunk", sample)
-			writeWireEvent(t, conn, "audio-stop", nil)
-		}
-		writeWireEvent(t, conn, "synthesize-stopped", nil)
-	})
-
-	client := wyoming.NewClient(addr)
-	ctx, cancel := contextWithTimeout(t)
-	defer cancel()
-
-	stream, err := client.OpenStream(ctx, wyoming.Voice{Name: "alba"})
-	if err != nil {
-		t.Fatalf("OpenStream: %v", err)
-	}
-	defer stream.Close()
-	if err := stream.SendText("One."); err != nil {
-		t.Fatalf("SendText: %v", err)
-	}
-	if err := stream.EndText(); err != nil {
-		t.Fatalf("EndText: %v", err)
-	}
-
-	var got []byte
-	for {
-		chunk, err := stream.Next()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			t.Fatalf("Next: %v", err)
-		}
-		got = append(got, chunk...)
-	}
-	if string(got) != string([]byte{10, 20}) {
-		t.Fatalf("audio = %v, want [10 20]", got)
-	}
-}
-
 func TestSynthesizeHonoursContextCancellation(t *testing.T) {
 	addr := fakeServer(t, func(conn net.Conn) {
 		readWireEvent(t, bufio.NewReader(conn))

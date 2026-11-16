@@ -3,8 +3,11 @@
 import type {
   ActivityView,
   AlertsView,
+  EqualizerView,
   HealthView,
   HermesView,
+  LightsView,
+  MonsterView,
   NotesView,
   PersonasView,
   PhrasebookView,
@@ -27,6 +30,7 @@ export type Flashable = { Flash?: string; Error?: string };
 export type PageViews = {
   activity: ActivityView;
   "voice-samples": VoiceSamplesView;
+  equalizer: EqualizerView;
   health: HealthView;
   settings: SettingsView;
   secrets: SecretsView;
@@ -36,6 +40,8 @@ export type PageViews = {
   phrasebook: PhrasebookView;
   routes: RoutesView;
   hermes: HermesView;
+  lights: LightsView;
+  monster: MonsterView;
   alerts: AlertsView;
   notes: NotesView;
   spotify: SpotifyView;

@@ -100,6 +100,17 @@ export type Choice = {
   Selected: boolean;
 };
 
+export type EqualizerProfile = {
+  Preset: string;
+  Bands: number[];
+};
+
+export type EqualizerView = {
+  Profile: EqualizerProfile;
+  Custom: EqualizerProfile;
+  Error: string;
+};
+
 export type HealthView = {
   Owner: string;
   Page: string;
@@ -166,6 +177,18 @@ export type IntegrationSecret = {
   Optional: boolean;
 };
 
+export type LightsDevice = {
+  address: string;
+  name: string;
+  protocol: string;
+};
+
+export type LightsView = {
+  devices: LightsDevice[] | null;
+  enabled: boolean;
+  status: string;
+};
+
 export type MissedAlert = {
   Kind: string;
   Label: string;
@@ -176,6 +199,31 @@ export type MissedAlert = {
   Ended: string;
   EndedISO: string;
   EndedBy: string;
+};
+
+export type MonsterDevice = {
+  dsn: string;
+  name: string;
+  model: string;
+  on: boolean;
+  mode: string;
+  brightness: number;
+  color: string;
+  kelvin: number;
+  effects: MonsterEffect[] | null;
+  error: string;
+};
+
+export type MonsterEffect = {
+  id: string;
+  name: string;
+};
+
+export type MonsterView = {
+  configured: boolean;
+  status: string;
+  error: string;
+  devices: MonsterDevice[] | null;
 };
 
 export type NoteItem = {

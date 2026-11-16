@@ -3,25 +3,14 @@
 // exposes. Every write is one cloud call, so sliders commit when they settle.
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@heroui/react";
-import { getJSON } from "../api";
-import { SelectField } from "../forms";
+import { usePageData } from "../api";
+import { SelectField, useActions } from "../forms";
 import { PageFrame } from "../shell";
 import { Empty, Lede, Notice, Range, Section } from "../ui";
+import type { MonsterDevice, MonsterView } from "../types";
 
-type Effect = { id: string; name: string };
-type MonsterDevice = {
-  dsn: string;
-  name: string;
-  model: string;
-  on: boolean;
-  mode: string;
-  brightness: number;
-  color: string;
-  kelvin: number;
-  effects: Effect[];
-  error?: string;
-};
-type MonsterView = { configured: boolean; status: string; error?: string; devices: MonsterDevice[] };
+// Writes are JSON, not the form encoding the other pages use.
+const JSON_INIT: RequestInit = { headers: { "Content-Type": "application/json", Accept: "application/json" } };
 
 // The white slider is a 0-100 control, while the cloud takes Kelvin. Both round
 // to 50 K, the step the Monster app exposes.
@@ -34,54 +23,28 @@ const kelvinAt = (percent: number) => Math.round(clampKelvin(KELVIN_MIN + (perce
 /** The slider position that shows this device's Kelvin. */
 const percentForKelvin = (kelvin: number) => Math.round(((clampKelvin(kelvin) - KELVIN_MIN) / (KELVIN_MAX - KELVIN_MIN)) * 100);
 
-// postMonster sends one dashboard action. A success answers {ok:true}; a
-// refusal answers non-2xx with the reason as plain text.
-async function postMonster(body: Record<string, unknown>): Promise<Response> {
-  return fetch("/api/ui/monster", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    credentials: "same-origin",
-    body: JSON.stringify(body),
-  });
-}
-
 // MonsterPage is the cloud controller page: read the account view, then command
 // each light. The cloud is the only source of truth, so every action reloads.
 export function MonsterPage() {
-  const [view, setView] = useState<MonsterView>();
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
-
-  const load = async () => {
-    setView(await getJSON<MonsterView>("/api/ui/monster"));
-  };
-
-  useEffect(() => {
-    load().catch((e) => setError(e instanceof Error ? e.message : String(e)));
-  }, []);
+  const { data: view, error, reload } = usePageData("monster");
+  // The JSON write answers {ok:true}, not a view, so the action has no refreshed
+  // view to swap in; the reload below is the single source of truth.
+  const actions = useActions<MonsterView>(() => {});
+  const busy = !!actions.pending;
 
   // act runs one cloud action, then refreshes the view. A refused write may
   // still have changed what the account reports, so the reload happens either
   // way and the action's own error stays on the page.
   const act = async (action: string, device: string, value: string) => {
-    setBusy(true);
-    setError("");
-    try {
-      const response = await postMonster({ action, device, value });
-      if (!response.ok) throw new Error((await response.text()).trim() || response.statusText);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      await load().catch(() => {});
-      setBusy(false);
-    }
+    await actions.run("/api/ui/monster", JSON.stringify({ action, device, value }), JSON_INIT);
+    await reload();
   };
 
   const devices = view?.devices ?? [];
 
   return (
     <PageFrame id="monster">
-      <Notice error={error || view?.error} />
+      <Notice error={error || actions.error || view?.error} />
       {!view ? (
         error ? null : <Empty>Loading…</Empty>
       ) : view.configured ? (
@@ -130,9 +93,10 @@ function MonsterCard({
   onAct: (action: string, device: string, value: string) => Promise<void>;
 }) {
   const [scene, setScene] = useState("");
+  const effects = device.effects ?? [];
   const scenes = [
     { value: "", label: "Choose a scene" },
-    ...device.effects.map((effect) => ({ value: effect.id, label: effect.name })),
+    ...effects.map((effect) => ({ value: effect.id, label: effect.name })),
   ];
   return (
     <Section
@@ -190,7 +154,7 @@ function MonsterCard({
             />
           </label>
         </div>
-        {device.effects.length > 0 && (
+        {effects.length > 0 && (
           <SelectField
             label="Scene"
             value={scene}

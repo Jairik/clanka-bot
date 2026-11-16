@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { Button, Switch } from "@heroui/react";
-import { getJSON } from "../api";
-import { SelectField } from "../forms";
+import { usePageData } from "../api";
+import { SelectField, useActions } from "../forms";
 import { PageFrame } from "../shell";
 import { Empty, Lede, Notice, Range, Section } from "../ui";
+import type { LightsDevice, LightsView } from "../types";
 
-type Device = { address: string; name: string; protocol: string };
-type View = { enabled: boolean; devices: Device[]; status: string };
+// Writes are JSON, not the form encoding the other pages use.
+const JSON_INIT: RequestInit = { headers: { "Content-Type": "application/json", Accept: "application/json" } };
 
 const PROTOCOLS = [
   { value: "lotus", label: "Lotus Lantern" },
@@ -21,49 +22,24 @@ const MODES = [
 
 const protocolLabel = (protocol: string) => PROTOCOLS.find((item) => item.value === protocol)?.label ?? protocol;
 
-// postLights sends one dashboard action. Scan answers with nearby devices;
-// every other action answers {ok:true} and the caller reloads the view.
-async function postLights(body: Record<string, unknown>): Promise<Response> {
-  return fetch("/api/ui/lights", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "application/json" },
-    credentials: "same-origin",
-    body: JSON.stringify(body),
-  });
-}
-
 // LightsPage is the Bluetooth controller page: opt in, scan, save, then
 // command each saved light. Physical state stays unverified.
 export function LightsPage() {
-  const [view, setView] = useState<View>();
-  const [found, setFound] = useState<Device[]>([]);
-  const [error, setError] = useState("");
-  const [busy, setBusy] = useState(false);
+  const { data: view, error, reload } = usePageData("lights");
+  const [found, setFound] = useState<LightsDevice[]>([]);
   const [protocol, setProtocol] = useState("lotus");
-
-  const load = async () => {
-    setView(await getJSON<View>("/api/ui/lights"));
-  };
-
-  useEffect(() => {
-    load().catch((e) => setError(e instanceof Error ? e.message : String(e)));
-  }, []);
+  const actions = useActions<LightsView>((written) => {
+    // A scan answers with the nearby-device list instead of the page view;
+    // every other JSON write answers {ok:true}.
+    if (Array.isArray(written)) setFound(written as unknown as LightsDevice[]);
+  });
+  const busy = !!actions.pending;
 
   // act runs one lights action, then refreshes the saved view. A scan also
   // keeps the nearby list so the user can save a controller.
   const act = async (action: string, extra: object = {}) => {
-    setBusy(true);
-    setError("");
-    try {
-      const response = await postLights({ action, ...extra });
-      if (!response.ok) throw new Error((await response.text()).trim() || response.statusText);
-      if (action === "scan") setFound(await response.json());
-      await load();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-    } finally {
-      setBusy(false);
-    }
+    await actions.run("/api/ui/lights", JSON.stringify({ action, ...extra }), JSON_INIT);
+    await reload();
   };
 
   const enabled = view?.enabled ?? false;
@@ -72,7 +48,7 @@ export function LightsPage() {
 
   return (
     <PageFrame id="lights">
-      <Notice error={error} />
+      <Notice error={error || actions.error} />
       <div className="space-y-2.5">
         <Section title="Bluetooth" summary={view ? (enabled ? "On" : "Off") : ""} defaultOpen flush>
           <Lede>
@@ -156,7 +132,7 @@ function SavedLight({
   onAct,
   onForget,
 }: {
-  device: Device;
+  device: LightsDevice;
   busy: boolean;
   enabled: boolean;
   onAct: (action: string, extra?: object) => Promise<void>;

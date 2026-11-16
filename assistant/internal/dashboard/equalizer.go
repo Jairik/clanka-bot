@@ -2,14 +2,28 @@
 package dashboard
 
 import (
-	"github.com/Jairik/clanka-bot/assistant/internal/equalizer"
 	"net/http"
+
+	"github.com/Jairik/clanka-bot/assistant/internal/equalizer"
 )
 
+// equalizerProfileView is one preset's ten bands as the page reads and writes
+// them. Tags match equalizer.Profile's default JSON field names.
+type equalizerProfileView struct {
+	Preset string  `json:"Preset"`
+	Bands  [10]int `json:"Bands"`
+}
+
+// equalizerView is the whole Equalizer page. Tags match the default field
+// names the old struct marshalled, so the wire bytes are unchanged.
 type equalizerView struct {
-	Profile equalizer.Profile
-	Custom  equalizer.Profile
-	Error   string
+	Profile equalizerProfileView `json:"Profile"`
+	Custom  equalizerProfileView `json:"Custom"`
+	Error   string               `json:"Error"`
+}
+
+func equalizerProfile(p equalizer.Profile) equalizerProfileView {
+	return equalizerProfileView{Preset: p.Preset, Bands: p.Bands}
 }
 
 func (h *Handler) equalizerRead() equalizerView {
@@ -18,7 +32,7 @@ func (h *Handler) equalizerRead() equalizerView {
 	}
 	p, _ := equalizer.Parse(h.settings.String(equalizer.Key))
 	custom, _ := equalizer.Parse(h.settings.String(equalizer.CustomKey))
-	return equalizerView{Profile: p, Custom: custom}
+	return equalizerView{Profile: equalizerProfile(p), Custom: equalizerProfile(custom)}
 }
 func (h *Handler) equalizerGet(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, http.StatusOK, h.equalizerRead())

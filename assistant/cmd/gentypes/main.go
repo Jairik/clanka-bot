@@ -27,8 +27,8 @@ import (
 // renamed or deleted Go struct fails this command instead of silently
 // disappearing from the bundle.
 var roots = []string{
-	"activityView", "alertsView", "healthView", "hermesView", "notesView",
-	"personasView", "phrasebookView", "routesView", "secretsView",
+	"activityView", "alertsView", "equalizerView", "healthView", "hermesView", "lightsView",
+	"monsterView", "notesView", "personasView", "phrasebookView", "routesView", "secretsView",
 	"sessionView", "settingsView", "soundsView", "spotifyView",
 	"voiceSamplesView", "voicesView", "volumeView",
 }
@@ -205,6 +205,11 @@ func typeOf(expr ast.Expr) string {
 	case *ast.StarExpr:
 		return typeOf(t.X) + " | null"
 	case *ast.ArrayType:
+		// A fixed-size Go array always marshals as a JSON array, never null;
+		// a nil slice does, so slices keep the null in their TypeScript type.
+		if t.Len != nil {
+			return typeOf(t.Elt) + "[]"
+		}
 		return typeOf(t.Elt) + "[] | null"
 	case *ast.MapType:
 		return "Record<" + typeOf(t.Key) + ", " + typeOf(t.Value) + ">"

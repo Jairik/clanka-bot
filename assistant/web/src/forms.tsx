@@ -12,7 +12,9 @@ import { ChevronDown } from "lucide-react";
 export type Actions<T> = {
   /** Action URL currently in flight, if any. */
   pending: string;
-  run: (action: string, body?: Record<string, string> | FormData | Blob) => Promise<boolean>;
+  /** `init` lets a page override the method, headers or credentials — for
+   * example to send a JSON body instead of the default form encoding. */
+  run: (action: string, body?: Record<string, string> | FormData | Blob | string, init?: RequestInit) => Promise<boolean>;
   flash: string;
   error: string;
   clear: () => void;
@@ -22,7 +24,7 @@ export type Actions<T> = {
  * Binds writes to one page view. `set` receives the refreshed view; the
  * flash/error are lifted out so they survive the next poll.
  */
-export function useActions<T extends Flashable>(set: (v: T) => void): Actions<T> {
+export function useActions<T>(set: (v: T) => void): Actions<T> {
   const [pending, setPending] = useState("");
   const [flash, setFlash] = useState("");
   const [error, setError] = useState("");
@@ -33,16 +35,19 @@ export function useActions<T extends Flashable>(set: (v: T) => void): Actions<T>
     return () => clearTimeout(id);
   }, [flash]);
 
-  const run = async (action: string, body?: Record<string, string> | FormData | Blob) => {
+  const run = async (action: string, body?: Record<string, string> | FormData | Blob | string, init?: RequestInit) => {
     setPending(action);
     setError("");
     setFlash("");
     try {
-      const res = await postForm<T>(action, body);
+      const res = await postForm<T>(action, body, init);
       if (res.view) {
         set(res.view);
-        setFlash(res.view.Flash ?? "");
-        setError(res.view.Error ?? "");
+        // Not every view carries the flash/error fields; read them defensively
+        // so pages whose writes answer with a different shape still work.
+        const withStatus = res.view as T & Partial<Flashable>;
+        setFlash(withStatus.Flash ?? "");
+        setError(withStatus.Error ?? "");
       } else if (!res.ok) {
         setError(res.text || `Request failed (${res.status}).`);
       }

@@ -1636,8 +1636,12 @@ negatives:
   - slow down the music
   - change the voice memo settings on my phone
   - speak after the tone
-  # #235: "what are my quiet hours" moved to positives:quiet.status; the
-  # assistant can now answer it, so it is no longer a fall-through negative.
+  # #235: these read-shaped quiet-hours questions still fall through. quiet.off
+  # scores 0.815/0.778 on them, so no quiet.status Example can clear the 0.23
+  # sibling margin against it. Keep them as negatives so a future Examples change
+  # cannot silently route them to quiet.off (which would answer a read as a write).
+  - what are my quiet hours
+  - when are my quiet hours
   - why is my phone on do not disturb
   - do not disturb is enabled on my phone
   - sleep mode on my phone

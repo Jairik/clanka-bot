@@ -61,6 +61,9 @@ type Config struct {
 	MaxResults int `yaml:"max_results"`
 	// Fetch holds web.fetch's bounds. An omitted block uses the code defaults.
 	Fetch FetchConfig `yaml:"fetch"`
+	// Feeds is the owner-configured news sources for news.headlines. Empty by
+	// default, which makes the Tool refuse honestly until a feed is set.
+	Feeds []FeedConfig `yaml:"feeds"`
 }
 
 // DefaultConfig is the shipped SearXNG service and its answer-sized bounds.
@@ -81,7 +84,46 @@ func (c Config) validate() error {
 	if err := c.validateSearch(); err != nil {
 		return err
 	}
-	return c.Fetch.validate()
+	if err := c.Fetch.validate(); err != nil {
+		return err
+	}
+	return c.validateFeeds()
+}
+
+// validateFeeds rejects an owner-configured feed list the Tool cannot honour:
+// at most maxFeeds, every entry named and https, and no duplicate names. A bad
+// feed fails Configure (and therefore startup), so a typo never silently drops
+// one source or lets a clear-text feed through.
+func (c Config) validateFeeds() error {
+	if len(c.Feeds) > maxFeeds {
+		return fmt.Errorf("feeds: at most %d feeds are allowed", maxFeeds)
+	}
+	seen := make(map[string]bool, len(c.Feeds))
+	for i, feed := range c.Feeds {
+		name := strings.TrimSpace(feed.Name)
+		if name == "" {
+			return fmt.Errorf("feeds[%d]: name is required", i)
+		}
+		raw := strings.TrimSpace(feed.URL)
+		if raw == "" {
+			return fmt.Errorf("feeds[%d]: url is required", i)
+		}
+		parsed, err := url.Parse(raw)
+		if err != nil {
+			return fmt.Errorf("feeds[%d]: url: %w", i, err)
+		}
+		if parsed.Scheme != "https" {
+			return fmt.Errorf("feeds[%d]: url must be https (got %q)", i, parsed.Scheme)
+		}
+		if parsed.Host == "" {
+			return fmt.Errorf("feeds[%d]: url must name a host", i)
+		}
+		if seen[name] {
+			return fmt.Errorf("feeds[%d]: duplicate feed name %q", i, name)
+		}
+		seen[name] = true
+	}
+	return nil
 }
 
 // validateSearch checks only the tools.web fields the search Provider needs.
@@ -177,9 +219,11 @@ func (m *Module) Configure(section *yaml.Node) error {
 }
 
 // Register builds the configured Provider and the SSRF-guarded fetcher, then
-// adds web.search and web.fetch. The keep-alive clients are created once here
-// and reused for every request. Both Tools share one Provenance cache, so a
-// URL a search returned can be read in a later turn (#172).
+// adds web.search, web.fetch and news.headlines. The keep-alive clients are
+// created once here and reused for every request. web.search and web.fetch
+// share one Provenance cache, so a URL a search returned can be read in a later
+// turn (#172); news.headlines reuses the same fetcher and cache, so a feed link
+// a follow-up web.fetch opens is already vetted.
 func (m *Module) Register(r *tool.Registry, deps tool.Deps) error {
 	m.logger = deps.Logger
 	if m.logger == nil {
@@ -197,7 +241,27 @@ func (m *Module) Register(r *tool.Registry, deps tool.Deps) error {
 	if err := tool.Add(r, New(m.cfg, provider, provenance, m.logger)); err != nil {
 		return err
 	}
-	return tool.Add(r, NewFetch(m.cfg.Fetch, fetcher, provenance, m.logger))
+	if err := tool.Add(r, NewFetch(m.cfg.Fetch, fetcher, provenance, m.logger)); err != nil {
+		return err
+	}
+	// news.headlines is Fast path eligible and also offered to the Agent path;
+	// it carries the shared name matcher so a spoken feed name resolves.
+	return tool.Add(r, NewHeadlines(m.cfg, fetcher, provenance, m.logger, deps.Names))
+}
+
+// ConformanceSamples returns one representative output per Speak Tool so the
+// conformance suite can exercise the real renderer. Only news.headlines speaks;
+// web.search and web.fetch are AgentOnly and carry no Speak.
+func (m *Module) ConformanceSamples() map[string]any {
+	return map[string]any{
+		HeadlinesName: HeadlinesOut{
+			Source: "Example",
+			Items: []HeadlineItem{
+				{Title: "Sample headline one", Link: "https://example.com/1", Source: "Example", Published: "2026-11-11T15:00:00Z"},
+				{Title: "Sample headline two", Link: "https://example.com/2", Source: "Example", Published: "2026-11-11T14:00:00Z"},
+			},
+		},
+	}
 }
 
 // Health probes the configured backend's local /healthz. It shares the same

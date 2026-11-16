@@ -261,6 +261,51 @@ func (f *fetcher) Fetch(ctx context.Context, rawURL string) (Page, error) {
 	}, nil
 }
 
+// fetchFeedBytes fetches one feed URL through the same SSRF-guarded transport
+// web.fetch uses, bounding the body to maxBytes. Unlike web.fetch it does not
+// gate on content type, because feeds are XML rather than HTML, and it returns
+// the raw bytes so the caller can parse RSS or Atom. A private address,
+// oversize body or non-2xx status all fail here exactly as they do for a page.
+func (f *fetcher) fetchFeedBytes(ctx context.Context, rawURL string, maxBytes int) ([]byte, *url.URL, error) {
+	target, pins, err := f.prepare(ctx, rawURL)
+	if err != nil {
+		return nil, nil, err
+	}
+	// Pin the vetted address into the dial context so the connection cannot be
+	// redirected by a second DNS answer between prepare and the dial: the dialer
+	// dials only the literal IPs here, never a fresh lookup.
+	request, err := http.NewRequestWithContext(
+		context.WithValue(ctx, pinKey{}, pins), http.MethodGet, target.String(), nil)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: %v", errBadFetchURL, err)
+	}
+	request.Header.Set("User-Agent", userAgent)
+	request.Header.Set("Accept", "application/rss+xml, application/atom+xml, application/xml, text/xml, */*")
+	response, err := f.client.Do(request)
+	if err != nil {
+		return nil, nil, fmt.Errorf("fetch feed %s: %w", target.Hostname(), err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode > 299 {
+		return nil, nil, fmt.Errorf("%w: %s", errFetchStatus, response.Status)
+	}
+	if response.ContentLength > int64(maxBytes) {
+		return nil, nil, fmt.Errorf("%w: content length %d", errFetchTooLarge, response.ContentLength)
+	}
+	body, err := io.ReadAll(io.LimitReader(response.Body, int64(maxBytes)+1))
+	if err != nil {
+		return nil, nil, fmt.Errorf("read feed: %w", err)
+	}
+	if len(body) > maxBytes {
+		return nil, nil, fmt.Errorf("%w: over %d bytes", errFetchTooLarge, maxBytes)
+	}
+	finalURL := target
+	if response.Request != nil && response.Request.URL != nil {
+		finalURL = response.Request.URL
+	}
+	return body, finalURL, nil
+}
+
 // readableMediaType is the HTML-only gate. XHTML is HTML for this purpose;
 // PDF, images, JSON and plain text are not readable pages.
 func readableMediaType(mediaType string) bool {

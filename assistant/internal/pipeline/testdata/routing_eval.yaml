@@ -1597,6 +1597,29 @@ positives:
     - what do I know about the car insurance
     - what have I noted about Sam
     - find my note about the batteries
+  news.headlines:
+    - "what's the news"
+    - "what is the news"
+    - "read me the headlines"
+    - "read the headlines"
+    - "give me the headlines"
+    - "tell me the news"
+    - "what are the top headlines"
+    - "headlines from the BBC"
+    - "news from the BBC"
+    - "latest news from Reuters"
+    - "read me the BBC headlines"
+    - "what's happening in the world"
+    - "catch me up on the news"
+    - "what's the latest"
+    - "top stories"
+    - "the day's headlines"
+    - "read me today's headlines"
+    - "what's making the news"
+    - "headlines on technology"
+    - "news update"
+    - "what are the headlines today"
+    - "read out the news"
 negatives:
   - "what's my next alarm"
   - "when does my next alarm go off"
@@ -1797,7 +1820,8 @@ negatives:
   - change the music
   - activate the kitchen lights
   - use the force
-  - switch to the news
+  # "switch to the news" is a legitimate news.headlines request now that the
+  # Tool exists; it is a positives entry above, not a fall-through.
   # Repeat and self-description shaped, but a request for another action or
   # another kind of repeat.
   - repeat the alarm tomorrow

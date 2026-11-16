@@ -188,6 +188,22 @@ var notifyThat = regexp.MustCompile(`(?i)^\s*(?:please\s+)?notify\s+my\s+phone\s
 // textMe matches "text me <message>" and "ping me <message>".
 var textMe = regexp.MustCompile(`(?i)^\s*(?:please\s+)?(?:text|ping)\s+me(?:\s+(.+?))?\s*[.!?]?\s*$`)
 
+// putOnPhone matches "put <message> on my phone" (the bare "copy/forward" and
+// "send" forms are covered by explicitSend).
+var putOnPhone = regexp.MustCompile(`(?i)^\s*(?:please\s+)?put\s+(.+?)\s+on\s+my\s+phone(?:\s+(?:please|now|right\s+now|when\s+you\s+can))?\s*[.!?]?\s*$`)
+
+// bareNotifyPhone matches "notify my phone" with no message, which sends the
+// previous reply the same way an explicit demonstrative does.
+var bareNotifyPhone = regexp.MustCompile(`(?i)^\s*(?:please\s+)?notify\s+my\s+phone\s*[.!?]?\s*$`)
+
+// barePingPhone matches "ping my phone" with no message (distinct from the
+// "ping me <message>" form covered by textMe).
+var barePingPhone = regexp.MustCompile(`(?i)^\s*(?:please\s+)?ping\s+my\s+phone\s*[.!?]?\s*$`)
+
+// aNotification matches "send me a notification" / "notify me a notification":
+// a phone Notification with no dictated text, so it sends the previous reply.
+var aNotification = regexp.MustCompile(`(?i)^\s*(?:please\s+)?(?:send|notify)\s+me\s+a\s+notification\s*[.!?]?\s*$`)
+
 // extractPhone fills the optional message from explicit phrasing. A
 // demonstrative ("that", "this", "your answer") becomes an empty message so the
 // handler resolves the previous reply at call time, not at extraction time.
@@ -209,7 +225,10 @@ func extractPhone(text string) (In, bool) {
 	if !containsAny(lower, "phone", "notify me", "text me", "ping me", "notification") {
 		return In{}, false
 	}
-	for _, pattern := range []*regexp.Regexp{explicitSend, notifyThat, textMe} {
+	for _, pattern := range []*regexp.Regexp{
+		explicitSend, notifyThat, textMe,
+		putOnPhone, bareNotifyPhone, barePingPhone, aNotification,
+	} {
 		match := pattern.FindStringSubmatch(text)
 		if match == nil {
 			continue
@@ -220,7 +239,11 @@ func extractPhone(text string) (In, bool) {
 		}
 		return In{Message: message}, true
 	}
-	return In{}, true
+	// Anything that merely mentions the phone (or a notification) but matches no
+	// send pattern is a question or a device-control phrase, not a request to
+	// push the previous reply. Leave it on the Agent path so routing a
+	// near-miss here never triggers an outward-facing ntfy send.
+	return In{}, false
 }
 
 // messageFromMatch turns a captured phrase into a message. A demonstrative

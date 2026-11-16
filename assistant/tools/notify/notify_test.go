@@ -268,6 +268,7 @@ func TestExtractPhone(t *testing.T) {
 		{"send this to my phone please", "", true},
 		{"send it to my phone", "", true},
 		{"send your last reply to my phone", "", true},
+		{"put that on my phone", "", true},
 		{"text me that", "", true},
 		{"notify my phone", "", true},
 		{"ping my phone", "", true},
@@ -280,6 +281,10 @@ func TestExtractPhone(t *testing.T) {
 		{"call my phone", "", false},
 		{"turn on notifications", "", false},
 		{"send an email to Sam", "", false},
+		// Phone mentions without a send verb must not send the last reply.
+		{"put my phone on charge", "", false},
+		{"my phone is dead", "", false},
+		{"is my phone charging", "", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.text, func(t *testing.T) {

@@ -167,6 +167,27 @@ func TestEndpointConfigIsValidated(t *testing.T) {
 	}
 }
 
+// TestPrerollFrameCountIsAFixedBound pins the bounded pre-roll from #213: it is
+// derived only from the frame size and sample rate, never the utterance length,
+// and is about 500 ms (above MinSpeech's 200 ms) so the first word is not
+// clipped.
+func TestPrerollFrameCountIsAFixedBound(t *testing.T) {
+	// Production frame size: 1024 bytes at 16 kHz mono is 32 ms, so 500 ms is
+	// 16 frames.
+	if got := PrerollFrameCount(1024, 16000); got != 16 {
+		t.Fatalf("PrerollFrameCount(1024, 16000) = %d, want 16 (~512 ms)", got)
+	}
+	// The bound tracks the frame size, not the utterance: doubling the frame
+	// size halves the frame count for the same 500 ms window.
+	if got := PrerollFrameCount(2048, 16000); got != 8 {
+		t.Fatalf("PrerollFrameCount(2048, 16000) = %d, want 8 (~512 ms)", got)
+	}
+	// A degenerate rate yields a safe zero bound rather than a panic.
+	if got := PrerollFrameCount(1024, 0); got != 0 {
+		t.Fatalf("PrerollFrameCount with zero rate = %d, want 0", got)
+	}
+}
+
 // TestLastSpeechIsTheLastVoicedFrame pins Response latency's start point: the
 // most recent frame at or above the threshold, not the end of the silence
 // window that fires the endpointer.

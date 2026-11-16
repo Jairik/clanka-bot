@@ -311,7 +311,11 @@ func TestWakeCueReachesTheRealSinkProcess(t *testing.T) {
 	}
 	cues.Bind(sett, nil)
 
-	source := &scriptSource{frames: append(repeat(loudFrame(), 8), repeat(silentFrame(), 40)...)}
+	// All-loud so the post-chime frames are heard as speech and the turn
+	// produces a transcript. The first ~200 ms of frames are captured while the
+	// 200 ms wake cue plays and are dropped as its echo; the loud frames that
+	// follow are the question (#213).
+	source := &scriptSource{frames: repeat(loudFrame(), 600)}
 	wake := &fakeWake{afterWords: 5, maxFires: 1}
 	stt := &fakeSTT{text: "hello"}
 	responder := &fakeResponder{calls: make(chan string, 1)}

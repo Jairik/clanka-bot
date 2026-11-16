@@ -62,7 +62,7 @@ import (
 
 // routingEvalTools is the complete Fast path surface this corpus must cover.
 var routingEvalTools = []string{
-	"lights.power", "lights.brightness", "lights.color", "lights.mode",
+	"lights.power", "lights.brightness", "lights.color", "lights.mode", "lights.list",
 	clock.Name,
 	clock.DateName,
 	clock.CityName,

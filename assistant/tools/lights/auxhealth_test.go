@@ -37,7 +37,7 @@ func TestAuxHealthNamesTheUnavailableController(t *testing.T) {
 	m.Service.Run = func(context.Context, ...string) ([]byte, error) {
 		return nil, &exec.ExitError{Stderr: []byte("bleak.exc.BleakError: failed to discover services, device disconnected\n")}
 	}
-	if err := m.Service.Apply(ctx, "", "power", "on"); err == nil {
+	if _, err := m.Service.Apply(ctx, "", "power", "on"); err == nil {
 		t.Fatal("a failed helper run must fail the write")
 	}
 	rows := m.AuxHealth(ctx)

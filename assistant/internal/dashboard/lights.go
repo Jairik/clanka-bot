@@ -97,7 +97,7 @@ func (h *Handler) lightsAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	default:
-		if err := s.Apply(r.Context(), in.Device, in.Action, in.Value); err != nil {
+		if _, err := s.Apply(r.Context(), in.Device, in.Action, in.Value); err != nil {
 			http.Error(w, err.Error(), 400)
 			return
 		}

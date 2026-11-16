@@ -45,10 +45,10 @@ type FeedConfig struct {
 // Spoken refusals. They are the only text the user hears on a failure: the feed
 // host, the resolver detail and the raw error stay in the local log.
 const (
-	headlinesNoFeeds        = "No news feeds are set up yet."
-	headlinesUnavailable    = "I couldn't load the headlines right now."
-	headlinesUnknownFeed    = "I don't have a news feed called %q."
-	headlinesAmbiguousFeed  = "There's more than one feed that could be %q; name it more specifically."
+	headlinesNoFeeds       = "No news feeds are set up yet."
+	headlinesUnavailable   = "I couldn't load the headlines right now."
+	headlinesUnknownFeed   = "I don't have a news feed called %q."
+	headlinesAmbiguousFeed = "There's more than one feed that could be %q; name it more specifically."
 )
 
 // headlinesExamples are the utterances a user would actually say. Every one must
@@ -382,8 +382,8 @@ type rssItem struct {
 }
 
 type atomDocument struct {
-	XMLName xml.Name     `xml:"feed"`
-	Entries []atomEntry  `xml:"entry"`
+	XMLName xml.Name    `xml:"feed"`
+	Entries []atomEntry `xml:"entry"`
 }
 
 type atomEntry struct {

@@ -291,9 +291,10 @@ var migrations = []migration{
 				summary     INTEGER NOT NULL DEFAULT 0
 			)`,
 			// Newest-first paging, the source and problems filters, and the
-			// age cutoff are each a bounded index range. There is no index on
-			// search: a full-text prefix index would be written on every
-			// request, and the query is bounded by the at range instead.
+			// age cutoff are each a bounded index range. Search is indexed
+			// outside this migration: internal/activity owns a trigram FTS5
+			// table over the same haystack (internal/activity/searchindex.go),
+			// created lazily so a build without FTS5 still opens this store.
 			`CREATE INDEX activity_at ON activity (at DESC, id DESC)`,
 			`CREATE INDEX activity_source_at ON activity (source, at DESC)`,
 			`CREATE INDEX activity_outcome_at ON activity (outcome, at DESC)`,

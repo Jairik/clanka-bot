@@ -144,6 +144,31 @@ describe("ActivityPage durable history", () => {
     expect(screen.queryByRole("button", { name: "Load older" })).toBeNull();
   });
 
+  it("says when a short search only covered the newest window", async () => {
+    const notice =
+      "Short searches cover only the newest 200 requests. Type at least three characters to search all stored history.";
+    stubFetch({
+      "/api/ui/session": () => json(session()),
+      "/api/ui/activity": () => json({ ...emptyActivity([live]), HasHistory: true }),
+      "/api/ui/activity?q=z": () =>
+        json({ ...emptyActivity([old]), HasHistory: true, Query: "z", SearchNotice: notice }),
+    });
+    const user = userEvent.setup();
+    render(
+      <Providers>
+        <ActivityPage />
+      </Providers>,
+    );
+    expect(await screen.findByText("live at the pi")).toBeTruthy();
+
+    await user.type(screen.getByRole("searchbox", { name: "Search activity" }), "z");
+
+    // The store's own limit is stated, and an empty page never claims a
+    // completeness the windowed search did not have.
+    expect(await screen.findByText(notice)).toBeTruthy();
+    expect(await screen.findByText(/in the searched window/)).toBeTruthy();
+  });
+
   it("pages the plain history below the first page instead of repeating it", async () => {
     stubFetch(routes());
     const user = userEvent.setup();

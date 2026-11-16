@@ -42,8 +42,10 @@ export async function getJSON<T>(path: string, signal?: AbortSignal): Promise<T>
  * CSRF guard accepts. A refused write still returns the view, so the caller
  * gets both the error text and the preserved state.
  */
-export async function postForm<T>(action: string, body?: Record<string, string> | FormData | Blob, init?: RequestInit): Promise<WriteResult<T>> {
-  const payload = body instanceof FormData || body instanceof Blob ? body : new URLSearchParams(body ?? {});
+export async function postForm<T>(action: string, body?: Record<string, string> | FormData | Blob | string, init?: RequestInit): Promise<WriteResult<T>> {
+  // A string is a raw body (a JSON POST); everything else is form-encoded or a
+  // prebuilt upload.
+  const payload = typeof body === "string" || body instanceof FormData || body instanceof Blob ? body : new URLSearchParams(body ?? {});
   // A take uploads as one raw WAV body, not multipart: the server bounds and
   // validates exactly the bytes the browser produced.
   const headers: Record<string, string> = { Accept: "application/json" };

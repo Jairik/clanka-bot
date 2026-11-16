@@ -23,6 +23,11 @@ misroute from the request log.
 - `assistant/config.yaml` — `semantic.threshold` and `semantic.margin` are set
   from the evaluation.
 
+The offline `TestRoutingEvalCoversRegisteredFastPathTools` compares the shipped
+module registry's Fast-path-eligible Tools with `routingEvalTools` and fails
+with the missing Tool's name (and step-6 instructions) or a stale list entry,
+so a new Tool cannot silently skip the eval without an embed service.
+
 The fixture is an oracle, not training data. Labels describe what the user
 meant, never what the model happened to predict. Positives must survive real
 extraction; a match that then fails extraction counts as a miss. Negatives

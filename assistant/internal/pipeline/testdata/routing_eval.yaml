@@ -738,6 +738,34 @@ positives:
     - do you have any issues
     - how's the system doing
 
+  system.diagnose:
+    # A diagnosis asks WHAT is failing / WHY, not the status yes/no question.
+    # "are you ok" and "any problems" stay on system.status.
+    - what's wrong
+    - what's wrong with you
+    - what's broken
+    - what exactly is broken
+    - why are you slow
+    - why are you so slow
+    - what failed
+    - what's failing
+    - what failed just now
+    - which service is down
+    - which of your services is down
+    - what's not responding
+    - which check is failing
+    - tell me what's wrong
+    - tell me what's broken
+    - tell me what's failing
+    - what went wrong
+    - what needs fixing
+    - what's malfunctioning
+    - what's the trouble
+    - give me the failure details
+    - describe what's failing
+    - why aren't your services working
+    - what error are you hitting
+
   notify.phone:
     # "That" refers to the previous Assistant reply; the handler resolves it
     # with provenance and refuses a Local-only result.
@@ -1607,6 +1635,14 @@ negatives:
   - take milk off the list
   - what's in my notes
   - delete the note about the boiler from my phone
+  # "what's wrong / broken / failed / slow" about the wider world, not this
+  # Assistant: these must not trigger system.diagnose's Fast path.
+  - what's wrong with my car engine
+  - what's broken in the garden
+  - why is my internet so slow at home
+  - what failed in my sourdough starter
+  - which airline is down right now
+  - why is the traffic so slow today
 
 # Compound requests ask for more than one thing. They are kept separate so
 # the evaluation can report compound handling on its own.

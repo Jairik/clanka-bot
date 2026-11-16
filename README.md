@@ -479,7 +479,10 @@ generated from the enabled registry on every call: a disabled Tool and its
 description disappear from the next answer, and no feature list lives in code.
 `system.status` reads the same bounded service/module snapshot as the Dashboard
 Health page, so a timed-out or unreachable service is reported honestly rather
-than as healthy.
+than as healthy. `system.diagnose` answers the follow-up ("what's wrong?",
+"what failed?") by speaking up to three failing checks with a short reason each;
+it is Local-only because a detail can name an internal address or an upstream
+error, so that detail never enters the model's context.
 
 Timers are stored in the database and survive a restart. Give one a label
 ("set a pasta timer for 10 minutes") and ask for it later ("how long is left on

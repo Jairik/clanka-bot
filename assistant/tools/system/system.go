@@ -1,6 +1,7 @@
-// Package system implements the system.status Tool: a bounded, honest
-// snapshot of the Compose services, the location service and every Tool
-// module that declares a health check. It reads the same internal/status
+// Package system implements the system.status and system.diagnose Tools: a
+// bounded, honest snapshot of the Compose services, the location service and
+// every Tool module that declares a health check, plus a private spoken
+// diagnosis with the failing checks' details. Both read the same internal/status
 // boundaries as the Dashboard Health page.
 package system
 
@@ -15,6 +16,10 @@ import (
 
 // Name is the canonical system.status Tool name.
 const Name = "system.status"
+
+// DiagnoseName is the canonical system.diagnose Tool name. It speaks the
+// failing checks' details on the Pi only; the detail is never model-visible.
+const DiagnoseName = "system.diagnose"
 
 // In has no fields: asking how the system is needs no arguments.
 type In struct{}
@@ -35,6 +40,38 @@ type Out struct {
 	Modules   []Check   `json:"modules,omitempty"`
 	Summary   string    `json:"summary"`
 }
+
+// DiagnoseIn has no fields: asking what is wrong needs no arguments.
+type DiagnoseIn struct{}
+
+// DiagnoseCheck is one failing check with the detail needed to explain it.
+// Unlike Check (used by the model-visible system.status), the Detail is part
+// of this Tool's contract; LocalOnlyYes keeps it on the Pi.
+type DiagnoseCheck struct {
+	Name   string `json:"name"`
+	State  string `json:"state"`
+	Detail string `json:"detail"`
+}
+
+// DiagnoseOut is the private diagnosis: up to three failing checks and the
+// spoken text built from them.
+type DiagnoseOut struct {
+	Checks []DiagnoseCheck `json:"checks,omitempty"`
+	Text   string          `json:"text"`
+}
+
+const (
+	// diagnoseMaxChecks bounds how many failures are spoken. The Health page
+	// stays the complete view; this is the voice counterpart.
+	diagnoseMaxChecks = 3
+	// diagnoseDetailRunes bounds one check's Detail in the spoken answer.
+	diagnoseDetailRunes = 80
+	// diagnoseTextRunes bounds the whole spoken answer.
+	diagnoseTextRunes = 300
+
+	diagnoseAllFine     = "Everything I can check is fine."
+	diagnoseUnavailable = "I can't check my services right now."
+)
 
 // New builds system.status. A nil status seam makes the Tool fail clearly
 // instead of inventing an "everything is fine".
@@ -64,7 +101,38 @@ func New(run func(context.Context) tool.StatusReport) tool.Tool[In, Out] {
 			"are you healthy",
 			"is everything working",
 			"is everything okay",
+			"is anything broken",
 			"any problems",
+		},
+	}
+}
+
+// NewDiagnose builds system.diagnose. It reuses the one shared status seam; a
+// nil seam fails clearly instead of inventing an "everything is fine". A
+// Detail can name an internal address or a shortened upstream error, so the
+// Tool is Local-only and its result never reaches the model.
+func NewDiagnose(run func(context.Context) tool.StatusReport) tool.Tool[DiagnoseIn, DiagnoseOut] {
+	return tool.Tool[DiagnoseIn, DiagnoseOut]{
+		Name:        DiagnoseName,
+		Description: "Say which of the Assistant's services, modules or location checks are failing and why, with a short reason for each. The details stay on this device.",
+		Permission:  tool.PermissionRead,
+		LocalOnly:   tool.LocalOnlyYes,
+		// Same envelope as system.status: the shared snapshot already has its
+		// own 3 s budget, and a timed-out snapshot must still be speakable.
+		Timeout: 5 * time.Second,
+		Handler: func(ctx context.Context, _ DiagnoseIn) (DiagnoseOut, error) {
+			if run == nil {
+				return DiagnoseOut{}, &tool.ToolError{Say: diagnoseUnavailable}
+			}
+			return diagnose(run(ctx)), nil
+		},
+		Speak: func(out DiagnoseOut) string { return out.Text },
+		Examples: []string{
+			"what's wrong",
+			"what's broken",
+			"why are you slow",
+			"what failed",
+			"which service is down",
 		},
 	}
 }
@@ -79,10 +147,14 @@ type Module struct{}
 // Name is the module name and config section suffix.
 func (*Module) Name() string { return "system" }
 
-// Register adds system.status. The handler reads Deps.Status per call, so the
-// live module list and service checks are always current.
+// Register adds system.status and system.diagnose. Both handlers read
+// Deps.Status per call, so the live module list and service checks are always
+// current and the two can never disagree.
 func (*Module) Register(r *tool.Registry, deps tool.Deps) error {
-	return tool.Add(r, New(deps.Status))
+	if err := tool.Add(r, New(deps.Status)); err != nil {
+		return err
+	}
+	return tool.Add(r, NewDiagnose(deps.Status))
 }
 
 // summarize builds the result and the one-line spoken answer. Details stay in
@@ -191,4 +263,78 @@ func plural(count int, one, many string) string {
 		return one
 	}
 	return many
+}
+
+// diagnose builds the private spoken result. It reports at most three failing
+// checks with a short reason each, and never claims health from an empty or
+// nil snapshot.
+func diagnose(report tool.StatusReport) DiagnoseOut {
+	if checked(report) == 0 {
+		return DiagnoseOut{Text: diagnoseUnavailable}
+	}
+	failures := failingChecks(report)
+	if len(failures) == 0 {
+		return DiagnoseOut{Text: diagnoseAllFine}
+	}
+	if len(failures) > diagnoseMaxChecks {
+		failures = failures[:diagnoseMaxChecks]
+	}
+	out := DiagnoseOut{Checks: make([]DiagnoseCheck, 0, len(failures))}
+	parts := make([]string, 0, len(failures))
+	for _, item := range failures {
+		detail := cleanDetail(item.Detail)
+		out.Checks = append(out.Checks, DiagnoseCheck{
+			Name:   item.Name,
+			State:  string(item.State),
+			Detail: detail,
+		})
+		part := item.Name
+		if detail != "" {
+			part += ": " + strings.TrimSuffix(detail, ".")
+		}
+		parts = append(parts, part)
+	}
+	out.Text = truncateRunes("Here's what's wrong: "+strings.Join(parts, "; ")+".", diagnoseTextRunes)
+	return out
+}
+
+// failingChecks returns the failing outcomes in the same order as failing().
+func failingChecks(report tool.StatusReport) []tool.StatusCheck {
+	var failures []tool.StatusCheck
+	collect := func(item tool.StatusCheck) {
+		if item.State == tool.StatusError || item.State == tool.StatusTimedOut {
+			failures = append(failures, item)
+		}
+	}
+	for _, item := range report.Services {
+		collect(item)
+	}
+	for _, item := range report.Modules {
+		collect(item)
+	}
+	collect(report.Location)
+	return failures
+}
+
+// cleanDetail stops at the first newline and bounds one Detail to the spoken
+// limit. Details are bounded by internal/status already; this keeps the voice
+// answer short and single-line even if a future producer grows one.
+func cleanDetail(detail string) string {
+	if i := strings.IndexAny(detail, "\r\n"); i >= 0 {
+		detail = detail[:i]
+	}
+	detail = strings.TrimSpace(detail)
+	if runes := []rune(detail); len(runes) > diagnoseDetailRunes {
+		detail = strings.TrimSpace(string(runes[:diagnoseDetailRunes]))
+	}
+	return detail
+}
+
+// truncateRunes bounds a string by rune count, not byte count, so multi-byte
+// text cannot exceed the spoken limit.
+func truncateRunes(text string, limit int) string {
+	if runes := []rune(text); len(runes) > limit {
+		return string(runes[:limit])
+	}
+	return text
 }

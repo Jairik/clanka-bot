@@ -124,6 +124,9 @@ func NewPlay(svc *Service) tool.Tool[PlayIn, PlayOut] {
 			}
 			// Music now holds Focus, so "skip", "pause" and "next" reach it.
 			svc.takeFocus()
+			// A new sink-input may have opened while the turn still holds the
+			// duck; lower it before the reply is spoken over it.
+			svc.reapplyMusic(ctx)
 			return PlayOut(played), nil
 		},
 		Speak: func(out PlayOut) string {

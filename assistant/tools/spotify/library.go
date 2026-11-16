@@ -144,6 +144,9 @@ func NewPlayPlaylist(svc *Service) tool.Tool[PlayPlaylistIn, PlayPlaylistOut] {
 			}
 			// Like spotify.play, a started playlist holds Music Focus.
 			svc.takeFocus()
+			// A new sink-input may have opened while the turn still holds the
+			// duck; lower it before the reply is spoken over it.
+			svc.reapplyMusic(ctx)
 			return PlayPlaylistOut{Name: played.Name, Shuffle: in.Shuffle, Volume: played.Volume, Capped: played.Capped}, nil
 		},
 		Speak: func(out PlayPlaylistOut) string {

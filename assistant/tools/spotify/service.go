@@ -49,6 +49,14 @@ type Playlists interface {
 	Lookup(name string) (spotify.Playlist, bool)
 }
 
+// MusicDucker re-applies the local duck to a stream that opens after a duck
+// has already started (for example, the track a "play" starts mid-turn while
+// the wake word or a reply still holds the duck). A nil one is a no-op. The
+// concrete *music.Ducker satisfies it.
+type MusicDucker interface {
+	Reapply(ctx context.Context) error
+}
+
 // Service is the state shared by the Spotify Tools: the Player and the one
 // Music Focus claim. Playing music claims Focus at the Music priority, so a
 // Ring or a reply holding higher Focus receives "stop" first. "skip" and
@@ -59,6 +67,11 @@ type Service struct {
 	library   Library
 	playlists Playlists
 	names     *namematch.Matcher
+
+	// ducker re-applies the local duck after a new stream opens mid-duck. It
+	// is nil unless main wires the music Ducker in (a setup without music stays
+	// nil and the Tools still work).
+	ducker MusicDucker
 
 	mu    sync.Mutex
 	claim *focus.Claim
@@ -92,6 +105,37 @@ func (s *Service) WithLibrary(library Library, playlists Playlists, names *namem
 	s.library, s.playlists, s.names = library, playlists, names
 	return s
 }
+
+// WithDucker wires the local duck so a stream that opens after a duck has
+// started is lowered before the reply that follows "play". A nil ducker leaves
+// the Service unchanged; the call returns the Service so construction reads as
+// one expression.
+func (s *Service) WithDucker(ducker MusicDucker) *Service {
+	s.ducker = ducker
+	return s
+}
+
+// reapplyMusic lowers a stream that appeared after the duck started. A "play",
+// "resume" or "play_playlist" opens a fresh sink-input while the turn still
+// holds the duck, so the reply that follows would otherwise be spoken over
+// full-volume music. The new input can trail the Play call by a beat, so the
+// re-apply retries once 100ms later rather than sleeping longer in the Tool
+// handler and delaying the spoken reply. It is best-effort: a failure is not
+// spoken and does not fail the play.
+func (s *Service) reapplyMusic(ctx context.Context) {
+	if s == nil || s.ducker == nil {
+		return
+	}
+	if err := s.ducker.Reapply(ctx); err != nil {
+		return
+	}
+	time.Sleep(reapplyRetry)
+	_ = s.ducker.Reapply(context.Background())
+}
+
+// reapplyRetry is the gap between the two Reapply attempts. It is short enough
+// that the spoken reply is not noticeably delayed.
+const reapplyRetry = 100 * time.Millisecond
 
 // intents is what music handles while it holds Focus.
 func intents() []focus.Intent {

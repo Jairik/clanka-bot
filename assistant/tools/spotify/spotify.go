@@ -172,6 +172,15 @@ func (m *Module) Auth() *spotify.Auth {
 	return m.auth
 }
 
+// Service returns the shared playback state. It is nil until Register builds
+// it, so callers must check. main wires the music Ducker through it.
+func (m *Module) Service() *Service {
+	if m == nil {
+		return nil
+	}
+	return m.service
+}
+
 // Client is the reusable Web API client for the later Spotify Tools.
 func (m *Module) Client() *spotify.Client {
 	if m == nil || m.auth == nil {

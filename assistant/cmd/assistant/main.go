@@ -549,6 +549,16 @@ func run() error {
 	if err := toolSet.RegisterAll(registry, deps, cfg.Tools.Sections); err != nil {
 		return fmt.Errorf("register tools: %w", err)
 	}
+	// The music Ducker lowers a stream that opens after a duck has started, so
+	// a track a "play" starts mid-turn is ducked before the reply is spoken.
+	// It is wired here (after Register builds the Service) only when both the
+	// Spotify service and the Ducker exist; a setup without either leaves it
+	// nil and the Tools still work.
+	if spotifyModule != nil && musicDucker != nil {
+		if svc := spotifyModule.Service(); svc != nil {
+			svc.WithDucker(musicDucker)
+		}
+	}
 	// Modules with a scheduler implement the optional Closer hook. Shutdown
 	// runs in reverse registration order and before the store closes, so a
 	// pending write can finish. This is deliberately generic: #53 can add its
@@ -1189,9 +1199,9 @@ func run() error {
 			Typed:    typedSession,
 			// The live Focus registry and Announcement queue feed the Dashboard's
 			// "what holds Focus / what is waiting" view and its SSE delta (#217).
-			Focus:        focusRegistry,
+			Focus:         focusRegistry,
 			Announcements: announcements,
-			Spoken:   spokenSession,
+			Spoken:        spokenSession,
 			// The mic button reuses the voice loop's STT service; the top bar
 			// volume drives the same Pulse sink as replies and audio.volume_set.
 			Transcriber: dashboardTranscriber(cfg),
@@ -1330,13 +1340,13 @@ func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingD
 	)
 
 	deps := voice.Deps{
-		Source:    audio.NewPulseSource(cfg.Capture.Binary, cfg.Capture.Source, captureFormat),
-		Wake:      voice.NewWyomingWake(wakeClient, detectModels, wireFormat, cfg.Wakeword.ModelThresholds()),
-		STT:       voice.NewWyomingSTT(sttClient, wyoming.TranscribeOptions{Name: cfg.STT.Model, Language: cfg.STT.Language}, wireFormat),
-		Player:    audio.NewPCMPlayer(sink),
-		Responder: voice.NewPipelineResponder(session, tool.DevicePi),
-		WakeWords: names,
-		Dropper:   pending,
+		Source:     audio.NewPulseSource(cfg.Capture.Binary, cfg.Capture.Source, captureFormat),
+		Wake:       voice.NewWyomingWake(wakeClient, detectModels, wireFormat, cfg.Wakeword.ModelThresholds()),
+		STT:        voice.NewWyomingSTT(sttClient, wyoming.TranscribeOptions{Name: cfg.STT.Model, Language: cfg.STT.Language}, wireFormat),
+		Player:     audio.NewPCMPlayer(sink),
+		Responder:  voice.NewPipelineResponder(session, tool.DevicePi),
+		WakeWords:  names,
+		Dropper:    pending,
 		WakeCue:    wakeCue,
 		Observer:   observer,
 		Stats:      stats,

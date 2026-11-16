@@ -357,9 +357,13 @@ type Manager struct {
 	retryInitial time.Duration
 	retryMax     time.Duration
 
-	// builtMu guards the Examples snapshot the worker last installed.
-	builtMu sync.Mutex
-	built   map[string][]string
+	// builtMu guards the Examples snapshot the worker last installed and the
+	// last build state reported to the Health page. The accessor is in-memory;
+	// it never probes the embed service.
+	builtMu         sync.Mutex
+	built           map[string][]string
+	examplesLastErr error
+	examplesAt      time.Time // last rebuild attempt, successful or not
 
 	// changeMu serializes a settings change signal with the final swap, so a
 	// rebuild whose snapshot was superseded in that last window is discarded
@@ -725,14 +729,47 @@ func (m *Manager) Examples() map[string][]string {
 }
 
 // MarkExamplesBuilt records the Examples snapshot a successful startup build
-// installed. Start must not have run yet.
+// installed and clears any earlier build error. Start must not have run yet.
 func (m *Manager) MarkExamplesBuilt(examples map[string][]string) {
 	if m == nil {
 		return
 	}
 	m.builtMu.Lock()
 	m.built = cloneExamples(examples)
+	m.examplesLastErr = nil
+	m.examplesAt = time.Now()
 	m.builtMu.Unlock()
+}
+
+// MarkExamplesFailed records a failed startup build so the Health page reports
+// the error and the attempt time while the worker keeps retrying. The router
+// stays attached: Control phrases and the Agent path are unaffected.
+func (m *Manager) MarkExamplesFailed(err error) {
+	if m == nil {
+		return
+	}
+	m.builtMu.Lock()
+	m.examplesLastErr = err
+	m.examplesAt = time.Now()
+	m.builtMu.Unlock()
+}
+
+// ExamplesState reports the semantic index's in-memory state for the Health
+// page: the number of indexed Tools, the last rebuild error (nil after a
+// successful swap) and the time of the last rebuild attempt. A nil manager or
+// router reports zero Tools and no attempt. It returns no Tool output or
+// settings values and adds no service probe.
+func (m *Manager) ExamplesState() (tools int, lastErr error, lastAttempt time.Time) {
+	if m == nil {
+		return 0, nil, time.Time{}
+	}
+	m.startMu.Lock()
+	router := m.router
+	m.startMu.Unlock()
+	m.builtMu.Lock()
+	lastErr, lastAttempt = m.examplesLastErr, m.examplesAt
+	m.builtMu.Unlock()
+	return router.ToolCount(), lastErr, lastAttempt
 }
 
 // UnavailableMessage returns the phrase the Agent path says when the model is
@@ -786,7 +823,12 @@ func (m *Manager) syncExamples(ctx context.Context) bool {
 	if err != nil {
 		m.logger.Warn("wording: examples rebuild failed, keeping old vectors", "error", err.Error())
 		// The flag stays set, so the bounded retry keeps trying until a rebuild
-		// succeeds.
+		// succeeds. Keep the error visible to the Health page; the live index
+		// (if any) is untouched.
+		m.builtMu.Lock()
+		m.examplesLastErr = err
+		m.examplesAt = time.Now()
+		m.builtMu.Unlock()
 		return true
 	}
 	// Check and swap are atomic with respect to a change signal. A newer
@@ -801,6 +843,8 @@ func (m *Manager) syncExamples(ctx context.Context) bool {
 	m.router.Swap(set)
 	m.builtMu.Lock()
 	m.built = current
+	m.examplesLastErr = nil
+	m.examplesAt = time.Now()
 	m.builtMu.Unlock()
 	// The installed set already reflects this snapshot's eligibility, so the
 	// flag clears only here: after a swap that was not superseded.

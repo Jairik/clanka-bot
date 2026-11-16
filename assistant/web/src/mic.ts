@@ -3,9 +3,9 @@
 // the server never decodes a codec. Needs a secure context (HTTPS or
 // localhost); `tailscale serve` provides HTTPS on the tailnet.
 import workletUrl from "./recorder-worklet.js?url";
+import { toPCM16 } from "./pcm";
 
 export const MIC_MAX_SECONDS = 30;
-const TARGET_RATE = 16000;
 
 export const micSupported = () => typeof window !== "undefined" && window.isSecureContext && !!navigator.mediaDevices?.getUserMedia;
 
@@ -72,27 +72,4 @@ export async function startRecording(onLevel: (rms: number) => void, options: Ca
       return toPCM16(chunks, rate, options.maxSeconds ?? MIC_MAX_SECONDS);
     },
   };
-}
-
-/** Box-filter downsample (a cheap low-pass that is plenty for speech) and quantize. */
-function toPCM16(chunks: Float32Array[], inRate: number, maxSeconds: number): ArrayBuffer {
-  const total = chunks.reduce((n, c) => n + c.length, 0);
-  const input = new Float32Array(total);
-  let o = 0;
-  for (const c of chunks) {
-    input.set(c, o);
-    o += c.length;
-  }
-  const ratio = inRate / TARGET_RATE;
-  const outLen = Math.min(Math.floor(total / ratio), TARGET_RATE * maxSeconds);
-  const out = new DataView(new ArrayBuffer(outLen * 2));
-  for (let i = 0; i < outLen; i++) {
-    const a = Math.floor(i * ratio);
-    const b = Math.max(a + 1, Math.floor((i + 1) * ratio));
-    let s = 0;
-    for (let j = a; j < b; j++) s += input[j];
-    const v = Math.max(-1, Math.min(1, s / (b - a)));
-    out.setInt16(i * 2, v < 0 ? v * 0x8000 : v * 0x7fff, true);
-  }
-  return out.buffer;
 }

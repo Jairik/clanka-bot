@@ -8,6 +8,7 @@ import (
 
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/tools/alarm"
+	"github.com/Jairik/clanka-bot/assistant/tools/alerts"
 	"github.com/Jairik/clanka-bot/assistant/tools/assistant"
 	"github.com/Jairik/clanka-bot/assistant/tools/audiocontrol"
 	"github.com/Jairik/clanka-bot/assistant/tools/calc"
@@ -39,15 +40,21 @@ type Set struct {
 
 // NewSet returns the module list. This is the only place modules are wired.
 func NewSet() *Set {
+	// alerts.next composes the three scheduling managers through their list
+	// seams. Keep the module pointers so its adapters read the live managers
+	// lazily, after Register has created them.
+	timerModule := timer.NewModule()
+	alarmModule := alarm.NewModule()
+	reminderModule := reminder.NewModule()
 	return &Set{modules: []tool.Module{
 		clock.NewModule(),
 		weather.NewModule(),
 		audiocontrol.NewModule(),
-		timer.NewModule(),
-		alarm.NewModule(),
+		timerModule,
+		alarmModule,
 		quiet.NewModule(),
 		voice.NewModule(),
-		reminder.NewModule(),
+		reminderModule,
 		notify.NewModule(),
 		assistant.NewModule(),
 		system.NewModule(),
@@ -62,6 +69,11 @@ func NewSet() *Set {
 		list.NewModule(),
 		lights.NewModule(),
 		monster.NewModule(),
+		alerts.NewModule(
+			alerts.TimerSource(timerModule.Manager),
+			alerts.AlarmSource(alarmModule.Manager),
+			alerts.ReminderSource(reminderModule.Manager),
+		),
 	}}
 }
 

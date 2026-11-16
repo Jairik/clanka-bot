@@ -1458,29 +1458,6 @@ positives:
     - what do I know about the car insurance
     - what have I noted about Sam
     - find my note about the batteries
-  github.checks:
-    - did my last build pass?
-    - is the build green on my repo?
-    - check the CI status
-    - did the latest checks fail?
-    - what's the build status on GitHub?
-    - are the CI checks still running?
-    - did my latest PR pass its checks?
-    - was the last GitHub build successful?
-    - tell me if CI passed on the repo
-    - did the build go green on main?
-    - how did the latest checks turn out?
-    - is CI red right now?
-    - show me the current build result
-    - did my most recent build succeed?
-    - what is the status of the GitHub checks?
-    - have the CI checks finished yet?
-    - is the latest commit passing its checks?
-    - check whether the build passed
-    - did the checks on my last commit pass?
-    - give me the CI verdict for my repo
-    - did the pipeline pass on the repo?
-    - were the GitHub checks green overnight?
 negatives:
   - how do I turn the lights on
   - why are my lights flickering
@@ -1764,19 +1741,6 @@ negatives:
   - what failed in my sourdough starter
   - which airline is down right now
   - why is the traffic so slow today
-  # GitHub-shaped but not a "did the last build pass?" status question: issue
-  # writes, PR lists and notifications are Agent-only, and how-to/definition
-  # questions are not a Tool at all. None may reach the Fast path.
-  - how do I configure GitHub Actions for my repo
-  - explain the difference between check runs and commit statuses
-  - open an issue about the failing build
-  - create a GitHub issue for the red CI check
-  - which pull requests are waiting on my review
-  - read my GitHub notifications
-  - show me the source of the CI script
-  - who wrote the build pipeline configuration
-  - what does a GitHub check run contain
-  - teach me how continuous integration works
 
 # Compound requests ask for more than one thing. They are kept separate so
 # the evaluation can report compound handling on its own.

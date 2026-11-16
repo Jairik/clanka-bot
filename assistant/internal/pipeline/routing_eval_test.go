@@ -120,7 +120,6 @@ var routingEvalTools = []string{
 	listtools.AddName,
 	listtools.ReadName,
 	listtools.RemoveName,
-	github.ChecksName,
 }
 
 const (
@@ -532,14 +531,6 @@ func (r evalNotifyReader) Get(key string) (settings.Value, bool) {
 	return value, ok
 }
 
-// evalGitHubSecrets resolves a harmless token so github.checks' real handler
-// runs against the local fake; the value is never logged or sent off-machine.
-type evalGitHubSecrets struct{}
-
-func (evalGitHubSecrets) Get(name string) (string, bool) {
-	return "eval-token", name == github.SecretName
-}
-
 // evalNotifySecrets keeps the generated topic in memory for one eval run.
 type evalNotifySecrets struct{}
 
@@ -746,36 +737,9 @@ func evalRegistry(t *testing.T) (*tool.Registry, *timer.Manager, *alarm.Manager,
 	if err := web.NewModule().Register(reg, tool.Deps{}); err != nil {
 		t.Fatalf("register web: %v", err)
 	}
-	// The issue/create/list/notification GitHub Tools are AgentOnly; checks is
-	// the one Fast-path Tool and its positives execute the real handler. A local
-	// fake answers the default-branch and check-runs reads, so no request leaves
-	// the machine and the spoken summary stays deterministic.
-	gh := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		if strings.HasSuffix(r.URL.Path, "/check-runs") {
-			fmt.Fprint(w, `{"total_count":2,"check_runs":[{"name":"build","status":"completed","conclusion":"success"},{"name":"test","status":"completed","conclusion":"success"}]}`)
-			return
-		}
-		fmt.Fprint(w, `{"default_branch":"main"}`)
-	}))
-	t.Cleanup(gh.Close)
-	ghModule := github.NewModule()
-	var ghSection yaml.Node
-	if err := ghSection.Encode(map[string]any{
-		"base_url":      gh.URL,
-		"timeout":       "1s",
-		"default_repo":  "acme/widgets",
-		"allowed_repos": []string{"acme/widgets"},
-	}); err != nil {
-		t.Fatalf("encode github config: %v", err)
-	}
-	if err := ghModule.Configure(&ghSection); err != nil {
-		t.Fatalf("configure github: %v", err)
-	}
-	if err := ghModule.Register(reg, tool.Deps{
-		Secrets: evalGitHubSecrets{},
-		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
-	}); err != nil {
+	// The GitHub Tools are AgentOnly for the same reason. The empty Deps means
+	// no secret and no handler execution; only their metadata is present.
+	if err := github.NewModule().Register(reg, tool.Deps{}); err != nil {
 		t.Fatalf("register github: %v", err)
 	}
 	// Spotify executes its real handlers against a scripted player, so the

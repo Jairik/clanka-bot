@@ -36,31 +36,26 @@ func TestChecksSummarisesGreenFailurePendingAndNoRuns(t *testing.T) {
 		state    string
 		total    int
 		failures string
-		say      string
 	}{
 		{
 			name:  "all green",
 			runs:  `{"total_count":2,"check_runs":[{"name":"build","status":"completed","conclusion":"success"},{"name":"test","status":"completed","conclusion":"success"}]}`,
 			state: checkStateSuccess, total: 2,
-			say: "Checks passed for acme/widgets on main (2 runs).",
 		},
 		{
 			name:  "one failure",
 			runs:  `{"total_count":2,"check_runs":[{"name":"build","status":"completed","conclusion":"success"},{"name":"unit tests","status":"completed","conclusion":"failure"}]}`,
 			state: checkStateFailure, total: 2, failures: "unit tests",
-			say: "Checks failed for acme/widgets on main: unit tests.",
 		},
 		{
 			name:  "still pending beats a failure",
 			runs:  `{"total_count":2,"check_runs":[{"name":"unit tests","status":"completed","conclusion":"failure"},{"name":"deploy","status":"in_progress"}]}`,
 			state: checkStatePending, total: 2, failures: "unit tests",
-			say: "Checks are still running for acme/widgets on main (2 runs).",
 		},
 		{
 			name:  "no runs",
 			runs:  `{"total_count":0,"check_runs":[]}`,
 			state: checkStateNone, total: 0,
-			say: "No check runs found for acme/widgets on main.",
 		},
 	}
 	for _, tt := range tests {
@@ -79,9 +74,6 @@ func TestChecksSummarisesGreenFailurePendingAndNoRuns(t *testing.T) {
 			}
 			if got := strings.Join(out.Failures, ","); got != tt.failures {
 				t.Fatalf("failures = %q, want %q", got, tt.failures)
-			}
-			if got := speakChecks(out); got != tt.say {
-				t.Fatalf("spoken = %q, want %q", got, tt.say)
 			}
 
 			requests := fake.snapshot()
@@ -174,9 +166,6 @@ func TestChecksResolvesMyLatestPRThroughSearch(t *testing.T) {
 	if out.PR != 42 || out.Ref != "abc123" || out.State != checkStateSuccess {
 		t.Fatalf("out = %+v, want PR 42 pinned to abc123", out)
 	}
-	if got := speakChecks(out); !strings.Contains(got, "PR #42") {
-		t.Fatalf("spoken = %q, want the PR number", got)
-	}
 	requests := fake.snapshot()
 	if len(requests) != 3 {
 		t.Fatalf("requests = %d, want search + pull + checks", len(requests))
@@ -257,6 +246,26 @@ func TestChecksMapsAuthRateLimitAndPermissionFailures(t *testing.T) {
 				t.Fatalf("failure = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestChecksIsAgentOnlyWithNoFastPathHooks replaces any Fast-path routing
+// expectation: issue #311 defers Examples until the phrasing is stable, so the
+// semantic router must never index this Tool. The Agent still gets the JSON Out.
+func TestChecksIsAgentOnlyWithNoFastPathHooks(t *testing.T) {
+	reg, _ := registerModule(t, testConfig(t, nil), fixedSecret("token"))
+	info, ok := reg.Info(ChecksName)
+	if !ok {
+		t.Fatalf("%s is not registered", ChecksName)
+	}
+	if !info.AgentOnly {
+		t.Fatalf("%s is not declared AgentOnly", ChecksName)
+	}
+	if info.Permission != tool.PermissionRead || info.LocalOnly {
+		t.Fatalf("permission=%q localOnly=%v, want read/LocalOnlyNo", info.Permission, info.LocalOnly)
+	}
+	if info.HasExtract || len(info.Examples) != 0 || info.HasSpeak {
+		t.Fatalf("Fast-path hooks on an Agent-only Tool: extract=%v examples=%v speak=%v", info.HasExtract, info.Examples, info.HasSpeak)
 	}
 }
 

@@ -1174,7 +1174,7 @@ func TestRepoAndBoundHelpers(t *testing.T) {
 // every GitHub result is untrusted facts, never instructions.
 func TestToolDescriptionsLabelGitHubTextAsUntrusted(t *testing.T) {
 	reg, _ := registerModule(t, testConfig(t, nil), fixedSecret("token"))
-	for _, name := range []string{Name, PRListName, NotificationsName} {
+	for _, name := range []string{Name, PRListName, NotificationsName, ChecksName} {
 		info, ok := reg.Info(name)
 		if !ok {
 			t.Fatalf("%s is not registered", name)

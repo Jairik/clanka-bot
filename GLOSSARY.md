@@ -288,6 +288,13 @@ An expiring request queued for music, reply or Timer Ring completion, visible
 and cancellable until dispatched. At most eight wait, for at most one hour.
 _Avoid_: Scheduled alert, Timer, Hermes job
 
+**Sleep timer**:
+A single in-memory deadline that pauses Spotify playback after a spoken
+duration without dropping music's Focus claim, so a bare "resume" still works.
+A manual pause, a stop or a lost device cancels it; a restart drops it because
+a restart stops Soloist too. It announces "Music stopped." and never Rings.
+_Avoid_: Timer, Alarm, Deferred action
+
 **Equalizer**:
 The single ten-band output filter shared by music, speech and Cues. It precedes
 the echo-cancel sink so the reference includes the chosen tuning. Its active

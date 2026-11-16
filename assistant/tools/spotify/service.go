@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/announce"
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/namematch"
 	"github.com/Jairik/clanka-bot/assistant/internal/spotify"
@@ -61,12 +62,23 @@ type Service struct {
 
 	mu    sync.Mutex
 	claim *focus.Claim
+
+	// The one in-memory sleep timer. The deadline lives only in this Service
+	// (a Dashboard page change never rebuilds it); a restart drops it, which
+	// is acceptable because a restart stops Soloist too. All fields are guarded
+	// by mu. sleepGen makes a cancelled or replaced callback a no-op.
+	sleepGen      uint64
+	sleepDeadline time.Time
+	sleepStop     oneShot
+	scheduler     scheduler
+	now           func() time.Time
+	announce      *announce.Queue
 }
 
 // NewService builds the shared state. A nil registry means a shared phrase
 // cannot reach music, but the Tools still work.
 func NewService(player Player, registry *focus.Registry) *Service {
-	return &Service{player: player, focus: registry}
+	return &Service{player: player, focus: registry, now: time.Now, scheduler: afterFunc}
 }
 
 // WithLibrary adds the playlist and library seams for the #73 Tools: the
@@ -99,7 +111,9 @@ func (s *Service) takeFocus() {
 	old.Release()
 }
 
-// dropFocus releases the Music claim.
+// dropFocus releases the Music claim. Stop and a lost device both end the
+// music, so they also cancel a pending sleep timer: it must never pause
+// playback after the claim is gone.
 func (s *Service) dropFocus() {
 	if s == nil {
 		return
@@ -107,6 +121,7 @@ func (s *Service) dropFocus() {
 	s.mu.Lock()
 	claim := s.claim
 	s.claim = nil
+	s.cancelSleepLocked()
 	s.mu.Unlock()
 	claim.Release()
 }
@@ -125,6 +140,9 @@ func (h holder) HandleIntent(ctx context.Context, intent focus.Intent) (string, 
 	text := ""
 	switch intent {
 	case focus.Pause:
+		// A manual pause ends the sleep timer; the music keeps its claim so a
+		// bare "resume" still reaches it.
+		h.s.cancelSleep()
 		err, text = h.s.player.Pause(ctx), "Paused."
 	case focus.Resume:
 		err, text = h.s.player.Resume(ctx), "Resuming."

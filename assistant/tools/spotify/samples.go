@@ -9,6 +9,7 @@ func (*Module) ConformanceSamples() map[string]any {
 		NextName:         NextOut{Skipped: true},
 		VolumeName:       VolumeOut{Percent: 40},
 		NowPlayingName:   NowPlayingOut{Track: "Creep", Artists: "Radiohead", Playing: true},
+		SleepName:        SleepOut{Armed: true, Minutes: 30, Duration: "30 minutes"},
 		PlayPlaylistName: PlayPlaylistOut{Name: "Running", Shuffle: true},
 		ShuffleName:      ShuffleOut{On: true},
 		RepeatName:       RepeatOut{Mode: "track"},

@@ -108,6 +108,7 @@ var routingEvalTools = []string{
 	spotifytools.NextName,
 	spotifytools.VolumeName,
 	spotifytools.NowPlayingName,
+	spotifytools.SleepName,
 	spotifytools.PlayPlaylistName,
 	spotifytools.ShuffleName,
 	spotifytools.RepeatName,

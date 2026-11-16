@@ -82,6 +82,7 @@ func (m *Module) registerPlayback(r *tool.Registry, deps tool.Deps) error {
 		OnRefresh: warmNameMatcher(deps.Names),
 	})
 	m.service = NewService(player, deps.Focus).WithLibrary(player, m.cache, deps.Names)
+	m.service.announce = deps.Announcements
 	return RegisterTools(r, m.service)
 }
 
@@ -116,6 +117,9 @@ func RegisterTools(r *tool.Registry, svc *Service) error {
 	if err := tool.Add(r, NewNowPlaying(svc)); err != nil {
 		return err
 	}
+	if err := tool.Add(r, NewSleep(svc)); err != nil {
+		return err
+	}
 	if err := tool.Add(r, NewPlayPlaylist(svc)); err != nil {
 		return err
 	}
@@ -148,8 +152,12 @@ func (m *Module) Start(ctx context.Context) error {
 	return nil
 }
 
-// Close cancels the playlist refresh and waits for it to stop.
+// Close cancels the playlist refresh and waits for it to stop. It also clears
+// the in-memory sleep timer, so a shutdown never pauses playback afterwards.
 func (m *Module) Close() {
+	if m.service != nil {
+		m.service.cancelSleep()
+	}
 	if m.cache != nil {
 		m.cache.Close()
 	}

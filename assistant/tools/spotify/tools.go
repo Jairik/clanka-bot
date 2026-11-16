@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/parse"
 	"github.com/Jairik/clanka-bot/assistant/internal/spotify"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 )
@@ -18,6 +20,7 @@ const (
 	NextName       = "spotify.next"
 	VolumeName     = "spotify.volume"
 	NowPlayingName = "spotify.now_playing"
+	SleepName      = "spotify.sleep"
 )
 
 // volumeStep is what "turn the music up" moves Spotify's volume by.
@@ -81,6 +84,24 @@ type NowPlayingOut struct {
 	Artists string `json:"artists,omitempty"`
 	Album   string `json:"album,omitempty"`
 	Playing bool   `json:"playing,omitempty"`
+}
+
+// SleepIn arms a timer for Minutes, a positive whole number of minutes. Zero
+// cancels the timer (the "cancel the sleep timer" phrasing routes here too).
+type SleepIn struct {
+	Minutes int `json:"minutes,omitempty"`
+}
+
+// SleepOut reports the sleep timer's actual outcome, so Speak can confirm the
+// real result rather than claiming a cancellation that did not happen.
+type SleepOut struct {
+	Armed     bool   `json:"armed,omitempty"`
+	Replaced  bool   `json:"replaced,omitempty"`
+	Cancelled bool   `json:"cancelled,omitempty"`
+	NoTimer   bool   `json:"no_timer,omitempty"`
+	Idle      bool   `json:"idle,omitempty"` // nothing holds music Focus, nothing was armed
+	Minutes   int    `json:"minutes,omitempty"`
+	Duration  string `json:"duration,omitempty"`
 }
 
 // NewPlay builds spotify.play.
@@ -150,6 +171,9 @@ func NewPause(svc *Service) tool.Tool[PauseIn, PauseOut] {
 				}
 				return PauseOut{}, toolError(err)
 			}
+			// A manual pause ends a pending sleep timer; "stop"/"resume" through
+			// Focus leave it alone unless the claim is released.
+			svc.cancelSleep()
 			return PauseOut{Paused: true}, nil
 		},
 		Speak: func(PauseOut) string { return "Paused." },
@@ -281,6 +305,63 @@ func NewNowPlaying(svc *Service) tool.Tool[NowPlayingIn, NowPlayingOut] {
 	}
 }
 
+// NewSleep builds spotify.sleep. It pauses music after a spoken duration and
+// keeps the music Focus claim so a bare "resume" still works. The deadline
+// lives in the Service, so a Dashboard page change cannot lose it; a restart
+// drops it, which is fine because a restart stops Soloist too.
+func NewSleep(svc *Service) tool.Tool[SleepIn, SleepOut] {
+	return tool.Tool[SleepIn, SleepOut]{
+		Name:        SleepName,
+		Description: "Set a sleep timer that stops the music after a number of minutes, or cancel an existing sleep timer. Only arms while music holds Focus.",
+		Permission:  tool.PermissionAct,
+		LocalOnly:   tool.LocalOnlyNo,
+		Handler: func(ctx context.Context, in SleepIn) (SleepOut, error) {
+			if in.Minutes == 0 {
+				if svc.cancelSleep() {
+					return SleepOut{Cancelled: true}, nil
+				}
+				return SleepOut{NoTimer: true}, nil
+			}
+			if in.Minutes < 0 {
+				return SleepOut{}, &tool.ToolError{Say: "I need a positive duration for the sleep timer."}
+			}
+			if !svc.musicHeld() {
+				return SleepOut{Idle: true}, nil
+			}
+			d := time.Duration(in.Minutes) * time.Minute
+			replaced := svc.armSleep(d)
+			return SleepOut{Armed: true, Replaced: replaced, Minutes: in.Minutes, Duration: parse.HumanDuration(d)}, nil
+		},
+		Speak: func(out SleepOut) string {
+			switch {
+			case out.Cancelled:
+				return "Sleep timer cancelled."
+			case out.NoTimer:
+				return "There is no sleep timer set."
+			case out.Idle:
+				return "Nothing is playing."
+			default:
+				line := "Stopping the music in " + out.Duration + "."
+				if out.Replaced {
+					line = "Stopping the music in " + out.Duration + " instead."
+				}
+				return line
+			}
+		},
+		Examples: []string{
+			"sleep timer for 30 minutes",
+			"set a sleep timer for 20 minutes",
+			"stop the music in 20 minutes",
+			"stop the music after 30 minutes",
+			"pause the music in an hour",
+			"sleep timer for an hour",
+			"stop playback in 45 minutes",
+			"cancel the sleep timer",
+		},
+		Extract: extractSleep,
+	}
+}
+
 func isNothingPlaying(err error) bool {
 	return errors.Is(err, spotify.ErrNothingPlaying)
 }
@@ -384,4 +465,37 @@ func extractVolume(text string) (VolumeIn, bool) {
 		return VolumeIn{Delta: volumeStep}, true
 	}
 	return VolumeIn{}, false
+}
+
+var (
+	sleepCancelRe = regexp.MustCompile(`(?i)^(?:cancel|clear|turn\s+off)\s+(?:the\s+|my\s+)?sleep\s+timer$`)
+	// sleepArmRe requires a sleep/music-stopping subject so a plain "set a timer
+	// for 20 minutes" stays with timer.set and "stop the music" stays with
+	// spotify.pause. The duration itself is read by the shared parse.Duration.
+	sleepArmRe = regexp.MustCompile(`(?i)\b(?:sleep\s+timer|stop\s+(?:(?:the|my)\s+)?(?:music|playback|spotify|song|songs|tunes|playing)|pause\s+(?:(?:the|my)\s+)?(?:music|playback|spotify|song|songs|tunes)|turn\s+off\s+(?:(?:the|my)\s+)?(?:music|playback|spotify))\b`)
+)
+
+// extractSleep reads a sleep-timer request. A cancel phrase maps to zero
+// minutes; an arm phrase needs a positive duration from the shared parser, so
+// an unknown or non-positive duration is refused and falls through.
+func extractSleep(text string) (SleepIn, bool) {
+	text = normalizeRequest(text)
+	if text == "" {
+		return SleepIn{}, false
+	}
+	if sleepCancelRe.MatchString(text) {
+		return SleepIn{Minutes: 0}, true
+	}
+	if !sleepArmRe.MatchString(text) {
+		return SleepIn{}, false
+	}
+	d, ok := parse.Duration(text, time.Minute)
+	if !ok || d <= 0 {
+		return SleepIn{}, false
+	}
+	minutes := int(d / time.Minute)
+	if minutes <= 0 {
+		return SleepIn{}, false
+	}
+	return SleepIn{Minutes: minutes}, true
 }

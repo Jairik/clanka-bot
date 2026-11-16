@@ -387,7 +387,11 @@ services:
   # by scripts/soloist-setup.sh and mounted read-only; it is never baked into
   # the image or committed. The private data directory and key are host bind
   # mounts, so credentials stay outside the image and outside the Assistant.
+  # Opt-in: the receiver only starts when the `spotify` Compose profile is
+  # active (set COMPOSE_PROFILES=spotify, or use `make spotify-up`). Without a
+  # key the rest of the stack still deploys and the health wait skips it.
   soloist:
+    profiles: ["spotify"]
     build:
       context: ./soloist
     image: clanka/soloist:${GIT_SHA:-dev}

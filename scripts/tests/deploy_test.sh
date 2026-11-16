@@ -44,8 +44,8 @@ write_docker_stub() {
 set -uo pipefail
 dir="${STUB_DOCKER_DIR:?STUB_DOCKER_DIR is required}"
 printf 'docker %s\n' "$*" >>"$dir/calls"
-printf 'GIT_SHA=%s\nDOCKER_DEFAULT_PLATFORM=%s\nCOMPOSE_PROJECT_NAME=%s\n' \
-	"${GIT_SHA-}" "${DOCKER_DEFAULT_PLATFORM-}" "${COMPOSE_PROJECT_NAME-}" >>"$dir/env"
+printf 'GIT_SHA=%s\nDOCKER_DEFAULT_PLATFORM=%s\nCOMPOSE_PROJECT_NAME=%s\nCOMPOSE_PROFILES=%s\n' \
+	"${GIT_SHA-}" "${DOCKER_DEFAULT_PLATFORM-}" "${COMPOSE_PROJECT_NAME-}" "${COMPOSE_PROFILES-}" >>"$dir/env"
 
 cmd="${1:-}"
 shift || true
@@ -68,10 +68,18 @@ compose)
 			if grep -qxF "$svc" "$dir/containers" 2>/dev/null; then
 				echo "cid-$svc"
 			fi
+		elif [[ "${1:-}" == "--services" ]]; then
+			# Only running, defined services: `docker compose ps --services`
+			# drops orphans (not in the current compose) and profiled
+			# services that were not started because their profile is
+			# inactive. Model that as the intersection of the container
+			# set with the service set.
+			grep -xF -f "$dir/services" "$dir/containers" 2>/dev/null || true
 		else
 			echo "stub compose ps"
 		fi
 		;;
+
 	up)
 		if [[ -f "$dir/up-fails" ]]; then
 			echo "stub compose up failed" >&2
@@ -232,7 +240,11 @@ run_make() {
 		# The outer `make test` exports GIT_SHA for its own repo; the fixture
 		# Makefile must derive its own SHA.
 		unset GIT_SHA DOCKER_DEFAULT_PLATFORM
-		STUB_DOCKER_DIR="$SCENARIO" PATH="$STUB_BIN:$PATH" make "$target"
+		STUB_DOCKER_DIR="$SCENARIO" PATH="$STUB_BIN:$PATH" \
+			SOLOIST_DIR="$SCENARIO/soloist" \
+			SOLOIST_BINARY="$SCENARIO/soloist/soloist" \
+			SOLOIST_LEGACY_DIR="$SCENARIO/legacy" \
+			make "$target"
 	) >"$OUT" 2>&1
 	STATUS=$?
 }
@@ -368,6 +380,51 @@ test_provisions_the_receiver_before_compose_up() {
 	assert_status 0 "deploy with a receiver succeeds"
 	assert_out_contains "deploy prepares the receiver" "using existing receiver binary"
 	assert_calls_contains "receiver setup runs before compose up" "docker compose up -d --build --remove-orphans"
+}
+
+test_deploy_without_spotify_key_skips_receiver() {
+	local repo
+	repo=$(new_repo)
+	new_scenario
+	# The checked-in compose defines soloist behind the spotify profile, but
+	# with no key the profile is inactive: config --services still names it,
+	# yet ps --services (after up) must not.
+	set_services assistant soloist
+	printf 'assistant\n' >"$SCENARIO/containers"
+	rm -f "$SCENARIO/soloist/api-key"
+	run_deploy "$repo"
+	assert_status 0 "deploy without a Spotify key succeeds"
+	assert_out_not_contains "deploy never provisions the receiver" "using existing receiver binary"
+	assert_calls_not_contains "deploy never health-checks the profiled service" "docker compose ps -q soloist"
+	assert_out_contains "deploy waits only for the running service" "all 1 service"
+}
+
+test_deploy_with_spotify_key_enables_profile() {
+	local repo
+	repo=$(new_repo)
+	new_scenario
+	# Key present (new_scenario) -> profile active, receiver provisioned, and
+	# ps --services includes soloist after up.
+	set_services assistant soloist
+	set_health assistant healthy
+	set_health soloist healthy
+	run_deploy "$repo"
+	assert_status 0 "deploy with a Spotify key succeeds"
+	assert_env_contains "deploy exports the spotify profile" "COMPOSE_PROFILES=spotify"
+	assert_out_contains "deploy provisions the receiver" "using existing receiver binary"
+	assert_calls_contains "deploy health-checks the receiver" "docker compose ps -q soloist"
+	assert_out_contains "deploy waits for both services" "all 2 service"
+}
+
+test_make_up_runs_optional_setup_without_key() {
+	local repo
+	repo=$(new_repo)
+	new_scenario
+	rm -f "$SCENARIO/soloist/api-key"
+	run_make "$repo" up
+	assert_status 0 "make up succeeds with no Spotify key"
+	assert_out_contains "make up skips the receiver" "Spotify receiver not configured; skipping"
+	assert_calls_not_contains "make up does not force the profile" "docker compose up -d --profile"
 }
 
 test_rollback_removes_orphans_from_a_newer_service_set() {
@@ -646,6 +703,9 @@ run_test test_deploys_current_branch
 run_test test_deploys_behind_upstream
 run_test test_waits_for_every_service
 run_test test_provisions_the_receiver_before_compose_up
+run_test test_deploy_without_spotify_key_skips_receiver
+run_test test_deploy_with_spotify_key_enables_profile
+run_test test_make_up_runs_optional_setup_without_key
 run_test test_rollback_removes_orphans_from_a_newer_service_set
 run_test test_reports_timeout_with_diagnostics
 run_test test_reports_unhealthy_service

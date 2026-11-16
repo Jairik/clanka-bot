@@ -29,8 +29,8 @@ func (*Module) Intents() []focus.Intent {
 	return []focus.Intent{focus.Stop, focus.Cancel, focus.Snooze}
 }
 
-// Register adds alarm.set, alarm.list, alarm.cancel and alarm.update.
-// Persisted Alarms are recovered by Start, not here, so the first recovered
+// Register adds alarm.set, alarm.list, alarm.cancel, alarm.update and
+// alarm.snooze. Persisted Alarms are recovered by Start, not here, so the first recovered
 // Ring already sees the effective settings, Cues, Zone and Ring seams.
 func (m *Module) Register(r *tool.Registry, deps tool.Deps) error {
 	var say func(context.Context, string) error

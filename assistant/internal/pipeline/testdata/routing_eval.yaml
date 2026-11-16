@@ -482,6 +482,32 @@ positives:
     - delete my 8 o'clock alarm
     - cancel the alarm I set for 6:30
     - cancel my 6:45 alarm
+  alarm.snooze:
+    # A phrased snooze of the ringing Alarm with a spoken delay. The bare word
+    # "snooze" is a Control phrase that reaches the ringing alert through Focus
+    # and never lands here; "alarm" and "snooze" keep these apart from Timers.
+    - snooze the alarm for ten minutes
+    - snooze the alarm for 10 minutes
+    - snooze my alarm for twenty minutes
+    - snooze for five more minutes
+    - snooze the alarm
+    - snooze my alarm
+    - snooze the morning alarm for 15 minutes
+    - snooze the alarm for another ten minutes
+    - snooze the alarm for 5 minutes
+    - snooze this alarm for ten minutes
+    - snooze the alarm for half an hour
+    - snooze my alarm for a few more minutes
+    - snooze the alarm for twenty minutes
+    - snooze the alarm for thirty minutes
+    - snooze my alarm for another five minutes
+    - snooze the alarm for one minute
+    - please snooze the alarm for ten minutes
+    - can you snooze the alarm for 20 minutes
+    - snooze the alarm for 45 minutes
+    - snooze my alarm for ten more minutes
+    - snooze the alarm for a quarter of an hour
+    - snooze the alarm for 8 minutes
   voice.set:
     # Changing the persistent voice. The name is resolved by the shared name
     # matcher, so the corpus uses library-style names rather than inventing a

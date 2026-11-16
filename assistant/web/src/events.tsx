@@ -4,7 +4,7 @@
 // an event missed while disconnected is recovered by that full resync.
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 
-export const LIVE_NAMES = ["activity", "volume", "alerts", "health"] as const;
+export const LIVE_NAMES = ["activity", "volume", "alerts", "health", "focus"] as const;
 export type LiveName = (typeof LIVE_NAMES)[number];
 
 export const isLiveName = (value: string): value is LiveName => (LIVE_NAMES as readonly string[]).includes(value);

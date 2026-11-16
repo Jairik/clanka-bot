@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/activity"
+	"github.com/Jairik/clanka-bot/assistant/internal/announce"
+	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/httpguard"
 	"github.com/Jairik/clanka-bot/assistant/internal/integrations"
 	"github.com/Jairik/clanka-bot/assistant/internal/persona"
@@ -136,6 +138,14 @@ type Options struct {
 	// its metadata to show what is deterministic, what only the Agent may call,
 	// and what stays on the Pi. Nil makes those pages explanatory.
 	Registry *tool.Registry
+	// Focus reports what currently holds the user's attention (Ring, Reply,
+	// Music) so the Dashboard can show why speech is or is not playing. Nil
+	// hides the focus view.
+	Focus *focus.Registry
+	// Announcements reports the unprompted-speech queue without any text, so the
+	// Dashboard can show how many are waiting and whether a hold is on. Nil
+	// hides the focus view.
+	Announcements *announce.Queue
 	// Integrations backs the Hermes page's account linking and per-integration
 	// grants. Nil makes the page explanatory.
 	Integrations *integrations.Service
@@ -225,6 +235,10 @@ type Handler struct {
 	phraseGenReady func() bool
 	registry       *tool.Registry
 	integrations   *integrations.Service
+	// focusReg and announceQueue feed the focus view and its live delta. Either
+	// may be nil, which hides the view.
+	focusReg     *focus.Registry
+	announceQueue *announce.Queue
 	spotify        *spotify.Auth
 	spotifyPairing *spotify.PairingReader
 	activity       *activity.Store
@@ -352,6 +366,8 @@ func New(opts Options) (*Handler, error) {
 		phraseGenReady: opts.PhraseGenReady,
 		registry:       opts.Registry,
 		integrations:   opts.Integrations,
+		focusReg:       opts.Focus,
+		announceQueue:  opts.Announcements,
 		spotify:        opts.Spotify,
 		spotifyPairing: opts.SpotifyPairing,
 		activity:       opts.Activity,
@@ -376,6 +392,9 @@ func New(opts Options) (*Handler, error) {
 	// The SSE hub is created before any route can be served; an Activity
 	// observer pushes each completed request as one delta.
 	h.live = newLiveHub(h)
+	// Focus and announcement deltas piggyback on the same hub; the hooks wrap
+	// the registry and queue observers main already installed.
+	h.wireFocusHooks()
 	if h.activity != nil {
 		h.activity.Subscribe(h.liveActivity)
 	}
@@ -395,6 +414,8 @@ func New(opts Options) (*Handler, error) {
 	// attachment headers and writes one bounded, redacted JSON document.
 	h.Handle("GET /api/ui/diagnostics", h.diagnostics)
 	h.Handle("GET /api/ui/activity", h.activityPage)
+	// The focus and announcement state, also pushed as an SSE delta on change.
+	h.Handle("GET /api/ui/focus", h.focusHandler)
 	// One read-only live stream for the whole app. Every write still uses its
 	// own Mutating route; this only carries deltas.
 	h.Handle("GET /api/ui/events", h.events)

@@ -358,6 +358,76 @@ func TestStatusKeepsTheSharedPassWhenTheFirstCallerGoesAway(t *testing.T) {
 	}
 }
 
+// overrunModules ignores the snapshot deadline and hands back its results only
+// after more than moduleGrace has elapsed (the abandoned-list case from #360).
+type overrunModules struct {
+	names []string
+	delay time.Duration
+}
+
+func (f overrunModules) Modules() []tool.Module { return modules(f.names) }
+func (f overrunModules) Health(ctx context.Context) []tools.Health {
+	<-ctx.Done()
+	time.Sleep(f.delay)
+	return []tools.Health{{Module: "clock", Err: nil}}
+}
+
+// TestStatusAbandonedModuleListTimesOutEveryModule is the #360 regression: a
+// list that overruns the module-list grace must not report its modules as
+// no-check (which OK() would ignore), but as timed out, keeping the report
+// honest even when another boundary passed.
+func TestStatusAbandonedModuleListTimesOutEveryModule(t *testing.T) {
+	// moduleGrace is 200ms; sleeping past it forces the abandoned-list path.
+	const overrun = 400 * time.Millisecond
+	source := status.New(status.Options{
+		Timeout:  25 * time.Millisecond,
+		Services: []status.ServiceCheck{{Name: "assistant", Check: func(context.Context) error { return nil }}},
+		Modules:  overrunModules{names: []string{"clock", "weather", "audio"}, delay: overrun},
+	})
+
+	start := time.Now()
+	report := source.Status(context.Background())
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("Status took %s, want the grace to bound the abandoned list", elapsed)
+	}
+	if len(report.Modules) != 3 {
+		t.Fatalf("modules = %+v, want a row per module", report.Modules)
+	}
+	for _, check := range report.Modules {
+		if check.State != tool.StatusTimedOut {
+			t.Errorf("%s = %+v, want timed-out", check.Name, check)
+		}
+	}
+	if report.OK() {
+		t.Error("OK() = true with no module checked; an abandoned list must not read healthy")
+	}
+}
+
+// TestStatusListReturningASubsetKeepsNoCheckForAbsent proves only a list that
+// actually returned, with a name genuinely missing from its results, reads
+// no-check.
+func TestStatusListReturningASubsetKeepsNoCheckForAbsent(t *testing.T) {
+	source := status.New(status.Options{
+		Timeout: time.Second,
+		Modules: fakeModules{
+			names:  []string{"clock", "weather", "audio"},
+			health: []tools.Health{{Module: "weather", Err: nil}, {Module: "audio", Err: nil}},
+		},
+	})
+
+	report := source.Status(context.Background())
+	byName := map[string]tool.StatusCheck{}
+	for _, check := range report.Modules {
+		byName[check.Name] = check
+	}
+	if got := byName["clock"]; got.State != tool.StatusNoCheck || got.Detail != "No health check declared." {
+		t.Errorf("clock = %+v, want no-check for the absent name", got)
+	}
+	if byName["weather"].State != tool.StatusOK || byName["audio"].State != tool.StatusOK {
+		t.Errorf("returned modules lost their real states: %+v", report.Modules)
+	}
+}
+
 func namesOf(checks []tool.StatusCheck) []string {
 	names := make([]string, 0, len(checks))
 	for _, check := range checks {

@@ -43,6 +43,19 @@ func (e *cacheEmbedder) last() []string {
 	return append([]string(nil), e.batches[len(e.batches)-1]...)
 }
 
+// embeddedSince totals the texts in the batches from index from onward, so a
+// test can count one batched warm without assuming the whole library arrived
+// in a single request.
+func (e *cacheEmbedder) embeddedSince(from int) int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	total := 0
+	for _, batch := range e.batches[from:] {
+		total += len(batch)
+	}
+	return total
+}
+
 // cacheFill builds count distinct texts and a fixed vector for each.
 func cacheFill(count int) ([]string, [][]float32) {
 	texts := make([]string, count)
@@ -211,8 +224,8 @@ func TestWarmSurvivesAMixedWorkload(t *testing.T) {
 	if err := matcher.Warm(ctx, SourcePlaylists, playlists); err != nil {
 		t.Fatalf("Warm: %v", err)
 	}
-	if got := len(embedder.last()); got != len(playlists) {
-		t.Fatalf("warm batch = %d texts, want %d", got, len(playlists))
+	if got := embedder.embeddedSince(0); got != len(playlists) {
+		t.Fatalf("warm embedded %d texts, want %d", got, len(playlists))
 	}
 
 	// 1049 fuzzy list-item lookups, one item at a time, as a list resolves a
@@ -265,17 +278,18 @@ func TestLibraryLargerThanTheBudgetDoesNotOscillate(t *testing.T) {
 	if err := matcher.Warm(ctx, SourcePlaylists, names); err != nil {
 		t.Fatalf("first Warm: %v", err)
 	}
-	if got := len(embedder.last()); got != len(names) {
-		t.Fatalf("first warm batch = %d texts, want the whole library %d", got, len(names))
+	if got := embedder.embeddedSince(0); got != len(names) {
+		t.Fatalf("first warm embedded %d texts, want the whole library %d", got, len(names))
 	}
 
 	// Every later warm fills only what the bound could not keep.
 	want := len(names) - maxCachedVectors
 	for pass := 2; pass <= 3; pass++ {
+		before := embedder.calls()
 		if err := matcher.Warm(ctx, SourcePlaylists, names); err != nil {
 			t.Fatalf("warm pass %d: %v", pass, err)
 		}
-		if got := len(embedder.last()); got != want {
+		if got := embedder.embeddedSince(before); got != want {
 			t.Fatalf("warm pass %d embedded %d texts, want %d: the cache cleared instead of evicting", pass, got, want)
 		}
 		matcher.mu.Lock()

@@ -220,9 +220,18 @@ func TestHelpIsGeneratedFromTheEnabledRegistry(t *testing.T) {
 			t.Errorf("help lacks enabled Tool %q: %+v", want, first.Tools)
 		}
 	}
-	for _, want := range []string{"Alpha does the first thing.", "Beta does the second thing.", "Private reads on the Pi."} {
-		if !strings.Contains(first.Text, want) {
-			t.Errorf("help text lacks %q: %q", want, first.Text)
+	// The spoken answer is grouped and bounded, so it names the areas (here the
+	// assistant and test modules) rather than repeating every description, and it
+	// never exceeds the 400-rune budget or omits the topic invitation.
+	if got := []rune(first.Text); len(got) > 400 {
+		t.Errorf("help text = %d runes, want at most 400: %q", len(got), first.Text)
+	}
+	if !strings.HasSuffix(first.Text, "Ask what I can do with one of them.") {
+		t.Errorf("help text does not end with the topic invitation: %q", first.Text)
+	}
+	for _, area := range []string{"assistant", "test"} {
+		if !strings.Contains(first.Text, area) {
+			t.Errorf("help text lacks area %q: %q", area, first.Text)
 		}
 	}
 
@@ -235,11 +244,19 @@ func TestHelpIsGeneratedFromTheEnabledRegistry(t *testing.T) {
 	if helpNames(second)["test.alpha"] {
 		t.Errorf("disabled test.alpha still appears: %+v", second.Tools)
 	}
-	if strings.Contains(second.Text, "Alpha does the first thing.") {
-		t.Errorf("disabled test.alpha description still spoken: %q", second.Text)
+	// Disabling a Tool removes it from the Tool list but never from its area, so
+	// the spoken text still names the area and stays bounded and honest.
+	if helpNames(second)["test.alpha"] {
+		t.Errorf("disabled test.alpha still appears: %+v", second.Tools)
 	}
-	if !helpNames(second)["test.beta"] || !strings.Contains(second.Text, "Beta does the second thing.") {
+	if !helpNames(second)["test.beta"] {
 		t.Errorf("enabled test.beta disappeared after disabling alpha: %+v", second.Tools)
+	}
+	if got := []rune(second.Text); len(got) > 400 {
+		t.Errorf("second help text = %d runes, want at most 400: %q", len(got), second.Text)
+	}
+	if !strings.HasSuffix(second.Text, "Ask what I can do with one of them.") {
+		t.Errorf("second help text does not end with the topic invitation: %q", second.Text)
 	}
 
 	info, _ := reg.Info(assistant.HelpName)

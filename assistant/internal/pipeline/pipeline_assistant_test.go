@@ -204,8 +204,19 @@ func TestHelpListsTheEnabledRegistryAndDropsADisabledTool(t *testing.T) {
 	if reply.Path != tool.PathControlPhrase || reply.Tool != assistant.HelpName {
 		t.Fatalf("help reply = %+v", reply)
 	}
-	if !strings.Contains(reply.Text, "Test Tool test.visible.") || !strings.Contains(reply.Text, "Test Tool test.hidden.") {
-		t.Fatalf("help text lacks enabled Tool descriptions: %q", reply.Text)
+	// The spoken answer is grouped by area and bounded, so it names the areas
+	// (here "assistant" and the test module) rather than repeating every
+	// description, and it ends with the topic invitation. The complete Tool
+	// list stays in HelpOut.Tools for the Dashboard (covered by the assistant
+	// package's own test); only Text is capped.
+	if !strings.Contains(reply.Text, "assistant") || !strings.Contains(reply.Text, "test") {
+		t.Fatalf("help text does not name the areas: %q", reply.Text)
+	}
+	if !strings.HasSuffix(reply.Text, "Ask what I can do with one of them.") {
+		t.Fatalf("help text does not end with the topic invitation: %q", reply.Text)
+	}
+	if len([]rune(reply.Text)) > 400 {
+		t.Fatalf("help text exceeds the 400-rune budget: %q", reply.Text)
 	}
 	if !reply.LocalOnly {
 		t.Error("help reply is not marked Local-only")

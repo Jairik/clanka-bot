@@ -18,6 +18,7 @@ export function HealthPage() {
   const groups: [string, Check[], string?][] = data
     ? [
         ["Compose services", data.Services ?? []],
+        ["Semantic routing", data.Routing ? [data.Routing] : [], "The semantic Fast path is optional: a degraded index leaves Control phrases and the Agent path working. This is the in-memory build state, not a service probe."],
         ["Wake word", data.Wakeword ?? [], "The wake and wake-free command models the Assistant listens for, with the detection threshold it applies to each one."],
         ["Location", data.Location ? [data.Location] : []],
         ["Tool modules", data.Modules ?? []],

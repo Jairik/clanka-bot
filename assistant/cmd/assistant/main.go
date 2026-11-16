@@ -868,6 +868,9 @@ func run() error {
 		// service returns, but Control phrases and the Agent path keep working
 		// and recovery needs no edit or restart.
 		logger.Warn("semantic routing will retry in the background", "embed_url", cfg.Embed.URL, "error", err.Error())
+		// Keep the failure visible on the Dashboard Health page; the worker
+		// clears it on the first successful rebuild.
+		wordingMgr.MarkExamplesFailed(err)
 	} else {
 		semantic.Swap(exampleSet)
 		wordingMgr.MarkExamplesBuilt(initialExamples)
@@ -1118,6 +1121,10 @@ func run() error {
 			Modules:       toolSet,
 			Location:      locSvc,
 			Status:        systemStatus,
+			// The Health page reports the semantic index's in-memory state from
+			// the same wording manager the pipeline reads. No extra embed probe
+			// and no Tool output reaches the page.
+			ExamplesState: wordingMgr.ExamplesState,
 			Settings:      settingsSvc,
 			ToolPolicy:    toolPolicy,
 			Secrets:       secretsSvc,

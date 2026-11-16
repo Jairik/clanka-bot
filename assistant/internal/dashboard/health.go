@@ -2,6 +2,7 @@ package dashboard
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/spotify"
 	"github.com/Jairik/clanka-bot/assistant/internal/status"
@@ -26,6 +27,11 @@ type healthView struct {
 	// Spotify keeps Connect pairing and Web API auth separate; they are
 	// different grants and one can be healthy while the other is not.
 	Spotify []checkView
+	// Routing reports the semantic index's in-memory build state beside the
+	// service rows. It is deliberately not part of internal/status: a degraded
+	// Fast path must not fail StatusReport.OK() or become a third probe of the
+	// same state (the live sampler and system.status Tool share that report).
+	Routing checkView
 	// DiagnosticsURL is the read-only support download the button on this page
 	// requests. It is additive: an older UI ignores it.
 	DiagnosticsURL string
@@ -52,6 +58,7 @@ func (h *Handler) health(ctx context.Context) healthView {
 		Location:       checkViewOf(report.Location),
 		Modules:        checkViews(report.Modules),
 		Spotify:        h.spotifyChecks(),
+		Routing:        h.routingCheck(),
 		DiagnosticsURL: "/api/ui/diagnostics",
 	}
 }
@@ -131,4 +138,43 @@ func (h *Handler) spotifyChecks() []checkView {
 		webView.StatusLabel = webAPI.Label
 	}
 	return []checkView{pairingView, webView}
+}
+
+// routingCheck maps the semantic router's in-memory build state to one Health
+// row, like the Spotify rows beside the service probes. It shows tool counts
+// and an error string, never Tool output or settings values. A degraded or
+// unbuilt Fast path is reported honestly instead of as a green ok, but it does
+// not change the shared StatusReport or probe the embed service again.
+func (h *Handler) routingCheck() checkView {
+	row := checkView{Name: "Semantic routing"}
+	if h.examplesState == nil {
+		row.Status = string(tool.StatusNotConfigured)
+		row.StatusLabel = "not configured"
+		row.Detail = "Semantic routing is not configured in this deployment."
+		return row
+	}
+
+	tools, lastErr, lastAttempt := h.examplesState()
+	if lastErr != nil || tools == 0 {
+		row.Status = string(tool.StatusError)
+		if lastErr != nil {
+			row.StatusLabel = "rebuild failed"
+			row.Detail = "Last Examples rebuild failed: " + lastErr.Error() + ". Semantic routing is unavailable until a rebuild succeeds."
+		} else {
+			row.StatusLabel = "not built yet"
+			row.Detail = "No Tools are indexed; semantic routing is unavailable until the index is built."
+		}
+		if !lastAttempt.IsZero() {
+			row.Detail += " Last attempt " + lastAttempt.UTC().Format("2006-01-02 15:04:05 UTC") + "."
+		}
+		return row
+	}
+
+	row.Status = string(tool.StatusOK)
+	row.StatusLabel = "ok"
+	row.Detail = fmt.Sprintf("%d Tools indexed", tools)
+	if !lastAttempt.IsZero() {
+		row.Detail += "; last rebuilt " + lastAttempt.UTC().Format("2006-01-02 15:04:05 UTC")
+	}
+	return row
 }

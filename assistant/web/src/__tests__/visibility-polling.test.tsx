@@ -97,6 +97,7 @@ describe("shell health poll", () => {
         Location: { Name: "pi", Status: "ok", StatusLabel: "OK", Detail: "" },
         Wakeword: [],
         Spotify: [],
+        Routing: { Name: "Semantic routing", Status: "not-configured", StatusLabel: "not configured", Detail: "" },
         DiagnosticsURL: "/api/ui/diagnostics",
       } satisfies HealthView),
     );

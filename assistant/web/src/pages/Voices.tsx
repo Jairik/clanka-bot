@@ -216,7 +216,7 @@ function VoiceItem({
   const [note, setNote] = useState(v.Note);
   useEffect(() => setNote(v.Note), [v.Note]);
   return (
-    <li id={v.Anchor}>
+    <li id={v.Anchor} tabIndex={-1}>
       <Fold
         triggerClassName="flex min-h-14 items-center gap-3 px-3.5 py-2.5 hover:bg-surface-secondary"
         bodyClassName="border-t border-dashed bg-surface-secondary px-3.5 py-3"

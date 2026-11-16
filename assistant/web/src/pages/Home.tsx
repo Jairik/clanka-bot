@@ -24,7 +24,9 @@ const scrollBehavior = (): ScrollBehavior =>
   typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
 
 export function Home() {
-  const [view, setView] = useQueryParam("view", "overview");
+  // A view switch is a place the reader can come back to; filters elsewhere
+  // still replace so typing a search does not fill history (#300).
+  const [view, setView] = useQueryParam("view", "overview", { push: true });
   const { Owner } = useSession();
   const { requests, pending } = useChat();
   const scroller = useRef<HTMLDivElement>(null);

@@ -1,12 +1,12 @@
 // App frame: icon rail (desktop) / bottom tabs (mobile), a search-first top bar
 // with the speaker volume, and the page area. Home (/) is the chat.
-import { createContext, useCallback, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Button, Drawer, Popover, SearchField } from "@heroui/react";
 import {
   Activity, AlarmClock, Bell, BookOpenText, Bot, HeartPulse, KeyRound, Lamp, Lightbulb, MessageSquare, Mic, Minus, MoreHorizontal, Music, Plus,
   Settings, Smile, StickyNote, Volume, Volume1, Volume2, VolumeX, Waves, Waypoints, type LucideIcon,
 } from "lucide-react";
-import { APIVersionMismatch, getJSON, navigate, postForm, useLocation } from "./api";
+import { APIVersionMismatch, getJSON, navigate, postForm, restoreKey, useHash, useLocation } from "./api";
 import { API_VERSION } from "./api-version";
 import { latestDelta, piUnreachableAfter, useLive, usePiStatus } from "./events";
 import type { HealthView, Session, Volume as VolumeState } from "./types";
@@ -250,14 +250,126 @@ function Owner() {
   );
 }
 
-/** Standard page frame: serif title and blurb, then the page body. */
+/** Scroll positions by path+search. Back/Forward restores them; a reload does not. */
+const scrollPositions = new Map<string, number>();
+
+/** location.hash is encoded; a malformed escape must not break the page. */
+const fragmentId = (hash: string) => {
+  const raw = hash.replace(/^#/, "");
+  if (!raw) return "";
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+};
+
+/**
+ * Standard page frame: serif title and blurb, then the page body. It also owns
+ * this page's navigation state — a hash deep link focuses its anchor, and
+ * Back/Forward restores the scroll position of the page they return to (#300).
+ */
 export function PageFrame({ id, children, right }: { id: PageId; children: ReactNode; right?: ReactNode }) {
   const p = PAGES.find((x) => x.id === id)!;
+  const { href } = useLocation();
+  const hash = useHash();
+  const scroller = useRef<HTMLDivElement>(null);
+  const focused = useRef<HTMLElement | null>(null);
+
   useEffect(() => {
     document.title = `${p.title} · clanka`;
   }, [p.title]);
+
+  // Throttled on scroll, and always in the layout cleanup: a navigation that
+  // unmounts this page must not lose the last position to a pending throttle.
+  useLayoutEffect(() => {
+    const el = scroller.current;
+    if (!el) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const save = () => scrollPositions.set(href, el.scrollTop);
+    const onScroll = () => {
+      if (timer !== undefined) return;
+      timer = setTimeout(() => {
+        timer = undefined;
+        save();
+      }, 120);
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      if (timer !== undefined) clearTimeout(timer);
+      save();
+    };
+  }, [href]);
+
+  // Only Back/Forward restores. A fresh rail click starts at the top, and a
+  // reload starts with an empty map; neither should be persisted.
+  useLayoutEffect(() => {
+    if (restoreKey() !== href + hash) return;
+    const el = scroller.current;
+    const saved = scrollPositions.get(href);
+    if (el && saved !== undefined) el.scrollTop = saved;
+  }, [href, hash]);
+
+  // The anchor is server-supplied and the rows arrive after the fetch, so watch
+  // for it instead of looking only on mount. Focus makes the target keyboard-
+  // reachable and the class keeps a visible ring for scripted focus.
+  useEffect(() => {
+    focused.current?.classList.remove("deep-link-target");
+    focused.current = null;
+    const targetId = fragmentId(hash);
+    if (!targetId) return;
+    let observer: MutationObserver | undefined;
+    const opened = new Set<string>();
+    // A row can live in a closed Section; open those disclosures first, or a
+    // focus call on a hidden row would do nothing in a real browser.
+    const openHiddenAncestors = (el: HTMLElement) => {
+      let node: HTMLElement | null = el;
+      while (node && node !== scroller.current) {
+        const id = node.id;
+        if ((node.hasAttribute("hidden") || node.getAttribute("aria-hidden") === "true") && id && !opened.has(id)) {
+          opened.add(id);
+          const trigger = Array.from(document.querySelectorAll<HTMLElement>("[aria-controls]")).find(
+            (b) => b.getAttribute("aria-controls") === id && b.getAttribute("aria-expanded") === "false",
+          );
+          trigger?.click();
+        }
+        node = node.parentElement;
+      }
+    };
+    const reveal = () => {
+      const el = document.getElementById(targetId);
+      if (!el) return false;
+      if (el.closest("[hidden], [aria-hidden='true']")) {
+        openHiddenAncestors(el);
+        return false;
+      }
+      if (!el.hasAttribute("tabindex")) el.tabIndex = -1;
+      el.classList.add("deep-link-target");
+      if (el.scrollIntoView) el.scrollIntoView({ block: "start", behavior: "auto" });
+      el.focus({ preventScroll: true });
+      focused.current = el;
+      observer?.disconnect();
+      return true;
+    };
+    if (!reveal()) {
+      observer = new MutationObserver(reveal);
+      observer.observe(scroller.current ?? document.body, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        attributeFilter: ["hidden", "aria-hidden"],
+      });
+    }
+    return () => {
+      observer?.disconnect();
+      focused.current?.classList.remove("deep-link-target");
+      focused.current = null;
+    };
+  }, [hash]);
+
   return (
-    <div className="h-full overflow-y-auto">
+    <div ref={scroller} data-testid="page-scroller" className="h-full overflow-y-auto">
       <div className="mx-auto max-w-4xl px-4 pt-6 pb-28 md:px-8 md:pt-10 md:pb-16">
         <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
           <div>

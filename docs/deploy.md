@@ -348,11 +348,13 @@ caveat and the self-hosted token steps.
 The Health page shows the seven current Compose services (`embed`, `assistant`,
 `wakeword`, `stt`, `tts`, `web-search`, `soloist`), the resolved location,
 each Tool module that declares a health check, and the two Spotify grants
-separately. `embed` and `web-search` are checked over HTTP `/healthz`; the three
-Wyoming services are checked with `describe`; `assistant` is the process
-serving the page; `soloist` is checked by the heartbeat it writes to the
-metadata-only status directory, and an expired build is a failure. One refresh
-is bounded by
+separately. `embed` and `web-search` are checked over HTTP `/healthz`; the wakeword
+Compose row performs a fresh `describe` of the service each refresh (the row
+reports the probe's measured round trip, not a cached hit) and the page's
+model rows reuse that result, while `stt` and `tts` are checked with
+`describe`; `assistant` is the process serving the page; `soloist` is checked
+by the heartbeat it writes to the metadata-only status directory, and an
+expired build is a failure. One refresh is bounded by
 `dashboard.health_timeout` (3 s), and checks that overrun are shown as timed
 out. These are endpoint/status checks, not Docker's container health field.
 

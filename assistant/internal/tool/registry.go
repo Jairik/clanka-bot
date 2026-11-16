@@ -490,11 +490,13 @@ func (r *Registry) Info(name string) (Info, bool) {
 // Provenance hook and the hook reports a known value for this result. Only the
 // registration-time declaration can change the static flag; a result value's
 // own methods are never consulted, so a LocalOnlyYes Tool cannot silently make
-// its text forwardable. An unknown Tool falls back to false conservatively.
+// its text forwardable. An unknown Tool fails closed: its text is treated as
+// Local-only, because this flag gates egress and a missing Tool is not evidence
+// that the text is safe to send.
 func (r *Registry) Provenance(name string, result any) bool {
 	e, ok := r.lookup(name)
 	if !ok {
-		return false
+		return true
 	}
 	if localOnly, known := e.provenance(result); known {
 		return localOnly

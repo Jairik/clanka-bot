@@ -120,8 +120,10 @@ func TestNilPointerResultDoesNotPanic(t *testing.T) {
 	}
 }
 
-func TestProvenanceOfUnknownToolIsConservative(t *testing.T) {
-	if tool.NewRegistry(time.Second).Provenance("missing", "text") {
-		t.Fatal("an unknown Tool was reported as Local-only")
+func TestProvenanceOfUnknownToolFailsClosed(t *testing.T) {
+	// The flag gates egress, so a Tool that is not in the registry must not be
+	// treated as safe to send: Local-only is the safe default.
+	if !tool.NewRegistry(time.Second).Provenance("missing", "text") {
+		t.Fatal("an unknown Tool was reported as public; provenance must fail closed")
 	}
 }

@@ -67,6 +67,7 @@ import (
 	personatools "github.com/Jairik/clanka-bot/assistant/tools/persona"
 	spotifytools "github.com/Jairik/clanka-bot/assistant/tools/spotify"
 	"github.com/Jairik/clanka-bot/assistant/tools/timer"
+	"github.com/Jairik/clanka-bot/assistant/tools/weather"
 )
 
 func main() {
@@ -584,6 +585,9 @@ func run() error {
 	// music.max_volume is a live Spotify setting, unset (no cap) by default.
 	defs = append(defs, spotify.Definitions()...)
 	defs = append(defs, lights.Definitions()...)
+	// The live weather temperature unit appears on the Dashboard Settings page
+	// like lights.* and spotify.*; the weather Tool reads it per reply (#318).
+	defs = append(defs, weather.Definitions()...)
 	// Notify's URL and missed-alert switch are live settings; the topic and
 	// optional token remain write-only secrets.
 	defs = append(defs, notify.Definitions(baseCfg.Notify)...)

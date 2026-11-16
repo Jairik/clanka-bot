@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
+	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 )
 
@@ -26,6 +28,105 @@ const Name = "weather.current"
 // write-only store can hold it and the Dashboard Secrets page lists it; the
 // .env variable of the same name is the bootstrap.
 const SecretName = "WEATHERAPI_API_KEY"
+
+// UnitKey is the live temperature-unit preference declared on the Dashboard
+// Settings page (issue #318). Its value is one of UnitAuto, UnitCelsius or
+// UnitFahrenheit.
+const UnitKey = "weather.temperature_unit"
+
+const (
+	UnitAuto       = "auto"
+	UnitCelsius    = "celsius"
+	UnitFahrenheit = "fahrenheit"
+)
+
+// usTimezones are the IANA zones where Fahrenheit is the everyday unit. "auto"
+// picks Fahrenheit for these and Celsius for everywhere else (issue #318). A
+// fixed table keeps the answer independent of the host's locale or clock.
+var usTimezones = map[string]bool{
+	"America/New_York":               true,
+	"America/Chicago":                true,
+	"America/Denver":                 true,
+	"America/Los_Angeles":            true,
+	"America/Phoenix":                true,
+	"America/Anchorage":              true,
+	"Pacific/Honolulu":               true,
+	"America/Detroit":                true,
+	"America/Boise":                  true,
+	"America/Indiana/Indianapolis":   true,
+	"America/Kentucky/Louisville":    true,
+	"America/North_Dakota/New_Salem": true,
+	"America/Puerto_Rico":            true,
+	"America/St_Thomas":              true,
+	"Pacific/Guam":                   true,
+	"Pacific/Pago_Pago":              true,
+}
+
+// Definitions declares the live temperature-unit setting. It is registered in
+// the one settings service exactly like lights.* and spotify.*, so the
+// Dashboard Settings page lists it and a write applies on the next weather
+// request without a restart (issue #318).
+func Definitions() []settings.Definition {
+	return []settings.Definition{
+		settings.String(UnitKey, UnitAuto,
+			settings.WithDescription("Unit for weather replies: auto follows the location's timezone (Fahrenheit in US zones, Celsius elsewhere)."),
+			settings.WithValidator(func(value any) error {
+				text, ok := value.(string)
+				if !ok || validUnit(text) != text {
+					return fmt.Errorf("%s must be %q, %q or %q", UnitKey, UnitAuto, UnitCelsius, UnitFahrenheit)
+				}
+				return nil
+			}),
+		),
+	}
+}
+
+// validUnit returns text when it is a declared value, otherwise the "auto"
+// default. Closed-form so the validator, the live reader and the renderer all
+// agree on what is legal.
+func validUnit(text string) string {
+	switch text {
+	case UnitAuto, UnitCelsius, UnitFahrenheit:
+		return text
+	default:
+		return UnitAuto
+	}
+}
+
+// UnitFrom reads the live unit preference. A nil service or an unexpected
+// stored value falls back to the code default; callers still resolve "auto"
+// against the location (issue #318).
+func UnitFrom(svc interface {
+	Get(string) (settings.Value, bool)
+}) string {
+	if svc == nil {
+		return UnitAuto
+	}
+	value, ok := svc.Get(UnitKey)
+	if !ok {
+		return UnitAuto
+	}
+	text, ok := value.Value.(string)
+	if !ok {
+		return UnitAuto
+	}
+	return validUnit(text)
+}
+
+// ToFahrenheit and ToMph keep Out's stored Celsius/km/h values authoritative
+// while exposing Fahrenheit/mph for the Agent and the spoken renderer.
+func ToFahrenheit(celsius float64) float64 { return celsius*9/5 + 32 }
+func ToMph(kph float64) float64            { return kph / 1.609344 }
+
+// withConversions populates the alternate-unit fields from the provider's
+// Celsius and km/h values. Providers report metric; every Out that leaves the
+// package carries both units.
+func withConversions(out Out) Out {
+	out.TemperatureF = ToFahrenheit(out.TemperatureC)
+	out.ApparentF = ToFahrenheit(out.ApparentC)
+	out.WindMph = ToMph(out.WindKph)
+	return out
+}
 
 const (
 	// DefaultWeatherAPIURL resolves a city and returns current conditions in one call.
@@ -62,7 +163,12 @@ type Out struct {
 	Condition    string  `json:"condition"`
 	TemperatureC float64 `json:"temperature_c"`
 	ApparentC    float64 `json:"apparent_temperature_c"`
+	// Fahrenheit and mph mirror the metric values above so the Agent can pick
+	// either unit. They are derived in withConversions, never spoken directly.
+	TemperatureF float64 `json:"temperature_f"`
+	ApparentF    float64 `json:"apparent_temperature_f"`
 	WindKph      float64 `json:"wind_speed_kph"`
+	WindMph      float64 `json:"wind_speed_mph"`
 	Humidity     int     `json:"relative_humidity_percent"`
 }
 
@@ -79,6 +185,10 @@ type Deps struct {
 	ForecastURL   string
 	FallbackURL   string
 	Location      func() (location.Location, bool)
+	// Settings returns the live settings service. The module supplies it so
+	// the Fast path renderer reads the temperature unit per reply (#318).
+	// Nil means only the code default ("auto") is available.
+	Settings func() *settings.Service
 	// FallbackDelay starts the next provider if one is still pending; zero uses 250ms.
 	// Budget bounds all providers together; zero uses 1s.
 	FallbackDelay time.Duration
@@ -119,7 +229,7 @@ func New(deps Deps) tool.Tool[In, Out] {
 		Handler: func(ctx context.Context, in In) (Out, error) {
 			return current(ctx, deps, in, cache)
 		},
-		Speak: speak,
+		Speak: speakFor(deps),
 		Examples: []string{
 			"what's the weather like",
 			"what's the weather",
@@ -152,13 +262,52 @@ func extract(text string) (In, bool) {
 	return In{City: city}, true
 }
 
-// speak renders conditions for the Fast path.
-func speak(out Out) string {
-	unit := "degrees"
-	if out.TemperatureC > -1 && out.TemperatureC < 1 {
-		unit = "degree"
+// speakFor builds the Fast path renderer. It reads the live setting and the
+// current location at speak time, so a Dashboard change applies to the next
+// reply without rebuilding the Tool. The effective unit is resolved once per
+// answer; the same weather never depends on what was spoken before (#318).
+func speakFor(deps Deps) func(Out) string {
+	return func(out Out) string { return speak(out, effectiveUnit(deps)) }
+}
+
+// effectiveUnit resolves the preference to a concrete unit. "auto" follows the
+// stored location's timezone; explicit celsius/fahrenheit always win.
+func effectiveUnit(deps Deps) string {
+	preference := UnitAuto
+	if deps.Settings != nil {
+		if svc := deps.Settings(); svc != nil {
+			preference = UnitFrom(svc)
+		}
 	}
-	return fmt.Sprintf("It's %.0f %s and %s in %s.", out.TemperatureC, unit, out.Condition, out.City)
+	if preference != UnitAuto {
+		return preference
+	}
+	timezone := ""
+	if deps.Location != nil {
+		if loc, ok := deps.Location(); ok {
+			timezone = strings.TrimSpace(loc.Timezone)
+		}
+	}
+	if usTimezones[timezone] {
+		return UnitFahrenheit
+	}
+	return UnitCelsius
+}
+
+// speak renders conditions for the Fast path, always naming the unit once.
+func speak(out Out, unit string) string {
+	temperature := out.TemperatureC
+	unitWord := "Celsius"
+	if unit == UnitFahrenheit {
+		temperature = ToFahrenheit(out.TemperatureC)
+		unitWord = "Fahrenheit"
+	}
+	rounded := math.Round(temperature)
+	degree := "degrees"
+	if math.Abs(rounded) == 1 {
+		degree = "degree"
+	}
+	return fmt.Sprintf("It's %.0f %s %s and %s in %s.", rounded, degree, unitWord, out.Condition, out.City)
 }
 
 func current(ctx context.Context, deps Deps, in In, cache *cache) (Out, error) {
@@ -280,14 +429,14 @@ func primaryCurrent(ctx context.Context, deps Deps, cache *cache, city string) (
 	if err != nil {
 		return Out{}, err
 	}
-	return Out{
+	return withConversions(Out{
 		City:         place.Name,
 		Condition:    condition(forecast.Current.WeatherCode),
 		TemperatureC: forecast.Current.Temperature,
 		ApparentC:    forecast.Current.Apparent,
 		WindKph:      forecast.Current.Wind,
 		Humidity:     forecast.Current.Humidity,
-	}, nil
+	}), nil
 }
 
 func unknownLocation() error {

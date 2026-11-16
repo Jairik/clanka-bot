@@ -107,7 +107,7 @@ func TestWeatherAnswersForTheCurrentLocation(t *testing.T) {
 	if !ok {
 		t.Fatal("Speak returned false")
 	}
-	if want := "It's 4 degrees and overcast in Berlin."; spoken != want {
+	if want := "It's 4 degrees Celsius and overcast in Berlin."; spoken != want {
 		t.Fatalf("Speak = %q, want %q", spoken, want)
 	}
 

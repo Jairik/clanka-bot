@@ -12,6 +12,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/config"
 	"github.com/Jairik/clanka-bot/assistant/internal/httpclient"
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
+	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"gopkg.in/yaml.v3"
 )
@@ -70,6 +71,9 @@ type Module struct {
 	cfg      Config
 	location func() (location.Location, bool)
 	secrets  tool.SecretResolver
+	// settings returns the one live settings service; the Tool reads the
+	// temperature unit from it per reply. Nil means the code default applies.
+	settings func() *settings.Service
 	// now is the module's clock for health ages; nil uses time.Now.
 	now    func() time.Time
 	health healthMemo
@@ -109,6 +113,7 @@ func (m *Module) Configure(section *yaml.Node) error {
 func (m *Module) Register(r *tool.Registry, deps tool.Deps) error {
 	m.location = deps.Location
 	m.secrets = deps.Secrets
+	m.settings = deps.Settings
 	def := New(m.deps())
 	inner := def.Handler
 	def.Handler = func(ctx context.Context, in In) (Out, error) {
@@ -172,6 +177,7 @@ func (m *Module) deps() Deps {
 		FallbackDelay: m.cfg.FallbackDelay.Duration(),
 		Budget:        m.cfg.Budget.Duration(),
 		Location:      m.location,
+		Settings:      m.settings,
 	}
 }
 

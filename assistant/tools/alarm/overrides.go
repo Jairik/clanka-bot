@@ -211,7 +211,14 @@ func looksLikeAlarmUpdate(lower string) bool {
 	if soundOf.MatchString(lower) || alarmOverridePossessive.MatchString(lower) {
 		return true
 	}
-	for _, verb := range []string{"change", "update", "switch", "modify", "adjust", "edit", "reset"} {
+	// Rename and retime cues are edits too, so a request like "move my gym
+	// alarm to 6:30" cannot be read as a new alarm or a cancel by the sibling
+	// Extract functions.
+	for _, verb := range []string{
+		"change", "update", "switch", "modify", "adjust", "edit", "reset",
+		"rename", "call", "name", "label", "retitle", "relabel",
+		"move", "retime", "shift", "reschedule",
+	} {
 		if containsWord(lower, verb) {
 			return true
 		}

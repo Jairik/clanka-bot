@@ -27,13 +27,16 @@ func (*Module) ConformanceSamples() map[string]any {
 		UpdateName: UpdateOut{
 			Alarm: Alarm{
 				ID:          "1",
+				Label:       "gym",
 				Hour:        7,
+				Minute:      30,
 				Schedule:    Daily,
 				NextFiresAt: next,
 				Sound:       "birds",
 			},
-			Matched: 1,
-			Changed: []string{"sound"},
+			Matched:       1,
+			Changed:       []string{"label", "time", "sound"},
+			PreviousClock: "7:00 am",
 		},
 	}
 }

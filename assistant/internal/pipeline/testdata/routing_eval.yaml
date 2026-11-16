@@ -439,6 +439,16 @@ positives:
     - clear my alarm sound
     - reset my alarm volume
     - use the default sound for my alarm
+    # Rename/retime an existing Alarm in place; the same tool edits the row
+    # instead of creating a second Alarm (#303). Wording stays clear of
+    # alarm.set's "set an alarm for ..." and alarm.cancel's "cancel my ...".
+    - rename my alarm to gym
+    - rename this alarm to gym
+    - rename my alarm to work
+    - rename the alarm to work
+    - retitle the alarm as gym
+    - relabel the alarm as gym
+    - retime the alarm to 8
   alarm.list:
     - what alarms do I have
     - list my alarms

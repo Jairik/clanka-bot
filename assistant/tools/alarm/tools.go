@@ -3,6 +3,7 @@ package alarm
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -138,12 +139,13 @@ func NewCancel(m *Manager) tool.Tool[CancelIn, CancelOut] {
 	}
 }
 
-// NewUpdate builds alarm.update. It changes only the per-Alarm overrides; the
-// schedule, label and next occurrence stay as they are.
+// NewUpdate builds alarm.update. It changes the per-Alarm overrides of one
+// existing Alarm, and can rename or retime it in place without creating a
+// second Alarm. Anything not requested stays as it is.
 func NewUpdate(m *Manager) tool.Tool[UpdateIn, UpdateOut] {
 	return tool.Tool[UpdateIn, UpdateOut]{
 		Name:        UpdateName,
-		Description: "Change an existing alarm's sound, volume or ramp; time, label and repeat are unchanged.",
+		Description: "Change an existing alarm's sound, volume or ramp, rename it, or move it to a new time; the repeat rule stays unchanged.",
 		Permission:  tool.PermissionAct,
 		// The result embeds the stored Alarm, including a label the request may
 		// not name when it matches by time or id, or when only one Alarm exists.
@@ -154,21 +156,26 @@ func NewUpdate(m *Manager) tool.Tool[UpdateIn, UpdateOut] {
 			return m.Update(ctx, in)
 		},
 		Speak: speakUpdate,
+		// Keep the wording out of alarm.set's "set an alarm for ..." and
+		// alarm.cancel's "cancel my ... alarm" territory: the Fast path scores
+		// every Example against every Tool and needs a 0.23 margin (#303).
 		Examples: []string{
-			"change my 7 am alarm to the birds sound",
-			"change my 7 am alarm to birds",
-			"change my alarm sound to the birds sound",
-			"change my alarm's sound to birds",
-			"update my 7 am alarm to the birds sound",
-			"switch my 7 am alarm to the birds sound",
-			"make my 7 am alarm use the birds sound",
-			"use the birds sound for my 7 am alarm",
-			"set my alarm sound to birds",
+			"rename my alarm to gym",
+			"rename this alarm to gym",
+			"rename my alarm to work",
+			"rename the alarm to work",
+			"retitle the alarm as gym",
+			"relabel the alarm as gym",
+			"retime the alarm to 8",
+			"change the sound of my alarm to birds",
+			"change my alarm sound to birds",
+			"use the birds sound for my alarm",
+			"switch my alarm to birds",
+			"make my alarm use birds",
 			"set my alarm volume to 40",
-			"update my alarm volume to 30",
 			"change my alarm volume to 40",
+			"update my alarm volume to 30",
 			"change my alarm ramp to 10 seconds",
-			"change my 7 am alarm ramp to 5 seconds",
 			"clear my alarm sound",
 			"reset my alarm volume",
 			"use the default sound for my alarm",
@@ -297,25 +304,110 @@ func extractSet(text string) (SetIn, bool) {
 	}, true
 }
 
-// extractUpdate reads the selector and the per-Alarm override change. It
-// requires an alarm word, an override phrase and an update cue, so "wake me at
-// 7 with the birds sound" stays with alarm.set.
+// editToValue reads the value of a trailing "to ..." / "as ..." on an edit
+// request. callAlarmName reads the rename form without "to": "call my 7 am
+// alarm work". Both are cut out before the override parser sees them, so a
+// spoken rename is never mistaken for a sound change.
+var (
+	editToValue   = regexp.MustCompile(`(?i)\b(?:to|as)\s+(.+?)\s*[.!?]*$`)
+	callAlarmName = regexp.MustCompile(`(?i)\bcall\s+(?:the\s+|my\s+|our\s+|your\s+)?(.+?)\s+alarm\s+(.+?)\s*[.!?]*$`)
+)
+
+// alarmEdit is the rename/retime half of a spoken update. stripped is the
+// request with the new value removed, leaving only the selector.
+type alarmEdit struct {
+	newLabel *string
+	newTime  string
+	stripped string
+}
+
+// parseAlarmEdit reads a new name or clock from one utterance, reusing the
+// shared clock parser. Volume and ramp clauses are ignored while scanning, so
+// "update my alarm volume to 10" cannot become a retime to 10:00.
+func parseAlarmEdit(text string) alarmEdit {
+	edit := alarmEdit{stripped: text}
+	scan := stripVolumeAndRamp(text)
+	lower := strings.ToLower(scan)
+	cut := func(clause string) {
+		if clause != "" {
+			edit.stripped = strings.TrimSpace(strings.Replace(text, clause, "", 1))
+		}
+	}
+
+	if loc := editToValue.FindStringSubmatchIndex(scan); loc != nil {
+		value := strings.TrimSpace(scan[loc[2]:loc[3]])
+		_, _, isClock := parse.Clock(value)
+		switch {
+		case renameVerb(lower):
+			if label := cleanAlarmLabel(value); label != "" {
+				edit.newLabel = &label
+				cut(scan[loc[0]:loc[3]])
+			}
+		case isClock && (retimeVerb(lower) || editVerb(lower)):
+			edit.newTime = formatTimeValue(value)
+			cut(scan[loc[0]:loc[3]])
+		}
+	}
+	if edit.newLabel == nil && edit.newTime == "" {
+		if loc := callAlarmName.FindStringSubmatchIndex(scan); loc != nil {
+			if label := cleanAlarmLabel(scan[loc[4]:loc[5]]); label != "" {
+				edit.newLabel = &label
+				cut(scan[loc[4]:loc[5]])
+			}
+		}
+	}
+	return edit
+}
+
+// formatTimeValue renders a parsed clock as the HH:MM stored in UpdateIn.
+func formatTimeValue(value string) string {
+	hour, minute, ok := parse.Clock(value)
+	if !ok {
+		return ""
+	}
+	return fmt.Sprintf("%02d:%02d", hour, minute)
+}
+
+// renameVerb, retimeVerb and editVerb classify the cue before a new value.
+// A generic "change ... to X" only moves the time: a word like "birds" still
+// belongs to the sound parser, so existing override requests keep working.
+func renameVerb(lower string) bool {
+	return containsWord(lower, "rename") || containsWord(lower, "call") ||
+		containsWord(lower, "name") || containsWord(lower, "label") ||
+		containsWord(lower, "retitle") || containsWord(lower, "relabel")
+}
+
+func retimeVerb(lower string) bool {
+	return containsWord(lower, "move") || containsWord(lower, "retime") ||
+		containsWord(lower, "shift") || containsWord(lower, "reschedule")
+}
+
+func editVerb(lower string) bool {
+	for _, verb := range []string{"change", "update", "switch", "edit", "modify", "adjust"} {
+		if containsWord(lower, verb) {
+			return true
+		}
+	}
+	return false
+}
+
+// extractUpdate reads the selector, the rename/retime value and any per-Alarm
+// override change. It requires an alarm word and an edit cue, so "wake me at 7
+// with the birds sound" stays with alarm.set.
 func extractUpdate(text string) (UpdateIn, bool) {
 	lower := strings.ToLower(text)
 	if !strings.Contains(lower, "alarm") {
 		return UpdateIn{}, false
 	}
-	if containsWord(lower, "wake") {
+	if containsWord(lower, "wake") || !looksLikeAlarmUpdate(lower) {
 		return UpdateIn{}, false
 	}
-	overrides := parseOverrides(text)
-	if !overrides.hasChanges() {
-		return UpdateIn{}, false
-	}
-	if !looksLikeAlarmUpdate(lower) {
-		return UpdateIn{}, false
-	}
+
+	edit := parseAlarmEdit(text)
+	overrides := parseOverrides(edit.stripped)
 	in := UpdateIn{
+		NewLabel:    edit.newLabel,
+		NewTime:     edit.newTime,
 		Sound:       overrides.Sound,
 		SoundReset:  overrides.SoundReset,
 		Volume:      overrides.Volume,
@@ -323,12 +415,16 @@ func extractUpdate(text string) (UpdateIn, bool) {
 		RampSeconds: overrides.RampSeconds,
 		RampReset:   overrides.RampReset,
 	}
-	// The selector clock is read after the override clauses are removed, so
-	// "change my alarm volume to 10" does not look for a 10:00 Alarm.
-	if hour, minute, ok := parse.Clock(stripOverridePhrases(text)); ok {
+	if !in.hasChanges() {
+		return UpdateIn{}, false
+	}
+	// The selector is read after the new value and override clauses are removed,
+	// so "move my gym alarm to 6:30" selects by gym, not by 6:30.
+	selector := stripOverridePhrases(edit.stripped)
+	if hour, minute, ok := parse.Clock(selector); ok {
 		in.Time = fmt.Sprintf("%02d:%02d", hour, minute)
 	}
-	in.Label = labelForAlarm(stripOverridePhrases(text))
+	in.Label = labelForAlarm(selector)
 	return in, true
 }
 
@@ -347,7 +443,9 @@ func describeOverrides(alarm Alarm) string {
 	return text
 }
 
-// speakUpdate says exactly what changed on the matched Alarm.
+// speakUpdate says exactly what changed on the matched Alarm. A rename or
+// retime leads with the named Alarm and its new value; unrequested overrides
+// are never mentioned.
 func speakUpdate(out UpdateOut) string {
 	if out.Ambiguous {
 		return "More than one alarm matches. Which one should I change?"
@@ -355,7 +453,15 @@ func speakUpdate(out UpdateOut) string {
 	if out.Matched == 0 {
 		return "No alarm matched."
 	}
-	target := "your " + formatClock(out.Alarm.Hour, out.Alarm.Minute) + " alarm"
+	labelChanged := changeIncludes(out.Changed, "label")
+	timeChanged := changeIncludes(out.Changed, "time")
+	oldClock := out.PreviousClock
+	if oldClock == "" {
+		oldClock = formatClock(out.Alarm.Hour, out.Alarm.Minute)
+	}
+	newClock := formatClock(out.Alarm.Hour, out.Alarm.Minute)
+
+	target := "your " + newClock + " alarm"
 	if out.Alarm.Label != "" {
 		target = "your " + out.Alarm.Label + " alarm"
 	}
@@ -385,12 +491,36 @@ func speakUpdate(out UpdateOut) string {
 			}
 		}
 	}
+	fallback := ""
+	if out.SoundFallback {
+		fallback = ", but I couldn't find that sound, so it uses the default sound"
+	}
+	if labelChanged || timeChanged {
+		var lead string
+		switch {
+		case labelChanged && timeChanged:
+			lead = "Renamed your " + oldClock + " alarm to " + out.Alarm.Label +
+				" and moved it to " + newClock
+		case labelChanged:
+			lead = "Renamed your " + oldClock + " alarm to " + out.Alarm.Label
+		default:
+			name := "your " + oldClock + " alarm"
+			if out.Alarm.Label != "" {
+				name = capitalize(out.Alarm.Label) + " alarm"
+			}
+			lead = name + " moved to " + newClock
+		}
+		if len(parts) > 0 {
+			lead += ", " + joinPhrases(parts)
+		}
+		return lead + fallback + "."
+	}
 	if out.SoundFallback {
 		prefix := "Changed " + target
 		if len(parts) > 0 {
 			prefix += ": " + joinPhrases(parts)
 		}
-		return prefix + ", but I couldn't find that sound, so it uses the default sound."
+		return prefix + fallback + "."
 	}
 	switch len(parts) {
 	case 0:
@@ -400,6 +530,16 @@ func speakUpdate(out UpdateOut) string {
 	default:
 		return "Changed " + target + ": " + joinPhrases(parts) + "."
 	}
+}
+
+// changeIncludes reports whether the reply names one kind of change.
+func changeIncludes(changes []string, want string) bool {
+	for _, change := range changes {
+		if change == want {
+			return true
+		}
+	}
+	return false
 }
 
 // rampPhrase renders a whole-second ramp for a reply.

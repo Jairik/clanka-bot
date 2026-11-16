@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -33,6 +34,15 @@ var (
 	// ErrNothingPlaying means the account has no playback session.
 	ErrNothingPlaying = errors.New("spotify: nothing is playing")
 )
+
+// intlPrefix matches the optional locale segment some open.spotify.com share
+// links carry, e.g. "intl-de" or "intl-de-de", before the kind/id pair.
+var intlPrefix = regexp.MustCompile(`^intl-[a-z]{2}(-[a-z]{2})?$`)
+
+// spotifyID is the shape of a real Spotify id: 22 base62 characters. A link
+// with anything else is malformed, so we reject it before the Web API can
+// answer 400.
+var spotifyID = regexp.MustCompile(`^[A-Za-z0-9]{22}$`)
 
 // API is the Web API seam Player drives. *Client satisfies it; keeping it an
 // interface lets a test aim the Player at an httptest fake.
@@ -321,20 +331,30 @@ func (p *Player) Play(ctx context.Context, req PlayRequest) (Played, error) {
 			if err != nil {
 				return Played{}, err
 			}
-			parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+			path := strings.Trim(u.Path, "/")
+			// Share links can carry a locale prefix like "intl-de" or
+			// "intl-de-de" before the kind/id pair; drop it so the path is
+			// just "kind/id" again.
+			if seg := strings.SplitN(path, "/", 2); intlPrefix.MatchString(seg[0]) {
+				if len(seg) != 2 {
+					return Played{}, ErrNothingFound
+				}
+				path = seg[1]
+			}
+			parts := strings.Split(path, "/")
 			if len(parts) != 2 {
 				return Played{}, ErrNothingFound
 			}
 			uri = "spotify:" + parts[0] + ":" + parts[1]
 		}
 		parts := strings.Split(uri, ":")
-		if len(parts) != 3 || parts[2] == "" {
+		if len(parts) != 3 || parts[2] == "" || !spotifyID.MatchString(parts[2]) {
 			return Played{}, ErrNothingFound
 		}
 		switch parts[1] {
 		case KindTrack:
 			body, _ = json.Marshal(map[string]any{"uris": []string{uri}})
-		case KindAlbum, KindPlaylist:
+		case KindAlbum, KindPlaylist, KindArtist:
 			body, _ = json.Marshal(map[string]any{"context_uri": uri})
 		default:
 			return Played{}, ErrNothingFound

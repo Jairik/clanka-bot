@@ -262,14 +262,21 @@ func TestAPIStatusExposesTheMachineReason(t *testing.T) {
 	}
 }
 
-// Spotify links bypass search and playlists explicitly enable shuffle.
+// TestCompletionLinks covers the open.spotify.com share links and spotify: URIs
+// that bypass search. Playlists explicitly enable shuffle; an intl- locale
+// prefix is stripped; an artist URI plays as a context_uri.
 func TestCompletionLinks(t *testing.T) {
-	for _, tc := range []struct{ query, body string }{
-		{"https://open.spotify.com/track/abc?si=x", `"uris":["spotify:track:abc"]`},
-		{"https://open.spotify.com/album/abc", `"context_uri":"spotify:album:abc"`},
-		{"https://open.spotify.com/playlist/abc", `"context_uri":"spotify:playlist:abc"`},
+	const id = "1Ah2Bc3De4Fg5Hi6Jk7LmN"
+	for _, tc := range []struct{ name, query, body string }{
+		{"track", "https://open.spotify.com/track/" + id + "?si=x", `"uris":["spotify:track:` + id + `"]`},
+		{"album", "https://open.spotify.com/album/" + id, `"context_uri":"spotify:album:` + id + `"`},
+		{"playlist", "https://open.spotify.com/playlist/" + id, `"context_uri":"spotify:playlist:` + id + `"`},
+		{"intl-track", "https://open.spotify.com/intl-de/track/" + id + "?si=x", `"uris":["spotify:track:` + id + `"]`},
+		{"intl-de-de-playlist", "https://open.spotify.com/intl-de-de/playlist/" + id, `"context_uri":"spotify:playlist:` + id + `"`},
+		{"artist-link", "https://open.spotify.com/artist/" + id, `"context_uri":"spotify:artist:` + id + `"`},
+		{"artist-uri", "spotify:artist:" + id, `"context_uri":"spotify:artist:` + id + `"`},
 	} {
-		t.Run(tc.query, func(t *testing.T) {
+		t.Run(tc.name, func(t *testing.T) {
 			p, f := newPlayerFixture(t, 0)
 			if _, err := p.Play(t.Context(), spotify.PlayRequest{Query: tc.query}); err != nil {
 				t.Fatal(err)
@@ -282,6 +289,33 @@ func TestCompletionLinks(t *testing.T) {
 			}
 			if strings.Contains(tc.query, "playlist") && !strings.Contains(joined, "state=true") {
 				t.Fatalf("shuffle missing: %s", joined)
+			}
+		})
+	}
+}
+
+// TestCompletionLinkErrors covers the link/URI inputs that must refuse to play
+// rather than call the Web API with a malformed body.
+func TestCompletionLinkErrors(t *testing.T) {
+	const id = "1Ah2Bc3De4Fg5Hi6Jk7LmN"
+	for _, query := range []string{
+		"https://open.spotify.com/track/" + "abc",            // id too short
+		"https://open.spotify.com/intl-de/track/" + "abc",    // intl + bad id
+		"spotify:episode:" + id,                              // unsupported kind
+		"https://open.spotify.com/track/" + id + "/extra",    // extra path segment
+		"https://open.spotify.com/intl-de",                   // prefix with no pair
+	} {
+		t.Run(query, func(t *testing.T) {
+			p, f := newPlayerFixture(t, 0)
+			_, err := p.Play(t.Context(), spotify.PlayRequest{Query: query})
+			if !errors.Is(err, spotify.ErrNothingFound) {
+				t.Fatalf("err = %v, want ErrNothingFound", err)
+			}
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			joined := strings.Join(f.calls, "\n")
+			if strings.Contains(joined, "/me/player/play") || strings.Contains(joined, "/search") {
+				t.Fatalf("unexpected calls: %s", joined)
 			}
 		})
 	}

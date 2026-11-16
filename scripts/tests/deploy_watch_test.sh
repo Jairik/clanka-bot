@@ -110,6 +110,9 @@ write_curl_stub
 
 new_scenario() {
 	SCENARIO="$(mktemp -d "$TMP/scenario.XXXXXX")"
+	# Each scenario starts with the watcher's own default settle window; a test
+	# that cares sets WATCH_MIN_AGE before calling run_watch.
+	WATCH_MIN_AGE=""
 	printf 'assistant\n' >"$SCENARIO/services"
 	printf 'assistant\n' >"$SCENARIO/containers"
 	printf 'clanka/assistant:test\n' >"$SCENARIO/images"
@@ -176,16 +179,21 @@ YAML
 }
 
 # Land a new commit on origin/main (via a second clone) and record its full SHA
-# in NEW_SHA. The local checkout deliberately stays behind.
+# in NEW_SHA. The local checkout deliberately stays behind. The commit is dated
+# `age` seconds in the past (default 20 minutes) so the settle window treats it
+# as settled: pass 0 for a merge that just happened, or a negative age to fake a
+# clock that runs behind the committer.
 advance_origin() {
-	local repo=$1 remote other
+	local repo=$1 age=${2:-1200} remote other when
+	when="$(date -R -d "@$(($(date +%s) - age))")"
 	remote="$(git -C "$repo" remote get-url origin)"
 	other="$(mktemp -d "$TMP/other.XXXXXX")"
 	git clone -q "$remote" "$other"
 	git_config "$other"
 	echo "advance-$RANDOM-$$" >"$other/advance-$(date +%s%N).txt"
 	git -C "$other" add -A
-	git -C "$other" commit -qm "advance origin"
+	GIT_AUTHOR_DATE="$when" GIT_COMMITTER_DATE="$when" \
+		git -C "$other" commit -qm "advance origin"
 	git -C "$other" push -q origin main
 	NEW_SHA="$(git -C "$other" rev-parse HEAD)"
 }
@@ -202,6 +210,7 @@ run_watch() {
 			DEPLOY_WATCH_LOCK="$SCENARIO/watch.lock" \
 			DEPLOY_WATCH_API="http://api.test" \
 			DEPLOY_WATCH_REPO="example/clanka-bot" \
+			DEPLOY_WATCH_MIN_AGE="${WATCH_MIN_AGE-}" \
 			DEPLOY_HEALTH_TIMEOUT="${DEPLOY_HEALTH_TIMEOUT:-5}" \
 			DEPLOY_POLL_INTERVAL="0.1" \
 			bash scripts/deploy-watch.sh "$@"
@@ -546,6 +555,80 @@ test_force_deploys_when_current() {
 	assert_out_contains "forced deploy names the SHA" "deploying $sha"
 }
 
+test_young_tip_waits_for_settle() {
+	local repo
+	repo=$(new_repo)
+	new_scenario
+	advance_origin "$repo" 0
+	run_watch "$repo"
+	assert_status 0 "young tip is not an error"
+	assert_out_contains "young tip waits for the settle window" "waiting 900s for main to settle"
+	assert_calls_empty "young tip never reaches docker"
+	assert_curl_empty "young tip never asks CI"
+	if [[ "$(git -C "$repo" rev-parse HEAD)" != "$NEW_SHA" ]]; then pass; else fail "young tip leaves HEAD alone"; fi
+}
+
+test_settled_tip_deploys() {
+	local repo short
+	repo=$(new_repo)
+	new_scenario
+	advance_origin "$repo" 1200
+	short="$(git -C "$repo" rev-parse --short "$NEW_SHA")"
+	run_watch "$repo"
+	assert_status 0 "settled tip deploys"
+	assert_out_contains "settled tip is deployed" "deploying $short"
+	assert_calls_contains "settled tip rebuilds the stack" "docker compose up -d --build --remove-orphans"
+}
+
+test_settle_window_can_be_disabled() {
+	local repo short
+	repo=$(new_repo)
+	new_scenario
+	advance_origin "$repo" 0
+	short="$(git -C "$repo" rev-parse --short "$NEW_SHA")"
+	WATCH_MIN_AGE=0
+	run_watch "$repo"
+	assert_status 0 "zero settle window deploys"
+	assert_calls_contains "zero settle window rebuilds the stack" "docker compose up -d --build --remove-orphans"
+	assert_env_contains "zero settle window tags the new SHA" "GIT_SHA=$short"
+}
+
+test_force_ignores_settle_window() {
+	local repo short
+	repo=$(new_repo)
+	new_scenario
+	advance_origin "$repo" 0
+	short="$(git -C "$repo" rev-parse --short "$NEW_SHA")"
+	run_watch "$repo" --force
+	assert_status 0 "forced young tip deploys"
+	assert_calls_contains "forced young tip rebuilds the stack" "docker compose up -d --build --remove-orphans"
+	assert_env_contains "forced young tip tags the new SHA" "GIT_SHA=$short"
+}
+
+test_future_commit_timestamp_is_clamped() {
+	local repo
+	repo=$(new_repo)
+	new_scenario
+	advance_origin "$repo" -300
+	run_watch "$repo"
+	assert_status 0 "future-dated commit is not an error"
+	assert_out_contains "future-dated commit is clamped to zero" "moved 0s ago"
+	assert_out_contains "future-dated commit still waits" "waiting 900s for main to settle"
+	assert_calls_empty "future-dated commit never reaches docker"
+}
+
+test_bad_settle_window_is_rejected() {
+	local repo
+	repo=$(new_repo)
+	new_scenario
+	advance_origin "$repo" 1200
+	WATCH_MIN_AGE=soon
+	run_watch "$repo"
+	assert_status 1 "non-numeric settle window is an error"
+	assert_out_contains "non-numeric settle window says why" "DEPLOY_WATCH_MIN_AGE must be a whole number"
+	assert_calls_empty "non-numeric settle window never reaches docker"
+}
+
 run_test() {
 	local name=$1
 	printf '== %s\n' "$name"
@@ -573,6 +656,12 @@ run_test test_detached_rollback_recovers_when_origin_moves
 run_test test_dry_run_changes_nothing
 run_test test_lock_held_skips
 run_test test_force_deploys_when_current
+run_test test_young_tip_waits_for_settle
+run_test test_settled_tip_deploys
+run_test test_settle_window_can_be_disabled
+run_test test_force_ignores_settle_window
+run_test test_future_commit_timestamp_is_clamped
+run_test test_bad_settle_window_is_rejected
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

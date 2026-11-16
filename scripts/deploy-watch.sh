@@ -4,6 +4,10 @@
 # A checkout on another branch, or with local commits ahead of origin/main, is
 # left alone: deploy.sh builds the branch that is checked out.
 #
+# A commit younger than DEPLOY_WATCH_MIN_AGE is not built yet. Rebuilding eight
+# images takes longer than a busy main stays still, so the settle window turns a
+# burst of merges into one deploy instead of one per commit.
+#
 #   scripts/deploy-watch.sh              deploy origin/main when it moves
 #   scripts/deploy-watch.sh --dry-run    report what would happen, change nothing
 #   scripts/deploy-watch.sh --force      redeploy even when HEAD is already there
@@ -25,6 +29,11 @@ LOCK_FILE="${DEPLOY_WATCH_LOCK:-/tmp/clanka-deploy-watch.lock}"
 API="${DEPLOY_WATCH_API:-https://api.github.com}"
 REPO="${DEPLOY_WATCH_REPO:-Jairik/clanka-bot}"
 CI_ENABLED="${DEPLOY_WATCH_CI:-1}"
+# A commit has to be this old before it is built. Merges arrive faster than a
+# Pi can rebuild eight images (six to thirty minutes each), so without a settle
+# window every commit starts its own full rebuild and the timer never idles.
+# --force and DEPLOY_WATCH_MIN_AGE=0 are the escapes.
+SETTLE_MINUTES="${DEPLOY_WATCH_MIN_AGE:-15}"
 
 log() { printf 'deploy-watch: %s\n' "$*"; }
 warn() { printf 'deploy-watch: warning: %s\n' "$*" >&2; }
@@ -46,13 +55,17 @@ do.
 
 Flags:
   --dry-run   do every check, log what would happen, never run deploy.sh
-  --force     deploy even when HEAD already equals origin/main
+  --force     deploy even when HEAD already equals origin/main, and ignore the
+              settle window
 
 Environment:
-  DEPLOY_WATCH_CI     0 disables the CI gate (default: enabled)
-  DEPLOY_WATCH_API    GitHub API base (default: https://api.github.com)
-  DEPLOY_WATCH_REPO   owner/name to query (default: Jairik/clanka-bot)
-  DEPLOY_WATCH_LOCK   lock file (default: /tmp/clanka-deploy-watch.lock)
+  DEPLOY_WATCH_CI        0 disables the CI gate (default: enabled)
+  DEPLOY_WATCH_API       GitHub API base (default: https://api.github.com)
+  DEPLOY_WATCH_REPO      owner/name to query (default: Jairik/clanka-bot)
+  DEPLOY_WATCH_LOCK      lock file (default: /tmp/clanka-deploy-watch.lock)
+  DEPLOY_WATCH_MIN_AGE   minutes a commit must have been on main before it is
+                         built, so a burst of merges coalesces into one rebuild
+                         (default: 15, 0 disables)
 
 The CI gate reads the public check-runs API, so no token is used or logged.
 A pending or red main is never deployed. If the API cannot be reached (or
@@ -118,9 +131,27 @@ ci_state() {
 	esac
 }
 
+# Seconds since a commit landed on main, clamped at zero. A commit timestamped
+# in the future is clock skew, not evidence that main has already settled, but
+# it must never block a deploy for longer than the settle window either.
+target_age() {
+	local target=$1 committed now
+	committed="$(git log -1 --format=%ct "$target" 2>/dev/null || echo 0)"
+	if ! [[ "$committed" =~ ^[0-9]+$ ]]; then
+		printf '0\n'
+		return 0
+	fi
+	now="$(date +%s)"
+	if ((now > committed)); then
+		printf '%s\n' "$((now - committed))"
+	else
+		printf '0\n'
+	fi
+}
+
 main() {
 	local dry_run=0 force=0 arg changes err target current target_short current_short status
-	local branch upstream built built_short
+	local branch upstream built built_short settle_secs age
 
 	for arg in "$@"; do
 		case "$arg" in
@@ -136,6 +167,12 @@ main() {
 			;;
 		esac
 	done
+
+	# A typo here must not silently become "deploy everything immediately" or
+	# "wait thirty-five hours": refuse the run instead of guessing.
+	case "$SETTLE_MINUTES" in
+	'' | *[!0-9]*) die "DEPLOY_WATCH_MIN_AGE must be a whole number of minutes, got '$SETTLE_MINUTES'" ;;
+	esac
 
 	# One watcher at a time. The fd stays open for the whole run; the kernel
 	# drops the lock if this process dies.
@@ -188,6 +225,18 @@ main() {
 		exit 0
 	fi
 	target_short="$(git rev-parse --short "$target")"
+
+	# Let a burst of merges finish before spending a rebuild on it. The age is
+	# the commit's own timestamp, so a tick that starts right after a merge sees
+	# a young tip and defers; the tick after the burst builds once.
+	settle_secs=$((SETTLE_MINUTES * 60))
+	if ((settle_secs > 0 && force == 0)); then
+		age="$(target_age "$target")"
+		if ((age < settle_secs)); then
+			log "origin/main $target_short moved ${age}s ago; waiting ${settle_secs}s for main to settle"
+			exit 0
+		fi
+	fi
 
 	if [[ "$CI_ENABLED" != "0" ]]; then
 		case "$(ci_state "$target")" in

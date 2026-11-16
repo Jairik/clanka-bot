@@ -111,7 +111,15 @@ install_units() {
 		printf 'WorkingDirectory=%s\n' "$REPO_ROOT"
 		printf 'ExecStart=%s/scripts/deploy-watch.sh\n' "$REPO_ROOT"
 		printf '%s\n' 'Environment=DEPLOY_HEALTH_TIMEOUT=300'
-		printf '%s\n' 'TimeoutStartSec=3600'
+		# Build one image at a time. Compose builds every service with a build
+		# section in parallel, and eight concurrent builds (three of them Python
+		# model images) is what drove this Pi into swap thrash badly enough that
+		# tailscaled and sshd stopped answering.
+		printf '%s\n' 'Environment=COMPOSE_PARALLEL_LIMIT=1'
+		# A build that does not finish in half an hour has hung, not run slow:
+		# fail the unit instead of holding the flock for the full hour while the
+		# host is unusable.
+		printf '%s\n' 'TimeoutStartSec=1800'
 	} >"$SERVICE_UNIT" || die "cannot write $SERVICE_UNIT"
 
 	{

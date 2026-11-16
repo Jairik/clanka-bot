@@ -953,6 +953,21 @@ microphone. The top bar has the Pi speaker's volume (click to mute, a slider in
 same form routes as before. Build it with `make web`; the Docker image does this
 itself. See `assistant/web/README.md` for the dev server.
 
+The **Health** page at `/health` reports the bounded Compose, wake word,
+location, Tool module and Spotify checks. Its **Download diagnostics** button
+fetches `GET /api/ui/diagnostics`, one support artifact (bounded to 1 MiB) that
+contains the health/status snapshot, process uptime, the UI artifact pin and
+reported version, the Dashboard API version, effective settings and Tool policy,
+Tool and secret metadata, voice/wakeword summary, and nothing else. Secret
+values, last-four hints, the ntfy topic, private Note text and Local-only Tool
+output are never included: secrets appear only as `set`/`source`, sensitive
+setting keys are redacted, and local-only call results are omitted. The route
+is an authenticated, same-origin GET behind the same identity and Host checks
+as every other Dashboard read; nothing is uploaded anywhere. A checkbox on the
+page is **off by default**: enabling "Include the last 50 requests" adds the
+recent Activity entries (`?requests=1`), which can contain private transcript
+and reply text. Review the file before attaching it to an issue.
+
 The **Settings** page at
 `/settings`. Every Tool is listed with its effective and code-declared
 Permission, Local-only flag and enabled state; Permission choices are only the

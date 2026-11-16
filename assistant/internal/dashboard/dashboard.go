@@ -197,6 +197,9 @@ type Handler struct {
 	toolModules    ModuleProvider
 	zone           *tz.Service
 	now            func() time.Time
+	// startedAt is the handler's construction time, used for the diagnostics
+	// bundle's process uptime. It uses the injected clock so tests are stable.
+	startedAt      time.Time
 	personas       *persona.Service
 	desktopNotify  func() bool
 	phrases        *phrasebook.Service
@@ -235,7 +238,10 @@ type Handler struct {
 	proxyAllowed func(net.IP) bool
 	ui           fs.FS
 	uiArtifact   *uiArtifact
-	mux          *http.ServeMux
+	// uiPin is the configured UI artifact pin. It is kept even when no artifact
+	// URL is configured, so the diagnostics bundle can report it.
+	uiPin string
+	mux   *http.ServeMux
 }
 
 // uiBuild is the Vite output of assistant/web. The directory is committed with
@@ -312,6 +318,7 @@ func New(opts Options) (*Handler, error) {
 		toolModules:    opts.ToolModules,
 		zone:           opts.Zone,
 		now:            now,
+		startedAt:      now(),
 		personas:       opts.Personas,
 		desktopNotify:  opts.DesktopNotify,
 		phrases:        opts.Phrases,
@@ -335,6 +342,7 @@ func New(opts Options) (*Handler, error) {
 		proxyAllowed:   opts.ProxyAllowed,
 		ui:             ui,
 		uiArtifact:     uiArtifact,
+		uiPin:          opts.UIVersion,
 		mux:            http.NewServeMux(),
 	}
 	// The SSE hub is created before any route can be served; an Activity
@@ -354,6 +362,10 @@ func New(opts Options) (*Handler, error) {
 	// refreshed view (and a real status code on failure).
 	h.Handle("GET /api/ui/session", h.sessionInfo)
 	h.Handle("GET /api/ui/health", h.healthPage)
+	// The one support download. A read like every other page: identity, Host
+	// and same-origin are already enforced by ServeHTTP; the route only sets
+	// attachment headers and writes one bounded, redacted JSON document.
+	h.Handle("GET /api/ui/diagnostics", h.diagnostics)
 	h.Handle("GET /api/ui/activity", h.activityPage)
 	// One read-only live stream for the whole app. Every write still uses its
 	// own Mutating route; this only carries deltas.

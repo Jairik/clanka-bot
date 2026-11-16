@@ -26,6 +26,9 @@ type healthView struct {
 	// Spotify keeps Connect pairing and Web API auth separate; they are
 	// different grants and one can be healthy while the other is not.
 	Spotify []checkView
+	// DiagnosticsURL is the read-only support download the button on this page
+	// requests. It is additive: an older UI ignores it.
+	DiagnosticsURL string
 }
 
 type checkView struct {
@@ -40,15 +43,16 @@ type checkView struct {
 func (h *Handler) health(ctx context.Context) healthView {
 	report := h.healthStatus.Status(ctx)
 	return healthView{
-		Owner:         h.owner,
-		Page:          "health",
-		CheckedAt:     report.CheckedAt.Format("2006-01-02 15:04:05 UTC"),
-		HealthTimeout: report.Timeout.String(),
-		Services:      checkViews(report.Services),
-		Wakeword:      h.wakewordChecks(ctx),
-		Location:      checkViewOf(report.Location),
-		Modules:       checkViews(report.Modules),
-		Spotify:       h.spotifyChecks(),
+		Owner:          h.owner,
+		Page:           "health",
+		CheckedAt:      report.CheckedAt.Format("2006-01-02 15:04:05 UTC"),
+		HealthTimeout:  report.Timeout.String(),
+		Services:       checkViews(report.Services),
+		Wakeword:       h.wakewordChecks(ctx),
+		Location:       checkViewOf(report.Location),
+		Modules:        checkViews(report.Modules),
+		Spotify:        h.spotifyChecks(),
+		DiagnosticsURL: "/api/ui/diagnostics",
 	}
 }
 

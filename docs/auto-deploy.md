@@ -1,11 +1,12 @@
 # Auto-deploy on the Pi
 
 The Pi turns `main` into the running stack by itself: a systemd timer polls the
-remote, and when `main` moves to a commit whose CI checks are green it runs the
-normal `scripts/deploy.sh` path. This reverses #13's "no auto-deploy", which
-assumed nothing could check a commit before it landed. CI now runs on every
-push, and the checks API is readable without a token for this public repo, so
-the timer can refuse a red `main` instead of putting it in the living room.
+remote, and when `main` has moved to a commit that has had a few minutes to
+settle and whose CI checks are green, it runs the normal `scripts/deploy.sh`
+path. This reverses #13's "no auto-deploy", which assumed nothing could check a
+commit before it landed. CI now runs on every push, and the checks API is
+readable without a token for this public repo, so the timer can refuse a red
+`main` instead of putting it in the living room.
 
 Nothing is exposed to the internet and no token is stored on the Pi. The timer
 only makes an outbound `git fetch` and one unauthenticated HTTPS request; the
@@ -29,16 +30,23 @@ Each tick, in order:
    `origin/main`, or it has none) is left alone without touching Docker. So is
    a checkout whose `HEAD` is not an ancestor of `origin/main` — local commits
    on `main`, or diverged history. If `HEAD` already is `origin/main`, stop.
-4. Ask GitHub for the commit's check runs. Still-running checks mean "try
+4. Wait for `main` to settle. A commit younger than `DEPLOY_WATCH_MIN_AGE`
+   (default 15 minutes) is not built yet: merging faster than a Pi rebuilds
+   eight images turns every commit into its own full rebuild, and two of those
+   back to back is enough to leave the host unusable (see "Build load" below).
+   The age is the commit's own timestamp, so a burst of merges coalesces into
+   one deploy at the end of it. `--force`, a manual `make deploy`, and
+   `DEPLOY_WATCH_MIN_AGE=0` all skip this wait.
+5. Ask GitHub for the commit's check runs. Still-running checks mean "try
    again next tick"; a failure, timeout or cancellation means "never deploy
    this commit" — the running stack stays as it is until a new commit lands.
    A missing or unreachable API is a warning, not a block: `HEAD` equality
    still prevents redundant builds.
-5. Run `scripts/deploy.sh` unchanged: `git pull --ff-only`, build the
+6. Run `scripts/deploy.sh` unchanged: `git pull --ff-only`, build the
    SHA-tagged images, `docker compose up -d --build --remove-orphans`, then the
    bounded health wait and the best-effort old-image prune. A prune warning
    leaves the deployed stack green.
-6. Re-read `HEAD` and report `deployed <sha>` only when it is the commit the
+7. Re-read `HEAD` and report `deployed <sha>` only when it is the commit the
    watcher asked for. A deploy that exits 0 but leaves `HEAD` elsewhere is an
    error that names both SHAs, so the journal never claims a build the host is
    not running.
@@ -77,7 +85,9 @@ own location, writes both units, then `daemon-reload` and
 because a system unit started with `User=` does not inherit the account's
 group memberships, so without it `docker` is unreachable for the deploy.
 `DEPLOY_HEALTH_TIMEOUT=300` is set in the unit because a Pi rebuild is slower
-than the 120 s default.
+than the 120 s default. So are `COMPOSE_PARALLEL_LIMIT=1` (one image at a time,
+so a rebuild cannot starve the host) and `TimeoutStartSec=1800` (a build that
+has not finished in half an hour has hung, not run slow — see "Build load").
 
 Re-running the installer updates the units and restarts the timer. Pause or
 remove:
@@ -106,6 +116,7 @@ Every line is prefixed `deploy-watch:` and the deploy it starts keeps its own
 | Line | Meaning |
 | --- | --- |
 | `already on <sha>` | nothing new; the normal quiet case |
+| `origin/main <sha> moved <n>s ago; waiting <n>s for main to settle` | the tip is younger than `DEPLOY_WATCH_MIN_AGE`; a merge burst is still arriving, so no build yet |
 | `working tree has local changes` | the checkout was edited by hand; commit, stash or move the file |
 | `checkout is on '<branch>' (upstream <upstream>), not origin/main; leaving it alone` | the checkout is on another branch (or has no upstream); the timer only tracks `main`; set the upstream with `git branch --set-upstream-to=origin/main <branch>` |
 | `checkout is not behind origin/main (local commits?); leaving it alone` | `HEAD` is ahead of or diverged from `origin/main`; push the commit or roll back |
@@ -147,6 +158,29 @@ A one-off check without deploying:
   anyway. A network blip is not a CI failure, and a commit that is already at
   `HEAD` is skipped regardless, so this cannot cause a redundant rebuild loop.
 
+## Build load
+
+Eight services carry a `build:` section, three of them Python model images, and
+`docker compose up -d --build` rebuilds all of them. On the Pi a full rebuild
+takes anywhere from three minutes with a warm layer cache to half an hour,
+while a busy `main` can take a commit every few minutes. Two things keep that
+from turning the box into a rebuild treadmill:
+
+- `DEPLOY_WATCH_MIN_AGE` (the settle window) refuses to build a tip younger
+  than 15 minutes, so a burst of merges coalesces into one deploy at the end of
+  it instead of one deploy per commit.
+- The unit sets `COMPOSE_PARALLEL_LIMIT=1`. Compose builds services
+  concurrently by default, and eight parallel builds on an 8 GB Pi 5 is enough
+  to thrash swap hard: `tailscaled` and `sshd` stopped getting scheduled for
+  tens of seconds at a time, so the host looked offline (no handshake, no SSH
+  banner) while the kernel still answered pings.
+
+If a build does hang, `TimeoutStartSec=1800` fails the unit half an hour in
+instead of holding the flock for a full hour, and the journal's last BuildKit
+step names what was running. `journalctl -k -b -1 | grep -i 'killed process'`
+separates an OOM kill from an I/O stall; a box that answers ICMP but never
+sends an SSH banner is starved, not down.
+
 ## Disk space
 
 Each tick builds a fresh `clanka/<service>:<sha>` set, so `deploy.sh` prunes the
@@ -177,6 +211,7 @@ nothing here publishes images to a registry.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `DEPLOY_WATCH_CI` | `1` | `0` deploys without asking GitHub about the checks |
+| `DEPLOY_WATCH_MIN_AGE` | `15` | minutes a commit must have been on `main` before it is built; `0` disables the settle window, `--force` skips it |
 | `DEPLOY_WATCH_REPO` | `Jairik/clanka-bot` | repository whose check runs gate the deploy |
 | `DEPLOY_WATCH_API` | `https://api.github.com` | API base; tests point it at a stub |
 | `DEPLOY_WATCH_LOCK` | `/tmp/clanka-deploy-watch.lock` | single-run lock |

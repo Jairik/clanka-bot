@@ -15,6 +15,7 @@ import { SpeakToggle } from "./speak";
 import { prefetch } from "./routes";
 import { snapVolume, VOL_STEP } from "./volume";
 import { Logo } from "./logo";
+import { useVisiblePolling } from "./visibility";
 
 export type PageId = "home" | "activity" | "alerts" | "notes" | "health" | "sounds" | "voices" | "personas" | "phrasebook" | "voice-samples" | "spotify" | "lights" | "monster" | "secrets" | "routes" | "hermes" | "settings";
 
@@ -109,10 +110,10 @@ function useHealthAlarm() {
   );
   useEffect(() => {
     void load();
-    if (live) return;
-    const id = setInterval(load, 60_000);
-    return () => clearInterval(id);
   }, [load, live]);
+  // A hidden tab must cost the Pi nothing; one reload on return closes the gap.
+  // The stream carries health while it is open, so the fallback is off then.
+  useVisiblePolling(load, 60_000, !live);
   useEffect(() => {
     if (generation > 0) void load();
   }, [generation, load]);

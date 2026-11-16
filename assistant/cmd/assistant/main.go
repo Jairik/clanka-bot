@@ -64,6 +64,8 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/wording"
 	"github.com/Jairik/clanka-bot/assistant/internal/wyoming"
 	"github.com/Jairik/clanka-bot/assistant/tools"
+	"github.com/Jairik/clanka-bot/assistant/tools/github"
+	"github.com/Jairik/clanka-bot/assistant/tools/monster"
 	"github.com/Jairik/clanka-bot/assistant/tools/alarm"
 	personatools "github.com/Jairik/clanka-bot/assistant/tools/persona"
 	spotifytools "github.com/Jairik/clanka-bot/assistant/tools/spotify"
@@ -696,6 +698,32 @@ func run() error {
 	// Account linking reuses the same write-only secrets the Tools resolve; the
 	// grants are the live settings declared above.
 	integrationSvc := integrations.New(secretsSvc, settingsSvc)
+
+	// The Dashboard Verify action proves a stored integration key with one
+	// cheap authenticated call per account. The verifier reuses each provider's
+	// own base URL and, for Spotify and Monster, their existing auth and health
+	// seams; ntfy's verify publishes one message because the owner pressed it.
+	verifierOpts := integrations.VerifierOptions{
+		Secrets:        secretsSvc,
+		Spotify:        spotifyModule.Auth(),
+		OpenRouterBase: provider.BaseURL,
+		NtfyBase:       cfg.Notify.URL,
+	}
+	if gh, ok := toolSet.Module("github").(*github.Module); ok && gh != nil {
+		verifierOpts.GitHubBase = gh.BaseURL()
+	} else {
+		verifierOpts.GitHubBase = github.DefaultConfig().BaseURL
+	}
+	if wm, ok := toolSet.Module("weather").(*weather.Module); ok && wm != nil {
+		verifierOpts.WeatherURL = wm.WeatherAPIURL()
+	} else {
+		verifierOpts.WeatherURL = weather.DefaultWeatherAPIURL
+	}
+	if mm, ok := toolSet.Module("monster").(*monster.Module); ok && mm != nil {
+		verifierOpts.Monster = mm.Service
+	}
+	integrationVerifier := integrations.NewVerifier(verifierOpts)
+
 	voiceCtx, cancelVoice := context.WithTimeout(ctx, 5*time.Minute)
 	var voiceProbe voicelib.Probe
 	var voicePreview dashboard.VoicePreview
@@ -1188,6 +1216,7 @@ func run() error {
 			// same registry and the account registry.
 			Registry:     registry,
 			Integrations: integrationSvc,
+			Verifier:     integrationVerifier,
 			Spotify:      spotifyModule.Auth(),
 			SpotifyPairing: &spotify.PairingReader{
 				Path:       cfg.Spotify.PairingStatusFile,

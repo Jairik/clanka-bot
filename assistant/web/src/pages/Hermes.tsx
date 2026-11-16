@@ -8,7 +8,7 @@ import { usePageData } from "../api";
 import { Field, TextField, useActions, type Actions } from "../forms";
 import { PageFrame } from "../shell";
 import type { HermesView, Integration, IntegrationSecret } from "../types";
-import { Badge, Dot, Empty, Fold, Lede, Notice, Section, cn, foldOpen } from "../ui";
+import { Badge, Dot, Empty, Fold, Lede, Notice, Section, cn, foldOpen, type Tone } from "../ui";
 
 export function HermesPage() {
   const { data, error, set } = usePageData("hermes");
@@ -134,6 +134,7 @@ function IntegrationEditor({ row, actions }: { row: Integration; actions: Action
   const linkAction = base;
   const unlinkAction = `${base}/unlink`;
   const grantAction = `${base}/grant`;
+  const verifyAction = `${base}/verify`;
   const ready = row.StatusKey === "linked" || row.StatusKey === "environment";
   // Blank is fine when the account already stores a value; only a truly missing
   // one blocks. The server skips a blank value when the account already has one
@@ -212,6 +213,19 @@ function IntegrationEditor({ row, actions }: { row: Integration; actions: Action
                 Unlink
               </Button>
             )}
+            {row.Linkable && (
+              <Button
+                size="sm"
+                type="button"
+                variant="ghost"
+                isPending={actions.pending === verifyAction}
+                isDisabled={actions.pending !== "" && actions.pending !== verifyAction}
+                onPress={() => void actions.run(verifyAction)}
+                aria-label={`Verify the stored key for ${row.Name}`}
+              >
+                Verify
+              </Button>
+            )}
             <span className="text-[11px] text-subtle">
               {row.Linkable
                 ? missing
@@ -220,6 +234,12 @@ function IntegrationEditor({ row, actions }: { row: Integration; actions: Action
                 : "The secrets service is not available in this build."}
             </span>
           </div>
+          {row.verify && (
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <Badge tone={verifyTone(row.verify.class)}>{verifyLabel(row.verify.class)}</Badge>
+              <span className="text-xs text-muted">{row.verify.reason}</span>
+            </div>
+          )}
         </form>
       )}
 
@@ -257,6 +277,29 @@ function IntegrationEditor({ row, actions }: { row: Integration; actions: Action
 
 const statusTone = (key: string): "ok" | "warn" | "neutral" =>
   key === "linked" || key === "environment" ? "ok" : key === "partial" ? "warn" : "neutral";
+
+/** Verify result color. "ok" is the only good outcome; anything that shows the
+ * key is wrong or the service is down is a warning, and unknown classes fall back
+ * to neutral so the page never invents a status. */
+const verifyTone = (cls: string): Tone =>
+  cls === "ok" ? "ok" : cls === "rejected" || cls === "unreachable" ? "warn" : "neutral";
+
+/** Human label for a verify class. Falls back to the raw class so an unknown
+ * value is shown rather than silently dropped. */
+const verifyLabel = (cls: string): string => {
+  switch (cls) {
+    case "ok":
+      return "Works";
+    case "rejected":
+      return "Rejected";
+    case "unreachable":
+      return "Unreachable";
+    case "not-configured":
+      return "Not configured";
+    default:
+      return cls;
+  }
+};
 
 function secretHint(s: IntegrationSecret) {
   if (!s.Set) return "Not set";

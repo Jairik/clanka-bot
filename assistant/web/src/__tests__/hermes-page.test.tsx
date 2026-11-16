@@ -23,7 +23,7 @@ const github = (over: Partial<Integration> = {}): Integration => ({
   ],
   Tools: ["github.issue_create", "github.pr_list"],
   ...over,
-});
+}) as Integration;
 
 const openrouter = (over: Partial<Integration> = {}): Integration => ({
   ID: "openrouter",
@@ -38,7 +38,7 @@ const openrouter = (over: Partial<Integration> = {}): Integration => ({
   Secrets: [{ Name: "OPENROUTER_API_KEY", Set: true, Source: "env", Last4: "", Optional: false }],
   Tools: ["agent path"],
   ...over,
-});
+}) as Integration;
 
 const view = (rows: Integration[] = [github(), openrouter()]): HermesView => ({
   Owner: "owner@example.com",
@@ -71,6 +71,7 @@ function stub(write: (path: string) => HermesView, get: () => HermesView = () =>
     "/api/ui/hermes": () => json(get()),
     "/hermes/integrations/github": route("/hermes/integrations/github"),
     "/hermes/integrations/github/unlink": route("/hermes/integrations/github/unlink"),
+    "/hermes/integrations/github/verify": route("/hermes/integrations/github/verify"),
     "/hermes/integrations/openrouter/grant": route("/hermes/integrations/openrouter/grant"),
   });
   return calls;
@@ -215,4 +216,49 @@ it("disables the link button when a required secret is not set and left blank", 
   const link = await screen.findByRole("button", { name: "Link account" });
   expect((link as HTMLButtonElement).disabled).toBe(true);
   expect(screen.getByText("Fill every required field to save.")).toBeTruthy();
+});
+
+it("verifies an account and renders the result inline", async () => {
+  const verified = view([
+    github({ verify: { class: "ok", reason: "The stored key works." } }),
+    openrouter(),
+  ]);
+  const calls = stub((path) => (path === "/hermes/integrations/github/verify" ? verified : view()));
+  const user = userEvent.setup();
+  render(<HermesPage />);
+  await screen.findByText("GitHub");
+
+  await user.click(screen.getByRole("button", { name: /GitHub/ }));
+  await user.click(await screen.findByRole("button", { name: /Verify/ }));
+
+  await waitFor(() => expect(calls).toHaveLength(1));
+  expect(calls[0].path).toBe("/hermes/integrations/github/verify");
+  expect(await screen.findByText("Works")).toBeTruthy();
+  expect(screen.getByText("The stored key works.")).toBeTruthy();
+});
+
+it("renders a rejected verify result with its label", async () => {
+  const rejected = view([
+    github({ verify: { class: "rejected", reason: "The stored credentials were rejected." } }),
+    openrouter(),
+  ]);
+  stub((path) => (path === "/hermes/integrations/github/verify" ? rejected : view()));
+  const user = userEvent.setup();
+  render(<HermesPage />);
+  await screen.findByText("GitHub");
+
+  await user.click(screen.getByRole("button", { name: /GitHub/ }));
+  await user.click(await screen.findByRole("button", { name: /Verify/ }));
+
+  expect(await screen.findByText("Rejected")).toBeTruthy();
+  expect(screen.getByText("The stored credentials were rejected.")).toBeTruthy();
+});
+
+it("does not verify on load or on a timer", async () => {
+  const calls = stub(() => view());
+  render(<HermesPage />);
+  await screen.findByText("GitHub");
+  // Give any stray effect a chance to fire; it must not.
+  await new Promise((r) => setTimeout(r, 50));
+  expect(calls.filter((c) => c.path.endsWith("/verify"))).toHaveLength(0);
 });

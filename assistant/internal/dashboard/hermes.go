@@ -94,6 +94,16 @@ type integrationView struct {
 	Linkable  bool
 	Secrets   []integrationSecretView
 	Tools     []string
+	// Verify is the result of an owner-pressed verify, rendered inline. It is
+	// nil until the owner asks, so the page never verifies on load or a timer.
+	Verify *integrationVerifyView `json:"verify,omitempty"`
+}
+
+// integrationVerifyView is one verify result rendered inline on the account.
+// It carries only the fixed class and reason; never a token or upstream body.
+type integrationVerifyView struct {
+	Class  string `json:"class"`
+	Reason string `json:"reason"`
 }
 
 type integrationSecretView struct {
@@ -203,6 +213,37 @@ func (h *Handler) hermesGrant(w http.ResponseWriter, r *http.Request) {
 		flash = flashHermesGranted
 	}
 	h.writeJSON(w, http.StatusOK, h.buildHermesView(flash, ""))
+}
+
+// hermesVerify proves one account's stored key with one cheap authenticated
+// call. It is an explicit, owner-pressed action: the result is rendered inline
+// and the page never verifies on load or a timer. ntfy's verify publishes one
+// message to the topic for the same reason.
+func (h *Handler) hermesVerify(w http.ResponseWriter, r *http.Request) {
+	if h.integrations == nil || h.verifier == nil {
+		http.NotFound(w, r)
+		return
+	}
+	id := r.PathValue("id")
+	if _, ok := h.integrations.Get(id); !ok {
+		h.writeJSON(w, http.StatusNotFound, h.buildHermesView("", "That account does not exist."))
+		return
+	}
+	result, err := h.verifier.Verify(r.Context(), id)
+	if err != nil {
+		h.writeJSON(w, http.StatusNotFound, h.buildHermesView("", "That account does not exist."))
+		return
+	}
+	view := h.buildHermesView("", "")
+	for i := range view.Rows {
+		if view.Rows[i].ID == id {
+			view.Rows[i].Verify = &integrationVerifyView{
+				Class:  string(result.Class),
+				Reason: result.Reason,
+			}
+		}
+	}
+	h.writeJSON(w, http.StatusOK, view)
 }
 
 // buildRoutesView precomputes the whole Tool table. Control-phrase counts are

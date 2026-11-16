@@ -206,6 +206,10 @@ func NewModule() *Module { return &Module{cfg: DefaultConfig()} }
 // Name is the module name and config section suffix.
 func (*Module) Name() string { return "github" }
 
+// BaseURL is the configured REST API origin, used by the Dashboard secrets
+// verifier so it probes the same host the Tools use.
+func (m *Module) BaseURL() string { return m.cfg.BaseURL }
+
 // RequiredSecrets declares both write-only secrets so the Secrets page lists
 // them. GITHUB_TOKEN (fine-grained) drives issues and PR search.
 // GITHUB_NOTIFICATIONS_TOKEN (classic, notifications scope) is optional: its

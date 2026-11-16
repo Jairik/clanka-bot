@@ -450,6 +450,22 @@ func (a *Auth) Token(ctx context.Context) (string, error) {
 	}
 }
 
+// Verify proves the Web API token with one authenticated GET /me. It returns
+// nil when the token is accepted, ErrNotConfigured when no Web API auth is
+// wired, and an APIError (status 401/403) when the token is rejected. The
+// Dashboard's secrets verifier maps those to its own fixed classes.
+func (a *Auth) Verify(ctx context.Context) error {
+	if a == nil || !a.cfg.Enabled() {
+		return ErrNotConfigured
+	}
+	client := a.Client()
+	if client == nil {
+		return ErrNotConfigured
+	}
+	_, err := client.Get(ctx, "/me", nil)
+	return err
+}
+
 // refreshOutcome is one single-flight refresh result.
 type refreshOutcome struct {
 	token string

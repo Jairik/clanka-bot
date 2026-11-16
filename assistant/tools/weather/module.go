@@ -85,6 +85,10 @@ func NewModule() *Module { return &Module{cfg: DefaultConfig()} }
 // Name is the module name and config section suffix.
 func (*Module) Name() string { return "weather" }
 
+// WeatherAPIURL is the configured current.json URL, used by the Dashboard
+// secrets verifier so it probes the same endpoint the Tool uses.
+func (m *Module) WeatherAPIURL() string { return m.cfg.WeatherAPIURL }
+
 // RequiredSecrets declares the optional WeatherAPI key so the write-only store
 // can hold it and the Dashboard Secrets page lists it. Without it, Open-Meteo
 // and wttr.in still answer.

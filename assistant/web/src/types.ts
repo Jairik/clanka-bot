@@ -212,6 +212,9 @@ export type Integration = {
   Linkable: boolean;
   Secrets: IntegrationSecret[] | null;
   Tools: string[] | null;
+  // Verify is the result of an owner-pressed verify, rendered inline. It is
+  // nil until the owner asks, so the page never verifies on load or a timer.
+  verify: IntegrationVerify | null;
 };
 
 export type IntegrationSecret = {
@@ -220,6 +223,11 @@ export type IntegrationSecret = {
   Source: string;
   Last4: string;
   Optional: boolean;
+};
+
+export type IntegrationVerify = {
+  class: string;
+  reason: string;
 };
 
 export type LightsDevice = {

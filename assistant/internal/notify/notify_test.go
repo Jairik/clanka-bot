@@ -822,6 +822,16 @@ func newBatchFixture(t *testing.T, values map[string]any, tweak func(*Options)) 
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
+	// A cooldown deferral arms a real timer; stop it on teardown so a test's
+	// frozen clock cannot leave a re-arming goroutine behind.
+	t.Cleanup(func() {
+		svc.batchMu.Lock()
+		if svc.pendingTimer != nil {
+			svc.pendingTimer.Stop()
+			svc.pendingTimer = nil
+		}
+		svc.batchMu.Unlock()
+	})
 	return &batchFixture{svc: svc, fake: fake, secrets: secrets, logs: logs, values: reader}
 }
 
@@ -932,7 +942,7 @@ func TestLiveMissedAlertPushesImmediately(t *testing.T) {
 	}
 }
 
-func TestMissedCooldownSkipsTheSecondSummary(t *testing.T) {
+func TestMissedCooldownDefersTheSecondSummaryUntilTheGapEnds(t *testing.T) {
 	now := time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
 	fixture := newBatchFixture(t, map[string]any{
 		CooldownKey: 60 * time.Second,
@@ -949,17 +959,35 @@ func TestMissedCooldownSkipsTheSecondSummary(t *testing.T) {
 	}
 	fixture.waitForCount(t, 1)
 
-	// A second burst ten seconds later is inside notify.cooldown. It is dropped
-	// rather than queued: the user already has a push, and the durable history
-	// rows still hold every alert.
+	// A second burst ten seconds later is inside notify.cooldown. It is kept
+	// pending and re-armed for the remainder of the gap: the user already has a
+	// push, but the recovered alert must not be lost.
 	now = now.Add(10 * time.Second)
 	fixture.svc.NotifyMissed(ctx, MissedAlert{Kind: "alarm", Label: "wash car", Reason: "downtime"})
 	if err := fixture.svc.flushPending(ctx); err != nil {
 		t.Fatalf("second flushPending: %v", err)
 	}
 	fixture.assertCount(t, 1)
-	if logs := fixture.logs.String(); !strings.Contains(logs, "skipped by cooldown") {
-		t.Fatalf("the skip was not logged at Debug: %s", logs)
+	if logs := fixture.logs.String(); !strings.Contains(logs, "deferred by cooldown") {
+		t.Fatalf("the deferral was not logged at Debug: %s", logs)
+	}
+	fixture.svc.batchMu.Lock()
+	remaining := len(fixture.svc.pending)
+	fixture.svc.batchMu.Unlock()
+	if remaining != 1 {
+		t.Fatalf("the cooldown-blocked alert was not kept pending: %d", remaining)
+	}
+
+	// Once the gap ends the held alert reaches the endpoint: one extra publish,
+	// not zero and not a merge that loses the label.
+	now = now.Add(51 * time.Second)
+	if err := fixture.svc.flushPending(ctx); err != nil {
+		t.Fatalf("flushPending after the gap: %v", err)
+	}
+	fixture.waitForCount(t, 2)
+	fixture.assertCount(t, 2)
+	if message := fixture.fake.messages()[1]; !strings.Contains(message, "wash car") {
+		t.Fatalf("second summary = %q, want it to name the deferred alert", message)
 	}
 }
 
@@ -999,6 +1027,162 @@ func TestMissedCooldownZeroNeverSkips(t *testing.T) {
 		}
 	}
 	fixture.waitForCount(t, 2)
+}
+
+// TestCloseDrainsHeldBatchExactlyOnce covers the shutdown-drain acceptance
+// criterion: a held batch is published once by Close, not zero times and not
+// twice. Close is also idempotent and safe on a nil service.
+func TestCloseDrainsHeldBatchExactlyOnce(t *testing.T) {
+	fixture := newBatchFixture(t, nil, func(opts *Options) { opts.RecoveryHold = time.Hour })
+	ctx := context.Background()
+	for _, alert := range recoveryAlerts() {
+		fixture.svc.NotifyMissed(ctx, alert)
+	}
+	if got := fixture.fake.count(); got != 0 {
+		t.Fatalf("a held recovery alert pushed %d requests before Close", got)
+	}
+	if err := fixture.svc.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	fixture.assertCount(t, 1)
+	if got := fixture.fake.messages()[0]; got != "You missed 3 alerts: pasta timer, 7am alarm, washing machine timer." {
+		t.Fatalf("drained summary = %q", got)
+	}
+	// A second Close must not republish the same batch.
+	if err := fixture.svc.Close(ctx); err != nil {
+		t.Fatalf("second Close: %v", err)
+	}
+	fixture.assertCount(t, 1)
+	var nilSvc *Service
+	if err := nilSvc.Close(ctx); err != nil {
+		t.Fatalf("Close on a nil service: %v", err)
+	}
+}
+
+// TestCloseFlushesInsideCooldown proves the final drain cannot lose an alert
+// merely because a previous summary was recent: there is no later flush to
+// wait for, so Close publishes even inside notify.cooldown.
+func TestCloseFlushesInsideCooldown(t *testing.T) {
+	now := time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
+	fixture := newBatchFixture(t, map[string]any{CooldownKey: 60 * time.Second}, func(opts *Options) {
+		opts.RecoveryHold = time.Hour
+		opts.Now = func() time.Time { return now }
+	})
+	ctx := context.Background()
+	fixture.svc.NotifyMissed(ctx, MissedAlert{Kind: "timer", Label: "pasta", Reason: "restart"})
+	if err := fixture.svc.flushPending(ctx); err != nil {
+		t.Fatalf("first flushPending: %v", err)
+	}
+	fixture.waitForCount(t, 1)
+
+	// A second batch immediately after is inside the gap; at shutdown Close
+	// must still deliver it.
+	fixture.svc.NotifyMissed(ctx, MissedAlert{Kind: "alarm", Label: "wash car", Reason: "downtime"})
+	if err := fixture.svc.Close(ctx); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	fixture.assertCount(t, 2)
+	if got := fixture.fake.messages()[1]; !strings.Contains(got, "wash car") {
+		t.Fatalf("drained summary = %q, want the held alert", got)
+	}
+}
+
+// TestRecoveryPassLongerThanHoldIsOneDebouncedSummary covers the acceptance
+// criterion for a pass whose inter-arrival gap is smaller than the hold but
+// whose total length exceeds it: every alert lands in one summary.
+func TestRecoveryPassLongerThanHoldIsOneDebouncedSummary(t *testing.T) {
+	const (
+		hold = 40 * time.Millisecond
+		gap  = 12 * time.Millisecond
+	)
+	fixture := newBatchFixture(t, map[string]any{CooldownKey: time.Duration(0)}, func(opts *Options) {
+		opts.RecoveryHold = hold
+	})
+	ctx := context.Background()
+	labels := []string{"pasta", "oven", "washing machine", "bins", "kettle"}
+	for _, label := range labels {
+		fixture.svc.NotifyMissed(ctx, MissedAlert{Kind: "timer", Label: label, Reason: "restart"})
+		time.Sleep(gap)
+	}
+	// Total pass length (5 * 12ms = 60ms) exceeds the 40ms hold, but every
+	// arrival re-arms it, so a single flush happens after the last alert.
+	fixture.waitForCount(t, 1)
+	fixture.assertCount(t, 1)
+	message := fixture.fake.messages()[0]
+	if !strings.Contains(message, "You missed 5 alerts") {
+		t.Fatalf("message = %q, want whole burst counted once", message)
+	}
+	for _, label := range labels {
+		if !strings.Contains(message, label) {
+			t.Fatalf("message = %q, missing %q", message, label)
+		}
+	}
+}
+
+// TestAlertAfterFirstFlushIsPublishedAfterCooldown covers the acceptance
+// criterion for alerts arriving after the first flush: the cooldown defers
+// them but they still reach the endpoint in exactly one extra publish.
+func TestAlertAfterFirstFlushIsPublishedAfterCooldown(t *testing.T) {
+	fixture := newBatchFixture(t, map[string]any{CooldownKey: 40 * time.Millisecond}, func(opts *Options) {
+		opts.RecoveryHold = 5 * time.Millisecond
+	})
+	ctx := context.Background()
+	fixture.svc.NotifyMissed(ctx, MissedAlert{Kind: "timer", Label: "pasta", Reason: "restart"})
+	fixture.waitForCount(t, 1)
+
+	// This alert lands after the first push but well inside the cooldown. The
+	// old code dropped it; it must now arrive as one extra publish.
+	fixture.svc.NotifyMissed(ctx, MissedAlert{Kind: "alarm", Label: "wash car", Reason: "downtime"})
+	fixture.waitForCount(t, 2)
+	fixture.assertCount(t, 2)
+	joined := strings.Join(fixture.fake.messages(), " | ")
+	if !strings.Contains(joined, "pasta") || !strings.Contains(joined, "wash car") {
+		t.Fatalf("combined summaries = %q, want both alerts", joined)
+	}
+}
+
+// TestCooldownShorterThanBurstCoversEveryAlert covers the acceptance criterion
+// for a cooldown shorter than a burst: whatever the number of summaries, the
+// combined names cover every alert and never a subset.
+func TestCooldownShorterThanBurstCoversEveryAlert(t *testing.T) {
+	now := time.Date(2026, 11, 15, 9, 0, 0, 0, time.UTC)
+	const cooldown = 15 * time.Second
+	fixture := newBatchFixture(t, map[string]any{CooldownKey: cooldown}, func(opts *Options) {
+		opts.RecoveryHold = time.Hour
+		opts.Now = func() time.Time { return now }
+	})
+	ctx := context.Background()
+	labels := []string{"pasta", "oven", "bins"}
+	for _, label := range labels {
+		fixture.svc.NotifyMissed(ctx, MissedAlert{Kind: "timer", Label: label, Reason: "restart"})
+		if err := fixture.svc.flushPending(ctx); err != nil {
+			t.Fatalf("flushPending: %v", err)
+		}
+		// Each arrival is inside the next cooldown window, so at least one
+		// batch is deferred instead of published immediately.
+		now = now.Add(cooldown / 2)
+	}
+	// Drive any batch the cooldown left pending, advancing the fake clock past
+	// the gap so it is published rather than re-deferred.
+	for i := 0; i <= len(labels); i++ {
+		fixture.svc.batchMu.Lock()
+		empty := len(fixture.svc.pending) == 0
+		fixture.svc.batchMu.Unlock()
+		if empty {
+			break
+		}
+		now = now.Add(cooldown)
+		if err := fixture.svc.flushPending(ctx); err != nil {
+			t.Fatalf("drain flushPending: %v", err)
+		}
+	}
+	fixture.assertCount(t, 2)
+	joined := strings.Join(fixture.fake.messages(), " | ")
+	for _, label := range labels {
+		if !strings.Contains(joined, label) {
+			t.Fatalf("combined summaries = %q, missing %q", joined, label)
+		}
+	}
 }
 
 func TestRecoveryBurstObeysQuietAndTheSwitch(t *testing.T) {

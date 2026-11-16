@@ -178,13 +178,11 @@ positives:
     - how's the weather
     - what's the weather outside
     - is it raining outside
-    - do I need an umbrella today
     - how's the weather in Berlin
     - what's the temperature outside
     - is it cold outside
     - what's it like outside
     - how hot is it today
-    - what's the forecast for today
     - is it sunny out
     - what's the weather in Paris
     - should I wear a jacket today
@@ -192,6 +190,34 @@ positives:
     - what's the temperature in London
     - is it going to rain today
     - what are the conditions outside
+    - what's the temperature right now
+    - is it humid outside
+  # weather.forecast (issue #240): today/tomorrow/weekday highs, lows, rain
+  # chance, sunrise and sunset. Multi-day ranges stay on the Agent path.
+  weather.forecast:
+    - what's the forecast for today
+    - what's the forecast for tomorrow
+    - do I need an umbrella today
+    - what's the forecast for Friday
+    - what's the forecast for Wednesday
+    - what's the forecast for London tomorrow
+    - what's the high tomorrow
+    - what's the high temperature tomorrow
+    - what's the high on Thursday
+    - what's the low tomorrow
+    - what are the highs and lows tomorrow
+    - when is the sunset
+    - what time is the sunset
+    - what time does the sun rise
+    - when's sunrise
+    - what time is sunset tomorrow
+    - when does the sun set in Paris
+    - do I need an umbrella tomorrow
+    - will I need an umbrella tomorrow
+    - should I bring an umbrella tomorrow
+    - do I need a coat tomorrow
+    - what's the forecast for Berlin tomorrow
+    - what's the forecast for Paris
   audio.volume_set:
     - turn the volume to 40
     - set the volume to 30 percent
@@ -1686,6 +1712,12 @@ negatives:
   - what's the date of the next full moon
   - stop the car
   - cancel my subscription
+  # weather.forecast range guard (issue #240): multi-day requests are rejected
+  # by Extract and must not reach the Fast path.
+  - what's the forecast for the weekend
+  - what's the weather going to be like next week
+  - will it rain this week
+  - what's the forecast for the next 5 days
   # Timer-shaped but not Fast path requests: no duration, no timer, or a
   # question about cooking rather than a running Timer.
   - set a timer

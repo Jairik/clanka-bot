@@ -6,15 +6,21 @@
 #   scripts/deploy.sh <commit>   check that commit out and reuse the images
 #                                already built for it (no rebuild)
 #
-# Health checks are bounded by DEPLOY_HEALTH_TIMEOUT seconds (default 120).
+# Health checks are bounded by DEPLOY_HEALTH_TIMEOUT seconds (default 180).
+# A slow assistant cold start (model rescan, first boot, a loaded Pi) can take
+# longer than Docker's own start_period + retries, so a transient `unhealthy`
+# that began within DEPLOY_COLD_START_GRACE seconds of the container's start is
+# tolerated and re-checked rather than treated as a failed deploy (default 150).
 # On failure the script prints `docker compose ps` and the logs of the
 # unhealthy services, then exits non-zero.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-HEALTH_TIMEOUT="${DEPLOY_HEALTH_TIMEOUT:-120}"
+HEALTH_TIMEOUT="${DEPLOY_HEALTH_TIMEOUT:-180}"
 POLL_INTERVAL="${DEPLOY_POLL_INTERVAL:-2}"
+# A crash-loop (`exited`/`dead`) is a real failure and is never within grace.
+COLD_START_GRACE="${DEPLOY_COLD_START_GRACE:-150}"
 
 log() { printf 'deploy: %s\n' "$*"; }
 warn() { printf 'deploy: warning: %s\n' "$*" >&2; }
@@ -38,8 +44,12 @@ start the stack with --no-build. This is the rollback path. The prune also runs
 after the health wait.
 
 Environment:
-  DEPLOY_HEALTH_TIMEOUT  seconds to wait for health checks (default 120)
+  DEPLOY_HEALTH_TIMEOUT  seconds to wait for health checks (default 180)
   DEPLOY_POLL_INTERVAL   seconds between health checks (default 2)
+  DEPLOY_COLD_START_GRACE  seconds after a container's start during which a
+                          transient 'unhealthy' is retried, not failed
+                          (default 150; must exceed the assistant start_period
+                          plus its retries x interval)
   DEPLOY_KEEP_IMAGES     newest image sets to keep (default 3)
   DEPLOY_PINNED_SHAS     comma-separated SHA prefixes the prune must keep
   DEPLOY_PRUNE_BUILD_CACHE  1 also prunes the build cache (off by default)
@@ -99,6 +109,39 @@ diagnose() {
 	done
 }
 
+
+# Warm-up preflight for host Pulse audio. Compose mounts the host Pulse socket
+# as `${XDG_RUNTIME_DIR:-/run/user/1000}/pulse`; over an interactive SSH session
+# the login manager sets XDG_RUNTIME_DIR, but the systemd timer unit runs with no
+# session and (now) exports it explicitly. If the runtime dir or the Pulse native
+# socket is missing, Docker creates an empty bind source and the assistant and
+# Soloist go deaf — and /healthz never catches it. Warn rather than fail: a
+# deploy that fails leaves the old (working) stack, but a deaf assistant is
+# worse. Returning 0 keeps the deploy going; the caller decides success.
+check_pulse() {
+	local uid runtime cookie user
+	uid="$(id -u 2>/dev/null || true)"
+	uid="${uid:-1000}"
+	runtime="${XDG_RUNTIME_DIR:-/run/user/$uid}"
+	if [[ -S "$runtime/pulse/native" ]]; then
+		cookie="$HOME/.config/pulse/cookie"
+		if [[ ! -r "$cookie" ]]; then
+			warn "Pulse cookie not readable at $cookie; the assistant may fail to authenticate to Pulse"
+		fi
+		return 0
+	fi
+	warn "Pulse native socket not found at $runtime/pulse/native"
+	warn "the assistant and Soloist will mount an empty Pulse directory and have no audio."
+	if [[ ! -d "/run/user/$uid" ]]; then
+		user="$(id -un 2>/dev/null || echo "$uid")"
+		warn "  /run/user/$uid is missing: the user's PipeWire session does not exist at boot."
+		warn "  enable lingering so the session survives without a login:"
+		warn "    sudo loginctl enable-linger $user"
+	fi
+	warn "  start PipeWire/Pulse for the deploy user, then re-run the deploy."
+	return 0
+}
+
 # Wait for every service Compose actually started, not a hard-coded list.
 # `docker compose ps --services` lists only running containers, so a service
 # behind an inactive profile (the Spotify receiver) is excluded automatically,
@@ -124,10 +167,32 @@ wait_for_health() {
 				pending+=("$svc (no container)")
 				continue
 			fi
-			status="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$cid" 2>/dev/null || echo missing)"
+			# Read the health status and the container's start time in one
+			# inspect so a slow cold start can be told apart from a crash-loop.
+			raw="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}} {{.State.StartedAt}}{{else}}{{.State.Status}} {{.State.StartedAt}}{{end}}' "$cid" 2>/dev/null || echo missing)"
+			status="${raw%% *}"
+			started_at="${raw#* }"
+			if [[ "$status" == "$started_at" ]]; then
+				# No space: a bare token (e.g. "missing"). Treat start as unknown.
+				started_at=""
+			fi
 			case "$status" in
 			healthy | running) ;;
-			unhealthy | exited | dead) failing+=("$svc ($status)") ;;
+			exited | dead)
+				# A crash-loop is a real failure, never inside the grace window.
+				failing+=("$svc ($status)")
+				;;
+			unhealthy)
+				if [[ -n "$started_at" ]]; then
+					age=$(( $(date +%s) - $(date -d "$started_at" +%s 2>/dev/null || echo 0) ))
+					if ((age < COLD_START_GRACE)); then
+						log "$svc is unhealthy after ${age}s; still waiting (cold-start grace ${COLD_START_GRACE}s)"
+						pending+=("$svc (unhealthy, within cold-start grace)")
+						continue
+					fi
+				fi
+				failing+=("$svc ($status)")
+				;;
 			*) pending+=("$svc (${status:-unknown})") ;;
 			esac
 		done
@@ -207,6 +272,13 @@ main() {
 		die "DEPLOY_HEALTH_TIMEOUT must be a whole number of seconds"
 	[[ "$POLL_INTERVAL" =~ ^[0-9]+([.][0-9]+)?$ ]] ||
 		die "DEPLOY_POLL_INTERVAL must be a number of seconds"
+	[[ "$COLD_START_GRACE" =~ ^[0-9]+$ ]] ||
+		die "DEPLOY_COLD_START_GRACE must be a whole number of seconds"
+
+	# Preflight the host Pulse socket before any build/start. A missing socket
+	# only warns: a failed deploy leaves the old stack, but a deaf assistant is
+	# worse, and /healthz does not depend on audio.
+	check_pulse
 
 	cd "$ROOT"
 	command -v docker >/dev/null 2>&1 || die "docker is required"

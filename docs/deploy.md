@@ -40,9 +40,13 @@ sudo bash scripts/install-deploy-watch.sh  # opt in to the auto-deploy timer (au
    `git rev-parse --short HEAD`, so every image is tagged
    `clanka/<service>:<sha>` and containers from a different service set are
    removed.
-6. Waits up to `DEPLOY_HEALTH_TIMEOUT` seconds (default 120) for every service
-   in `docker-compose.yml` to be healthy. On failure it exits non-zero, prints
-   `docker compose ps` and the logs of the failing service(s).
+6. Waits up to `DEPLOY_HEALTH_TIMEOUT` seconds (default 180) for every service
+   in `docker-compose.yml` to be healthy. A transient `unhealthy` that the
+   container entered within `DEPLOY_COLD_START_GRACE` seconds (default 150) of its
+   own start is re-checked rather than failed, so a slow assistant cold start
+   (model rescan, first boot, a loaded Pi) is not reported as a broken deploy;
+   a crash-loop (`exited`/`dead`) is always a failure. On failure it exits
+   non-zero, prints `docker compose ps` and the logs of the failing service(s).
 7. After the health wait, runs `scripts/prune-images.sh` best effort to
    reclaim old SHA-tagged image sets. A prune failure warns and never fails an
    otherwise healthy deploy; the policy is under
@@ -85,6 +89,7 @@ Tuning and diagnostics:
 
 ```sh
 DEPLOY_HEALTH_TIMEOUT=180 scripts/deploy.sh   # slower models on the Pi
+DEPLOY_COLD_START_GRACE=150 scripts/deploy.sh # tolerate a slow assistant cold start (s)
 DEPLOY_KEEP_IMAGES=5 make prune-images        # keep more rollback sets
 docker compose ps
 docker compose logs -f <service>
@@ -123,6 +128,24 @@ ML services never touch audio devices.
       sudo systemctl enable --now docker
       docker compose version
       ```
+
+- [ ] Enable lingering for the deploy user so the PipeWire/Pulse session exists
+      at boot without a login. The `clanka-deploy` systemd timer runs as this
+      user with **no** session, so `/run/user/<uid>` (and the Pulse socket it
+      holds) only appears while the user's session is lingering. Without it, a
+      headless reboot starts the audio containers against a missing socket and
+      the assistant comes up deaf:
+
+      ```sh
+      sudo loginctl enable-linger "$USER"
+      ```
+
+      The timer unit exports `XDG_RUNTIME_DIR=/run/user/<uid>` for this user, so
+      Compose's `${XDG_RUNTIME_DIR:-/run/user/1000}/pulse` Pulse mount resolves
+      to the right path instead of silently assuming UID 1000. The same holds for
+      a manual `docker compose up` over SSH: the login session sets
+      `XDG_RUNTIME_DIR`, but verify it is present (`echo $XDG_RUNTIME_DIR`) and
+      that `$XDG_RUNTIME_DIR/pulse/native` is a socket before deploying.
 
 ### Remote access
 

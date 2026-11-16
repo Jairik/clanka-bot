@@ -431,46 +431,25 @@ func normalizeRequest(text string) string {
 
 var (
 	volumeSubjectRe = regexp.MustCompile(`(?i)\b(?:music|spotify|song|songs|tunes)\b`)
-	volumePercentRe = regexp.MustCompile(`(\d{1,3})\s*(?:%|percent)?`)
-	volumeToRe      = regexp.MustCompile(`(?i)\b(?:to|at)\s+\d`)
-	volumeUpRe      = regexp.MustCompile(`(?i)\b(?:up|louder|raise|higher|increase)\b`)
-	volumeDownRe    = regexp.MustCompile(`(?i)\b(?:down|quieter|softer|lower|decrease|reduce)\b`)
 )
 
 // extractVolume reads a music-volume request. It requires the word music (or
-// Spotify) so a plain "volume up" stays with audio.volume_set.
+// Spotify) so a plain "volume up" stays with audio.volume_set. The shared
+// "direction plus number" grammar lives in parse.VolumeChange so the speaker
+// and music volumes behave identically.
 func extractVolume(text string) (VolumeIn, bool) {
 	text = normalizeRequest(text)
 	if !volumeSubjectRe.MatchString(text) {
 		return VolumeIn{}, false
 	}
-	up, down := volumeUpRe.MatchString(text), volumeDownRe.MatchString(text)
-	if m := volumePercentRe.FindStringSubmatch(text); m != nil {
-		var n int
-		fmt.Sscanf(m[1], "%d", &n)
-		if n < 0 || n > 100 {
-			return VolumeIn{}, false
-		}
-		// "down by 20 percent" and "10 percent louder" are relative; "to 30"
-		// (or no direction word) is an absolute level.
-		if (up || down) && !volumeToRe.MatchString(text) {
-			if n == 0 || (up && down) {
-				return VolumeIn{}, false
-			}
-			if down {
-				n = -n
-			}
-			return VolumeIn{Delta: n}, true
-		}
-		return VolumeIn{Percent: &n}, true
+	percent, delta, ok := parse.VolumeChange(text, volumeStep)
+	if !ok {
+		return VolumeIn{}, false
 	}
-	switch {
-	case down:
-		return VolumeIn{Delta: -volumeStep}, true
-	case up:
-		return VolumeIn{Delta: volumeStep}, true
+	if percent != nil {
+		return VolumeIn{Percent: percent}, true
 	}
-	return VolumeIn{}, false
+	return VolumeIn{Delta: delta}, true
 }
 
 var (

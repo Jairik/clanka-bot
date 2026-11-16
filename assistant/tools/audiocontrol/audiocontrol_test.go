@@ -3,6 +3,7 @@ package audiocontrol_test
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"testing"
 	"time"
 
@@ -319,6 +320,70 @@ func TestVolumeExtractFailsWithoutANumberOrDirection(t *testing.T) {
 		t.Fatal("Extract succeeded, want failure so the request falls through")
 	}
 }
+
+// TestVolumeExtractGrammar exercises the shared direction-plus-number grammar
+// through the real Extract path: a number after "to" is absolute, a number
+// after a bare direction is relative, and a bare direction is one step.
+func TestVolumeExtractGrammar(t *testing.T) {
+	reg := newRegistry(t, &fakeControls{})
+	cases := []struct {
+		text string
+		want audiocontrol.VolumeIn
+	}{
+		{"turn the volume down to 20", audiocontrol.VolumeIn{Percent: pi(20)}},
+		{"turn it up to 80", audiocontrol.VolumeIn{Percent: pi(80)}},
+		{"turn the volume down by 30 percent", audiocontrol.VolumeIn{Delta: -30}},
+		{"volume up to 70", audiocontrol.VolumeIn{Percent: pi(70)}},
+		{"set the volume to 5 percent", audiocontrol.VolumeIn{Percent: pi(5)}},
+		{"volume 100", audiocontrol.VolumeIn{Percent: pi(100)}},
+		{"turn the volume to 40", audiocontrol.VolumeIn{Percent: pi(40)}},
+		{"louder", audiocontrol.VolumeIn{Delta: 10}},
+		{"quieter", audiocontrol.VolumeIn{Delta: -10}},
+	}
+	for _, tc := range cases {
+		args, ok := reg.Extract(audiocontrol.VolumeName, tc.text)
+		if !ok {
+			t.Fatalf("Extract(%q) failed", tc.text)
+		}
+		var got audiocontrol.VolumeIn
+		if err := json.Unmarshal(args, &got); err != nil {
+			t.Fatalf("Extract(%q) unmarshal: %v", tc.text, err)
+		}
+		if !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("Extract(%q) = %+v, want %+v", tc.text, got, tc.want)
+		}
+	}
+}
+
+// TestVolumeExtractKeepsMuteAndUnmute confirms the extractor still drives the
+// sink mute flag ahead of the number grammar.
+func TestVolumeExtractKeepsMuteAndUnmute(t *testing.T) {
+	reg := newRegistry(t, &fakeControls{})
+	cases := []struct {
+		text string
+		want audiocontrol.VolumeIn
+	}{
+		{"mute", audiocontrol.VolumeIn{Mute: pb(true)}},
+		{"mute the volume", audiocontrol.VolumeIn{Mute: pb(true)}},
+		{"unmute", audiocontrol.VolumeIn{Mute: pb(false)}},
+	}
+	for _, tc := range cases {
+		args, ok := reg.Extract(audiocontrol.VolumeName, tc.text)
+		if !ok {
+			t.Fatalf("Extract(%q) failed", tc.text)
+		}
+		var got audiocontrol.VolumeIn
+		if err := json.Unmarshal(args, &got); err != nil {
+			t.Fatalf("Extract(%q) unmarshal: %v", tc.text, err)
+		}
+		if !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("Extract(%q) = %+v, want %+v", tc.text, got, tc.want)
+		}
+	}
+}
+
+func pi(n int) *int  { return &n }
+func pb(b bool) *bool { return &b }
 
 func TestVolumeToolsAreFastPathEligible(t *testing.T) {
 	reg := newRegistry(t, &fakeControls{})

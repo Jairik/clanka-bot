@@ -213,6 +213,14 @@ positives:
     - make it quieter please
     - set the sound volume to 60
     - put the volume at 75
+    - turn the volume down to 20
+    - turn it up to 80
+    - turn the volume down by 30 percent
+    - volume up to 70
+    - set the volume to 5 percent
+    - volume 100
+    - turn up the volume
+    - turn down the volume
   audio.stop:
     - stop
     - stop making noise
@@ -1649,7 +1657,6 @@ negatives:
   # Voice-shaped but not a library or rate request: playback, volume, privacy,
   # or a different voice service.
   - play the jarvis song
-  - turn up the volume
   - speak up
   - talk to the agent
   - what voices does Spotify have
@@ -1669,7 +1676,6 @@ negatives:
   - sleep mode on my phone
   - I woke up at 7 this morning
   - remind me to be quiet at 10
-  - turn down the volume
   - good night
   - how many hours until morning
   - set quiet hours

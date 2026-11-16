@@ -69,5 +69,5 @@ func TestNativePulse(t *testing.T) {
 	if len(inputs) != 1 || inputs[0].Sink != master {
 		t.Fatalf("filter output was moved into a feedback loop: %s", out)
 	}
-	recovered.fallback(ctx)
+	recovered.fallback(ctx, recovered.master, recovered.module)
 }

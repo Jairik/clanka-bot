@@ -484,9 +484,11 @@ export type Session = {
   Activity: boolean;
   CanSpeak: boolean;
   Speak: boolean;
-  // CanPlayReplies is browser playback's own capability: a reply to resolve in
-  // the Activity store and a TTS service to synthesize it. It is independent of
-  // CanSpeak, which is about the Pi speaker; a speaker alone cannot play here.
+  // CanPlayReplies reports whether the chat can synthesize a reply into the
+  // owner's browser: the Activity store holds the text and a TTS service can
+  // speak it. It is independent of CanSpeak (a Pi speaker): a deployment with
+  // no speaker at all can still play a reply here, and one with a speaker but
+  // no TTS cannot. The control follows this flag, never the Pi opt-in.
   CanPlayReplies: boolean;
   // APIVersion is the view-shape contract this server serves. A UI built
   // against a different value refuses to render instead of showing undefined

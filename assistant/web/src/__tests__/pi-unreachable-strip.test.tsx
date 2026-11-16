@@ -44,6 +44,7 @@ const health: HealthView = {
   Location: { Name: "pi", Status: "ok", StatusLabel: "OK", Detail: "" },
   Modules: [],
   Spotify: [],
+  DiagnosticsURL: "/api/ui/diagnostics",
 };
 
 const mount = () => render(<LiveProvider><Shell><div data-testid="page">page</div></Shell></LiveProvider>);

@@ -141,7 +141,10 @@ export async function downloadDiagnostics(path: string, includeRequests: boolean
 type Load<T> = {
   data: T | null;
   error: string;
+  /** First load (and the stream-fallback poll): the page shows its empty/skeleton state. */
   loading: boolean;
+  /** The Refresh button's own in-flight state; ordered so a slow reply can't win over a newer one. */
+  refreshing: boolean;
   reload: () => Promise<void>;
   /** Replace the view with a write's response. */
   set: (v: T) => void;
@@ -155,13 +158,19 @@ export function usePageData<P extends DataPage>(page: P, opts: { poll?: number; 
   const [data, setData] = useState<PageViews[P] | null>(null);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const first = useRef(true);
+  // Orders concurrent refreshes: the reply that resolves last (newest snapshot)
+  // wins, so a slow earlier check cannot overwrite a fresher view.
+  const seq = useRef(0);
   const query = opts.query;
   const { live, generation, subscribe, resync } = useLive();
 
   const reload = useCallback(async () => {
     const q = first.current && query ? `?${query}` : "";
     first.current = false;
+    const mine = ++seq.current;
+    setRefreshing(true);
     try {
       // Health and Alerts arrive as a whole view, so a delta that lands while
       // the snapshot is in flight is the newer state (#149).
@@ -170,12 +179,14 @@ export function usePageData<P extends DataPage>(page: P, opts: { poll?: number; 
         () => getJSON<PageViews[P]>(`/api/ui/${page}${q}`),
         latestDelta,
       );
-      setData(v);
-      setError("");
+      if (mine === seq.current) {
+        setData(v);
+        setError("");
+      }
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      if (mine === seq.current) setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setLoading(false);
+      if (mine === seq.current) setRefreshing(false);
     }
   }, [page, query, resync]);
 
@@ -210,7 +221,7 @@ export function usePageData<P extends DataPage>(page: P, opts: { poll?: number; 
     if (generation > 0) void reload();
   }, [generation, reload]);
 
-  return { data, error, loading, reload, set: setData };
+  return { data, error, loading, refreshing, reload, set: setData };
 }
 
 // ---------- routing ----------

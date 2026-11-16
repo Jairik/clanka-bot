@@ -115,17 +115,20 @@ type SetOut struct {
 	SoundFallback  bool   `json:"sound_fallback,omitempty"`
 }
 
-// UpdateIn changes the per-Alarm overrides of one existing Alarm. ID, Time and
-// Label select it; Time and Label may be combined. Sound is a spoken or
-// canonical library name, Volume and RampSeconds are optional overrides, and
-// the *Reset flags clear that field back to the kind default. An explicit 0
-// volume or ramp is distinct from a reset. This is also the Dashboard's typed
-// write path for the Scheduled alerts page (#58).
+// UpdateIn changes one existing Alarm. ID, Time and Label select it; Time and
+// Label may be combined. Sound is a spoken or canonical library name, Volume
+// and RampSeconds are optional overrides, and the *Reset flags clear that field
+// back to the kind default. An explicit 0 volume or ramp is distinct from a
+// reset. NewLabel and NewTime rename or retime the selected Alarm in place:
+// the ID, schedule and every unrequested field stay as they are. This is also
+// the Dashboard's typed write path for the Scheduled alerts page (#58).
 type UpdateIn struct {
 	Audio       *string `json:"audio,omitempty"` // A pointer permits clearing completion media.
 	ID          string  `json:"id,omitempty"`
 	Label       string  `json:"label,omitempty"`
 	Time        string  `json:"time,omitempty"`
+	NewLabel    *string `json:"new_label,omitempty"` // Spoken new name; nil keeps the current label.
+	NewTime     string  `json:"new_time,omitempty"`  // Clock time to move the Alarm to.
 	Sound       string  `json:"sound,omitempty"`
 	SoundReset  bool    `json:"sound_reset,omitempty"`
 	Volume      *int    `json:"volume,omitempty"`
@@ -136,8 +139,9 @@ type UpdateIn struct {
 
 // UpdateOut reports the selected Alarm and what changed. Matched is 0 when no
 // Alarm matched; Ambiguous is true when more than one did and nothing was
-// written. Changed holds "sound", "volume" and/or "ramp" for the reply and the
-// Dashboard.
+// written. Changed holds "label", "time", "sound", "volume" and/or "ramp" for
+// the reply and the Dashboard. PreviousClock is the clock before a rename or
+// retime, so the reply can name the Alarm the user recognised.
 type UpdateOut struct {
 	Alarm          Alarm    `json:"alarm"`
 	Matched        int      `json:"matched"`
@@ -145,6 +149,7 @@ type UpdateOut struct {
 	Changed        []string `json:"changed,omitempty"`
 	RequestedSound string   `json:"requested_sound,omitempty"`
 	SoundFallback  bool     `json:"sound_fallback,omitempty"`
+	PreviousClock  string   `json:"previous_clock,omitempty"`
 }
 
 // CancelIn names the Alarm to cancel by id, spoken label or clock time. Empty
@@ -492,10 +497,12 @@ func sortAlarms(alarms []Alarm) {
 	})
 }
 
-// Update changes the per-Alarm overrides of one existing Alarm. It never
-// changes the schedule, label or next occurrence: only sound, volume and ramp
-// are written, so a pending repeat or snooze keeps its time. An ambiguous
-// match writes nothing and reports Ambiguous; the caller must ask which Alarm.
+// Update changes one existing Alarm in place. Sound, volume and ramp keep their
+// old behaviour and never touch the schedule or occurrence. A requested label
+// or clock time additionally renames or retimes the Alarm: the ID, schedule and
+// every other field stay as they are, and retiming recomputes the next
+// occurrence from the live zone. An ambiguous match writes nothing and reports
+// Ambiguous; the caller must ask which Alarm.
 func (m *Manager) Update(ctx context.Context, in UpdateIn) (UpdateOut, error) {
 	if err := validateUpdate(in); err != nil {
 		return UpdateOut{}, err
@@ -544,6 +551,34 @@ func (m *Manager) Update(ctx context.Context, in UpdateIn) (UpdateOut, error) {
 	updated := target
 	out := UpdateOut{Matched: 1}
 	var changed []string
+	if in.NewLabel != nil {
+		label := cleanAlarmLabel(*in.NewLabel)
+		if label == "" {
+			return UpdateOut{}, &tool.ToolError{Say: "What should I call the alarm?"}
+		}
+		out.PreviousClock = formatClock(target.Hour, target.Minute)
+		updated.Label = label
+		changed = append(changed, "label")
+	}
+	timeChanged := strings.TrimSpace(in.NewTime) != ""
+	if timeChanged {
+		hour, minute, ok := parse.Clock(in.NewTime)
+		if !ok {
+			return UpdateOut{}, &tool.ToolError{Say: "Which time should the alarm move to?"}
+		}
+		out.PreviousClock = formatClock(target.Hour, target.Minute)
+		now := m.now()
+		loc := m.location()
+		if target.Schedule == Once {
+			updated.NextFiresAt = nextOnce(now, hour, minute, loc, false)
+		} else {
+			spec := scheduleSpec{schedule: target.Schedule, days: weekdayMaskOf(target.Weekdays)}
+			updated.NextFiresAt = nextOccurrence(spec, hour, minute, loc, now)
+		}
+		updated.Hour = hour
+		updated.Minute = minute
+		changed = append(changed, "time")
+	}
 	if in.Audio != nil {
 		updated.Audio = strings.TrimSpace(*in.Audio)
 		changed = append(changed, "audio")
@@ -599,12 +634,20 @@ func (m *Manager) Update(ctx context.Context, in UpdateIn) (UpdateOut, error) {
 		m.mu.Unlock()
 		return UpdateOut{Matched: 0}, nil
 	}
-	if e := m.entries[target.ID]; e != nil {
+	if timeChanged {
+		// A moved Alarm needs a new callback at the recomputed occurrence;
+		// scheduleLocked replaces the old timer (including a pending snooze).
+		m.scheduleLocked(updated, updated.NextFiresAt, false)
+	} else if e := m.entries[target.ID]; e != nil {
 		// The timer and occurrence stay as they are; the next fire picks up the
-		// new overrides from this live entry (or the row when store-backed).
+		// new label and overrides from this live entry (or the row when
+		// store-backed).
 		e.alarm.Sound = updated.Sound
 		e.alarm.Volume = cloneInt(updated.Volume)
 		e.alarm.RampSeconds = cloneInt(updated.RampSeconds)
+		if in.NewLabel != nil {
+			e.alarm.Label = updated.Label
+		}
 	}
 	m.mu.Unlock()
 
@@ -613,17 +656,28 @@ func (m *Manager) Update(ctx context.Context, in UpdateIn) (UpdateOut, error) {
 	m.logger.Info("alarm updated",
 		"alarm_id", target.ID,
 		"changed", changed,
+		"label", updated.Label,
+		"time", formatClock(updated.Hour, updated.Minute),
+		"next_fires_at", updated.NextFiresAt,
 		"sound", updated.Sound,
 		"volume", updated.Volume,
 		"ramp_seconds", updated.RampSeconds)
 	return out, nil
 }
 
-// validateUpdate rejects contradictory and out-of-range override requests
-// before any row is touched.
+// validateUpdate rejects contradictory and out-of-range requests before any
+// row is touched.
 func validateUpdate(in UpdateIn) error {
 	if !in.hasChanges() {
 		return &tool.ToolError{Say: "What should I change about the alarm?"}
+	}
+	if in.NewLabel != nil && cleanAlarmLabel(*in.NewLabel) == "" {
+		return &tool.ToolError{Say: "What should I call the alarm?"}
+	}
+	if strings.TrimSpace(in.NewTime) != "" {
+		if _, _, ok := parse.Clock(in.NewTime); !ok {
+			return &tool.ToolError{Say: "Which time should the alarm move to?"}
+		}
 	}
 	if in.SoundReset && strings.TrimSpace(in.Sound) != "" {
 		return &tool.ToolError{Say: "Choose a sound or the default, not both."}
@@ -640,9 +694,10 @@ func validateUpdate(in UpdateIn) error {
 	return validateRamp(in.RampSeconds)
 }
 
-// hasChanges reports whether the request names at least one override change.
+// hasChanges reports whether the request names at least one change.
 func (in UpdateIn) hasChanges() bool {
-	return in.Audio != nil || in.SoundReset || strings.TrimSpace(in.Sound) != "" ||
+	return in.NewLabel != nil || strings.TrimSpace(in.NewTime) != "" ||
+		in.Audio != nil || in.SoundReset || strings.TrimSpace(in.Sound) != "" ||
 		in.VolumeReset || in.Volume != nil ||
 		in.RampReset || in.RampSeconds != nil
 }
@@ -942,14 +997,21 @@ func (m *Manager) Close() {
 // It replaces any older callback for the same id, so a snooze cannot leave the
 // next repeat occurrence running at the same time.
 func (m *Manager) schedule(alarm Alarm, occurrence time.Time, snoozed bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.scheduleLocked(alarm, occurrence, snoozed)
+}
+
+// scheduleLocked is schedule with the Manager lock already held, so Update can
+// swap a retimed Alarm's callback without unlocking between the patch and the
+// replacement. It still replaces any older callback for the same id.
+func (m *Manager) scheduleLocked(alarm Alarm, occurrence time.Time, snoozed bool) {
+	if m.closed || m.cancelled[alarm.ID] {
+		return
+	}
 	delay := occurrence.Sub(m.now())
 	if delay < 0 {
 		delay = 0
-	}
-	m.mu.Lock()
-	if m.closed || m.cancelled[alarm.ID] {
-		m.mu.Unlock()
-		return
 	}
 	if old := m.entries[alarm.ID]; old != nil {
 		old.timer.Stop()
@@ -961,7 +1023,6 @@ func (m *Manager) schedule(alarm Alarm, occurrence time.Time, snoozed bool) {
 		snoozed:    snoozed,
 		timer:      time.AfterFunc(delay, func() { m.runFire(id, snoozed) }),
 	}
-	m.mu.Unlock()
 }
 
 // runFire registers one callback with Close's wait group, so a shutdown waits

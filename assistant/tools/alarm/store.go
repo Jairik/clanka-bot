@@ -658,13 +658,23 @@ func (m *Manager) setNext(ctx context.Context, id string, next time.Time) error 
 	return nil
 }
 
-// updateRow writes only the override columns named by the request. Leaving the
-// schedule, label, next_fires_at and snoozed_until out of the UPDATE is what
-// preserves a pending repeat or snooze across an update. The bool is false when
-// the row disappeared first (a concurrent cancel), not an error.
+// updateRow writes only the columns named by the request. Leaving the schedule
+// and untouched columns out of the UPDATE is what preserves a pending repeat
+// or snooze across an override-only update. A rename writes just the label; a
+// retime writes the new clock and occurrence in the same statement, clearing a
+// pending snooze so the new time is authoritative. The bool is false when the
+// row disappeared first (a concurrent cancel), not an error.
 func (m *Manager) updateRow(ctx context.Context, id string, in UpdateIn, updated Alarm) (bool, error) {
 	var sets []string
 	var args []any
+	if in.NewLabel != nil {
+		sets = append(sets, "label = ?")
+		args = append(args, updated.Label)
+	}
+	if strings.TrimSpace(in.NewTime) != "" {
+		sets = append(sets, "hour = ?, minute = ?, next_fires_at = ?, snoozed_until = NULL")
+		args = append(args, updated.Hour, updated.Minute, updated.NextFiresAt.UnixMilli())
+	}
 	if in.Audio != nil {
 		sets = append(sets, "audio = ?")
 		args = append(args, updated.Audio)

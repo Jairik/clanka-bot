@@ -439,6 +439,14 @@ positives:
     - clear my alarm sound
     - reset my alarm volume
     - use the default sound for my alarm
+    # Rename/retime an existing Alarm in place; the same tool edits the row
+    # instead of creating a second Alarm (#303).
+    - rename my 7 am alarm to gym
+    - call my 7 am alarm work
+    - move my gym alarm to 6:30
+    - change my 7 am alarm to 6:30
+    - rename my alarm to gym
+    - move my work alarm to 8
   alarm.list:
     - what alarms do I have
     - list my alarms

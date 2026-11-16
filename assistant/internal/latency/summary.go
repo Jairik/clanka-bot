@@ -24,6 +24,20 @@ var (
 	BudgetAgent = Budget{Label: "Agent path", P50: 2500, P95: 4000}
 )
 
+// StageBudget is the per-stage latency budget from #12, in milliseconds. These
+// numbers are the same expectations the dev-box run in docs/latency-dev-box.md
+// was measured against; see the "Stage budgets" table in docs/latency.md. They
+// let the report catch a regression that moves time from one stage into another
+// while the overall Response stays within budget. A stage absent from this map
+// (for example tool_execute, which is network-bound and conditional on the
+// Tool's own latency) has no budget and is never flagged.
+var StageBudget = map[Stage]Budget{
+	StageEndpointing:   {Label: "endpointing", P50: 550, P95: 600},
+	StageSTTFinalize:   {Label: "stt_finalize", P50: 200, P95: 250},
+	StageRouting:       {Label: "routing", P50: 50, P95: 100},
+	StageTTSFirstAudio: {Label: "tts_first_audio", P50: 150, P95: 200},
+}
+
 // AgentFirstTokenP50 is the #12 trigger for questioning the model choice:
 // above it, flag the model first, before anything else.
 const AgentFirstTokenP50 = 1200.0
@@ -31,7 +45,7 @@ const AgentFirstTokenP50 = 1200.0
 // BudgetFor returns the Response latency budget for a routed path.
 func BudgetFor(path string) (Budget, bool) {
 	switch path {
-	case "fast_path", "control_phrase", "confirmation":
+	case "fast_path", "control_phrase", "confirmation", "focus_intent":
 		return BudgetFast, true
 	case "agent_path":
 		return BudgetAgent, true
@@ -235,4 +249,21 @@ func Percentile(sorted []float64, p float64) float64 {
 // samples) never counts as over budget.
 func (s PathSummary) Over(b Budget) (overP50, overP95 bool) {
 	return s.ResponseCount > 0 && s.Response.P50 > b.P50, s.ResponseCount > 0 && s.Response.P95 > b.P95
+}
+
+// OverStage reports whether a named stage exceeds its per-stage budget. The
+// stage name is resolved to the _ms log key, so callers pass the Stage value
+// (for example "routing") rather than the raw log key. A stage that was not
+// measured (absent from the summary, or zero samples) is not over budget and
+// reports measured=false. The CLI owns no policy of its own: it only prints the
+// flag this returns and never decides which stages are budgeted.
+func (s PathSummary) OverStage(stage string, b Budget) (overP50, overP95, measured bool) {
+	if !strings.HasSuffix(stage, "_ms") {
+		stage += "_ms"
+	}
+	st, ok := s.Stages[stage]
+	if !ok || st.N == 0 {
+		return false, false, false
+	}
+	return st.P50 > b.P50, st.P95 > b.P95, true
 }

@@ -153,7 +153,7 @@ the Fast path.
 ### GitHub
 
 The Agent can answer "any PRs waiting on me", read "what are my GitHub
-notifications", and open an issue after a spoken Confirmation. All three are
+notifications", and open an issue after a spoken Confirmation. Those three are
 Agent-only Tools: an open-ended GitHub request has no honest semantic Fast path
 route, and an issue write is a `confirm` Tool that the Agent loop arms as a
 one-turn Confirmation. Nothing is sent until the user says a clear yes; "no", an
@@ -161,11 +161,21 @@ unrelated request, or a Barge-in drops the pending call. The create request is
 sent exactly once, with no automatic retry, so a timeout cannot duplicate an
 issue.
 
+`github.checks` answers "did my last build pass?" on the semantic Fast path. It
+reads one page of check runs (`per_page=20`, no pagination) for a ref and speaks
+whether they passed, failed, are still pending, or none exist, naming up to three
+failing check runs. An omitted repo uses `tools.github.default_repo` and an
+omitted ref uses the repository's default branch; "my latest PR" resolves the
+newest open PR authored by `@me` through the same bounded search as `pr_list`.
+An explicit repo is checked against `tools.github.allowed_repos` before any HTTP
+call, so a model cannot read a repository the operator did not name.
+
 There are two write-only secrets (Dashboard `/secrets` or `.env`). `GITHUB_TOKEN`
-is a fine-grained PAT for `issue_create` and `pr_list`: give it access to the
-repositories in `tools.github.allowed_repos` and "Issues: Read and write" for
-`issue_create`; the review-requested search needs no extra fine-grained
-permission. `github.pr_list` asks GitHub for
+is a fine-grained PAT for `issue_create`, `pr_list` and `checks`: give it access to
+the repositories in `tools.github.allowed_repos` and "Issues: Read and write" for
+`issue_create`. `checks` needs "Checks: read" and "Commit statuses: read" (or
+"Actions: read" for workflow runs); a 403 says so aloud. The review-requested
+search needs no extra fine-grained permission. `github.pr_list` asks GitHub for
 `is:open is:pr review-requested:@me` — the "waiting on me" semantics, not every
 open pull request — and needs no identity request of its own.
 

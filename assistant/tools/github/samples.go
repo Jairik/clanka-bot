@@ -10,5 +10,12 @@ func (*Module) ConformanceSamples() map[string]any {
 			Title:  "Timers don't survive restart",
 			URL:    "https://github.com/acme/widgets/issues/12",
 		},
+		ChecksName: ChecksOut{
+			Repo:     "acme/widgets",
+			Ref:      "main",
+			State:    checkStateSuccess,
+			Total:    3,
+			Failures: []string{},
+		},
 	}
 }

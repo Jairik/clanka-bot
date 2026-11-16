@@ -150,11 +150,12 @@ tools:
       # reader.
       require_provenance: true
   github:
-    # Agent-path GitHub Tools. The token is a write-only secret, never here.
-    # issue_create and pr_list use the fine-grained GITHUB_TOKEN; notifications
-    # use only the optional classic GITHUB_NOTIFICATIONS_TOKEN (notifications
-    # scope) because GitHub's notifications API rejects fine-grained tokens
-    # (see README.md "GitHub").
+    # GitHub Tools. The token is a write-only secret, never here.
+    # issue_create, pr_list and checks use the fine-grained GITHUB_TOKEN;
+    # checks reads commit statuses and check runs on the allowed repos.
+    # notifications uses only the optional classic GITHUB_NOTIFICATIONS_TOKEN
+    # (notifications scope) because GitHub's notifications API rejects
+    # fine-grained tokens (see README.md "GitHub").
     base_url: "https://api.github.com"
     # A plain-http base_url is refused unless it is a loopback fake: the
     # fine-grained PAT is a bearer token on every call. A LAN GitHub Enterprise

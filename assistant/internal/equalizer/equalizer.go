@@ -61,21 +61,35 @@ func Definitions() []settings.Definition {
 }
 
 // Controller swaps filters while keeping the original sink as the flat fallback.
+//
+// The lock guards only the small state record; every pactl subprocess runs
+// outside it so a playback start (which reads Target under the lock) never waits
+// for a whole reconciliation pass. Only Watch's single ticker drives sync, so no
+// second sync races the one in flight.
 type Controller struct {
 	mu                            sync.Mutex
 	run                           func(context.Context, ...string) (string, error)
+	configured                    bool
 	master, name, module, applied string
+	// cachedTargets caches the sink indices that must stay on the master (and
+	// the filter just replaced) so the steady-state tick can re-run the input
+	// moves without re-listing the sinks.
+	cachedTargets                 map[int]bool
 	err                           error
 }
 
 func New(master string) *Controller {
-	return &Controller{master: master, run: func(ctx context.Context, args ...string) (string, error) {
-		b, e := exec.CommandContext(ctx, "pactl", args...).CombinedOutput()
-		if e != nil {
-			return "", fmt.Errorf("pactl %s: %w: %s", args[0], e, b)
-		}
-		return strings.TrimSpace(string(b)), nil
-	}}
+	return &Controller{
+		configured: master != "",
+		master:     master,
+		run: func(ctx context.Context, args ...string) (string, error) {
+			b, e := exec.CommandContext(ctx, "pactl", args...).CombinedOutput()
+			if e != nil {
+				return "", fmt.Errorf("pactl %s: %w: %s", args[0], e, b)
+			}
+			return strings.TrimSpace(string(b)), nil
+		},
+	}
 }
 
 // loadHint names the fixes for a failed filter load. PulseAudio and
@@ -117,154 +131,288 @@ func (c *Controller) Watch(ctx context.Context, s *settings.Service) {
 		}
 	}
 }
+
+// sync snapshots the state under a short lock, runs every pactl call outside it,
+// then re-acquires the lock to publish the result. A settings change that lands
+// in the middle of the I/O is detected at publish time: if the live applied
+// value no longer matches the snapshot, the new profile is left unapplied so the
+// next tick re-runs instead of committing a stale result.
 func (c *Controller) sync(parent context.Context, raw string) {
 	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
 	defer cancel()
+
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.applied == "" && c.name == "" {
-		// Recover only our named filters, including their original master after an assistant restart.
-		out, err := c.run(ctx, "list", "short", "modules")
+	snap := struct {
+		configured bool
+		master     string
+		name       string
+		module     string
+		applied    string
+		targets    map[int]bool
+	}{c.configured, c.master, c.name, c.module, c.applied, c.cachedTargets}
+	c.mu.Unlock()
+
+	configured, master, name, module, applied, targets := snap.configured, snap.master, snap.name, snap.module, snap.applied, snap.targets
+	dirty, loaded := false, false
+	var syncErr error
+
+	// 1. Recover one of our named filters from a prior run (including its
+	//    original master) after an assistant restart. Only when nothing is
+	//    applied and no filter is active yet.
+	if applied == "" && name == "" {
+		rName, rModule, rMaster, err := c.recoverModules(ctx)
 		if err != nil {
-			c.err = err
-			return
+			syncErr = err
+		} else if rName != "" {
+			name, module, dirty = rName, rModule, true
+			if master == "" {
+				master = rMaster
+			}
 		}
-		// PulseAudio 16 omits module indices in JSON; the short format retains them.
-		for _, line := range strings.Split(out, "\n") {
-			columns := strings.Split(line, "\t")
-			if len(columns) < 3 || columns[1] != "module-ladspa-sink" {
-				continue
-			}
-			moduleID, err := strconv.Atoi(columns[0])
-			if err != nil {
-				continue
-			}
-			fields := strings.Fields(columns[2])
-			name, master := "", ""
-			for _, field := range fields {
-				if strings.HasPrefix(field, "sink_name=") {
-					name = strings.TrimPrefix(field, "sink_name=")
+	}
+
+	// 2. Learn the master from the host default when none was configured or
+	//    recovered.
+	if syncErr == nil && master == "" {
+		got, err := c.run(ctx, "get-default-sink")
+		if err != nil {
+			syncErr = err
+		} else {
+			master = got
+			dirty = true
+		}
+	}
+
+	// 3. A disappearing filter means Pulse restarted; drop the active name so
+	//    the profile is reloaded, but keep the module id so the stale filter is
+	//    cleaned up after the reload. This cheap per-tick check keeps the heavier
+	//    sink listing out of the steady state.
+	if syncErr == nil && name != "" {
+		if _, err := c.run(ctx, "get-sink-volume", name); err != nil {
+			name, applied, dirty = "", "", true
+		}
+	}
+
+	// 4. Apply the profile when it changed (or no filter is active yet). All
+	//    pactl calls here run outside the lock.
+	if syncErr == nil && raw != applied {
+		newName, newModule, newMaster, newTargets, err := c.loadProfile(ctx, raw, master, name, configured)
+		if err != nil {
+			// Flat fallback: point the default back at the master and drop the
+			// stale filter, then leave the controller flat.
+			c.fallback(ctx, master, module)
+			name, module, applied = "", "", ""
+			syncErr = err
+		} else {
+			oldModule := module
+			name, module, master, applied, targets = newName, newModule, newMaster, raw, newTargets
+			loaded, dirty = true, true
+			if oldModule != "" && oldModule != newModule {
+				if _, err := c.run(ctx, "unload-module", oldModule); err != nil {
+					syncErr = err
 				}
-				if strings.HasPrefix(field, "sink_master=") {
-					master = strings.TrimPrefix(field, "sink_master=")
-				}
-			}
-			if (name == "clanka_eq_a" || name == "clanka_eq_b") && master != "" {
-				c.name = name
-				c.module = strconv.Itoa(moduleID)
-				if c.master == "" {
-					c.master = master
-				}
-				break
 			}
 		}
 	}
-	if c.master == "" {
-		var err error
-		c.master, err = c.run(ctx, "get-default-sink")
-		if err != nil {
-			c.err = err
-			return
+
+	// 5. Each tick re-routes the current inputs onto the active filter. After a
+	//    load or recovery the route already ran; in steady state we only list
+	//    the inputs and move them using the cached sink list, never
+	//    set-default-sink or a fresh sink listing.
+	if syncErr == nil && name != "" {
+		if loaded {
+			// routing already performed by loadProfile
+		} else if dirty || targets == nil {
+			targets, syncErr = c.route(ctx, name, master, module, "")
+		} else {
+			syncErr = c.moveInputs(ctx, name, module, targets)
 		}
 	}
-	// A disappearing filter means Pulse restarted; never retain a stale module id.
-	if c.name != "" {
-		if _, err := c.run(ctx, "get-sink-volume", c.name); err != nil {
-			c.name = ""
-			c.module = ""
-			c.applied = ""
-		}
+
+	// Publish under the lock. If the live applied value changed during the I/O
+	// (a settings edit or a concurrent sync), do not overwrite it; leave the
+	// next tick to re-run.
+	c.mu.Lock()
+	if syncErr == nil && c.applied == snap.applied {
+		c.applied = applied
 	}
-	if raw != c.applied {
-		p, err := Parse(raw)
-		if err != nil {
-			c.err = err
-			return
-		}
-		name := "clanka_eq_a"
-		if c.name == name {
-			name = "clanka_eq_b"
-		}
-		controls := make([]string, 10)
-		for i, g := range p.Bands {
-			controls[i] = strconv.Itoa(g)
-		}
-		id, err := c.run(ctx, "load-module", "module-ladspa-sink", "sink_name="+name, "sink_master="+c.master, "plugin=caps", "label=Eq10X2", "channels=2", "rate=48000", "control="+strings.Join(controls, ","))
-		if err != nil {
-			c.err = fmt.Errorf("EQ unavailable; flat audio fallback: %w", c.loadHint(err))
-			c.fallback(ctx)
-			return
-		}
-		oldName, oldModule := c.name, c.module
-		c.name, c.module, c.applied = name, id, raw
-		if err = c.route(ctx, oldName); err != nil {
-			c.err = err
-			c.fallback(ctx)
-			return
-		}
-		if oldModule != "" {
-			if _, err = c.run(ctx, "unload-module", oldModule); err != nil {
-				c.err = err
-				return
-			}
-		}
-	}
-	c.err = c.route(ctx, "")
+	c.master, c.name, c.module, c.cachedTargets, c.err = master, name, module, targets, syncErr
+	c.mu.Unlock()
 }
 
-// route includes already-playing music and clients pinned to the configured sink.
-func (c *Controller) route(ctx context.Context, old string) error {
-	if _, err := c.run(ctx, "set-default-sink", c.name); err != nil {
-		return err
+// recoverModules finds a filter we previously loaded so a restart does not chain
+// filters. It returns the recovered filter name, its module id and the master it
+// was built on.
+func (c *Controller) recoverModules(ctx context.Context) (string, string, string, error) {
+	out, err := c.run(ctx, "list", "short", "modules")
+	if err != nil {
+		return "", "", "", err
+	}
+	// PulseAudio 16 omits module indices in JSON; the short format retains them.
+	for _, line := range strings.Split(out, "\n") {
+		columns := strings.Split(line, "\t")
+		if len(columns) < 3 || columns[1] != "module-ladspa-sink" {
+			continue
+		}
+		moduleID, err := strconv.Atoi(columns[0])
+		if err != nil {
+			continue
+		}
+		fields := strings.Fields(columns[2])
+		name, master := "", ""
+		for _, field := range fields {
+			if strings.HasPrefix(field, "sink_name=") {
+				name = strings.TrimPrefix(field, "sink_name=")
+			}
+			if strings.HasPrefix(field, "sink_master=") {
+				master = strings.TrimPrefix(field, "sink_master=")
+			}
+		}
+		if (name == "clanka_eq_a" || name == "clanka_eq_b") && master != "" {
+			return name, strconv.Itoa(moduleID), master, nil
+		}
+	}
+	return "", "", "", nil
+}
+
+// loadProfile loads the desired profile onto the next named filter and routes
+// the inputs onto it. For a non-configured master (learned from the host
+// default, or recovered) with no healthy filter loaded, a "No such entity"
+// failure re-reads the host default once and retries with the new master. The
+// returned master reflects any re-resolution so the caller can publish it.
+func (c *Controller) loadProfile(ctx context.Context, raw, master, name string, configured bool) (newName, newModule, newMaster string, targets map[int]bool, err error) {
+	p, err := Parse(raw)
+	if err != nil {
+		return "", "", master, nil, err
+	}
+	newName = "clanka_eq_a"
+	if name == newName {
+		newName = "clanka_eq_b"
+	}
+	controls := make([]string, 10)
+	for i, g := range p.Bands {
+		controls[i] = strconv.Itoa(g)
+	}
+	args := []string{
+		"load-module", "module-ladspa-sink",
+		"sink_name=" + newName, "sink_master=" + master,
+		"plugin=caps", "label=Eq10X2", "channels=2", "rate=48000",
+		"control=" + strings.Join(controls, ","),
+	}
+	id, loadErr := c.run(ctx, args...)
+	if loadErr != nil {
+		// Non-configured master and no healthy filter: re-resolve the host
+		// default once inside the same 3 s context and retry. Never re-resolve
+		// while a healthy filter is loaded.
+		if !configured && name == "" {
+			if resolved, reErr := c.run(ctx, "get-default-sink"); reErr == nil {
+				master = resolved
+				args[3] = "sink_master=" + master
+				id, loadErr = c.run(ctx, args...)
+			}
+		}
+		if loadErr != nil {
+			wrapped := c.loadHint(loadErr)
+			if !configured {
+				wrapped = fmt.Errorf("%w (the host's default sink may have changed; the assistant will re-resolve it)", wrapped)
+			}
+			return "", "", master, nil, wrapped
+		}
+	}
+	targets, err = c.route(ctx, newName, master, id, name)
+	if err != nil {
+		return "", "", master, nil, err
+	}
+	return newName, id, master, targets, nil
+}
+
+// route makes the filter the default sink, lists the sinks to map their indices,
+// lists the inputs and moves every input that is not already on the master or
+// the filter being replaced. It returns the sink indices that must stay on the
+// master (and the replaced filter) so the steady-state tick can re-run the moves
+// without re-listing sinks.
+func (c *Controller) route(ctx context.Context, name, master, module, old string) (map[int]bool, error) {
+	if _, err := c.run(ctx, "set-default-sink", name); err != nil {
+		return nil, err
 	}
 	out, err := c.run(ctx, "--format=json", "list", "sinks")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var sinks []struct {
 		Index int
 		Name  string
 	}
 	if err = json.Unmarshal([]byte(out), &sinks); err != nil {
-		return err
+		return nil, err
 	}
 	targets := map[int]bool{}
 	for _, s := range sinks {
-		if s.Name == c.master || s.Name == old {
+		if s.Name == master || s.Name == old {
 			targets[s.Index] = true
 		}
 	}
-	out, err = c.run(ctx, "--format=json", "list", "sink-inputs")
+	inputs, err := c.listInputs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := c.applyMoves(ctx, name, module, targets, inputs); err != nil {
+		return nil, err
+	}
+	return targets, nil
+}
+
+// moveInputs re-lists the current inputs and moves them using a cached sink map.
+func (c *Controller) moveInputs(ctx context.Context, name, module string, targets map[int]bool) error {
+	inputs, err := c.listInputs(ctx)
 	if err != nil {
 		return err
 	}
-	var inputs []struct {
-		Index       int
-		Driver      string
-		Properties  map[string]string
-		Sink        int
-		OwnerModule json.RawMessage `json:"owner_module"`
+	return c.applyMoves(ctx, name, module, targets, inputs)
+}
+
+func (c *Controller) listInputs(ctx context.Context) ([]sinkInput, error) {
+	out, err := c.run(ctx, "--format=json", "list", "sink-inputs")
+	if err != nil {
+		return nil, err
 	}
+	var inputs []sinkInput
 	if err = json.Unmarshal([]byte(out), &inputs); err != nil {
-		return err
+		return nil, err
 	}
+	return inputs, nil
+}
+
+type sinkInput struct {
+	Index       int
+	Driver      string
+	Properties  map[string]string
+	Sink        int
+	OwnerModule json.RawMessage `json:"owner_module"`
+}
+
+// applyMoves moves every input that is on the master (or the filter being
+// replaced) and is not the filter's own stream onto the active filter.
+func (c *Controller) applyMoves(ctx context.Context, name, module string, targets map[int]bool, inputs []sinkInput) error {
 	for _, in := range inputs {
 		// Filter outputs must stay on the master, or the graph would feed back.
-		if targets[in.Sink] && !strings.Contains(in.Driver, "ladspa") && in.Properties["media.role"] != "filter" && strings.Trim(string(in.OwnerModule), `"`) != c.module {
-			if _, err = c.run(ctx, "move-sink-input", strconv.Itoa(in.Index), c.name); err != nil {
+		if targets[in.Sink] && !strings.Contains(in.Driver, "ladspa") && in.Properties["media.role"] != "filter" && strings.Trim(string(in.OwnerModule), `"`) != module {
+			if _, err := c.run(ctx, "move-sink-input", strconv.Itoa(in.Index), name); err != nil {
 				return err
 			}
 		}
 	}
 	return nil
 }
-func (c *Controller) fallback(_ context.Context) {
-	// Cleanup gets its own budget even if the failed operation exhausted its deadline.
+
+// fallback points the default sink back at the master and drops a stale filter.
+// It runs its own budget even if the failed operation exhausted its deadline,
+// and it runs outside the controller lock so a playback start is never blocked.
+func (c *Controller) fallback(_ context.Context, master, module string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	_, _ = c.run(ctx, "set-default-sink", c.master)
-	if c.module != "" {
-		_, _ = c.run(ctx, "unload-module", c.module)
+	_, _ = c.run(ctx, "set-default-sink", master)
+	if module != "" {
+		_, _ = c.run(ctx, "unload-module", module)
 	}
-	c.name, c.module, c.applied = "", "", ""
 }

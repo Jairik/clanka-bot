@@ -427,7 +427,7 @@ func TestSoundsRoleAssignmentEnforcesCapAndReset(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("wake assignment status = %d", rec.Code)
 	}
-	if v := decodeSounds(t, rec); !strings.Contains(v.Error, "cap") || !strings.Contains(v.Error, "1s") {
+	if v := decodeSounds(t, rec); !strings.Contains(v.Error, "cap") || !strings.Contains(v.Error, "500ms") {
 		t.Fatalf("wake error = %q", v.Error)
 	}
 	value, _ := f.settings.Get(sound.Key(sound.RoleWake))

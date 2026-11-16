@@ -141,6 +141,70 @@ func newFixtureAt(t *testing.T, dir string, cfg sound.Config) *fixture {
 	return &fixture{dir: dir, store: st, sounds: sounds, settings: sett, sink: sink}
 }
 
+// TestWakeCapIsHalfSecondAndDocumentsDroppedSpeech pins the #298 cap and the
+// user-facing wording: speech during the cue is echo, not a clipped request.
+func TestWakeCapIsHalfSecondAndDocumentsDroppedSpeech(t *testing.T) {
+	f := newFixture(t, sound.Config{})
+	if got := sound.Cap(sound.RoleWake); got != 500*time.Millisecond {
+		t.Fatalf("Cap(wake) = %v, want 500ms", got)
+	}
+	// The other roles keep their caps.
+	if got := sound.Cap(sound.RoleReminder); got != 3*time.Second {
+		t.Fatalf("Cap(reminder) = %v, want 3s", got)
+	}
+	if got := sound.Cap(sound.RoleError); got != 3*time.Second {
+		t.Fatalf("Cap(error) = %v, want 3s", got)
+	}
+	if got := sound.Cap(sound.RoleTimerRing); got != time.Minute {
+		t.Fatalf("Cap(timer_ring) = %v, want 1m", got)
+	}
+	if got := sound.Cap(sound.RoleAlarmRing); got != time.Minute {
+		t.Fatalf("Cap(alarm_ring) = %v, want 1m", got)
+	}
+
+	// The built-in chime still fits under the shorter wake cap.
+	chime, ok := f.sounds.Clip(sound.RoleWake)
+	if !ok || chime.Duration > sound.Cap(sound.RoleWake) {
+		t.Fatalf("built-in chime = %+v, %v, does not fit the wake cap", chime.Duration, ok)
+	}
+
+	// The live setting's description names the new cap and the dropped speech.
+	findDescription := func(role sound.Role) string {
+		t.Helper()
+		for _, def := range f.sounds.Definitions(sound.Config{}) {
+			if def.Key == sound.Key(role) {
+				return def.Description
+			}
+		}
+		t.Fatalf("no definition for %s", role)
+		return ""
+	}
+	wakeDesc := findDescription(sound.RoleWake)
+	if !strings.Contains(wakeDesc, "Maximum 500ms") ||
+		!strings.Contains(wakeDesc, "not sent to speech recognition") {
+		t.Fatalf("wake description = %q", wakeDesc)
+	}
+	ringDesc := findDescription(sound.RoleAlarmRing)
+	if strings.Contains(ringDesc, "not sent to speech recognition") {
+		t.Fatalf("non-wake description mentions dropped speech: %q", ringDesc)
+	}
+
+	// The validator accepts exactly 500 ms and rejects 600 ms with the cap.
+	dir := f.sounds.LibraryDir()
+	writeLibraryWAV(t, dir, "half.wav", 500*time.Millisecond)
+	writeLibraryWAV(t, dir, "too_long.wav", 600*time.Millisecond)
+	if err := f.sounds.Rescan(context.Background()); err != nil {
+		t.Fatalf("Rescan: %v", err)
+	}
+	if err := f.sounds.Validate(sound.RoleWake, "half"); err != nil {
+		t.Fatalf("Validate(500ms wake) = %v", err)
+	}
+	if err := f.sounds.Validate(sound.RoleWake, "too_long"); err == nil ||
+		!strings.Contains(err.Error(), "over the 500ms cap") {
+		t.Fatalf("Validate(600ms wake) = %v, want the 500ms cap error", err)
+	}
+}
+
 func TestClipNameResolvesLibrarySoundAndAppliesTheRoleCap(t *testing.T) {
 	f := newFixture(t, sound.Config{})
 	writeLibraryWAV(t, f.sounds.LibraryDir(), "birds.wav", 500*time.Millisecond)
@@ -261,9 +325,9 @@ func TestInvalidLibraryWavIsSkipped(t *testing.T) {
 func TestRoleCapsRejectRatherThanTrim(t *testing.T) {
 	f := newFixture(t, sound.Config{})
 	dir := f.sounds.LibraryDir()
-	long := writeLibraryWAV(t, dir, "long.wav", 1500*time.Millisecond)
-	just := writeLibraryWAV(t, dir, "just.wav", 1001*time.Millisecond)
-	exact := writeLibraryWAV(t, dir, "exact.wav", time.Second)
+	long := writeLibraryWAV(t, dir, "long.wav", 600*time.Millisecond)
+	just := writeLibraryWAV(t, dir, "just.wav", 501*time.Millisecond)
+	exact := writeLibraryWAV(t, dir, "exact.wav", 500*time.Millisecond)
 	long3 := writeLibraryWAV(t, dir, "long3.wav", 4*time.Second)
 	ring := writeLibraryWAV(t, dir, "ring.wav", 61*time.Second)
 	edge := writeLibraryWAV(t, dir, "edge.wav", 59*time.Second)
@@ -273,16 +337,16 @@ func TestRoleCapsRejectRatherThanTrim(t *testing.T) {
 
 	ctx := context.Background()
 	if _, err := f.settings.Set(ctx, sound.Key(sound.RoleWake), "long"); err == nil ||
-		!strings.Contains(err.Error(), "over the 1s cap") {
-		t.Fatalf("wake assignment error = %v, want the 1s cap error", err)
+		!strings.Contains(err.Error(), "over the 500ms cap") {
+		t.Fatalf("wake assignment error = %v, want the 500ms cap error", err)
 	}
 	// A millisecond over the cap is still over, even though the index column
-	// could truncate it to exactly 1000 ms; exactly 1 s is accepted.
+	// could truncate it to exactly 500 ms; exactly 0.5 s is accepted.
 	if _, err := f.settings.Set(ctx, sound.Key(sound.RoleWake), "just"); err == nil {
-		t.Fatal("1001 ms wake sound was accepted")
+		t.Fatal("501 ms wake sound was accepted")
 	}
 	if _, err := f.settings.Set(ctx, sound.Key(sound.RoleWake), "exact"); err != nil {
-		t.Fatalf("exactly 1 s wake sound was rejected: %v", err)
+		t.Fatalf("exactly 500 ms wake sound was rejected: %v", err)
 	}
 	if _, err := f.settings.Set(ctx, sound.Key(sound.RoleReminder), "long3"); err == nil ||
 		!strings.Contains(err.Error(), "over the 3s cap") {
@@ -306,7 +370,7 @@ func TestRoleCapsRejectRatherThanTrim(t *testing.T) {
 		if err != nil {
 			t.Fatalf("InspectWAV %s: %v", path, err)
 		}
-		if path == long && info.Duration != 1500*time.Millisecond {
+		if path == long && info.Duration != 600*time.Millisecond {
 			t.Fatalf("long.wav duration = %v after rejection", info.Duration)
 		}
 	}
@@ -670,7 +734,7 @@ func discardLogger() *slog.Logger {
 // response, and accepts a valid one that the next Clip resolves.
 func TestSettingsAPIRejectsAnOverCapCue(t *testing.T) {
 	f := newFixture(t, sound.Config{})
-	writeLibraryWAV(t, f.sounds.LibraryDir(), "long.wav", 1500*time.Millisecond)
+	writeLibraryWAV(t, f.sounds.LibraryDir(), "long.wav", 600*time.Millisecond)
 	writeLibraryWAV(t, f.sounds.LibraryDir(), "birds.wav", 400*time.Millisecond)
 	if err := f.sounds.Rescan(context.Background()); err != nil {
 		t.Fatalf("Rescan: %v", err)
@@ -700,7 +764,7 @@ func TestSettingsAPIRejectsAnOverCapCue(t *testing.T) {
 	}
 
 	status, body := put("sounds.wake", "long")
-	if status != http.StatusBadRequest || !strings.Contains(body, "over the 1s cap") {
+	if status != http.StatusBadRequest || !strings.Contains(body, "over the 500ms cap") {
 		t.Fatalf("oversized PUT = %d %s", status, body)
 	}
 	status, body = put("sounds.wake", "birds")

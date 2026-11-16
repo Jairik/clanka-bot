@@ -63,9 +63,10 @@ const (
 func Cap(role Role) time.Duration {
 	switch role {
 	case RoleWake:
-		// Endpointing waits for the wake Cue to finish, so a long sound delays
-		// the start of the question.
-		return time.Second
+		// Audio captured while the wake Cue plays is treated as echo and is
+		// dropped, never sent to STT. A long cue therefore clips the start of
+		// the request, so keep it short (the built-in chime is 0.27 s).
+		return 500 * time.Millisecond
 	case RoleReminder, RoleError:
 		return 3 * time.Second
 	case RoleTimerRing, RoleAlarmRing:
@@ -256,10 +257,14 @@ func (s *Service) Definitions(cfg Config) []settings.Definition {
 	defs := make([]settings.Definition, 0, len(Roles))
 	for _, role := range Roles {
 		role := role
+		description := fmt.Sprintf(
+			"Sound played as the %s Cue: a library name, a path under the data volume, or none. Maximum %s.",
+			role, Cap(role))
+		if role == RoleWake {
+			description += " Audio captured while this Cue plays is treated as echo and is not sent to speech recognition, so keep it short."
+		}
 		opts := []settings.Option{
-			settings.WithDescription(fmt.Sprintf(
-				"Sound played as the %s Cue: a library name, a path under the data volume, or none. Maximum %s.",
-				role, Cap(role))),
+			settings.WithDescription(description),
 			settings.WithValidator(func(value any) error {
 				text, ok := value.(string)
 				if !ok {

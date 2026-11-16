@@ -89,13 +89,14 @@ func (d *Ducker) Reapply(ctx context.Context) error {
 	}
 	d.mu.Lock()
 	want := normalPercent
-	if d.depth > 0 {
+	ducked := d.depth > 0
+	if ducked {
 		want = d.percent
 	}
 	d.mu.Unlock()
 	d.opMu.Lock()
 	defer d.opMu.Unlock()
-	if d.depth > 0 {
+	if ducked {
 		d.logger.Info("music reapply", "reason", "stream appeared mid-duck", "percent", want)
 	}
 	ctx, cancel := context.WithTimeout(ctx, pactlTimeout)

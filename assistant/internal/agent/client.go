@@ -94,6 +94,12 @@ func newProvider(settings Settings) *provider {
 type completion struct {
 	Content string
 	Calls   []CallRef
+	// Token counts come from the final usage chunk of the stream. They are
+	// zero when the provider ignores include_usage (unknown, not free).
+	PromptTokens     int64
+	CompletionTokens int64
+	TotalTokens      int64
+	CachedTokens     int64
 }
 
 // stream sends one chat-completion request and streams the reply. onDelta, when
@@ -105,6 +111,9 @@ func (p *provider) stream(ctx context.Context, messages []openai.ChatCompletionM
 		model = p.fallbackModel
 	}
 	params := openai.ChatCompletionNewParams{Model: model, Messages: messages}
+	// Ask for the final usage chunk. Providers that ignore this option simply
+	// report zero, which the caller reads as unknown rather than free.
+	params.StreamOptions = openai.ChatCompletionStreamOptionsParam{IncludeUsage: openai.Bool(true)}
 	if len(tools) > 0 {
 		params.Tools = tools
 	}
@@ -135,6 +144,14 @@ func (p *provider) stream(ctx context.Context, messages []openai.ChatCompletionM
 
 	for stream.Next() {
 		chunk := stream.Current()
+		// The final usage chunk has an empty Choices array, so read usage
+		// before the skip below. Counts only, never prompt or reply text.
+		if chunk.JSON.Usage.Valid() {
+			out.PromptTokens += chunk.Usage.PromptTokens
+			out.CompletionTokens += chunk.Usage.CompletionTokens
+			out.TotalTokens += chunk.Usage.TotalTokens
+			out.CachedTokens += chunk.Usage.PromptTokensDetails.CachedTokens
+		}
 		if len(chunk.Choices) == 0 {
 			continue
 		}

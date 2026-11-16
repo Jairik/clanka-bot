@@ -540,6 +540,9 @@ func (p *Pipeline) callAgent(ctx context.Context, req tool.Request, transcript s
 	// The single provider retry, when it happened, is visible on the request
 	// line so a slow turn can be explained without reading the debug log.
 	latency.SetAttr(ctx, "agent_retries", result.Retries)
+	// Per-turn model token counts, summed across steps by the Agent path.
+	// Counts and step count only: no prompt or reply text is logged here.
+	latency.SetTokens(ctx, result.PromptTokens, result.CompletionTokens, result.TotalTokens, result.CachedTokens, result.Steps)
 	// A spoken Unavailable message is still a reply, but the model call
 	// failed; the raw request line must say so rather than look like success.
 	switch {

@@ -624,6 +624,19 @@ func SetAttr(ctx context.Context, key string, value any) {
 	}
 }
 
+// SetTokens publishes one turn's model token counts on ctx's request line,
+// the same way callAgent publishes agent_retries. Only integers are recorded:
+// prompt, completion, total and cached token counts plus the model step count.
+// Zero counts mean the provider omitted usage (unknown, not free). No prompt
+// or reply text is ever passed here.
+func SetTokens(ctx context.Context, prompt, completion, total, cached int64, steps int) {
+	SetAttr(ctx, "prompt_tokens", prompt)
+	SetAttr(ctx, "completion_tokens", completion)
+	SetAttr(ctx, "total_tokens", total)
+	SetAttr(ctx, "cached_tokens", cached)
+	SetAttr(ctx, "agent_steps", steps)
+}
+
 // SetFailure stores the failure reason on ctx's timeline.
 func SetFailure(ctx context.Context, message string) {
 	if t := FromContext(ctx); t != nil {

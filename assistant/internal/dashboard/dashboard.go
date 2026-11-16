@@ -29,6 +29,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/internal/toolpolicy"
 	"github.com/Jairik/clanka-bot/assistant/internal/tz"
+	"github.com/Jairik/clanka-bot/assistant/internal/voice"
 	"github.com/Jairik/clanka-bot/assistant/internal/voicelib"
 	"github.com/Jairik/clanka-bot/assistant/internal/wakesample"
 )
@@ -159,6 +160,10 @@ type Options struct {
 	// thresholds. Settings shows it read-only and Health checks it against the
 	// service's advertised models. Zero means voice input is off.
 	Wakeword WakewordInfo
+	// FalseWakes is the voice loop's in-memory false-wake counters (#299). The
+	// Health page renders a "since restart" row from it. Nil hides the row,
+	// which is how a voice-disabled deployment omits it.
+	FalseWakes *voice.Stats
 	// Hosts is the explicit public Host allowlist: the tailnet name
 	// `tailscale serve` exposes, exactly as it appears in the URL. Loopback
 	// names are always accepted for the documented local smoke test. An empty
@@ -228,6 +233,9 @@ type Handler struct {
 	// wakeword is the configured allowlist and thresholds shown on Settings
 	// and probed on Health.
 	wakeword WakewordInfo
+	// falseWakes is the voice loop's in-memory false-wake counter set; nil when
+	// voice input is off, which hides the Health row.
+	falseWakes *voice.Stats
 	// live fans out the SSE stream: activity deltas plus sampled volume, alert
 	// and health changes.
 	live *liveHub
@@ -343,6 +351,7 @@ func New(opts Options) (*Handler, error) {
 		transcriber:    opts.Transcriber,
 		volume:         opts.Volume,
 		wakeword:       opts.Wakeword,
+		falseWakes:     opts.FalseWakes,
 		wakeModels:     wakeModels,
 		askLock:        make(chan struct{}, 1),
 		micLock:        make(chan struct{}, 1),

@@ -98,6 +98,7 @@ describe("shell health poll", () => {
         Wakeword: [],
         Spotify: [],
         Routing: { Name: "Semantic routing", Status: "not-configured", StatusLabel: "not configured", Detail: "" },
+        FalseWakes: null,
         DiagnosticsURL: "/api/ui/diagnostics",
       } satisfies HealthView),
     );

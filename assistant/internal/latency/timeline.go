@@ -116,10 +116,14 @@ type ToolCallDetail struct {
 // the single structured request log line is written. Detail is nil when the
 // request ended before routing (for example a failed transcription).
 type Completed struct {
-	ID          string
-	Source      Source
-	Path        string
-	Tool        string
+	ID     string
+	Source Source
+	Path   string
+	Tool   string
+	// WakeWord is the wake model that started this voice request, carried over
+	// from the request line's wake_word attr. Empty for non-voice or no-wake
+	// entries. It is a model name, not transcript text.
+	WakeWord    string
 	Transcript  string
 	Outcome     Outcome
 	Error       string
@@ -478,6 +482,11 @@ func (t *Timeline) completedLocked(outcome Outcome, err error) Completed {
 		Outcome:     outcome,
 		Stages:      make(map[Stage]time.Duration, len(t.stages)),
 		Checkpoints: make(map[string]time.Duration, len(t.checkpoint)),
+	}
+	// The voice loop sets the wake_word attr once it has a transcript. Reuse it
+	// so the observer sees the same model name the request line logs.
+	if wakeWord, ok := t.attrs["wake_word"].(string); ok {
+		completed.WakeWord = wakeWord
 	}
 	if d, ok := t.responseLocked(); ok {
 		completed.Response = d

@@ -20,6 +20,7 @@ func TestObserverSeesOneCompletedRequestWithDisplayDetail(t *testing.T) {
 	tl.SetLastVoice(now.Add(-500 * time.Millisecond))
 
 	SetRoute(ctx, "fast_path", "secret.read", "read my secret")
+	SetAttr(ctx, "wake_word", "okay_nabu")
 	SetStage(ctx, StageRouting, 40*time.Millisecond)
 	AddToolCall(ctx, ToolCallDetail{
 		Name:      "secret.read",
@@ -45,6 +46,9 @@ func TestObserverSeesOneCompletedRequestWithDisplayDetail(t *testing.T) {
 	got := completed[0]
 	if got.ID != "req-1" || got.Source != SourceVoice || got.Path != "fast_path" {
 		t.Fatalf("unexpected completion identity: %+v", got)
+	}
+	if got.WakeWord != "okay_nabu" {
+		t.Fatalf("completion wake word = %q, want the wake_word attr", got.WakeWord)
 	}
 	if got.Outcome != OutcomeOK || !got.HasResponse || got.Response != 1400*time.Millisecond {
 		t.Fatalf("unexpected outcome/response: %+v", got)

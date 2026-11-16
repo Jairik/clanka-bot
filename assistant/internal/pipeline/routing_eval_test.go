@@ -103,6 +103,7 @@ var routingEvalTools = []string{
 	notifytools.Name,
 	calc.Name,
 	units.Name,
+	units.CurrencyName,
 	random.FlipName,
 	random.RollName,
 	random.PickName,

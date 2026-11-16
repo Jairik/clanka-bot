@@ -1,6 +1,8 @@
-// Package units implements units.convert for common length, mass, volume,
-// temperature, time, speed and area units. The table is fixed in code: no
-// currency, no live rates and no network lookup.
+// Package units holds the network-free units.convert table of length, mass,
+// volume, temperature, time, speed and area units, and units.currency, which
+// converts between currencies using the daily ECB reference rates. units.convert
+// stays free of currency, live rates and any network lookup; units.currency is
+// the only part of the module that fetches over the network.
 package units
 
 import (
@@ -482,7 +484,10 @@ func NewModule() *Module { return &Module{} }
 // Name is the module name and config section suffix.
 func (*Module) Name() string { return "units" }
 
-// Register adds units.convert.
+// Register adds units.convert and units.currency.
 func (*Module) Register(r *tool.Registry, _ tool.Deps) error {
-	return tool.Add(r, New())
+	if err := tool.Add(r, New()); err != nil {
+		return err
+	}
+	return tool.Add(r, NewCurrency(CurrencyOptions{}))
 }

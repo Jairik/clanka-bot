@@ -176,6 +176,7 @@ above the 0.95 precision floor. Run against
 | `reminder.cancel` | 22 | 12 | 0 | 12 | 0 | 10 | 1.00 | 0.5455 |
 | `calc.evaluate` | 22 | 17 | 0 | 17 | 0 | 5 | 1.00 | 0.7727 |
 | `units.convert` | 24 | 22 | 0 | 22 | 0 | 2 | 1.00 | 0.9167 |
+| `units.currency` | 23 | 23 | 0 | 23 | 0 | 0 | 1.00 | 1.00 |
 | `random.flip` | 21 | 21 | 0 | 21 | 0 | 0 | 1.00 | 1.00 |
 | `random.roll` | 22 | 22 | 0 | 22 | 0 | 0 | 1.00 | 1.00 |
 | `random.pick` | 22 | 17 | 0 | 17 | 0 | 5 | 1.00 | 0.7727 |

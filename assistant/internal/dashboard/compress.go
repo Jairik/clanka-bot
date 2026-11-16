@@ -46,9 +46,10 @@ func compressible(contentType string) bool {
 	return false
 }
 
-// compressWriter gzips a 200 answer whose content type is text. It decides at
-// WriteHeader time, so a handler that already chose an encoding (a
-// precompressed asset) or a non-text body is untouched.
+// compressWriter gzips a 200 answer with a compressible content type: the text
+// types plus application/json and image/svg+xml. It decides at WriteHeader time,
+// so a handler that already chose an encoding (a precompressed asset) or a
+// non-compressible body is untouched.
 type compressWriter struct {
 	http.ResponseWriter
 	gz          *gzip.Writer

@@ -268,8 +268,9 @@ func (a *Auth) initialStatus() authStatus {
 
 // Begin starts one PKCE authorization. The state is cryptographically random,
 // single-use, expires after ten minutes and is bound to the owner and to a
-// separate cookie value. The CSRF protection on the starting request is the
-// Dashboard's same-origin POST guard.
+// separate binding cookie. The flow starts from a plain same-origin GET link,
+// not a form POST: its CSRF protection is the state parameter, the owner binding
+// and the binding cookie, all checked again on the callback.
 func (a *Auth) Begin(owner string) (BeginResult, error) {
 	if a == nil || !a.cfg.Enabled() {
 		return BeginResult{}, ErrNotConfigured

@@ -226,10 +226,13 @@ func (s *Service) metadataLocked(name string) Metadata {
 }
 
 // lastFour returns a suffix only when the value is long enough that the
-// suffix is a hint rather than a large share of the secret.
+// suffix is a hint rather than a large share of the secret. It counts runes,
+// not bytes, so a multi-byte character at the boundary is never split into
+// invalid UTF-8 (which json.Marshal would then render as U+FFFD).
 func lastFour(value string) string {
-	if len(value) < minLastFourLength {
+	runes := []rune(value)
+	if len(runes) < minLastFourLength {
 		return ""
 	}
-	return value[len(value)-4:]
+	return string(runes[len(runes)-4:])
 }

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/secrets"
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
@@ -152,6 +153,43 @@ func TestSetKeepsSurroundingSpacesButStripsLineBreaks(t *testing.T) {
 	}
 	if value, ok := svc.Get(name); !ok || value != " hunter2 " {
 		t.Fatalf("Get pasted value = %q, %v; want %q", value, ok, " hunter2 ")
+	}
+}
+
+func TestLastFourHandlesMultiByteRunesAndHidesShortSecrets(t *testing.T) {
+	const name = "SECRETS_TEST_LASTFOUR"
+	t.Setenv(name, "")
+	svc, _ := openService(t, name)
+	ctx := context.Background()
+
+	// 16 bytes: ten ASCII letters followed by two 3-byte euro signs. The old
+	// byte-based suffix grabbed bytes 13-16, splitting the first euro into
+	// invalid UTF-8 that json.Marshal rendered as U+FFFD. The rune-based suffix
+	// returns the last four runes, always valid and exactly four characters.
+	meta, err := svc.Set(ctx, name, "aaaaaaaaaa€€")
+	if err != nil {
+		t.Fatalf("Set multi-byte value: %v", err)
+	}
+	if !utf8.ValidString(meta.Last4) {
+		t.Fatalf("last4 = %q is not valid UTF-8", meta.Last4)
+	}
+	if r := []rune(meta.Last4); len(r) != 4 {
+		t.Fatalf("last4 = %q has %d runes, want 4", meta.Last4, len(r))
+	}
+	if meta.Last4 != "aa€€" {
+		t.Fatalf("last4 = %q, want aa€€", meta.Last4)
+	}
+
+	// A value of minLastFourLength bytes made of multi-byte runes is still
+	// shorter than the rune threshold, so the suffix must stay hidden. Twelve
+	// bytes of four 3-byte characters would, under the old byte rule, have
+	// exposed a mangled three-character suffix.
+	meta, err = svc.Set(ctx, name, "世界你好")
+	if err != nil {
+		t.Fatalf("Set short multi-byte value: %v", err)
+	}
+	if meta.Last4 != "" {
+		t.Fatalf("last4 = %q, want hidden for a value shorter than %d runes", meta.Last4, 12)
 	}
 }
 

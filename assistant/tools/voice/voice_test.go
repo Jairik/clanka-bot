@@ -2,6 +2,7 @@ package voice_test
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -402,5 +403,110 @@ func TestVoiceSetFarMissKeepsTheNotFoundSentence(t *testing.T) {
 	var toolErr *tool.ToolError
 	if !errors.As(err, &toolErr) || !strings.Contains(toolErr.Say, "couldn't find a voice called nobody") || strings.Contains(toolErr.Say, "Did you mean") {
 		t.Fatalf("err = %v, want the plain not-found sentence", err)
+	}
+}
+
+// rateUpdatedAt reads the settings row's write timestamp so a test can prove
+// whether a Tool call wrote to the store (an upsert bumps updated_at even when
+// the value is unchanged).
+func rateUpdatedAt(t *testing.T, st *store.Store) string {
+	t.Helper()
+	var updated string
+	err := st.DB().QueryRow(`SELECT updated_at FROM settings WHERE key = ?`, voicelib.KeyRate).Scan(&updated)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ""
+	}
+	if err != nil {
+		t.Fatalf("rate updated_at: %v", err)
+	}
+	return updated
+}
+
+// TestVoiceRateNoOpAtMaxSpeed refuses the no-op and writes nothing. "Speak
+// faster" at 2.0x used to claim the rate changed while storing nothing.
+func TestVoiceRateNoOpAtMaxSpeed(t *testing.T) {
+	f := newFixture(t)
+	if _, err := f.run(t, voice.RateName, voice.RateIn{Delta: 10}); err != nil {
+		t.Fatalf("rate to max: %v", err)
+	}
+	if got := f.voices.Rate(); got != voicelib.MaxRate {
+		t.Fatalf("rate = %v, want %v", got, voicelib.MaxRate)
+	}
+	before := rateUpdatedAt(t, f.store)
+
+	out, err := f.run(t, voice.RateName, voice.RateIn{Delta: 1})
+	if err != nil {
+		t.Fatalf("rate faster at max: %v", err)
+	}
+	ro := out.(voice.RateOut)
+	if ro.Changed {
+		t.Fatalf("Changed = %v, want false at the fastest speed", ro.Changed)
+	}
+	if ro.Rate != voicelib.MaxRate {
+		t.Fatalf("Rate = %v, want %v", ro.Rate, voicelib.MaxRate)
+	}
+	spoken, _ := f.registry.Speak(voice.RateName, out)
+	if spoken != "I'm already at the fastest speed." {
+		t.Fatalf("Speak = %q", spoken)
+	}
+	if got := rateUpdatedAt(t, f.store); got != before {
+		t.Fatalf("updated_at = %q, want unchanged %q (no settings write for the no-op)", got, before)
+	}
+}
+
+// TestVoiceRateNoOpAtMinSpeed refuses the no-op the other direction.
+func TestVoiceRateNoOpAtMinSpeed(t *testing.T) {
+	f := newFixture(t)
+	if _, err := f.run(t, voice.RateName, voice.RateIn{Delta: -10}); err != nil {
+		t.Fatalf("rate to min: %v", err)
+	}
+	if got := f.voices.Rate(); got != voicelib.MinRate {
+		t.Fatalf("rate = %v, want %v", got, voicelib.MinRate)
+	}
+
+	out, err := f.run(t, voice.RateName, voice.RateIn{Delta: -1})
+	if err != nil {
+		t.Fatalf("rate slower at min: %v", err)
+	}
+	ro := out.(voice.RateOut)
+	if ro.Changed {
+		t.Fatalf("Changed = %v, want false at the slowest speed", ro.Changed)
+	}
+	spoken, _ := f.registry.Speak(voice.RateName, out)
+	if spoken != "I'm already at the slowest speed." {
+		t.Fatalf("Speak = %q", spoken)
+	}
+}
+
+// TestVoiceRateStepUpToMaxStoresOnce proves a real 1.9 -> 2.0 step reports the
+// change, says faster, and performs a settings write (the stored value moves).
+func TestVoiceRateStepUpToMaxStoresOnce(t *testing.T) {
+	f := newFixture(t)
+	if _, err := f.voices.SetRate(context.Background(), 1.9); err != nil {
+		t.Fatalf("SetRate 1.9: %v", err)
+	}
+	before := rateUpdatedAt(t, f.store)
+
+	// A bare call is the Control phrase "speak faster": one step (0.1) up.
+	out, err := f.run(t, voice.RateName, voice.RateIn{})
+	if err != nil {
+		t.Fatalf("rate faster: %v", err)
+	}
+	ro := out.(voice.RateOut)
+	if !ro.Changed {
+		t.Fatalf("Changed = %v, want true for a real 1.9 -> 2.0 step", ro.Changed)
+	}
+	if ro.Rate != 2.0 {
+		t.Fatalf("Rate = %v, want 2.0", ro.Rate)
+	}
+	spoken, _ := f.registry.Speak(voice.RateName, out)
+	if spoken != "Okay, I'll speak a little faster." {
+		t.Fatalf("Speak = %q", spoken)
+	}
+	if got := rateUpdatedAt(t, f.store); got == before {
+		t.Fatalf("updated_at unchanged; expected the 1.9 -> 2.0 step to write the setting")
+	}
+	if got := f.settings.Float(voicelib.KeyRate); got != 2.0 {
+		t.Fatalf("stored rate = %v, want 2.0", got)
 	}
 }

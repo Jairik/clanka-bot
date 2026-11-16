@@ -280,9 +280,10 @@ type RateIn struct {
 
 // RateOut is the stored multiplier and the step that produced it.
 type RateOut struct {
-	Rate  float64 `json:"rate"`
-	Delta int     `json:"delta"`
-	Reset bool    `json:"reset,omitempty"`
+	Rate    float64 `json:"rate"`
+	Delta   int     `json:"delta"`
+	Reset   bool    `json:"reset,omitempty"`
+	Changed bool    `json:"changed,omitempty"`
 }
 
 func (m *Module) newRate(deps tool.Deps) tool.Tool[RateIn, RateOut] {
@@ -296,6 +297,7 @@ func (m *Module) newRate(deps tool.Deps) tool.Tool[RateIn, RateOut] {
 			if service == nil {
 				return RateOut{}, &tool.ToolError{Say: "The voice library isn't available."}
 			}
+			before := service.Rate()
 			target := 1.0
 			delta := in.Delta
 			switch {
@@ -305,22 +307,29 @@ func (m *Module) newRate(deps tool.Deps) tool.Tool[RateIn, RateOut] {
 				// The Control phrase ("speak faster") carries no arguments;
 				// its direction is the default one step up.
 				delta = 1
-				target = service.Rate() + m.cfg.Step
+				target = before + m.cfg.Step
 			default:
-				target = service.Rate() + float64(delta)*m.cfg.Step
+				target = before + float64(delta)*m.cfg.Step
 			}
 			rate, err := service.SetRate(ctx, target)
 			if err != nil {
 				return RateOut{}, &tool.ToolError{Say: "I couldn't change the speaking rate."}
 			}
-			return RateOut{Rate: rate, Delta: delta, Reset: in.Normal}, nil
+			// Changed reports whether the stored multiplier actually moved, so
+			// a clamped no-op ("speak faster" at 2.0x) says it is already at
+			// the limit instead of claiming a change that never happened.
+			return RateOut{Rate: rate, Delta: delta, Reset: in.Normal, Changed: rate != before}, nil
 		},
 		Speak: func(out RateOut) string {
 			switch {
 			case out.Reset:
 				return "Okay, back to normal speed."
+			case out.Delta > 0 && !out.Changed:
+				return "I'm already at the fastest speed."
 			case out.Delta > 0:
 				return "Okay, I'll speak a little faster."
+			case out.Delta < 0 && !out.Changed:
+				return "I'm already at the slowest speed."
 			case out.Delta < 0:
 				return "Okay, I'll speak a little slower."
 			default:

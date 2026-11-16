@@ -8,6 +8,7 @@ import { getJSON, postForm } from "./api";
 import { isTypedSource, mergeActivity } from "./activity";
 import { useLive } from "./events";
 import { MIC_MAX_SECONDS, micSupported } from "./mic";
+import { PlayReply } from "./reply-audio";
 import { useRecorder } from "./recorder";
 import { useSession } from "./shell";
 import { SpeakHint } from "./speak";
@@ -333,20 +334,23 @@ export function Exchange({ r }: { r: Request }) {
         <p className="py-1 text-[15px] leading-relaxed break-words whitespace-pre-wrap">
           {r.Reply || <span className={isFailed(r) ? "text-danger" : "text-muted"}>{r.Error || "No reply text."}</span>}
         </p>
-        <Fold
-          triggerClassName="flex w-auto items-center gap-1.5 py-0.5 text-[11px] text-subtle hover:text-foreground"
-          bodyClassName="mt-1.5 border bg-surface-secondary p-3"
-          trigger={
-            <>
-              <ChevronDown className={cn("size-3", foldOpen)} />
-              {r.Tool ? <span className="font-mono">{r.Tool}</span> : <span>{r.PathLabel}</span>}
-              {ms > 0 && <span>· {fmtMS(ms)}</span>}
-              <OutcomeBadge r={r} />
-            </>
-          }
-        >
-          <RequestDetail r={r} />
-        </Fold>
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+          <Fold
+            triggerClassName="flex w-auto items-center gap-1.5 py-0.5 text-[11px] text-subtle hover:text-foreground"
+            bodyClassName="mt-1.5 border bg-surface-secondary p-3"
+            trigger={
+              <>
+                <ChevronDown className={cn("size-3", foldOpen)} />
+                {r.Tool ? <span className="font-mono">{r.Tool}</span> : <span>{r.PathLabel}</span>}
+                {ms > 0 && <span>· {fmtMS(ms)}</span>}
+                <OutcomeBadge r={r} />
+              </>
+            }
+          >
+            <RequestDetail r={r} />
+          </Fold>
+          <PlayReply id={r.ID} reply={r.Reply} time={fmtClock(r.TimeISO)} />
+        </div>
       </BotRow>
     </div>
   );

@@ -484,6 +484,10 @@ export type Session = {
   Activity: boolean;
   CanSpeak: boolean;
   Speak: boolean;
+  // CanPlayReplies is browser playback's own capability: a reply to resolve in
+  // the Activity store and a TTS service to synthesize it. It is independent of
+  // CanSpeak, which is about the Pi speaker; a speaker alone cannot play here.
+  CanPlayReplies: boolean;
   // APIVersion is the view-shape contract this server serves. A UI built
   // against a different value refuses to render instead of showing undefined
   // fields; see internal/dashboard/version.go.

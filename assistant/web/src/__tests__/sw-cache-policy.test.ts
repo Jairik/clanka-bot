@@ -37,6 +37,11 @@ describe("shouldCache", () => {
     expect(shouldCache(get("audio"), url("/voices/audio/alba"))).toBe(false);
   });
 
+  it("never caches a reply's audio: it is the owner's words in the active voice", () => {
+    expect(shouldCache(get(), url("/reply/audio/req-1"))).toBe(false);
+    expect(shouldCache(get("audio"), url("/reply/audio/req-1"))).toBe(false);
+  });
+
   it("never caches any media request, whatever its path", () => {
     expect(shouldCache(get("audio"), url("/assets/theme.wav"))).toBe(false);
   });

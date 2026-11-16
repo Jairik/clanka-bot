@@ -50,6 +50,7 @@ const SessionCtx = createContext<Session>({
   Activity: false,
   CanSpeak: false,
   Speak: false,
+  CanPlayReplies: false,
   APIVersion: API_VERSION,
 });
 export const useSession = () => useContext(SessionCtx);

@@ -164,29 +164,29 @@ func setMute(ctx context.Context, controls Controls, step int, muted bool) (Volu
 	return VolumeOut{Unmuted: true}, nil
 }
 
-// extractVolume reads an absolute percent, a direction, or mute from the
+// extractVolume reads an absolute percent, a relative delta, or mute from the
 // utterance. Mute drives the sink mute flag and keeps the level; it never
 // changes a Ring's own absolute volume settings or the Quiet-hours software
-// gain.
+// gain. The "direction plus number" grammar (e.g. "down to 20" is absolute,
+// "down by 30" is relative) is shared with Spotify in parse.VolumeChange.
 func extractVolume(text string, step int) (VolumeIn, bool) {
 	lower := strings.ToLower(text)
 	switch {
 	case strings.Contains(lower, "unmute"), strings.Contains(lower, "un-mute"):
 		unmuted := false
 		return VolumeIn{Mute: &unmuted}, true
-	case strings.Contains(lower, "louder"), strings.Contains(lower, "turn it up"), strings.Contains(lower, "volume up"):
-		return VolumeIn{Delta: step}, true
-	case strings.Contains(lower, "quieter"), strings.Contains(lower, "turn it down"), strings.Contains(lower, "volume down"):
-		return VolumeIn{Delta: -step}, true
 	case strings.Contains(lower, "mute"):
 		muted := true
 		return VolumeIn{Mute: &muted}, true
 	}
-	n, ok := parse.Number(text)
-	if !ok || n < 0 || n > 100 {
+	percent, delta, ok := parse.VolumeChange(text, step)
+	if !ok {
 		return VolumeIn{}, false
 	}
-	return VolumeIn{Percent: &n}, true
+	if percent != nil {
+		return VolumeIn{Percent: percent}, true
+	}
+	return VolumeIn{Delta: delta}, true
 }
 
 // NewStop builds audio.stop.

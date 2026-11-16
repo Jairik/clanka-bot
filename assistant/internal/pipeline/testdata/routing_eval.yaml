@@ -714,6 +714,31 @@ positives:
     - what services can you offer
     - what are the things you can do
     - give me a list of your tools
+  assistant.forget:
+    # Drop the shared conversation history on the Pi, not a note, timer or
+    # list. "forget everything I told you" now has a Fast path home here.
+    - forget that
+    - forget the conversation
+    - clear our chat
+    - start over
+    - never mind that
+    - forget everything we've talked about
+    - let's start fresh
+    - clear the conversation history
+    - forget everything I told you
+    - forget our conversation
+    - clear the chat history
+    - forget what we were talking about
+    - wipe the conversation
+    - forget about this conversation
+    - please forget the conversation
+    - can we start over
+    - let's start over
+    - clear our conversation
+    - forget the chat
+    - start a new conversation
+    - let's forget the conversation
+    - forget what I just said
   system.status:
     # Health and availability questions about the Assistant itself, not the
     # weather, an alarm or a phone.
@@ -1629,12 +1654,18 @@ negatives:
   - search the web for shopping list apps
   - create a note in the notes app
   - delete all my notes
-  - forget everything I told you
   - add a reminder to my shopping list
   - put milk on the list
   - take milk off the list
   - what's in my notes
   - delete the note about the boiler from my phone
+  # Forget/clear-shaped but about a note, timer, list, alarm or reminder, not
+  # the conversation: these must never reach assistant.forget.
+  - forget the shopping list
+  - clear all my notes
+  - clear the kitchen timer
+  - forget the alarm I set for 7
+  - clear my reminders before bed
   # "what's wrong / broken / failed / slow" about the wider world, not this
   # Assistant: these must not trigger system.diagnose's Fast path.
   - what's wrong with my car engine

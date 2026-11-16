@@ -306,6 +306,11 @@ func run() error {
 	// The previous reply stays in memory with its provenance so a follow-up
 	// "send that to my phone" can resolve it without persisting private text.
 	lastReplyStore := lastreply.New()
+	// Build the one shared conversation history before Tools register so the
+	// assistant.forget Tool can hold the very instance the Agent path and the
+	// Fast path read. Resetting it drops stale turns for both paths at once.
+	conversationHistory := agent.NewHistory(
+		cfg.Agent.History.Turns, cfg.Agent.History.Quiet.Duration(), nil)
 
 	// Resolve the place once before serving so the first request has it; Watch
 	// keeps it fresh every 24h and retries a failed boot lookup on a bounded
@@ -526,6 +531,7 @@ func run() error {
 		Notify:    notifySvc,
 		LastReply: lastReplyStore,
 		Status:    systemStatus.Status,
+		History:   conversationHistory,
 	}
 	if speechSpeaker != nil {
 		deps.Speaker = speechSpeaker
@@ -816,6 +822,9 @@ func run() error {
 		MaxSteps:               cfg.Agent.MaxSteps,
 		HistoryTurns:           cfg.Agent.History.Turns,
 		HistoryQuiet:           cfg.Agent.History.Quiet.Duration(),
+		// Use the same instance assistant.forget holds, built before Tools
+		// registered above, so a spoken forget clears the Agent path's context.
+		History: conversationHistory,
 	}, registry, logger)
 	if err != nil {
 		return err

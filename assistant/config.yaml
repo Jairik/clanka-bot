@@ -509,6 +509,14 @@ control_phrases:
   "quiet hours off": quiet.off
   "i'm awake": quiet.awake
   "i am awake": quiet.awake
+  # Forgetting the conversation drops the shared Agent/Fast-path history on
+  # the Pi. It is Local-only, so it works with no provider reachable. Other
+  # "forget" and "clear" requests (notes, timers, lists) are not Control
+  # phrases: they belong to their own Tools or the Agent path.
+  "forget that": assistant.forget
+  "forget the conversation": assistant.forget
+  "clear our chat": assistant.forget
+  "start over": assistant.forget
 
 # The Agent path: one OpenAI-compatible provider, no failover.
 agent:

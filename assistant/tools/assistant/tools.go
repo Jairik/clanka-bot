@@ -22,6 +22,53 @@ type RepeatOut struct {
 	At        time.Time `json:"at,omitempty"`
 }
 
+// ForgetIn has no fields: "forget the conversation" clears whatever is stored,
+// it does not take the current utterance as its input.
+type ForgetIn struct{}
+
+// ForgetOut is the one-line confirmation that the history was cleared.
+type ForgetOut struct {
+	Text string `json:"text"`
+}
+
+// NewForget builds assistant.forget. It resets the shared conversation history
+// on the Pi, so it works with no provider reachable. It is deliberately
+// Local-only and Fast-path eligible (PermissionAct, not AgentOnly).
+//
+// It clears only conversation turns, never the last-reply store: "say that
+// again" must still work after a forget. It does not clear Scheduled alerts,
+// notes or lists; this is conversation state only. A nil history is a clear
+// failure rather than a panic, for callers with no shared history wired.
+func NewForget(history tool.HistoryResetter) tool.Tool[ForgetIn, ForgetOut] {
+	return tool.Tool[ForgetIn, ForgetOut]{
+		Name:        ForgetName,
+		Description: "Forget the current conversation and start with a clean history.",
+		Permission:  tool.PermissionAct,
+		// A forget must work even when the provider is unreachable, and its
+		// confirmation never leaves the Pi. LocalOnlyYes + AgentOnly is
+		// rejected at registration, so this stays Fast-path eligible.
+		LocalOnly: tool.LocalOnlyYes,
+		Handler: func(context.Context, ForgetIn) (ForgetOut, error) {
+			if history == nil {
+				return ForgetOut{}, &tool.ToolError{Say: "I can't forget anything right now."}
+			}
+			history.Reset()
+			return ForgetOut{Text: "Forgotten."}, nil
+		},
+		Speak: func(out ForgetOut) string { return out.Text },
+		Examples: []string{
+			"forget that",
+			"forget the conversation",
+			"clear our chat",
+			"start over",
+			"never mind that",
+			"forget everything we've talked about",
+			"let's start fresh",
+			"clear the conversation history",
+		},
+	}
+}
+
 // HelpIn has no fields.
 type HelpIn struct{}
 

@@ -212,6 +212,104 @@ func TestHelpListsTheEnabledRegistryAndDropsADisabledTool(t *testing.T) {
 	}
 }
 
+// TestForgetControlPhraseClearsPriorContextBeforeTheAgent is the pipeline-level
+// acceptance test: the Control phrase routes to assistant.forget, speaks the
+// confirmation, and the stale context is gone from the history the Agent reads.
+func TestForgetControlPhraseClearsPriorContextBeforeTheAgent(t *testing.T) {
+	reg := tool.NewRegistry(time.Second)
+	runner := newFakeRunner()
+	history := runner.History()
+	if err := assistant.NewModule().Register(reg, tool.Deps{
+		LastReply: lastreply.New(),
+		History:   history,
+	}); err != nil {
+		t.Fatalf("register assistant: %v", err)
+	}
+	p, _ := newComposedPipeline(t, reg, map[string]string{
+		"forget that": assistant.ForgetName,
+	}, pipeline.WithAgent(runner, nil), pipeline.WithHistory(history))
+
+	history.Add(agent.Turn{Utterance: "my favorite is the blue one", Reply: "Noted."})
+
+	reply := p.Handle(context.Background(), request(), "forget that")
+	if reply.Path != tool.PathControlPhrase || reply.Tool != assistant.ForgetName {
+		t.Fatalf("forget reply = %+v, want the forget Tool", reply)
+	}
+	if reply.Text != "Forgotten." {
+		t.Fatalf("forget text = %q, want Forgotten.", reply.Text)
+	}
+	if !reply.LocalOnly {
+		t.Error("forget reply is not Local-only")
+	}
+	assertNoStaleContext(t, history, "blue one")
+}
+
+// TestNonHistoryForgetDoesNotClear is the semantic-side regression: "forget my
+// shopping list" is about a list, not the conversation, so it must fall through
+// to the Agent path and leave the shared history intact. A genuine
+// conversation forget on the same router clears it.
+func TestNonHistoryForgetDoesNotClear(t *testing.T) {
+	reg := tool.NewRegistry(time.Second)
+	runner := newFakeRunner()
+	history := runner.History()
+	// Register only the forget Tool so the fake embedder only needs vectors for
+	// its Examples; the whole module would index repeat/help Examples too.
+	if err := tool.Add(reg, assistant.NewForget(history)); err != nil {
+		t.Fatalf("add forget: %v", err)
+	}
+
+	emb := &fakeEmbedder{vectors: map[string][]float32{
+		"forget that":                          {1, 0},
+		"forget the conversation":              {1, 0},
+		"clear our chat":                       {1, 0},
+		"start over":                           {1, 0},
+		"never mind that":                      {1, 0},
+		"forget everything we've talked about": {1, 0},
+		"let's start fresh":                    {1, 0},
+		"clear the conversation history":       {1, 0},
+		"forget my shopping list":              {0, 1},
+	}}
+	p, _ := newSemanticPipeline(t, reg, nil, emb,
+		pipeline.WithAgent(runner, nil), pipeline.WithHistory(history))
+
+	history.Add(agent.Turn{Utterance: "my favorite is the blue one", Reply: "Noted."})
+
+	other := p.Handle(context.Background(), request(), "forget my shopping list")
+	if other.Tool == assistant.ForgetName || other.Path == tool.PathFast {
+		t.Fatalf("non-history forget misrouted to the forget Tool: %+v", other)
+	}
+	if turns := history.Recent(); len(turns) != 1 || turns[0].Utterance != "my favorite is the blue one" {
+		t.Fatalf("history changed after a non-history forget: %+v", turns)
+	}
+
+	forgot := p.Handle(context.Background(), request(), "forget the conversation")
+	if forgot.Tool != assistant.ForgetName || forgot.Text != "Forgotten." {
+		t.Fatalf("forget reply = %+v, want the forget Tool confirmation", forgot)
+	}
+	assertNoStaleContext(t, history, "blue one")
+}
+
+// assertNoStaleContext checks both the stored turns and the prompt the next
+// Agent request would build, since forgetting is only useful if stale context
+// no longer reaches the model.
+func assertNoStaleContext(t *testing.T, history *agent.History, stale string) {
+	t.Helper()
+	turns := history.Recent()
+	for _, turn := range turns {
+		if strings.Contains(turn.Utterance, stale) || strings.Contains(turn.Reply, stale) {
+			t.Errorf("stale turn survived forget: %+v", turn)
+		}
+	}
+	messages := agent.NewPromptBuilder("").Messages("anything else", turns)
+	encoded, err := json.Marshal(messages)
+	if err != nil {
+		t.Fatalf("marshal prompt: %v", err)
+	}
+	if strings.Contains(string(encoded), stale) {
+		t.Errorf("next Agent prompt still carries stale context %q: %s", stale, encoded)
+	}
+}
+
 func TestStatusSummarizesTheSharedHealthSeam(t *testing.T) {
 	reg := tool.NewRegistry(time.Second)
 	if err := system.NewModule().Register(reg, tool.Deps{Status: func(context.Context) tool.StatusReport {

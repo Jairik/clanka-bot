@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/agent"
 	"github.com/Jairik/clanka-bot/assistant/internal/lastreply"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
@@ -67,6 +68,69 @@ func TestRepeatWithoutAPreviousReplyFailsClearly(t *testing.T) {
 		t.Fatal("Execute succeeded with no previous reply")
 	}
 	if got := tool.FailureMessage(err); got != "I haven't said anything yet." {
+		t.Fatalf("FailureMessage = %q", got)
+	}
+}
+
+// TestForgetClearsHistoryAndKeepsLastReply covers the three core promises of
+// assistant.forget: the module wiring passes the shared history to the Tool, a
+// call clears that history, and the spoken confirmation says what happened.
+// The last-reply store is deliberately left alone so "say that again" still
+// works after a forget.
+func TestForgetClearsHistoryAndKeepsLastReply(t *testing.T) {
+	history := agent.NewHistory(10, 5*time.Minute, nil)
+	history.Add(agent.Turn{Utterance: "remember the blue one", Reply: "Okay."})
+	history.Add(agent.Turn{Utterance: "and the red one", Reply: "Got it."})
+
+	replies := lastreply.New()
+	replies.Record(lastreply.Reply{Text: "It's 3:04 PM.", Tool: "time.now", Path: "fast_path"})
+
+	reg := newRegistry(t)
+	if err := assistant.NewModule().Register(reg, tool.Deps{LastReply: replies, History: history}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+
+	out, ok := execute(t, reg, assistant.ForgetName).(assistant.ForgetOut)
+	if !ok {
+		t.Fatal("result is not assistant.ForgetOut")
+	}
+	if out.Text != "Forgotten." {
+		t.Fatalf("ForgetOut.Text = %q, want Forgotten.", out.Text)
+	}
+	if spoken, ok := reg.Speak(assistant.ForgetName, out); !ok || spoken != "Forgotten." {
+		t.Fatalf("Speak = %q/%v, want the spoken confirmation Forgotten.", spoken, ok)
+	}
+	if turns := history.Recent(); len(turns) != 0 {
+		t.Fatalf("history after forget = %+v, want cleared", turns)
+	}
+	if reply, ok := replies.Last(); !ok || reply.Text != "It's 3:04 PM." {
+		t.Fatalf("last reply after forget = %+v/%v, want it untouched", reply, ok)
+	}
+
+	info, _ := reg.Info(assistant.ForgetName)
+	if info.Permission != tool.PermissionAct {
+		t.Errorf("Permission = %q, want act", info.Permission)
+	}
+	if !info.LocalOnly {
+		t.Error("assistant.forget is not Local-only; its result could leave the Pi")
+	}
+	if info.AgentOnly {
+		t.Error("assistant.forget is AgentOnly; it must run on the Fast path without a provider")
+	}
+}
+
+// TestForgetWithoutHistoryFailsClearly is the nil-seam regression: a caller
+// with no shared history gets a spoken failure, never a panic.
+func TestForgetWithoutHistoryFailsClearly(t *testing.T) {
+	reg := newRegistry(t)
+	if err := tool.Add(reg, assistant.NewForget(nil)); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	_, err := reg.Execute(context.Background(), assistant.ForgetName, nil)
+	if err == nil {
+		t.Fatal("Execute succeeded with no history")
+	}
+	if got := tool.FailureMessage(err); got != "I can't forget anything right now." {
 		t.Fatalf("FailureMessage = %q", got)
 	}
 }

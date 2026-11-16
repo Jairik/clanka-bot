@@ -37,6 +37,11 @@ const (
 	// listPageSize is the per_page value for the list endpoints. The result
 	// count is capped at maxResultLimit, so this is also a prompt-size bound.
 	listPageSize = 10
+	// checksPageSize is the single page of check runs the checks Tool asks for.
+	// The spoken summary is bounded, so the Tool never paginates this endpoint.
+	checksPageSize = 20
+	// maxNamedFailures is how many failing check run names the Tool speaks.
+	maxNamedFailures = 3
 
 	// Bounds for the text copied into a Tool result. GitHub text is untrusted
 	// facts for the model, and a short bound keeps one item from swallowing the
@@ -72,6 +77,9 @@ var (
 	// stored token is not classic or lacks the notifications scope, and the Tool
 	// says exactly that.
 	errNotificationsClassicOnly = errors.New("github: notifications endpoints require a classic personal access token")
+	// errNoAuthoredPR means the "my latest PR" ref found no open pull request
+	// authored by the token owner in the selected repository.
+	errNoAuthoredPR = errors.New("github: no open pull request authored by the token owner")
 )
 
 // apiError is one non-2xx response. It deliberately carries only the status and
@@ -464,6 +472,120 @@ func (c *client) unreadNotifications(ctx context.Context, limit int) ([]Notifica
 		notifications = []Notification{}
 	}
 	return notifications, nil
+}
+
+// checkRun is the subset of one GitHub check run the checks Tool needs: its
+// name plus the two fields that decide whether it passed. Everything else in
+// the response is deliberately ignored, so no private body reaches a result.
+type checkRun struct {
+	Name       string `json:"name"`
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
+}
+
+// checkRuns asks for ONE page of check runs on one ref. It never paginates: a
+// spoken status is a bounded summary, not a complete CI history. The route and
+// the fine-grained token are the same ones the other read Tools use.
+func (c *client) checkRuns(ctx context.Context, repo, ref string) (int, []checkRun, error) {
+	owner, name, ok := splitRepo(repo)
+	if !ok {
+		return 0, nil, fmt.Errorf("github: invalid repository %q", repo)
+	}
+	query := url.Values{}
+	query.Set("per_page", strconv.Itoa(checksPageSize))
+	path := "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(name) +
+		"/commits/" + url.PathEscape(ref) + "/check-runs"
+	var response struct {
+		TotalCount int        `json:"total_count"`
+		CheckRuns  []checkRun `json:"check_runs"`
+	}
+	if _, err := c.do(ctx, c.token, http.MethodGet, path, query, nil, &response); err != nil {
+		return 0, nil, checksError(err)
+	}
+	return response.TotalCount, response.CheckRuns, nil
+}
+
+// defaultBranch reads the repository's default branch. One read-only request
+// lets an omitted ref mean "the repo's default branch" without a branch name
+// hardcoded in the Tool.
+func (c *client) defaultBranch(ctx context.Context, repo string) (string, error) {
+	owner, name, ok := splitRepo(repo)
+	if !ok {
+		return "", fmt.Errorf("github: invalid repository %q", repo)
+	}
+	path := "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(name)
+	var response struct {
+		DefaultBranch string `json:"default_branch"`
+	}
+	if _, err := c.do(ctx, c.token, http.MethodGet, path, nil, nil, &response); err != nil {
+		return "", checksError(err)
+	}
+	branch := strings.TrimSpace(response.DefaultBranch)
+	if branch == "" {
+		return "", errors.New("github: repository returned no default branch")
+	}
+	return branch, nil
+}
+
+// latestAuthoredPR resolves "my latest PR" to the newest open pull request
+// authored by @me in one repository. The search is bounded to one item and the
+// pull request's head SHA is read in a second bounded request, so the following
+// check-runs call is pinned to an exact commit rather than a movable branch.
+func (c *client) latestAuthoredPR(ctx context.Context, repo string) (int, string, error) {
+	owner, name, ok := splitRepo(repo)
+	if !ok {
+		return 0, "", fmt.Errorf("github: invalid repository %q", repo)
+	}
+	query := url.Values{}
+	query.Set("q", "is:open is:pr author:@me repo:"+repo)
+	query.Set("sort", "updated")
+	query.Set("order", "desc")
+	query.Set("per_page", "1")
+	var search struct {
+		Items []struct {
+			Number int `json:"number"`
+		} `json:"items"`
+	}
+	if _, err := c.do(ctx, c.token, http.MethodGet, "/search/issues", query, nil, &search); err != nil {
+		return 0, "", checksError(err)
+	}
+	if len(search.Items) == 0 || search.Items[0].Number == 0 {
+		return 0, "", errNoAuthoredPR
+	}
+	number := search.Items[0].Number
+	path := "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(name) + "/pulls/" + strconv.Itoa(number)
+	var pull struct {
+		Head struct {
+			SHA string `json:"sha"`
+		} `json:"head"`
+	}
+	if _, err := c.do(ctx, c.token, http.MethodGet, path, nil, nil, &pull); err != nil {
+		return 0, "", checksError(err)
+	}
+	sha := strings.TrimSpace(pull.Head.SHA)
+	if sha == "" {
+		return 0, "", errNoAuthoredPR
+	}
+	return number, sha, nil
+}
+
+// checksError maps a checks/read response to the shared safe sentinels, so the
+// Tool's spoken hint names the missing token permission rather than a raw body.
+func checksError(err error) error {
+	var apiErr *apiError
+	if errors.As(err, &apiErr) {
+		switch {
+		case apiErr.RateLimited:
+			return mapped(errRateLimited, apiErr.Status)
+		case apiErr.Status == http.StatusUnauthorized:
+			return mapped(errTokenRejected, apiErr.Status)
+		case apiErr.Status == http.StatusForbidden:
+			return mapped(errForbidden, apiErr.Status)
+		case apiErr.Status == http.StatusNotFound:
+			return mapped(errNotFound, apiErr.Status)
+		}
+	}
+	return err
 }
 
 // authError maps GET /user's failures for the health check.

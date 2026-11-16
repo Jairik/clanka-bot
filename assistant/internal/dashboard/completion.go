@@ -56,6 +56,10 @@ func (h *Handler) alertCreate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Audio must be at most 2048 characters", 400)
 		return
 	}
+	if len(label) > 200 {
+		http.Error(w, "Label must be at most 200 characters", 400)
+		return
+	}
 	var err error
 	switch r.FormValue("kind") {
 	case "timer":

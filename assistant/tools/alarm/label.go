@@ -85,10 +85,9 @@ func cleanAlarmLabel(raw string) string {
 	if !strings.ContainsAny(label, "abcdefghijklmnopqrstuvwxyz") {
 		return ""
 	}
-	// A spoken label is a name, not a sentence; keep it short.
-	if len(label) > 40 {
-		label = label[:40]
-	}
+	// A spoken label is a name, not a sentence; keep it short and never split
+	// a multi-byte rune.
+	label = parse.CapLabel(label, parse.LabelCap())
 	return strings.TrimSpace(label)
 }
 

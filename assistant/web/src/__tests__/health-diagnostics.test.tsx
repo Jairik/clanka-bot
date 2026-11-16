@@ -18,6 +18,7 @@ const health: HealthView = {
   Location: { Name: "pi", Status: "ok", StatusLabel: "OK", Detail: "" },
   Modules: [],
   Spotify: [],
+  Routing: { Name: "Semantic routing", Status: "not-configured", StatusLabel: "not configured", Detail: "Semantic routing is not configured in this deployment." },
   DiagnosticsURL: "/api/ui/diagnostics",
 };
 

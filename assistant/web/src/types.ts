@@ -125,6 +125,11 @@ export type HealthView = {
   // Spotify keeps Connect pairing and Web API auth separate; they are
   // different grants and one can be healthy while the other is not.
   Spotify: Check[] | null;
+  // Routing reports the semantic index's in-memory build state beside the
+  // service rows. It is deliberately not part of internal/status: a degraded
+  // Fast path must not fail StatusReport.OK() or become a third probe of the
+  // same state (the live sampler and system.status Tool share that report).
+  Routing: Check;
   // DiagnosticsURL is the read-only support download the button on this page
   // requests. It is additive: an older UI ignores it.
   DiagnosticsURL: string;

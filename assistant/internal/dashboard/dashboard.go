@@ -58,6 +58,12 @@ type Options struct {
 	// Status optionally supplies the shared bounded snapshot main also gives
 	// the system.status Tool. When nil, New builds one from the fields above.
 	Status *status.Source
+	// ExamplesState reports the semantic router's in-memory build state for the
+	// Health page: indexed Tool count, last rebuild error and last attempt time.
+	// main passes the wording manager's accessor, so no second embed probe is
+	// added and no Tool output reaches the page. Nil shows the row as not
+	// configured.
+	ExamplesState func() (tools int, lastErr error, lastAttempt time.Time)
 	// WakeModels optionally shares the wakeword service's cached describe with
 	// the Compose wakeword check in Services, so a Health render describes the
 	// service once. When nil, New creates a private cache for this handler.
@@ -184,6 +190,7 @@ type Handler struct {
 	owner          string
 	logger         *slog.Logger
 	healthStatus   *status.Source
+	examplesState  func() (tools int, lastErr error, lastAttempt time.Time)
 	settings       *settings.Service
 	tools          *toolpolicy.Policy
 	secrets        *secrets.Service
@@ -305,6 +312,7 @@ func New(opts Options) (*Handler, error) {
 		owner:          owner,
 		logger:         logger,
 		healthStatus:   healthStatus,
+		examplesState:  opts.ExamplesState,
 		settings:       opts.Settings,
 		tools:          opts.ToolPolicy,
 		secrets:        opts.Secrets,

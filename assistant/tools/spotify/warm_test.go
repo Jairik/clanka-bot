@@ -285,6 +285,74 @@ func TestModuleStartWarmsTheSharedNameMatcher(t *testing.T) {
 	}
 }
 
+// TestRuntimeConnectLoadsOnRequestAndWarms is the acceptance test for the
+// post-Connect state (#376): the refresh token appears after boot, so nobody
+// started the cache and the first playlist request loads it with a direct
+// Refresh. That refresh must warm off the request path, and a later lookup must
+// embed only the query instead of a cold candidate batch.
+func TestRuntimeConnectLoadsOnRequestAndWarms(t *testing.T) {
+	var pages atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"access_token":"access-token","token_type":"Bearer","expires_in":3600}`))
+		case "/me/playlists":
+			pages.Add(1)
+			_, _ = w.Write([]byte(warmTwoLists))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	cfg := spotify.DefaultConfig()
+	cfg.ClientID = "0123456789abcdef0123456789abcdef"
+	cfg.RedirectURI = "http://127.0.0.1:8082/spotify/callback"
+	cfg.APIBaseURL = srv.URL
+	cfg.TokenURL = srv.URL + "/token"
+
+	embedder := &warmEmbedder{}
+	matcher := namematch.New(embedder, namematch.Config{Threshold: func() float64 { return 0.5 }})
+	module := NewModule()
+	module.BindConfig(cfg)
+	deps := tool.Deps{Secrets: fakeWarmStore{token: "refresh-token"}, Names: matcher}
+	if err := module.Register(tool.NewRegistry(time.Second), deps); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	// Deliberately no Start: this is the runtime-Connect path, so the first
+	// request is what loads the cache.
+	defer module.Close()
+
+	// The first request drives the lazy Refresh. An exact name short-circuits
+	// the matcher, so the warm is the only embed in play.
+	pl, err := module.service.resolvePlaylist(context.Background(), "Running")
+	if err != nil || pl.Name != "Running" {
+		t.Fatalf("first resolvePlaylist = %+v, %v, want Running", pl, err)
+	}
+	if !module.cache.Loaded() {
+		t.Fatal("the request did not load the playlist cache")
+	}
+	if pages.Load() == 0 {
+		t.Fatal("the request never called /me/playlists")
+	}
+
+	// The warm lands within a few seconds, off the request path.
+	waitFor(t, "the warm after a request-driven refresh", func() bool { return embedder.calls() == 1 })
+	if got := embedder.batch(0); !sameBatch(got, []string{"chill vibes", "running"}) {
+		t.Fatalf("warm batch = %v, want the loaded names normalised", got)
+	}
+
+	// With the library warm, a later lookup embeds only the query.
+	pl, err = module.service.resolvePlaylist(context.Background(), "my running tunes")
+	if err != nil || pl.Name != "Running" {
+		t.Fatalf("lookup after the warm = %+v, %v, want Running", pl, err)
+	}
+	if got := embedder.batch(1); !sameBatch(got, []string{"running tunes"}) {
+		t.Fatalf("lookup batch = %v, want only the query", got)
+	}
+}
+
 // TestWarmFailureDoesNotFailTheRefresh proves a broken embed service is
 // invisible to the refresh: the names still load, nothing is spoken or logged
 // as a refresh failure, and the first lookup still resolves from a cold batch

@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -33,6 +34,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/internal/voicelib"
 	"github.com/Jairik/clanka-bot/assistant/internal/wording"
+	"github.com/Jairik/clanka-bot/assistant/tools"
 	"github.com/Jairik/clanka-bot/assistant/tools/alarm"
 	"github.com/Jairik/clanka-bot/assistant/tools/assistant"
 	"github.com/Jairik/clanka-bot/assistant/tools/audiocontrol"
@@ -268,6 +270,187 @@ func TestRoutingEvalFixtureShape(t *testing.T) {
 		if strings.TrimSpace(utterance) == "" {
 			t.Errorf("compound %d is empty", i)
 		}
+	}
+}
+
+// productionRoutingRegistry wires the shipped Tool modules the same way the
+// conformance suite does: one production module set, nil config sections and
+// harmless test seams. No handler runs and nothing leaves the process, so the
+// coverage gate below is an offline assertion, not a quality measurement.
+func productionRoutingRegistry(t *testing.T) *tool.Registry {
+	t.Helper()
+	reg := tool.NewRegistry(5 * time.Second)
+	deps := tool.Deps{
+		Clock:  func() time.Time { return time.Date(2026, 11, 11, 15, 4, 0, 0, time.UTC) },
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Location: func() (location.Location, bool) {
+			return location.Location{City: "Berlin", Region: "Berlin", Timezone: "Europe/Berlin"}, true
+		},
+		Speaker: guardSpeaker{},
+		Audio:   &evalAudio{},
+		Secrets: evalNotifySecrets{},
+	}
+	if err := tools.NewSet().RegisterAll(reg, deps, nil); err != nil {
+		t.Fatalf("register production Tool modules: %v", err)
+	}
+	return reg
+}
+
+// guardSpeaker drops alert speech; the coverage gate only reads metadata.
+type guardSpeaker struct{}
+
+func (guardSpeaker) SayText(context.Context, string) error { return nil }
+
+// routedFastPathTools is the Fast-path surface the fixture must measure:
+// registered, enabled, eligible by the pipeline's real rule and carrying at
+// least one Example to index. Agent-only, confirm, no-Speak and Example-less
+// Tools are deliberately not required.
+func routedFastPathTools(reg *tool.Registry) []string {
+	var names []string
+	for _, name := range reg.Names() {
+		info, ok := reg.Info(name)
+		if !ok {
+			continue
+		}
+		if info.Enabled && pipeline.CanUseFastPath(info) && len(info.Examples) > 0 {
+			names = append(names, name)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+// routingCoverage is the difference between the routed surface and the
+// measurement list. missing names a real Fast-path Tool with no fixture
+// entry; stale names a list entry that is not a registered Fast-path Tool.
+type routingCoverage struct {
+	missing []string
+	stale   []string
+}
+
+// checkRoutingCoverage is pure so the regression test can feed it synthetic
+// surfaces without registering a fake Tool in the production registry.
+func checkRoutingCoverage(routed, listed []string) routingCoverage {
+	var coverage routingCoverage
+	for _, name := range routed {
+		if !contains(listed, name) {
+			coverage.missing = append(coverage.missing, name)
+		}
+	}
+	for _, name := range listed {
+		if !contains(routed, name) {
+			coverage.stale = append(coverage.stale, name)
+		}
+	}
+	sort.Strings(coverage.missing)
+	sort.Strings(coverage.stale)
+	return coverage
+}
+
+// routingEvalStepSix is the step-6 instruction from docs/agents/adding-a-tool.md,
+// printed with the Tool name so a missing entry cannot be fixed by guessed data.
+const routingEvalStepSix = "add its canonical name to routingEvalTools in assistant/internal/pipeline/routing_eval_test.go, add 20+ positives under positives:<tool> in assistant/internal/pipeline/testdata/routing_eval.yaml, and add the opposite-side negatives (step 6 of docs/agents/adding-a-tool.md)"
+
+func routingCoverageProblems(coverage routingCoverage) []string {
+	var problems []string
+	if len(coverage.missing) > 0 {
+		problems = append(problems, fmt.Sprintf("registered Fast-path Tool(s) missing from routingEvalTools: %s; %s", strings.Join(coverage.missing, ", "), routingEvalStepSix))
+	}
+	if len(coverage.stale) > 0 {
+		problems = append(problems, fmt.Sprintf("routingEvalTools name(s) that are not registered Fast-path Tools: %s; remove or correct them in assistant/internal/pipeline/routing_eval_test.go or register the Tool", strings.Join(coverage.stale, ", ")))
+	}
+	return problems
+}
+
+// TestRoutingEvalCoversRegisteredFastPathTools is the offline gate: a new
+// Fast-path Tool cannot silently skip the eval. It compares the shipped routed
+// surface with routingEvalTools and names every gap; no embed service is
+// needed, so the normal suite always runs it.
+func TestRoutingEvalCoversRegisteredFastPathTools(t *testing.T) {
+	reg := productionRoutingRegistry(t)
+	coverage := checkRoutingCoverage(routedFastPathTools(reg), routingEvalTools)
+	for _, problem := range routingCoverageProblems(coverage) {
+		t.Error(problem)
+	}
+}
+
+// TestRoutingEvalCoverageGuard proves the gate fires for a missing Fast-path
+// Tool, stays quiet for the current fixture and ignores Tools that are not
+// Fast-path eligible (Agent-only, confirm, no Speak or no Examples).
+func TestRoutingEvalCoverageGuard(t *testing.T) {
+	t.Run("current fixture passes", func(t *testing.T) {
+		reg := productionRoutingRegistry(t)
+		coverage := checkRoutingCoverage(routedFastPathTools(reg), routingEvalTools)
+		if problems := routingCoverageProblems(coverage); len(problems) != 0 {
+			t.Fatalf("current fixture should be clean: %s", strings.Join(problems, "; "))
+		}
+	})
+
+	t.Run("missing Fast-path Tool is named", func(t *testing.T) {
+		reg := productionRoutingRegistry(t)
+		const missing = "guard.missing_tool"
+		addGuardTool(t, reg, missing, tool.PermissionRead, true, false, []string{"run the guard probe"})
+		// These three are registered but cannot be routed by meaning, so they
+		// must not show up as missing.
+		addGuardTool(t, reg, "guard.agent_only", tool.PermissionRead, true, true, nil)
+		addGuardTool(t, reg, "guard.confirm", tool.PermissionConfirm, true, false, []string{"confirm the guard probe"})
+		addGuardTool(t, reg, "guard.no_speak", tool.PermissionRead, false, false, []string{"describe the guard probe"})
+
+		coverage := checkRoutingCoverage(routedFastPathTools(reg), routingEvalTools)
+		if got, want := strings.Join(coverage.missing, ","), missing; got != want {
+			t.Fatalf("missing = %q, want %q (excluded Tools must not be required)", got, want)
+		}
+		if len(coverage.stale) != 0 {
+			t.Fatalf("stale = %q, want none", coverage.stale)
+		}
+		problems := routingCoverageProblems(coverage)
+		if len(problems) != 1 {
+			t.Fatalf("problems = %q, want one", problems)
+		}
+		for _, want := range []string{missing, "routing_eval_test.go", "routing_eval.yaml", "20+"} {
+			if !strings.Contains(problems[0], want) {
+				t.Errorf("problem %q does not name %q", problems[0], want)
+			}
+		}
+	})
+
+	t.Run("stale fixture name is named", func(t *testing.T) {
+		reg := productionRoutingRegistry(t)
+		const stale = "guard.stale_name"
+		listed := append(append([]string(nil), routingEvalTools...), stale)
+		coverage := checkRoutingCoverage(routedFastPathTools(reg), listed)
+		if got, want := strings.Join(coverage.stale, ","), stale; got != want {
+			t.Fatalf("stale = %q, want %q", got, want)
+		}
+		if len(coverage.missing) != 0 {
+			t.Fatalf("missing = %q, want none", coverage.missing)
+		}
+		if problems := routingCoverageProblems(coverage); len(problems) != 1 || !strings.Contains(problems[0], stale) || !strings.Contains(problems[0], "routing_eval_test.go") {
+			t.Fatalf("problems = %q, want one naming %s and the file to edit", problems, stale)
+		}
+	})
+}
+
+// addGuardTool registers a synthetic Tool for the coverage regression test.
+// An empty In keeps it Fast-path eligible when speak and Examples are set.
+func addGuardTool(t *testing.T, reg *tool.Registry, name string, permission tool.Permission, speak, agentOnly bool, examples []string) {
+	t.Helper()
+	tl := tool.Tool[struct{}, struct{}]{
+		Name:        name,
+		Description: "Coverage guard probe.",
+		Permission:  permission,
+		LocalOnly:   tool.LocalOnlyNo,
+		AgentOnly:   agentOnly,
+		Examples:    examples,
+		Handler: func(context.Context, struct{}) (struct{}, error) {
+			return struct{}{}, nil
+		},
+	}
+	if speak {
+		tl.Speak = func(struct{}) string { return "probe" }
+	}
+	if err := tool.Add(reg, tl); err != nil {
+		t.Fatalf("add guard Tool %s: %v", name, err)
 	}
 }
 

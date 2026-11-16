@@ -120,6 +120,8 @@ jobs:
         run: pip install "wyoming==1.11.0" numpy pytest
       - name: Test
         run: python -m pytest tts/tests -q
+      - name: STT test
+        run: python -m pytest stt/tests -q
 
   routing-eval:
     name: Routing eval (real MiniLM)

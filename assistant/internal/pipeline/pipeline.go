@@ -588,10 +588,11 @@ func (p *Pipeline) callTool(ctx context.Context, req tool.Request, transcript, n
 		})
 		return message, err.Error(), nil, info.LocalOnly
 	}
-	// One result can carry different provenance from its Tool's static flag:
-	// assistant.repeat is Local-only so the Agent never sees it, yet the text
-	// it repeats keeps the flag that text had when it was spoken.
-	localOnly := resultLocalOnly(info.LocalOnly, result)
+	// A declared Provenance hook can give one replayed text different provenance
+	// from its Tool's static flag: assistant.repeat is Local-only so the Agent
+	// never sees it, yet the text it repeats keeps the flag it had when spoken.
+	// Only a Tool that declared the hook at registration can change the flag.
+	localOnly := p.registry.Provenance(name, result)
 	spoken, ok := p.registry.Speak(name, result)
 	if !ok {
 		err := fmt.Errorf("tool %q has no Speak renderer", name)
@@ -609,25 +610,6 @@ func (p *Pipeline) callTool(ctx context.Context, req tool.Request, transcript, n
 	})
 	p.recordToolTurn(transcript, spoken, name, result, localOnly)
 	return spoken, "", nil, localOnly
-}
-
-// resultProvenance is implemented by a Tool result that reports the Local-only
-// provenance of its own text. The Tool's static LocalOnly declaration still
-// decides Agent-path visibility and registration; this hook only overrides the
-// provenance of the text one call produced.
-type resultProvenance interface {
-	LocalOnlyProvenance() (localOnly bool, ok bool)
-}
-
-// resultLocalOnly resolves one result's Local-only flag, falling back to the
-// Tool's static declaration when the result reports no provenance of its own.
-func resultLocalOnly(static bool, result any) bool {
-	if provenance, ok := result.(resultProvenance); ok {
-		if localOnly, known := provenance.LocalOnlyProvenance(); known {
-			return localOnly
-		}
-	}
-	return static
 }
 
 // recordToolTurn keeps a successful Fast path turn in the shared history,

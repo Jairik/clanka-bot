@@ -82,8 +82,8 @@ func TestRepeatKeepsTheLocalOnlyProvenance(t *testing.T) {
 	if !out.LocalOnly {
 		t.Fatal("RepeatOut.LocalOnly = false, want the recorded Local-only provenance")
 	}
-	if localOnly, known := out.LocalOnlyProvenance(); !known || !localOnly {
-		t.Fatalf("LocalOnlyProvenance() = %v/%v, want the recorded Local-only flag", localOnly, known)
+	if !reg.Provenance(assistant.RepeatName, out) {
+		t.Fatal("declared provenance = false, want the recorded Local-only flag")
 	}
 
 	info, _ := reg.Info(assistant.RepeatName)
@@ -106,8 +106,8 @@ func TestRepeatReportsTheRepeatedTextsProvenance(t *testing.T) {
 		t.Fatalf("Add: %v", err)
 	}
 	out := execute(t, reg, assistant.RepeatName).(assistant.RepeatOut)
-	if localOnly, known := out.LocalOnlyProvenance(); !known || localOnly {
-		t.Fatalf("LocalOnlyProvenance() = %v/%v, want public provenance", localOnly, known)
+	if reg.Provenance(assistant.RepeatName, out) {
+		t.Fatal("declared provenance = true, want public provenance for a public reply")
 	}
 	info, _ := reg.Info(assistant.RepeatName)
 	if !info.LocalOnly {

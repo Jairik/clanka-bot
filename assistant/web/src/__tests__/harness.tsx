@@ -14,6 +14,7 @@ export const session = (over: Partial<Session> = {}): Session => ({
   Activity: true,
   CanSpeak: true,
   Speak: false,
+  CanPlayReplies: true,
   APIVersion: API_VERSION,
   ...over,
 });

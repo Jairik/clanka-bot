@@ -7,6 +7,7 @@ import { getJSON, navigate, useQueryParam } from "../api";
 import { latestDelta, useLive, type LiveName } from "../events";
 import { Composer, Exchange, PendingExchange, fmtMS, isFailed, isTyped, parseMS, totalMS, useChat } from "../chat";
 import { DeferredRows, useDeferredQueue } from "../queued-actions";
+import { ReplyAudioProvider } from "../reply-audio";
 import { useSession } from "../shell";
 import type { AlertsView, HealthView, SecretsView, SpotifyView } from "../types";
 import { Dot, cn, Tip } from "../ui";
@@ -90,80 +91,82 @@ export function Home() {
   const name = Owner.split("@")[0];
 
   return (
-    <div className="flex h-full flex-col">
-      <div ref={scroller} onScroll={onScroll} data-testid="chat-scroller" className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto max-w-[1400px] px-4 pt-6 md:px-8 md:pt-10">
-          <div className="flex flex-wrap items-end justify-between gap-4">
-            <div>
-              <h1 className="font-serif text-3xl tracking-tight md:text-[34px]">
-                {greeting()} <span className="text-muted">{name}</span>
-              </h1>
-              <p className="mt-1 text-sm text-muted">here's a quick look at what clanka has been up to.</p>
+    <ReplyAudioProvider>
+      <div className="flex h-full flex-col">
+        <div ref={scroller} onScroll={onScroll} data-testid="chat-scroller" className="min-h-0 flex-1 overflow-y-auto">
+          <div className="mx-auto max-w-[1400px] px-4 pt-6 md:px-8 md:pt-10">
+            <div className="flex flex-wrap items-end justify-between gap-4">
+              <div>
+                <h1 className="font-serif text-3xl tracking-tight md:text-[34px]">
+                  {greeting()} <span className="text-muted">{name}</span>
+                </h1>
+                <p className="mt-1 text-sm text-muted">here's a quick look at what clanka has been up to.</p>
+              </div>
+              {/* Toggle buttons rather than Tabs: the two views share one page
+                  and there is no tab panel to point aria-controls at. */}
+              <ToggleButtonGroup
+                selectionMode="single"
+                disallowEmptySelection
+                selectedKeys={new Set([chat ? "chat" : "overview"])}
+                onSelectionChange={(keys) => setView(String([...keys][0]))}
+                aria-label="Home view"
+                className="border"
+              >
+                <ToggleButton id="overview" className="px-4">
+                  Overview
+                </ToggleButton>
+                <ToggleButton id="chat" className="px-4">
+                  Conversation
+                </ToggleButton>
+              </ToggleButtonGroup>
             </div>
-            {/* Toggle buttons rather than Tabs: the two views share one page
-                and there is no tab panel to point aria-controls at. */}
-            <ToggleButtonGroup
-              selectionMode="single"
-              disallowEmptySelection
-              selectedKeys={new Set([chat ? "chat" : "overview"])}
-              onSelectionChange={(keys) => setView(String([...keys][0]))}
-              aria-label="Home view"
-              className="border"
-            >
-              <ToggleButton id="overview" className="px-4">
-                Overview
-              </ToggleButton>
-              <ToggleButton id="chat" className="px-4">
-                Conversation
-              </ToggleButton>
-            </ToggleButtonGroup>
-          </div>
 
-          {chat ? (
-            <div className="mx-auto max-w-3xl space-y-6 py-8" aria-live="polite">
-              {requests.length === 0 && pending.length === 0 && (
-                <p className="py-10 text-center text-sm text-muted">Nothing yet. Ask something below, or talk to the Pi.</p>
-              )}
-              {requests.slice(-20).map((r) => (
-                <Exchange key={r.ID} r={r} />
-              ))}
-              {pending.map((p) => (
-                <PendingExchange key={p.id} p={p} />
-              ))}
-              <div ref={end} />
-            </div>
-          ) : (
-            <Overview />
+            {chat ? (
+              <div className="mx-auto max-w-3xl space-y-6 py-8" aria-live="polite">
+                {requests.length === 0 && pending.length === 0 && (
+                  <p className="py-10 text-center text-sm text-muted">Nothing yet. Ask something below, or talk to the Pi.</p>
+                )}
+                {requests.slice(-20).map((r) => (
+                  <Exchange key={r.ID} r={r} />
+                ))}
+                {pending.map((p) => (
+                  <PendingExchange key={p.id} p={p} />
+                ))}
+                <div ref={end} />
+              </div>
+            ) : (
+              <Overview />
+            )}
+          </div>
+        </div>
+
+        <div className="mx-auto w-full max-w-3xl shrink-0 px-3 pt-2 pb-3 md:px-4 md:pb-6">
+          {newReply && chat && (
+            <button
+              type="button"
+              onClick={jumpToLatest}
+              aria-label="Scroll to new reply"
+              className="new-reply-pill mx-auto mb-2 flex w-fit items-center gap-1.5 border bg-surface px-3 py-1.5 text-xs text-muted shadow-sm transition-colors hover:bg-surface-secondary hover:text-foreground"
+            >
+              <ArrowDown className="size-3.5" />
+              New reply
+            </button>
           )}
+          {!chat && <QuickActions onSent={() => setView("chat")} />}
+          <Composer
+            placeholder="Ask clanka to…"
+            onSent={() => setView("chat")}
+            toolbar={
+              <Tip>
+                <Button isIconOnly size="sm" variant="ghost" aria-label={chat ? "Show overview" : "Show conversation"} onPress={() => setView(chat ? "overview" : "chat")}>
+                  <History className="size-4" />
+                </Button>
+              </Tip>
+            }
+          />
         </div>
       </div>
-
-      <div className="mx-auto w-full max-w-3xl shrink-0 px-3 pt-2 pb-3 md:px-4 md:pb-6">
-        {newReply && chat && (
-          <button
-            type="button"
-            onClick={jumpToLatest}
-            aria-label="Scroll to new reply"
-            className="new-reply-pill mx-auto mb-2 flex w-fit items-center gap-1.5 border bg-surface px-3 py-1.5 text-xs text-muted shadow-sm transition-colors hover:bg-surface-secondary hover:text-foreground"
-          >
-            <ArrowDown className="size-3.5" />
-            New reply
-          </button>
-        )}
-        {!chat && <QuickActions onSent={() => setView("chat")} />}
-        <Composer
-          placeholder="Ask clanka to…"
-          onSent={() => setView("chat")}
-          toolbar={
-            <Tip>
-              <Button isIconOnly size="sm" variant="ghost" aria-label={chat ? "Show overview" : "Show conversation"} onPress={() => setView(chat ? "overview" : "chat")}>
-                <History className="size-4" />
-              </Button>
-            </Tip>
-          }
-        />
-      </div>
-    </div>
+    </ReplyAudioProvider>
   );
 }
 

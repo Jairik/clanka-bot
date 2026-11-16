@@ -474,6 +474,13 @@ func New(opts Options) (*Handler, error) {
 	// The wording preview returns bytes only: it never plays through the Pi and
 	// never changes the active voice, so it is an authenticated GET.
 	h.Handle("GET /settings/wording/preview", h.settingsWordingPreview)
+	// Reply audio is the chat's browser playback: one stored reply, resolved by
+	// id in the path, synthesized with the active voice and returned as WAV. It
+	// never plays through the Pi speaker, so it is a GET like the preview. The
+	// trailing-slash form answers an empty id with a 400 instead of falling
+	// through to the app document.
+	h.Handle("GET /reply/audio/{id}", h.replyAudio)
+	h.Handle("GET /reply/audio/", h.replyAudio)
 	// The Scheduled alerts page lists every active Timer, Alarm and Reminder,
 	// cancels one by its manager id, and edits the per-Alarm Ring overrides.
 	// Every write goes through Mutating for identity and same-origin.
@@ -592,6 +599,12 @@ type sessionView struct {
 	Activity bool
 	CanSpeak bool
 	Speak    bool
+	// CanPlayReplies reports whether the chat can synthesize a reply into the
+	// owner's browser: the Activity store holds the text and a TTS service can
+	// speak it. It is independent of CanSpeak (a Pi speaker): a deployment with
+	// no speaker at all can still play a reply here, and one with a speaker but
+	// no TTS cannot. The control follows this flag, never the Pi opt-in.
+	CanPlayReplies bool
 	// APIVersion is the view-shape contract this server serves. A UI built
 	// against a different value refuses to render instead of showing undefined
 	// fields; see internal/dashboard/version.go.
@@ -603,14 +616,15 @@ func (h *Handler) sessionInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.writeJSON(w, http.StatusOK, sessionView{
-		Owner:      h.owner,
-		Typed:      h.typed != nil,
-		Mic:        h.typed != nil && h.transcriber != nil,
-		Volume:     h.volume != nil,
-		Activity:   h.activity != nil,
-		CanSpeak:   h.spoken != nil && h.settings != nil,
-		Speak:      h.speaking(),
-		APIVersion: APIVersion,
+		Owner:          h.owner,
+		Typed:          h.typed != nil,
+		Mic:            h.typed != nil && h.transcriber != nil,
+		Volume:         h.volume != nil,
+		Activity:       h.activity != nil,
+		CanSpeak:       h.spoken != nil && h.settings != nil,
+		Speak:          h.speaking(),
+		CanPlayReplies: h.activity != nil && h.voices != nil && h.voicePreview != nil,
+		APIVersion:     APIVersion,
 	})
 }
 

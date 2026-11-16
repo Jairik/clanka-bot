@@ -483,3 +483,24 @@ func isDigits(s string) bool {
 	}
 	return true
 }
+
+// labelCap is the most runes a spoken timer/alarm label may hold. Truncating on
+// bytes would split a multi-byte rune, so callers cap with CapLabel instead of
+// slicing the string directly.
+const labelCap = 40
+
+// CapLabel trims label to at most n runes so a multi-byte rune is never split
+// mid-character. The result is also space-trimmed, matching the cleaner's prior
+// behaviour. Inputs already at or below n runes are unchanged.
+func CapLabel(label string, n int) string {
+	r := []rune(label)
+	if len(r) <= n {
+		return label
+	}
+	return strings.TrimSpace(string(r[:n]))
+}
+
+// LabelCap returns the maximum runes a spoken label may hold.
+func LabelCap() int {
+	return labelCap
+}

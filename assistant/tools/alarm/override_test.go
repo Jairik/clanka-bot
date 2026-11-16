@@ -280,9 +280,10 @@ func TestUpdateExtractsSelectorsAndOverrides(t *testing.T) {
 	if !reset.SoundReset || reset.Time != "07:00" {
 		t.Fatalf("reset = %+v, want a sound reset on 07:00", reset)
 	}
-	// An unsupported time change is not an override and must fall through.
-	if _, ok := reg.Extract(alarm.UpdateName, "change my 7 am alarm to 8 am"); ok {
-		t.Error("a time-only change extracted as alarm.update")
+	// A time-only change is now a supported retime of the selected Alarm.
+	retime := extract("change my 7 am alarm to 8 am")
+	if retime.Time != "07:00" || retime.NewTime != "08:00" {
+		t.Fatalf("retime = %+v, want the 07:00 selector and new time 08:00", retime)
 	}
 	// A plain change with no override is not an update.
 	if _, ok := reg.Extract(alarm.UpdateName, "change my 7 am alarm"); ok {

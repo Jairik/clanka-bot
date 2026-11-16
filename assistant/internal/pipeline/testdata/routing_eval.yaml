@@ -735,6 +735,38 @@ positives:
     - I'm up now, no more whispering
     - I'm awake, end the quiet please
     - I'm awake, quiet time is over
+  # Read-only queries about the current Quiet-hours state. They ask whether the
+  # house is quiet or do not disturb is on, never set a window or start a timed
+  # period, so they stay clear of quiet.set/off/dnd/awake. Added for #235.
+  # The phrasing avoids the exact "quiet hours off/set" and "do not disturb for
+  # <duration>" shapes: those collide with the write Tools below the 0.23 margin,
+  # and quiet.status is LocalOnlyYes so a fallen-through query could not be
+  # answered by the Agent either. Semantically equivalent wording is used
+  # instead.
+  quiet.status:
+    - am I in quiet hours now
+    - is my do not disturb active
+    - is the do not disturb mode enabled
+    - is quiet mode active
+    - is it quiet in the house
+    - when is the quiet period active
+    - are we currently quiet
+    - do my quiet hours cover the night
+    - is quiet mode on
+    - is the quiet mode on
+    - tell me if quiet mode is on
+    - is quiet mode engaged
+    - is the house quiet
+    - is it silent in the house
+    - are we quiet right now
+    - are we being quiet right now
+    - is quiet mode currently on
+    - tell me if the quiet mode is on
+    - is quiet mode turned on
+    - is the house quiet right now
+    - is it quiet in the room
+    - is quiet mode currently enabled
+    - is the quiet mode currently on
   assistant.repeat:
     # Repeat the last spoken reply, not the current utterance and not a
     # schedule's repeat rule.
@@ -1604,7 +1636,8 @@ negatives:
   - slow down the music
   - change the voice memo settings on my phone
   - speak after the tone
-  - what are my quiet hours
+  # #235: "what are my quiet hours" moved to positives:quiet.status; the
+  # assistant can now answer it, so it is no longer a fall-through negative.
   - why is my phone on do not disturb
   - do not disturb is enabled on my phone
   - sleep mode on my phone
@@ -1614,6 +1647,18 @@ negatives:
   - good night
   - how many hours until morning
   - set quiet hours
+  # Quiet/DND-shaped but about another device or an open question, not the
+  # assistant's Quiet hours: these must not reach quiet.status or its siblings
+  # (#235). The device qualifier ("on my phone", "on my laptop") keeps them off
+  # the Fast path; an open question about the concept is an Agent request.
+  - turn on do not disturb on my phone
+  - what does do not disturb do on an iphone
+  - my android is on do not disturb
+  - put my laptop on do not disturb
+  - is the do not disturb setting on my tablet
+  - explain what quiet hours means
+  - how do quiet hours work on android
+  - turn quiet hours on for my phone
   # Sleep-timer-shaped but not a music stop: questions and descriptions about
   # sleep timers must stay off the Fast path (spotify.pause keeps "stop the
   # music", timer.set keeps a plain timed Ring).

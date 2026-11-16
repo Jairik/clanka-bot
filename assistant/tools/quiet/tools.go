@@ -55,6 +55,31 @@ type AwakeOut struct {
 	DoNotDisturb bool `json:"do_not_disturb"`
 }
 
+// StatusIn has no arguments.
+type StatusIn struct{}
+
+// StatusOut reports the current Quiet-hours state without changing anything. It
+// reuses internal/quiet Status so the Fast path can answer a question the write
+// Tools never could.
+type StatusOut struct {
+	// Enabled is the daily-window switch.
+	Enabled bool `json:"enabled"`
+	// Start and End are the effective normalised clock strings.
+	Start string `json:"start"`
+	End   string `json:"end"`
+	// DNDUntil and AwakeUntil are the stored instants, localised to the user's
+	// timezone; zero when absent.
+	DNDUntil time.Time `json:"dnd_until"`
+	AwakeUntil time.Time `json:"awake_until"`
+	// Volume is the absolute quiet volume percent.
+	Volume int `json:"volume"`
+	// InWindow reports that the wall-clock instant falls inside the daily
+	// window, even when Awake is bypassing it.
+	InWindow bool `json:"in_window"`
+	// Reason names why Quiet is on or why the window is not holding.
+	Reason string `json:"reason"`
+}
+
 // NewSet builds quiet.set. It writes the same overrides the Dashboard edits.
 func NewSet(service *quietcore.Service) tool.Tool[SetIn, SetOut] {
 	return tool.Tool[SetIn, SetOut]{
@@ -265,6 +290,63 @@ func NewAwake(service *quietcore.Service) tool.Tool[AwakeIn, AwakeOut] {
 			"I'm awake, quiet time is over",
 		},
 		Extract: extractAwake,
+	}
+}
+
+// NewStatus builds quiet.status. It reads the live Quiet state and speaks the
+// current condition: off, the daily window, or a timed do-not-disturb period.
+// It takes no arguments and never writes, so it is a pure read.
+func NewStatus(service *quietcore.Service) tool.Tool[StatusIn, StatusOut] {
+	return tool.Tool[StatusIn, StatusOut]{
+		Name:        StatusName,
+		Description: "Report the current Quiet hours state: whether quiet hours or do not disturb are on, and when they end.",
+		Permission:  tool.PermissionRead,
+		// Quiet hours are local-only: the window and volume stay on the Pi.
+		LocalOnly: tool.LocalOnlyYes,
+		Handler: func(ctx context.Context, _ StatusIn) (StatusOut, error) {
+			if service == nil {
+				return StatusOut{}, &tool.ToolError{Say: "Quiet hours are not available."}
+			}
+			status := service.Status()
+			location := service.Location()
+			return StatusOut{
+				Enabled:    status.Enabled,
+				Start:      status.Start,
+				End:        status.End,
+				DNDUntil:   status.DNDUntil.In(location),
+				AwakeUntil: status.AwakeUntil.In(location),
+				Volume:     status.Volume,
+				InWindow:   status.InWindow,
+				Reason:     string(status.Reason),
+			}, nil
+		},
+		Speak: func(out StatusOut) string {
+			// A timed do-not-disturb period takes priority in the spoken reply.
+			if out.Reason == string(quietcore.ReasonDND) {
+				return "Do not disturb until " + quietcore.HumanClock(out.DNDUntil.Format("15:04")) + "."
+			}
+			if !out.Enabled {
+				return "Quiet hours are off."
+			}
+			if out.Reason == string(quietcore.ReasonWindow) {
+				return "It's quiet until " + quietcore.HumanClock(out.End) + ". Quiet hours run from " +
+					quietcore.HumanClock(out.Start) + " to " + quietcore.HumanClock(out.End) + "."
+			}
+			// Enabled but not currently quiet: outside the window, or the
+			// current window is bypassed by "I'm awake".
+			return "Quiet hours run from " + quietcore.HumanClock(out.Start) + " to " +
+				quietcore.HumanClock(out.End) + "; it's not quiet now."
+		},
+		Examples: []string{
+			"am I in quiet hours now",
+			"is my do not disturb active",
+			"is the do not disturb mode enabled",
+			"is quiet mode active",
+			"is it quiet in the house",
+			"when is the quiet period active",
+			"are we currently quiet",
+			"do my quiet hours cover the night",
+		},
 	}
 }
 

@@ -10,10 +10,11 @@ import (
 
 // Canonical Tool names.
 const (
-	SetName   = "quiet.set"
-	OffName   = "quiet.off"
-	DNDName   = "quiet.dnd"
-	AwakeName = "quiet.awake"
+	SetName    = "quiet.set"
+	OffName    = "quiet.off"
+	DNDName    = "quiet.dnd"
+	AwakeName  = "quiet.awake"
+	StatusName = "quiet.status"
 )
 
 // Module is the quiet Tool domain. The live window and volume are settings,
@@ -39,5 +40,8 @@ func (m *Module) Register(r *tool.Registry, deps tool.Deps) error {
 	if err := tool.Add(r, NewDND(service)); err != nil {
 		return err
 	}
-	return tool.Add(r, NewAwake(service))
+	if err := tool.Add(r, NewAwake(service)); err != nil {
+		return err
+	}
+	return tool.Add(r, NewStatus(service))
 }

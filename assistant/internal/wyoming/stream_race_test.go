@@ -107,14 +107,6 @@ func TestCloseIsRaceFreeWithConcurrentWrites(t *testing.T) {
 		}
 		raceWriteClose(t, func() error { return stream.Write([]byte{1, 2}) }, stream.Close)
 	})
-
-	t.Run("Stream", func(t *testing.T) {
-		stream, err := client.OpenStream(ctx, Voice{})
-		if err != nil {
-			t.Fatalf("OpenStream: %v", err)
-		}
-		raceWriteClose(t, func() error { return stream.SendText("one") }, stream.Close)
-	})
 }
 
 // TestCloseUnblocksPendingReads checks the other half of #261: the atomic swap
@@ -142,17 +134,6 @@ func TestCloseUnblocksPendingReads(t *testing.T) {
 		}
 		assertCloseUnblocksRead(t, func() error {
 			_, err := stream.Finish()
-			return err
-		}, stream.Close)
-	})
-
-	t.Run("Stream.Next", func(t *testing.T) {
-		stream, err := client.OpenStream(ctx, Voice{})
-		if err != nil {
-			t.Fatalf("OpenStream: %v", err)
-		}
-		assertCloseUnblocksRead(t, func() error {
-			_, err := stream.Next()
 			return err
 		}, stream.Close)
 	})

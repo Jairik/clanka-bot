@@ -132,16 +132,7 @@ func payloadOf(ev event) []byte {
 	return payload
 }
 
-// streamMode says whether the stream carries one synthesis or streamed text.
-type streamMode int
-
-const (
-	modeOnce streamMode = iota
-	modeText
-)
-
-// Stream is a synthesis in progress. Audio is available chunk by chunk. It is
-// safe for one goroutine to call Next while another calls SendText.
+// Stream is a one-shot synthesis in progress. Audio is available chunk by chunk.
 type Stream struct {
 	conn        net.Conn
 	reader      *bufio.Reader
@@ -149,7 +140,6 @@ type Stream struct {
 	stopContext func() bool
 	timeout     time.Duration
 	readTimeout time.Duration
-	mode        streamMode
 
 	// Format is the latest audio format announced by the service.
 	Format Format
@@ -167,7 +157,7 @@ func (c *Client) Synthesize(ctx context.Context, text string, voice Voice, opts 
 	if text == "" {
 		return nil, errors.New("wyoming: text is required")
 	}
-	s, err := c.open(ctx, modeOnce)
+	s, err := c.open(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -179,24 +169,6 @@ func (c *Client) Synthesize(ctx context.Context, text string, voice Voice, opts 
 		return nil, err
 	}
 	if err := s.awaitAudioStart(); err != nil {
-		s.Close()
-		return nil, err
-	}
-	return s, nil
-}
-
-// OpenStream starts a streaming synthesis. Call SendText as sentences are
-// ready, EndText when the text is complete, and Next for audio as it arrives.
-// The rate is fixed for the whole stream, like the voice.
-func (c *Client) OpenStream(ctx context.Context, voice Voice, opts ...SynthesisOption) (*Stream, error) {
-	s, err := c.open(ctx, modeText)
-	if err != nil {
-		return nil, err
-	}
-	data := map[string]any{}
-	addVoice(data, voice)
-	addRate(data, opts)
-	if err := s.write("synthesize-start", data); err != nil {
 		s.Close()
 		return nil, err
 	}
@@ -219,7 +191,7 @@ func addVoice(data map[string]any, voice Voice) {
 	}
 }
 
-func (c *Client) open(ctx context.Context, mode streamMode) (*Stream, error) {
+func (c *Client) open(ctx context.Context) (*Stream, error) {
 	conn, err := c.dial(ctx)
 	if err != nil {
 		return nil, err
@@ -230,24 +202,10 @@ func (c *Client) open(ctx context.Context, mode streamMode) (*Stream, error) {
 		ctx:         ctx,
 		timeout:     c.timeout,
 		readTimeout: c.readTimeout,
-		mode:        mode,
 	}
 	// Closing the connection on cancellation unblocks a pending read.
 	s.stopContext = context.AfterFunc(ctx, func() { _ = conn.Close() })
 	return s, nil
-}
-
-// SendText appends a text chunk to a streaming synthesis.
-func (s *Stream) SendText(text string) error {
-	if text == "" {
-		return nil
-	}
-	return s.write("synthesize-chunk", map[string]any{"text": text})
-}
-
-// EndText marks the end of a streaming synthesis's text.
-func (s *Stream) EndText() error {
-	return s.write("synthesize-stop", nil)
 }
 
 func (s *Stream) write(typ string, data map[string]any) error {
@@ -302,11 +260,6 @@ func (s *Stream) Next() ([]byte, error) {
 				return payload, nil
 			}
 		case "audio-stop":
-			// One-shot synthesis is done; a text stream may have more segments.
-			if s.mode == modeOnce {
-				return nil, io.EOF
-			}
-		case "synthesize-stopped":
 			return nil, io.EOF
 		case "error":
 			return nil, errorEvent(ev)

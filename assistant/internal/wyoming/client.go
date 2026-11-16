@@ -1,6 +1,6 @@
 // Package wyoming is a small client for the Wyoming voice protocol over TCP.
 // It speaks JSONL headers plus raw PCM payloads, and only the parts the
-// assistant needs: describe, one-shot synthesis and streaming synthesis.
+// assistant needs: describe and one-shot synthesis.
 package wyoming
 
 import (

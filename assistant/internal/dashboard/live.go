@@ -163,8 +163,9 @@ func (hub *liveHub) unsubscribe(client *liveClient) {
 	hub.mu.Unlock()
 }
 
-// sample runs one goroutine for every open stream. Each source has its own
-// ticker, no more frequent than the polling it replaces.
+// sample runs one goroutine for the whole hub, started on the first stream and
+// stopped when the last one leaves. Each source has its own ticker, no more
+// frequent than the polling it replaces.
 func (hub *liveHub) sample(ctx context.Context) {
 	if hub.handler == nil {
 		return

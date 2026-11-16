@@ -173,6 +173,39 @@ func TestLinkAllowsBlankRequiredWhenAlreadyStored(t *testing.T) {
 	}
 }
 
+func TestLinkPreservesSurroundingSpaces(t *testing.T) {
+	svc, secretSvc, _ := newFixture(t)
+	ctx := context.Background()
+
+	// A Monster password may legitimately begin or end with a space. Link must
+	// route the value through the same normalization as secrets.Set, keeping
+	// surrounding spaces and stripping only \r\n\t paste artifacts rather than
+	// trimming everything with strings.TrimSpace.
+	const padded = " s3cret "
+	if err := svc.Link(ctx, "monster", map[string]string{
+		"MONSTER_EMAIL":    "owner@example.com",
+		"MONSTER_PASSWORD": padded,
+	}); err != nil {
+		t.Fatalf("Link: %v", err)
+	}
+	if value, ok := secretSvc.Get("MONSTER_PASSWORD"); !ok || value != padded {
+		t.Fatalf("Get after Link = %q, %v; want %q", value, ok, padded)
+	}
+
+	// A trailing newline/tab is a paste artifact and is stripped while the
+	// leading/trailing spaces survive.
+	const pasted = " s3cret \r\n\t"
+	if err := svc.Link(ctx, "monster", map[string]string{
+		"MONSTER_EMAIL":    "owner@example.com",
+		"MONSTER_PASSWORD": pasted,
+	}); err != nil {
+		t.Fatalf("Link pasted: %v", err)
+	}
+	if value, ok := secretSvc.Get("MONSTER_PASSWORD"); !ok || value != padded {
+		t.Fatalf("Get after Link pasted = %q, %v; want %q", value, ok, padded)
+	}
+}
+
 func TestUnlinkLeavesEnvironmentValueActive(t *testing.T) {
 	t.Setenv("WEATHERAPI_API_KEY", "env-weather-key")
 	svc, _, _ := newFixture(t)

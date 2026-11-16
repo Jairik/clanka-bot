@@ -296,11 +296,18 @@ func (s *Service) Link(ctx context.Context, id string, values map[string]string)
 	}
 	sort.Strings(names)
 	for _, name := range names {
-		value := strings.TrimSpace(values[name])
-		if value == "" {
+		// Normalise the same way secrets.Set does: keep surrounding spaces,
+		// strip only \r\n\t paste artifacts, and skip a value that is blank
+		// once every whitespace run is ignored. Trimming with
+		// strings.TrimSpace here would silently alter a password whose edges
+		// are significant, defeating the verbatim contract of the Secrets
+		// page; secrets.Set applies the same policy, so the stored value is
+		// identical whether it is set from the page or from an integration.
+		norm := strings.Trim(values[name], "\r\n\t")
+		if strings.TrimSpace(norm) == "" {
 			continue
 		}
-		if _, err := s.secrets.Set(ctx, name, value); err != nil {
+		if _, err := s.secrets.Set(ctx, name, norm); err != nil {
 			return fmt.Errorf("integrations: save %s: %w", name, err)
 		}
 	}

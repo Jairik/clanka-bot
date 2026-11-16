@@ -300,6 +300,9 @@ check_service() {
 		fail "$svc: healthcheck needs a test command"
 	fi
 	check_health_urls "$svc" "$block"
+	if [[ "$svc" == "assistant" ]]; then
+		check_assistant_search_dependency "$block"
+	fi
 
 	if [[ -z "$context" ]]; then
 		return
@@ -316,6 +319,29 @@ check_service() {
 	case " $ML_SERVICES " in
 	*" $svc "*) check_weights_layer "$svc" "$dockerfile" ;;
 	esac
+}
+
+# The depends_on sub-block of a service (long form), one line per indented
+# entry. Stop at the next service-level or sibling key so later blocks are not
+# credited to depends_on.
+depends_on_block() {
+	awk '
+		/^    depends_on:[[:space:]]*(#.*)?$/ { in_dep=1; next }
+		in_dep && /^    [A-Za-z0-9_.-]+:/ { in_dep=0 }
+		in_dep { print }
+	' <<<"$1"
+}
+
+# web-search is an Agent-only, runtime-optional Tool (web.search). The runtime
+# already fails that Tool cleanly when SearXNG is down, so gating the assistant
+# on its health would block the whole stack on an optional service. A
+# copy-paste that reintroduces the dependency must fail the check.
+check_assistant_search_dependency() {
+	local block=$1 dep
+	dep="$(depends_on_block "$block")"
+	if grep -qE '^[[:space:]]*web-search[[:space:]]*(:|[[:space:]#])' <<<"$dep"; then
+		fail "assistant: web-search must not be a depends_on entry; it is an Agent-only, runtime-optional Tool (web.search) that fails cleanly when SearXNG is unhealthy. Drop it so an unhealthy SearXNG no longer blocks the assistant"
+	fi
 }
 
 main() {

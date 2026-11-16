@@ -175,6 +175,11 @@ services:
       - ${XDG_RUNTIME_DIR:-/run/user/1000}/pulse:/run/pulse:ro
       - ${HOME}/.config/pulse:/pulse-cookie:ro
     depends_on:
+      # embed stays a service_healthy dependency on purpose: semantic routing is
+      # a hard Fast-path requirement, so the assistant must not start without a
+      # working phrase index. (A documented Agent-only fallback when embed is
+      # down would be a separate product decision; the router falls through on
+      # an embed failure but the phrase index would be empty.)
       embed:
         condition: service_healthy
       tts:
@@ -183,8 +188,12 @@ services:
         condition: service_healthy
       stt:
         condition: service_healthy
-      web-search:
-        condition: service_healthy
+      # web-search is intentionally NOT a dependency. It backs the Agent-only
+      # web.search Tool, which the runtime is designed to tolerate: if SearXNG
+      # is down, times out, returns invalid JSON or an oversize body, the Tool
+      # fails cleanly and the Agent says it could not search. A service_healthy
+      # gate here would block the whole assistant (Fast path, timers, alarms
+      # and the Dashboard) from ever being created on an unhealthy SearXNG.
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
       interval: 10s

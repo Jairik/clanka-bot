@@ -561,6 +561,37 @@ test_real_compose_file_passes() {
 	assert_out_contains "the full eight-service stack is checked" "8 service(s)"
 }
 
+write_assistant_web_search_health_dep() {
+	mkdir -p "$FIXTURE/assistant"
+	printf 'FROM scratch\n' >"$FIXTURE/assistant/Dockerfile"
+	cat >"$FIXTURE/docker-compose.yml" <<'YAML'
+services:
+  assistant:
+    build: ./assistant
+    image: clanka/assistant:${GIT_SHA:-dev}
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 256
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+    depends_on:
+      web-search:
+        condition: service_healthy
+YAML
+}
+
+test_rejects_web_search_health_dependency() {
+	new_fixture
+	write_assistant_web_search_health_dep
+	run_check
+	assert_status 1 "assistant with a web-search health gate fails"
+	assert_out_contains "the reintroduced web-search dependency is named" "web-search must not be a depends_on"
+}
+
 run_test() {
 	printf '== %s\n' "$1"
 	"$1"
@@ -600,6 +631,7 @@ run_test test_rejects_unclassified_commented_service
 run_test test_list_parsing_stops_at_other_keys
 run_test test_requires_no_new_privileges_on_soloist
 run_test test_real_compose_file_passes
+run_test test_rejects_web_search_health_dependency
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

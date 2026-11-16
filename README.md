@@ -15,8 +15,15 @@ the same Pulse sink as the Assistant's speech (ADR-0004).
 
 ```sh
 cp .env.example .env
+mkdir -p exports
 docker compose up --build
 ```
+
+`exports/` holds the voice-sample bundles the Dashboard writes; creating it
+before `docker compose up` makes the bind mount owned by your user instead of
+root, so the assistant can write bundles without a manual `chown`. If a fresh
+`up` already left `exports` root-owned, run
+`sudo chown -R $(id -u):$(id -g) exports` and resubmit the bundle.
 
 The image downloads the Pocket TTS weights and default voice at build time,
 anonymously, from the public `kyutai/pocket-tts-without-voice-cloning` bundle

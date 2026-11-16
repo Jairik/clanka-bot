@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -116,7 +117,17 @@ type Options struct {
 	MaxTakes int
 	// Now overrides the clock in tests.
 	Now func() time.Time
+	// Log receives a startup warning when ExportDir exists but is not writable
+	// by this process (for example the host bind mount left root-owned by a
+	// previous `docker compose up`). Nil uses slog.Default.
+	Log *slog.Logger
 }
+
+// exportDirRemediation is the exact host command a deployer runs to repair a
+// root-owned ./exports bind mount. It is printed both as a startup warning and
+// inside the Dashboard bundle-submit error, so the fix is discoverable in both
+// places instead of a raw EACCES.
+const exportDirRemediation = "sudo chown -R $(id -u):$(id -g) exports"
 
 // Service is the take store and bundle exporter. It has no database: a sample
 // set is files the owner explicitly copies off the box, never history.
@@ -155,6 +166,17 @@ func New(opts Options) (*Service, error) {
 			return nil, fmt.Errorf("wakesample: create %s: %w", path, err)
 		}
 	}
+	log := opts.Log
+	if log == nil {
+		log = slog.Default()
+	}
+	// Probe writability so a root-owned bind mount fails loudly at startup
+	// instead of with a raw EACCES on the first bundle submit. Startup must
+	// still succeed: voice samples and the rest of the assistant keep working.
+	if err := probeWritable(exportDir); err != nil {
+		log.Warn("voice sample export directory is not writable by this process; "+exportDirRemediation+" and resubmit the bundle",
+			"dir", exportDir, "error", err)
+	}
 	now := opts.Now
 	if now == nil {
 		now = time.Now
@@ -173,6 +195,22 @@ func New(opts Options) (*Service, error) {
 		maxTakes:  maxTakes,
 		now:       now,
 	}, nil
+}
+
+// probeWritable confirms this process can write to dir by creating and removing
+// a .write-test file. A root-owned bind mount rejects the create, surfacing the
+// problem before a bundle submit.
+func probeWritable(dir string) error {
+	f, err := os.CreateTemp(dir, ".write-test-")
+	if err != nil {
+		return err
+	}
+	name := f.Name()
+	if err := f.Close(); err != nil {
+		_ = os.Remove(name)
+		return err
+	}
+	return os.Remove(name)
 }
 
 // Dir is the take store root.
@@ -528,7 +566,7 @@ func (s *Service) Submit(slug string) (Bundle, error) {
 	}
 	tmp, err := os.CreateTemp(s.exportDir, ".bundle-*.tar.gz")
 	if err != nil {
-		return Bundle{}, err
+		return Bundle{}, fmt.Errorf("could not write the bundle to %s: %w; %s and resubmit the bundle", s.exportDir, err, exportDirRemediation)
 	}
 	cleanup := func() { _ = os.Remove(tmp.Name()) }
 	if err := s.writeBundle(tmp, slug, positives, negatives, now); err != nil {

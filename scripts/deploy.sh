@@ -204,8 +204,13 @@ main() {
 
 	# Host-visible voice-sample bundles. Created before Compose so the bind
 	# mount is owned by the deploy user rather than root; the directory is
-	# gitignored because it holds the owner's recordings.
+	# gitignored because it holds the owner's recordings. A previous
+	# `docker compose up` may have left it root-owned, which mkdir -p will not
+	# repair, so fail with the exact remediation before any build runs.
 	mkdir -p "$ROOT/exports"
+	if [[ ! -w "$ROOT/exports" ]]; then
+		die "exports is not writable (likely owned by root from a previous docker compose up); run: sudo chown -R $(id -u):$(id -g) exports"
+	fi
 
 	if [[ -n "$requested" ]]; then
 		sha="$(resolve_sha "$requested")"

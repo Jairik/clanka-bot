@@ -1155,6 +1155,7 @@ func run() error {
 			SSHHost:   cfg.VoiceSamples.SSHHost,
 			Desktop:   cfg.VoiceSamples.Desktop,
 			MaxTakes:  cfg.VoiceSamples.MaxTakes,
+			Log:       logger,
 		})
 		if err != nil {
 			return fmt.Errorf("voice samples: %w", err)

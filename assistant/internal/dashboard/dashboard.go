@@ -149,6 +149,9 @@ type Options struct {
 	// Integrations backs the Hermes page's account linking and per-integration
 	// grants. Nil makes the page explanatory.
 	Integrations *integrations.Service
+	// Verifier proves a stored integration key works from the Dashboard. Nil
+	// hides the Verify action.
+	Verifier *integrations.Verifier
 	// Spotify is the one Web API auth seam shared with the future Spotify
 	// Tools. The page never renders a token; the pairing reader is separate
 	// because Connect pairing and Web API auth are different grants.
@@ -235,6 +238,7 @@ type Handler struct {
 	phraseGenReady func() bool
 	registry       *tool.Registry
 	integrations   *integrations.Service
+	verifier       *integrations.Verifier
 	// focusReg and announceQueue feed the focus view and its live delta. Either
 	// may be nil, which hides the view.
 	focusReg     *focus.Registry
@@ -366,6 +370,7 @@ func New(opts Options) (*Handler, error) {
 		phraseGenReady: opts.PhraseGenReady,
 		registry:       opts.Registry,
 		integrations:   opts.Integrations,
+		verifier:       opts.Verifier,
 		focusReg:       opts.Focus,
 		announceQueue:  opts.Announcements,
 		spotify:        opts.Spotify,
@@ -499,6 +504,7 @@ func New(opts Options) (*Handler, error) {
 	h.Mutating("POST /hermes/integrations/{id}", h.hermesLink)
 	h.Mutating("POST /hermes/integrations/{id}/unlink", h.hermesUnlink)
 	h.Mutating("POST /hermes/integrations/{id}/grant", h.hermesGrant)
+	h.Mutating("POST /hermes/integrations/{id}/verify", h.hermesVerify)
 	h.Mutating("POST /settings/tools/{name}", h.settingsToolSave)
 	h.Mutating("POST /settings/tools/{name}/reset", h.settingsToolReset)
 	h.Mutating("POST /settings/values/{key}", h.settingsValueSave)

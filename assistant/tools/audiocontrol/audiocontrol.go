@@ -33,12 +33,15 @@ type VolumeIn struct {
 	Mute    *bool `json:"mute,omitempty"`
 }
 
-// VolumeOut echoes the requested change for the log and the reply.
+// VolumeOut echoes the requested change for the log and the reply. NoChange
+// marks a relative step that hit the ceiling or floor and wrote nothing, so
+// the reply does not claim the level moved.
 type VolumeOut struct {
-	Percent int  `json:"percent,omitempty"`
-	Delta   int  `json:"delta,omitempty"`
-	Muted   bool `json:"muted,omitempty"`
-	Unmuted bool `json:"unmuted,omitempty"`
+	Percent  int  `json:"percent,omitempty"`
+	Delta    int  `json:"delta,omitempty"`
+	Muted    bool `json:"muted,omitempty"`
+	Unmuted  bool `json:"unmuted,omitempty"`
+	NoChange bool `json:"no_change,omitempty"`
 }
 
 // StopIn has no arguments.
@@ -90,15 +93,20 @@ func NewVolumeWithStep(controls Controls, step int) tool.Tool[VolumeIn, VolumeOu
 			if delta == 0 {
 				delta = step
 			}
-			if err := controls.AdjustVolume(ctx, delta); err != nil {
+			applied, err := controls.AdjustVolume(ctx, delta)
+			if err != nil {
 				return VolumeOut{}, err
 			}
-			return VolumeOut{Delta: delta}, nil
+			return VolumeOut{Delta: delta, NoChange: !applied}, nil
 		},
 		Speak: func(out VolumeOut) string {
 			switch {
 			case out.Unmuted:
 				return "Unmuted."
+			case out.NoChange && out.Delta > 0:
+				return "Volume is already at 100 percent."
+			case out.NoChange && out.Delta < 0:
+				return "Volume is already at 0 percent."
 			case out.Delta > 0:
 				return "Volume up."
 			case out.Delta < 0:
@@ -149,7 +157,7 @@ func setMute(ctx context.Context, controls Controls, step int, muted bool) (Volu
 		return VolumeOut{}, err
 	}
 	if level == 0 {
-		if err := controls.AdjustVolume(ctx, step); err != nil {
+		if _, err := controls.AdjustVolume(ctx, step); err != nil {
 			return VolumeOut{}, err
 		}
 	}

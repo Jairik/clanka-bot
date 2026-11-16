@@ -30,9 +30,9 @@ func (a *audioRecorder) SetVolume(_ context.Context, percent int) error {
 	return nil
 }
 
-func (a *audioRecorder) AdjustVolume(_ context.Context, delta int) error {
+func (a *audioRecorder) AdjustVolume(_ context.Context, delta int) (bool, error) {
 	a.delta = delta
-	return nil
+	return true, nil
 }
 
 func (a *audioRecorder) Level(context.Context) (int, error) {

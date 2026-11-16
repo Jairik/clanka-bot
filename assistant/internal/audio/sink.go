@@ -159,16 +159,17 @@ func (s *PulseSink) SetVolume(ctx context.Context, percent int) error {
 // AdjustVolume steps the sink volume by a relative percent. The target is
 // capped at 0-100 so "louder" cannot climb into PulseAudio's amplification
 // range, which the Dashboard and the wake-free command cannot express. A step
-// that cannot change the level writes nothing.
-func (s *PulseSink) AdjustVolume(ctx context.Context, delta int) error {
+// that cannot change the level writes nothing and reports applied=false, so
+// callers can answer without claiming the volume moved.
+func (s *PulseSink) AdjustVolume(ctx context.Context, delta int) (bool, error) {
 	current, err := s.Level(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
 	// An up step at or above the ceiling cannot raise the level, and clamping to
 	// 100 would turn it into a drop, so it writes nothing.
 	if delta > 0 && current >= 100 {
-		return nil
+		return false, nil
 	}
 	target := current + delta
 	if target < 0 {
@@ -178,9 +179,12 @@ func (s *PulseSink) AdjustVolume(ctx context.Context, delta int) error {
 		target = 100
 	}
 	if target == current {
-		return nil
+		return false, nil
 	}
-	return s.SetVolume(ctx, target)
+	if err := s.SetVolume(ctx, target); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // Level reads only the sink's level, without the mute query, so a slow or

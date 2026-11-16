@@ -1,6 +1,6 @@
 // The chat's formatters and the pending-request ids.
 import { describe, expect, it } from "vitest";
-import { createRequestId, fmtClock, fmtMS, parseMS, totalMS } from "../chat";
+import { createRequestId, fmtClock, fmtMS, parseMS, tokenLine, totalMS } from "../chat";
 import { req } from "./harness";
 
 describe("timing formatters", () => {
@@ -30,6 +30,12 @@ describe("timing formatters", () => {
     });
     expect(totalMS(r)).toBe(1500);
     expect(totalMS(req({ ID: "none", Stages: null }))).toBe(0);
+  });
+
+  it("renders token counts as in/out and zero as unknown", () => {
+    expect(tokenLine(req({ ID: "r", PromptTokens: 12000, CompletionTokens: 34 }))).toBe("12000 in / 34 out");
+    // An old row or a provider that omitted usage: unknown, never 0 or free.
+    expect(tokenLine(req({ ID: "old" }))).toBe("unknown");
   });
 
   it("renders a clock time from an ISO string or a Date", () => {

@@ -81,6 +81,14 @@ type Entry struct {
 	Stages      []Timing
 	Checkpoints []Timing
 	Calls       []Call
+	// Per-turn model token counts and step count, carried from the request
+	// completion. Zero means the provider omitted usage (unknown, not free);
+	// a row written before these columns existed also reads zero.
+	PromptTokens     int64
+	CompletionTokens int64
+	TotalTokens      int64
+	CachedTokens     int64
+	Steps            int
 	// Summary is set when retention has trimmed this row's long text.
 	Summary bool
 	// Cursor is the durable history position this row was read at. It is empty
@@ -159,14 +167,19 @@ func (s *Store) Observe(completed latency.Completed) {
 		return
 	}
 	entry := Entry{
-		ID:         completed.ID,
-		At:         s.now(),
-		Source:     string(completed.Source),
-		Path:       completed.Path,
-		Tool:       completed.Tool,
-		Outcome:    string(completed.Outcome),
-		Error:      truncate(completed.Error, maxResultRunes),
-		Transcript: truncate(completed.Transcript, maxTranscriptRunes),
+		ID:               completed.ID,
+		At:               s.now(),
+		Source:           string(completed.Source),
+		Path:             completed.Path,
+		Tool:             completed.Tool,
+		Outcome:          string(completed.Outcome),
+		Error:            truncate(completed.Error, maxResultRunes),
+		Transcript:       truncate(completed.Transcript, maxTranscriptRunes),
+		PromptTokens:     completed.PromptTokens,
+		CompletionTokens: completed.CompletionTokens,
+		TotalTokens:      completed.TotalTokens,
+		CachedTokens:     completed.CachedTokens,
+		Steps:            completed.Steps,
 	}
 	if completed.HasResponse {
 		ms := completed.Response.Milliseconds()

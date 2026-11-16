@@ -370,6 +370,14 @@ export type Request = {
   Stages: Timing[] | null;
   Checkpoints: Timing[] | null;
   Calls: Call[] | null;
+  // Per-turn model token counts. Zero means unknown (the provider omitted
+  // usage, or the row predates them); the page renders that as "unknown",
+  // never as zero or free.
+  PromptTokens: number;
+  CompletionTokens: number;
+  TotalTokens: number;
+  CachedTokens: number;
+  AgentSteps: number;
 };
 
 export type RingKind = {

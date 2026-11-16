@@ -87,12 +87,47 @@ type Result struct {
 	// Retries is the number of attempted provider retries in this turn (0 or
 	// 1). It is published on the request line as agent_retries.
 	Retries int
+	// Token counts are summed across every model step in this turn and
+	// published on the request line as prompt_tokens / completion_tokens and
+	// friends. Zero means the provider omitted usage (unknown, not free).
+	PromptTokens     int64
+	CompletionTokens int64
+	TotalTokens      int64
+	CachedTokens     int64
+	// Steps is the number of model steps the turn took. It is published on
+	// the request line as agent_steps.
+	Steps int
 	// MaxSteps is the step-limit stop, which is a failed request rather than a
 	// successful answer.
 	MaxSteps bool
 	// Cancelled is a Barge-in or shutdown, not a provider failure. The caller
 	// must not log it as unavailable or mark the request failed.
 	Cancelled bool
+}
+
+// tokenUsage is the summed model usage for one request across its steps.
+type tokenUsage struct {
+	prompt     int64
+	completion int64
+	total      int64
+	cached     int64
+	steps      int
+}
+
+func (u tokenUsage) add(c completion) tokenUsage {
+	u.prompt += c.PromptTokens
+	u.completion += c.CompletionTokens
+	u.total += c.TotalTokens
+	u.cached += c.CachedTokens
+	return u
+}
+
+func (u tokenUsage) apply(r *Result) {
+	r.PromptTokens = u.prompt
+	r.CompletionTokens = u.completion
+	r.TotalTokens = u.total
+	r.CachedTokens = u.cached
+	r.Steps = u.steps
 }
 
 // Agent runs the tool-calling loop against one registry.
@@ -200,6 +235,7 @@ func (a *Agent) Run(ctx context.Context, req tool.Request, utterance string, onD
 
 	var recorded []ToolCall
 	var retries int
+	var usage tokenUsage
 	for step := 0; step < a.maxSteps; step++ {
 		// stream returns an empty completion on every error, so the caller
 		// cannot tell from the result whether anything was already spoken.
@@ -230,8 +266,12 @@ func (a *Agent) Run(ctx context.Context, req tool.Request, utterance string, onD
 		if err != nil {
 			result := a.failure(ctx, req, err)
 			result.Retries = retries
+			usage.steps = step + 1
+			usage.apply(&result)
 			return result
 		}
+		usage = usage.add(reply)
+		usage.steps = step + 1
 		if len(reply.Calls) == 0 {
 			text := strings.TrimSpace(reply.Content)
 			// An empty answer is a fallback line no delta carried.
@@ -246,7 +286,9 @@ func (a *Agent) Run(ctx context.Context, req tool.Request, utterance string, onD
 				"tools", callNames(recorded),
 				"duration_ms", time.Since(started).Milliseconds(),
 			)
-			return Result{Text: text, Calls: recorded, TextNotStreamed: notStreamed, Retries: retries}
+			result := Result{Text: text, Calls: recorded, TextNotStreamed: notStreamed, Retries: retries}
+			usage.apply(&result)
+			return result
 		}
 
 		// A confirm Tool never runs here. The registry arms the single pending
@@ -266,7 +308,9 @@ func (a *Agent) Run(ctx context.Context, req tool.Request, utterance string, onD
 				if text == "" {
 					text = ConfirmPrompt
 				}
-				return Result{Text: text, Calls: recorded, Pending: &pending, Retries: retries}
+				result := Result{Text: text, Calls: recorded, Pending: &pending, Retries: retries}
+				usage.apply(&result)
+				return result
 			}
 			// The proposal was invalid (for example unparsable arguments).
 			// Report every call back to the model and keep the loop honest
@@ -292,7 +336,10 @@ func (a *Agent) Run(ctx context.Context, req tool.Request, utterance string, onD
 	a.history.Add(Turn{Utterance: utterance, Reply: MaxStepsMessage, Calls: recorded})
 	a.logger.Warn("agent stopped at step limit", "request_id", req.ID, "steps", a.maxSteps)
 	// The step-limit line is a fixed fallback no delta carried.
-	return Result{Text: MaxStepsMessage, Calls: recorded, MaxSteps: true, TextNotStreamed: true, Retries: retries}
+	usage.steps = a.maxSteps
+	result := Result{Text: MaxStepsMessage, Calls: recorded, MaxSteps: true, TextNotStreamed: true, Retries: retries}
+	usage.apply(&result)
+	return result
 }
 
 // firstConfirm returns the index of the first runnable confirm call in one

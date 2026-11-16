@@ -180,6 +180,12 @@ export const parseMS = (s: string) => {
 };
 export const fmtMS = (ms: number) => (ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`);
 export const totalMS = (r: Request) => (r.Stages ?? []).reduce((n, s) => n + parseMS(s.MS), 0);
+// A provider that omitted usage (or an old row) carries zero counts. Show that
+// as "unknown", never as "0" and never as a free turn. Counts only; no text.
+export const tokenLine = (r: Request) =>
+  r.PromptTokens > 0 || r.CompletionTokens > 0
+    ? `${r.PromptTokens} in / ${r.CompletionTokens} out`
+    : "unknown";
 
 /** Best-effort phone haptic; a browser without it is simply silent. */
 const vibrate = (ms: number) => {
@@ -244,12 +250,14 @@ function StageBar({ r }: { r: Request }) {
 }
 
 export function RequestDetail({ r, showReply }: { r: Request; showReply?: boolean }) {
+  const tokens = tokenLine(r);
   const rows: [string, ReactNode][] = [
     ["Path", r.PathLabel],
     ["Tool", r.Tool ? <span className="font-mono">{r.Tool}</span> : "—"],
     ["Source", r.SourceLabel],
     ["Outcome", r.OutcomeText],
     ["Response", r.Measured ? <span className="font-mono">{r.Response}</span> : <span className="text-muted">not measured</span>],
+    ["Tokens", tokens === "unknown" ? <span className="text-muted">{tokens}</span> : <span className="font-mono">{tokens}</span>],
   ];
   for (const c of r.Checkpoints ?? []) rows.push([c.Label, <span className="font-mono">{c.MS}</span>]);
   return (

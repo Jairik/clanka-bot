@@ -64,8 +64,10 @@ type migration struct {
 // and never leave this process. Version 12 adds the optional completion audio
 // on Timers and Alarms. Version 13 is the per-Persona phrase book: one short
 // spoken confirmation per Persona and overridable Tool, with the shipped
-// terse default kept in code. The versions stay contiguous in either merge
-// order.
+// terse default kept in code. Version 14 adds nullable per-turn model token
+// counts to Activity rows (#302): a row written before it reads NULL, which the
+// reader turns into zero ("unknown", never "free"). The versions stay
+// contiguous in either merge order.
 var migrations = []migration{
 	{
 		version: 1,
@@ -319,6 +321,15 @@ var migrations = []migration{
 			updated_at INTEGER NOT NULL,
 			PRIMARY KEY (persona, tool)
 		)`,
+	}},
+	{version: 14, name: "activity_tokens", statements: []string{
+		// Counts only, never text or a price. NULL on an existing row means
+		// "usage was not recorded" and the reader reports zero/unknown.
+		`ALTER TABLE activity ADD COLUMN prompt_tokens INTEGER`,
+		`ALTER TABLE activity ADD COLUMN completion_tokens INTEGER`,
+		`ALTER TABLE activity ADD COLUMN total_tokens INTEGER`,
+		`ALTER TABLE activity ADD COLUMN cached_tokens INTEGER`,
+		`ALTER TABLE activity ADD COLUMN agent_steps INTEGER`,
 	}},
 }
 

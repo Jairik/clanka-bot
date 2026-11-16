@@ -124,11 +124,13 @@ func (h *History) Add(entry Entry) error {
 	}
 	_, err = h.db.ExecContext(context.Background(), `
 		INSERT INTO activity (request_id, at, source, path, tool, outcome, error,
-			transcript, reply, local_only, response_ms, stages, checkpoints, calls, search)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			transcript, reply, local_only, response_ms, stages, checkpoints, calls, search,
+			prompt_tokens, completion_tokens, total_tokens, cached_tokens, agent_steps)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		entry.ID, at.UnixMilli(), entry.Source, entry.Path, entry.Tool, entry.Outcome,
 		entry.Error, entry.Transcript, entry.Reply, entry.LocalOnly, response,
-		string(stages), string(checkpoints), string(calls), searchText(entry))
+		string(stages), string(checkpoints), string(calls), searchText(entry),
+		entry.PromptTokens, entry.CompletionTokens, entry.TotalTokens, entry.CachedTokens, entry.Steps)
 	if err != nil {
 		slog.Default().Warn("activity history write", "error", err.Error())
 		return fmt.Errorf("activity history: insert: %w", err)
@@ -211,7 +213,8 @@ func (h *History) QueryPage(ctx context.Context, q Query) (Page, error) {
 	}
 
 	statement := `SELECT id, request_id, at, source, path, tool, outcome, error,
-		transcript, reply, local_only, response_ms, stages, checkpoints, calls, summary
+		transcript, reply, local_only, response_ms, stages, checkpoints, calls, summary,
+		prompt_tokens, completion_tokens, total_tokens, cached_tokens, agent_steps
 		FROM activity`
 	if len(conditions) > 0 {
 		statement += " WHERE " + strings.Join(conditions, " AND ")
@@ -450,17 +453,30 @@ func scanEntry(rows *sql.Rows) (Entry, string, error) {
 		stages, checkpoints, calls string
 		requestID                  string
 		response                   sql.NullInt64
+		prompt, completion         sql.NullInt64
+		total, cached              sql.NullInt64
+		agentSteps                 sql.NullInt64
 		localOnly, summary         bool
 	)
 	if err := rows.Scan(&id, &requestID, &at, &entry.Source, &entry.Path, &entry.Tool,
 		&entry.Outcome, &entry.Error, &entry.Transcript, &entry.Reply, &localOnly,
-		&response, &stages, &checkpoints, &calls, &summary); err != nil {
+		&response, &stages, &checkpoints, &calls, &summary,
+		&prompt, &completion, &total, &cached, &agentSteps); err != nil {
 		return Entry{}, "", fmt.Errorf("activity history: scan: %w", err)
 	}
 	entry.ID = requestID
 	entry.At = time.UnixMilli(at)
 	entry.LocalOnly = localOnly
 	entry.Summary = summary
+	// A NULL column is a row written before migration 14. Zero reads as
+	// unknown, never as a free turn.
+	entry.PromptTokens = prompt.Int64
+	entry.CompletionTokens = completion.Int64
+	entry.TotalTokens = total.Int64
+	entry.CachedTokens = cached.Int64
+	if agentSteps.Valid {
+		entry.Steps = int(agentSteps.Int64)
+	}
 	if response.Valid {
 		ms := response.Int64
 		entry.ResponseMS = &ms

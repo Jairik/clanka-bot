@@ -128,6 +128,14 @@ type Completed struct {
 	Stages      map[Stage]time.Duration
 	Checkpoints map[string]time.Duration
 	Detail      *Detail
+	// Per-turn model token counts and step count, published by SetTokens.
+	// Counts are numbers only; zero means the provider omitted usage. No prompt
+	// or reply text is carried here.
+	PromptTokens     int64
+	CompletionTokens int64
+	TotalTokens      int64
+	CachedTokens     int64
+	Steps            int
 }
 
 // Observer receives every completed request. The Activity store implements
@@ -172,6 +180,14 @@ type Timeline struct {
 	done       bool
 	detail     *Detail
 	observer   Observer
+	// token counts are numeric request metadata, set by SetTokens alongside
+	// the same-named request-line attributes. They feed Completed, which is
+	// the one event the Activity store observes.
+	promptTokens     int64
+	completionTokens int64
+	totalTokens      int64
+	cachedTokens     int64
+	steps            int
 }
 
 // New opens a timeline. The request ID is the one every layer logs, so voice,
@@ -477,6 +493,11 @@ func (t *Timeline) completedLocked(outcome Outcome, err error) Completed {
 	if completed.Error == "" && err != nil {
 		completed.Error = err.Error()
 	}
+	completed.PromptTokens = t.promptTokens
+	completed.CompletionTokens = t.completionTokens
+	completed.TotalTokens = t.totalTokens
+	completed.CachedTokens = t.cachedTokens
+	completed.Steps = t.steps
 	if t.detail != nil {
 		copied := *t.detail
 		copied.Calls = append([]ToolCallDetail(nil), t.detail.Calls...)
@@ -622,6 +643,34 @@ func SetAttr(ctx context.Context, key string, value any) {
 	if t := FromContext(ctx); t != nil {
 		t.SetAttr(key, value)
 	}
+}
+
+// SetTokens publishes one turn's model token counts on ctx's request line,
+// the same way callAgent publishes agent_retries. Only integers are recorded:
+// prompt, completion, total and cached token counts plus the model step count.
+// Zero counts mean the provider omitted usage (unknown, not free). No prompt
+// or reply text is ever passed here. The same numbers are kept on Completed so
+// the Activity store can persist them without reading the log line back.
+func SetTokens(ctx context.Context, prompt, completion, total, cached int64, steps int) {
+	if t := FromContext(ctx); t != nil {
+		t.setTokens(prompt, completion, total, cached, steps)
+	}
+}
+
+func (t *Timeline) setTokens(prompt, completion, total, cached int64, steps int) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.done {
+		return
+	}
+	t.promptTokens, t.completionTokens = prompt, completion
+	t.totalTokens, t.cachedTokens = total, cached
+	t.steps = steps
+	t.attrs["prompt_tokens"] = prompt
+	t.attrs["completion_tokens"] = completion
+	t.attrs["total_tokens"] = total
+	t.attrs["cached_tokens"] = cached
+	t.attrs["agent_steps"] = steps
 }
 
 // SetFailure stores the failure reason on ctx's timeline.

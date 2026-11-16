@@ -61,6 +61,11 @@ export const req = (over: Partial<Request> & { ID: string }): Request => ({
   Checkpoints: [],
   Calls: [],
   Summary: false,
+  PromptTokens: 0,
+  CompletionTokens: 0,
+  TotalTokens: 0,
+  CachedTokens: 0,
+  AgentSteps: 0,
   ...over,
 });
 

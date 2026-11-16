@@ -86,7 +86,7 @@ function PhrasebookBody({
                   key={p.Name}
                   type="button"
                   aria-pressed={on}
-                  aria-label={`Show ${p.Name}${p.Active ? " (active persona)" : ""}, ${count(p.Count, "override")}`}
+                  aria-label={`Show ${p.Name}${p.Active ? " active" : ""} ${count(p.Count, "override")}`}
                   disabled={!!switching}
                   onClick={() => void onPick(p.Name)}
                   className={cn(
@@ -95,8 +95,8 @@ function PhrasebookBody({
                     switching === p.Name && "opacity-60",
                   )}
                 >
-                  <span className="max-w-40 truncate">{p.Name}</span>
-                  {p.Active && <span className="border border-current px-1 text-[10px] tracking-wide uppercase">active</span>}
+                  <span className="max-w-40 truncate">{p.Name}</span>{" "}
+                  {p.Active && <><span className="border border-current px-1 text-[10px] tracking-wide uppercase">active</span>{" "}</>}
                   <span className="font-mono text-[10px] opacity-70">{p.Count}</span>
                 </button>
               );

@@ -1,0 +1,99 @@
+{
+  "Owner": "smoke@example.com",
+  "Page": "alerts",
+  "Flash": "",
+  "Error": "",
+  "HasManagers": true,
+  "ZoneName": "UTC",
+  "Alerts": [
+    {
+      "Audio": "",
+      "KindKey": "timer",
+      "Kind": "Timer",
+      "Label": "Tea",
+      "Next": "in 5 minutes",
+      "NextISO": "2026-11-13T09:05:00Z",
+      "Detail": "5m",
+      "CancelAction": "/alerts/timer/t1/cancel",
+      "CancelLabel": "Cancel"
+    },
+    {
+      "Audio": "",
+      "KindKey": "alarm",
+      "Kind": "Alarm",
+      "Label": "Wake up",
+      "Next": "07:00 daily",
+      "NextISO": "2026-11-14T07:00:00Z",
+      "Detail": "daily",
+      "CancelAction": "/alerts/alarm/a1/cancel",
+      "CancelLabel": "Cancel"
+    },
+    {
+      "Audio": "",
+      "KindKey": "reminder",
+      "Kind": "Reminder",
+      "Label": "Call mum",
+      "Next": "in 1 hour",
+      "NextISO": "2026-11-13T10:00:00Z",
+      "Detail": "1h",
+      "CancelAction": "/alerts/reminder/r1/cancel",
+      "CancelLabel": "Cancel"
+    }
+  ],
+  "Alarms": [
+    {
+      "ID": "a1",
+      "Title": "Wake up",
+      "Schedule": "07:00 daily",
+      "Next": "07:00",
+      "NextISO": "2026-11-14T07:00:00Z",
+      "SoundCurrent": "chime",
+      "SoundEffective": "chime",
+      "SoundDefault": "chime",
+      "SoundOverride": false,
+      "VolumeCurrent": "40%",
+      "VolumeEffective": "40%",
+      "VolumeDefault": "40%",
+      "VolumeOverride": false,
+      "RampCurrent": "0ms",
+      "RampEffective": "0ms",
+      "RampDefault": "0ms",
+      "RampOverride": false,
+      "HasOverride": false,
+      "SoundKey": "alarm.sound",
+      "VolumeKey": "alarm.volume",
+      "RampKey": "alarm.ramp",
+      "SoundCap": "Sound",
+      "HasLibrary": true,
+      "Sounds": [
+        { "Value": "chime", "Label": "Chime", "Selected": true },
+        { "Value": "bell", "Label": "Bell", "Selected": false }
+      ],
+      "Action": "/alerts/alarm/a1/edit",
+      "ResetAction": "/alerts/alarm/a1/reset",
+      "Edit": {
+        "AlarmID": "a1",
+        "Sound": "chime",
+        "Volume": "40%",
+        "Ramp": "0ms",
+        "VolumeReset": false,
+        "RampReset": false
+      }
+    }
+  ],
+  "Missed": [
+    {
+      "Kind": "Timer",
+      "Label": "Boil eggs",
+      "Scheduled": "07:00",
+      "ScheduledISO": "2026-11-13T07:00:00Z",
+      "Fired": "07:00",
+      "FiredISO": "2026-11-13T07:00:00Z",
+      "Ended": "07:01",
+      "EndedISO": "2026-11-13T07:01:00Z",
+      "EndedBy": "timeout"
+    }
+  ],
+  "MissedLimit": 20,
+  "DesktopNotify": true
+}

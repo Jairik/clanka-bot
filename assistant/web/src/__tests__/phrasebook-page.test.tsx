@@ -61,7 +61,7 @@ it("groups the phrases and shows the counts and the active persona", async () =>
   expect(screen.getByText("Lights")).toBeTruthy();
   expect(screen.getByText("Timer")).toBeTruthy();
   // The active persona is marked.
-  const ada = screen.getByRole("button", { name: /Show Ada \(active persona\), 1 override/ });
+  const ada = screen.getByRole("button", { name: /Show Ada active 1 override/ });
   expect(ada.getAttribute("aria-pressed")).toBe("true");
   expect(screen.getAllByText("1 phrase")).toHaveLength(2);
 });
@@ -119,10 +119,10 @@ it("switches persona through a read of the same view", async () => {
   render(<PhrasebookPage />);
   await screen.findByText("lights.power");
 
-  await user.click(screen.getByRole("button", { name: /^Show Bo,/ }));
+  await user.click(screen.getByRole("button", { name: /^Show Bo 0 overrides/ }));
 
   await waitFor(() => expect(seen).toEqual(["Bo"]));
-  await waitFor(() => expect(screen.getByRole("button", { name: /^Show Bo,/ }).getAttribute("aria-pressed")).toBe("true"));
+  await waitFor(() => expect(screen.getByRole("button", { name: /^Show Bo 0 overrides/ }).getAttribute("aria-pressed")).toBe("true"));
 });
 
 it("shows the shipped defaults read-only when no persona is active", async () => {

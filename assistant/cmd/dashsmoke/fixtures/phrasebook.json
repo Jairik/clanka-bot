@@ -1,0 +1,38 @@
+{
+  "Owner": "smoke@example.com",
+  "Page": "phrasebook",
+  "Flash": "",
+  "Error": "",
+  "HasService": true,
+  "HasGenerator": true,
+  "ActivePersona": "Home",
+  "Selected": "Home",
+  "Personas": [
+    { "Name": "Home", "Active": true, "Count": 3 },
+    { "Name": "Work", "Active": false, "Count": 3 }
+  ],
+  "Slots": [
+    {
+      "Tool": "lights",
+      "Group": "Home",
+      "Description": "Turn a light on or off.",
+      "Default": "Okay, the light is on.",
+      "Phrase": "The light is now on.",
+      "Source": "override",
+      "Overridden": true
+    },
+    {
+      "Tool": "timer",
+      "Group": "Schedule",
+      "Description": "Start a countdown.",
+      "Default": "Timer started.",
+      "Phrase": "Your timer is running.",
+      "Source": "default",
+      "Overridden": false
+    }
+  ],
+  "Total": 3,
+  "Overridden": 1,
+  "Generated": 0,
+  "Manual": 1
+}

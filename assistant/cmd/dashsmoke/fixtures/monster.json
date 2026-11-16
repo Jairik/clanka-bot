@@ -1,0 +1,20 @@
+{
+  "configured": true,
+  "status": "connected",
+  "devices": [
+    {
+      "dsn": "MONSTER-001",
+      "name": "Desk light",
+      "model": "Smart Bulb",
+      "on": true,
+      "mode": "color",
+      "brightness": 80,
+      "color": "#ffcc00",
+      "kelvin": 2700,
+      "effects": [
+        { "id": "sunrise", "name": "Sunrise" },
+        { "id": "rainbow", "name": "Rainbow" }
+      ]
+    }
+  ]
+}

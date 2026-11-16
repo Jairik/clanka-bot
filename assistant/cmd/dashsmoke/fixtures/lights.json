@@ -1,0 +1,7 @@
+{
+  "devices": [
+    { "address": "AA:BB:CC:DD:EE:FF", "name": "Lamp", "protocol": "ble" }
+  ],
+  "enabled": true,
+  "status": "2 devices available"
+}

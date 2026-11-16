@@ -21,6 +21,7 @@ const ROUTES = [
   "/lights",
   "/secrets",
   "/settings",
+  "/monster",
 ];
 
 /**

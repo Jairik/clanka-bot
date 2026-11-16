@@ -19,7 +19,7 @@ How much a Tool may change the world: `read` (no side effects), `act` (harmless 
 _Avoid_: Scope, access level, risk tier
 
 **Local-only Tool**:
-A Tool whose results must never leave the Pi, so the Agent path can neither see nor call it.
+A Tool whose own results must never leave the Pi, so the Agent path can neither see nor call it. The one declared exception is text it replays from an earlier reply: `assistant.repeat` sets `Provenance` so the repeated text keeps its previous provenance while the Tool itself stays Local-only. A result type cannot lower the flag by implementing a method.
 _Avoid_: Private tool, offline tool, sensitive tool
 
 **Agent-only Tool**:
@@ -91,7 +91,7 @@ A configurable phrase spoken when the Agent path can't reach its model, so the u
 _Avoid_: Error message, brain-offline line
 
 **Last reply**:
-The most recent completed Assistant answer kept in memory, with the Tool that produced it and whether that result was Local-only. Follow-ups ("say that again", "send that to my phone") read it; a cancelled or blank turn does not replace it.
+The most recent completed Assistant answer kept in memory, with the Tool that produced it and whether that result was Local-only. Follow-ups ("say that again", "send that to my phone") read it; a cancelled or blank turn does not replace it. The recorded `LocalOnly` flag is the provenance of the *text* — which may be replayed from an earlier reply through a declared per-result hook — not of the Tool that produced the last call.
 _Avoid_: Previous output, last message, say-again buffer
 
 **Activity**:

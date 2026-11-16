@@ -222,15 +222,32 @@ each Agent-only Tool its own Agent journey and plain negatives.
 
 ## 5. Choose Local-only
 
-`LocalOnlyYes` means the result must never leave the Pi: the Agent path cannot
-see or call it, and neither can Hermes or the MCP surface. `LocalOnlyNo` leaves
-it available to both paths. Registration fails until you choose one explicitly,
-and no setting can override it. The scaffold default `LocalOnlyNo` is only safe
-because the placeholder has no private data. The authenticated Dashboard
-Activity page displays each call's human-facing result with a Local-only badge;
-that is display-only and never relaxes the egress rule.
+`LocalOnlyYes` means the Tool's own results must never leave the Pi: the Agent
+path cannot see or call it, and neither can Hermes or the MCP surface.
+`LocalOnlyNo` leaves it available to both paths. Registration fails until you
+choose one explicitly, and no setting can override it. The scaffold default
+`LocalOnlyNo` is only safe because the placeholder has no private data. The
+authenticated Dashboard Activity page displays each call's human-facing result
+with a Local-only badge; that is display-only and never relaxes the egress rule.
 
-Completion: the declaration matches where the Tool's results may travel.
+The static declaration still decides registration, Agent visibility and the MCP
+surface. The one exception is a declared per-result provenance hook,
+`Provenance func(out Out) (localOnly bool, ok bool)`, on `tool.Tool`. Set it only
+when your result *replays* text produced by an earlier reply and that text must
+keep the provenance it had when it was spoken; `ok=false` falls back to your
+static flag. The pipeline resolves the hook in `callTool` and on the
+Confirmation path in `confirmedCall`. `tool.Add` rejects the hook on a
+`LocalOnlyNo` Tool, because there is no flag to downgrade, so the declaration
+sits next to `LocalOnly` where it is reviewed. A result type must **not**
+implement a method to change its own flag — that escape hatch was removed, and
+only the declared hook counts. The hook is the only exception and must never
+describe text your Tool created itself. `assistant.repeat` is the only current
+user: its result carries the previous reply's provenance while the repeat Tool
+itself stays `LocalOnlyYes`, so the Agent never sees it.
+
+Completion: the declaration matches where the Tool's results may travel, and a
+result type you add has no way to lower the flag except a declared `Provenance`
+you intended.
 
 ## 6. Write Examples, negative cases and eval cases
 

@@ -157,6 +157,7 @@ func TestExtractSetWindow(t *testing.T) {
 		"quiet hours begin at 10 and end at 6":                  {"22:00", "06:00"},
 		"quiet hours from 9 in the evening to 6 in the morning": {"21:00", "06:00"},
 		"quiet hours from 12 to 6":                              {"00:00", "06:00"},
+		"quiet from 22:00 to 07:00":                             {"22:00", "07:00"},
 	}
 	f := newFixture(t)
 	set := quiet.NewSet(f.service)
@@ -202,6 +203,10 @@ func TestExtractOffDNDAwake(t *testing.T) {
 		"turn off the lights",
 		"turn off the quiet music",
 		"do not disturb for two hours",
+		// The integers of a written decimal are not two clock times.
+		"quiet for 0.5 hours",
+		"quiet for zero point five hours",
+		"quiet for one point five hours",
 	} {
 		if _, ok := off.Extract(utterance); ok {
 			t.Errorf("off Extract(%q) matched", utterance)
@@ -218,6 +223,15 @@ func TestExtractOffDNDAwake(t *testing.T) {
 		"do not disturb for 1.5 hours":   5400,
 		"pause notifications for 0.25 h": 900,
 		"dnd for one point five minutes": 90,
+		// The plain "quiet for" form is a duration, not a Quiet-hours window.
+		"quiet for 0.5 hours":             1800,
+		"quiet for half an hour":          1800,
+		"quiet for 15 minutes":            900,
+		"quiet for 2 hours":               7200,
+		"quiet for two hours":             7200,
+		"quiet for zero point five hours": 1800,
+		"quiet for one point five hours":  5400,
+		"be quiet for 0.5 hours":          1800,
 	} {
 		in, ok := dnd.Extract(utterance)
 		if !ok || in.DurationSeconds != want {

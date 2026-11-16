@@ -97,6 +97,9 @@ func NewSet(service *quietcore.Service) tool.Tool[SetIn, SetOut] {
 			"set nightly quiet hours from 10:30 to 7",
 			"quiet hours from 9 in the evening to 6 in the morning",
 			"quiet hours from 10:30 in the evening to 7 in the morning",
+			// #363: a clock-time window starting with bare "quiet" stays with
+			// quiet.set, clear of the new "quiet for <duration>" Examples.
+			"quiet from 22:00 to 07:00",
 		},
 		Extract: func(text string) (SetIn, bool) {
 			start, end, ok := parseWindow(text)
@@ -176,6 +179,15 @@ func NewDND(service *quietcore.Service) tool.Tool[DNDIn, DNDOut] {
 		Examples: []string{
 			"do not disturb for two hours",
 			"do not disturb for 30 minutes",
+			// #363: the plain "quiet for <duration>" family must clear the
+			// margin against quiet.off, not fall through to the Agent path.
+			// "quiet for two hours" only reaches 0.227 against quiet.off
+			// (below the 0.23 margin) and pulls "quiet hours off" under it
+			// too; the digit form clears at 0.241 without widening anything.
+			"quiet for 0.5 hours",
+			"quiet for half an hour",
+			"quiet for 15 minutes",
+			"quiet for 2 hours",
 			"turn on do not disturb for an hour",
 			"mute everything for an hour",
 			"dnd for 45 minutes",
@@ -260,16 +272,22 @@ func NewAwake(service *quietcore.Service) tool.Tool[AwakeIn, AwakeOut] {
 // match so "10 pm" and "10" are treated differently.
 var clockToken = regexp.MustCompile(`(?i)\b([0-9]{1,2})(?::([0-9]{2}))?\s*(a\.?m\.?|p\.?m\.?)?`)
 
-// parseWindow reads two clock times from a Quiet-hours utterance. It applies
-// one deliberate heuristic: "from 10:30 to 7" means 10:30 pm, not a 20.5-hour
-// daytime window, so a reversed pair of 12-hour clocks moves the start into
-// the evening.
+// writtenDecimal matches the number in a duration phrase, such as "0.5" in
+// "quiet for 0.5 hours". Its two integers are one number, not two clock times,
+// so the clock scan runs on text where they are blanked.
+var writtenDecimal = regexp.MustCompile(`[0-9]*\.[0-9]+`)
+
+// parseWindow reads two clock times from a Quiet-hours utterance. A written
+// decimal is blanked first, so "quiet for 0.5 hours" is a duration and not the
+// window 00:00-05:00. It applies one deliberate heuristic: "from 10:30 to 7"
+// means 10:30 pm, not a 20.5-hour daytime window, so a reversed pair of
+// 12-hour clocks moves the start into the evening.
 func parseWindow(text string) (string, string, bool) {
 	lower := strings.ToLower(text)
 	if !strings.Contains(lower, "quiet") && !strings.Contains(lower, "window") {
 		return "", "", false
 	}
-	matches := clockToken.FindAllStringSubmatch(text, -1)
+	matches := clockToken.FindAllStringSubmatch(writtenDecimal.ReplaceAllString(text, " "), -1)
 	if len(matches) < 2 {
 		return "", "", false
 	}
@@ -367,6 +385,9 @@ func extractDND(text string) (DNDIn, bool) {
 		"do not disturb", "dnd", "mute everything", "mute the house",
 		"silence things", "quiet down", "hold everything", "pause notifications",
 		"keep things quiet", "need quiet", "give me", "be quiet for",
+		// "quiet for" is the plain duration form. The window form uses "quiet
+		// hours" and is rejected above by parseWindow.
+		"quiet for",
 	}
 	triggered := false
 	for _, trigger := range triggers {

@@ -1238,9 +1238,11 @@ curl -s -X DELETE localhost:8081/api/settings/sounds.error
 ```
 
 Length caps are enforced when a sound is assigned and never trim the file:
-`wake` 1.0 s, `reminder`/`error` 3 s, Rings 60 s. A longer sound is rejected
-with the cap in the error. The wake, error and reminder Cues are wired, and a
-Timer or Alarm Ring loops `sounds.timer_ring` or `sounds.alarm_ring` through the
+`wake` 0.5 s, `reminder`/`error` 3 s, Rings 60 s. A longer sound is rejected
+with the cap in the error. Audio captured while the wake Cue plays is treated as
+echo and is not sent to speech recognition, so a long wake sound can clip the
+start of a request; keep it short. The wake, error and reminder Cues are wired,
+and a Timer or Alarm Ring loops `sounds.timer_ring` or `sounds.alarm_ring` through the
 Ring engine: it waits for the current reply sentence, ducks music, speaks the
 label and stops on "stop" or "snooze". A `none` or missing Ring sound falls
 back to the old single spoken line. A Reminder plays `sounds.reminder` once

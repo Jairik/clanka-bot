@@ -40,6 +40,88 @@ func (p *capturePlayer) snapshot() ([][]byte, []audio.Format) {
 	return append([][]byte(nil), p.buffers...), append([]audio.Format(nil), p.formats...)
 }
 
+// blockingCuePlayer signals when a cue starts and blocks for its duration, so
+// a test can stage echo during the cue and speech after it deterministically.
+type blockingCuePlayer struct {
+	started chan struct{}
+	block   time.Duration
+	once    sync.Once
+}
+
+func (p *blockingCuePlayer) Play(ctx context.Context, _ []byte, _ audio.Format) error {
+	p.once.Do(func() { close(p.started) })
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(p.block):
+		return nil
+	}
+}
+
+// echoFrame is a voiced frame with a distinct sample value so a test can tell
+// cue echo apart from the user's speech when both reach STT.
+func echoFrame() []byte {
+	pcm := make([]byte, frameBytes)
+	for i := 0; i < len(pcm); i += 2 {
+		binary.LittleEndian.PutUint16(pcm[i:], 0x1111)
+	}
+	return pcm
+}
+
+// TestHalfSecondWakeCueDropsEchoButPassesPostCueSpeech pins the #298 trade-off:
+// a cue at the new 0.5 s cap still rejects audio captured while it plays, but
+// speech starting after the cue ends reaches STT.
+func TestHalfSecondWakeCueDropsEchoButPassesPostCueSpeech(t *testing.T) {
+	const cueDuration = 500 * time.Millisecond
+	source := &stagedSource{}
+	wake := &fakeWake{afterWords: 5, maxFires: 1}
+	stt := &fakeSTT{text: "hello"}
+	player := &blockingCuePlayer{started: make(chan struct{}), block: cueDuration}
+	responder := &fakeResponder{calls: make(chan string, 1)}
+
+	loop := newLoop(t, voice.Config{
+		FrameBytes: frameBytes,
+		Endpoint:   endpointConfig(200 * time.Millisecond),
+	}, voice.Deps{
+		Source: source, Wake: wake, STT: stt, Player: player, Responder: responder,
+		WakeCue: func() ([]byte, audio.Format, bool) {
+			return []byte{1, 2, 3, 4}, audio.Format{Rate: 16000, Width: 2, Channels: 1}, true
+		},
+	})
+	runLoop(t, loop)
+
+	select {
+	case <-player.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("wake cue did not start")
+	}
+
+	// Loud frames captured while the cue plays are echo and must be dropped.
+	source.stage(repeat(echoFrame(), 8))
+
+	// Speak only after the cue and its chimeEnd timestamp gate have passed.
+	time.Sleep(cueDuration + 60*time.Millisecond)
+	source.stage(utteranceFrames())
+
+	waitForReply(t, responder.calls, "no reply after post-cue speech")
+
+	var heardEcho, heardSpeech bool
+	for _, frame := range stt.received() {
+		if bytes.Equal(frame, echoFrame()) {
+			heardEcho = true
+		}
+		if bytes.Equal(frame, loudFrame()) {
+			heardSpeech = true
+		}
+	}
+	if heardEcho {
+		t.Fatal("audio captured during the cue reached STT")
+	}
+	if !heardSpeech {
+		t.Fatal("speech after the cue did not reach STT")
+	}
+}
+
 func TestLoopUsesTheLiveWakeCueInsteadOfTheStaticChime(t *testing.T) {
 	source := &scriptSource{frames: append(repeat(loudFrame(), 8), repeat(silentFrame(), 40)...)}
 	wake := &fakeWake{afterWords: 5, maxFires: 1}

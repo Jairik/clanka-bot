@@ -112,9 +112,10 @@ func (m *Module) Configure(section *yaml.Node) error {
 	return nil
 }
 
-// Register adds weather.current. A successful live answer also seeds the Health
-// memo, so the Health row does not pay a second provider round trip right after
-// a spoken or typed weather request.
+// Register adds weather.current and weather.forecast. A successful live answer
+// (for the current place) also seeds the Health memo, so the Health row does
+// not pay a second provider round trip right after a spoken or typed weather
+// request.
 func (m *Module) Register(r *tool.Registry, deps tool.Deps) error {
 	m.location = deps.Location
 	m.secrets = deps.Secrets
@@ -130,7 +131,20 @@ func (m *Module) Register(r *tool.Registry, deps tool.Deps) error {
 		}
 		return out, err
 	}
-	return tool.Add(r, def)
+	if err := tool.Add(r, def); err != nil {
+		return err
+	}
+	// weather.forecast shares the same providers, cache TTLs and Health memo.
+	fdef := NewForecast(m.deps())
+	finner := fdef.Handler
+	fdef.Handler = func(ctx context.Context, in ForecastIn) (ForecastOut, error) {
+		out, err := finner(ctx, in)
+		if err == nil && strings.TrimSpace(in.City) == "" {
+			m.health.record(m.clock(), nil)
+		}
+		return out, err
+	}
+	return tool.Add(r, fdef)
 }
 
 // Health checks that the configured provider chain answers for the current
@@ -184,6 +198,7 @@ func (m *Module) deps() Deps {
 		Location:      m.location,
 		Settings:      m.settings,
 		RecordWeatherAPIOutcome: m.recordWeatherAPIStatus,
+		Now:           m.now,
 	}
 }
 

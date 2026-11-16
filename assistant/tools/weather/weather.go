@@ -189,6 +189,9 @@ type Deps struct {
 	// the Fast path renderer reads the temperature unit per reply (#318).
 	// Nil means only the code default ("auto") is available.
 	Settings func() *settings.Service
+	// Now is the module clock. weather.forecast maps a day to a daily index in
+	// the location's timezone; nil uses time.Now.
+	Now func() time.Time
 	// FallbackDelay starts the next provider if one is still pending; zero uses 250ms.
 	// Budget bounds all providers together; zero uses 1s.
 	FallbackDelay time.Duration
@@ -222,6 +225,9 @@ func New(deps Deps) tool.Tool[In, Out] {
 	if deps.FallbackURL == "" {
 		deps.FallbackURL = DefaultFallbackURL
 	}
+	if deps.Now == nil {
+		deps.Now = time.Now
+	}
 
 	cache := newCache()
 	return tool.Tool[In, Out]{
@@ -239,16 +245,31 @@ func New(deps Deps) tool.Tool[In, Out] {
 			"what's the weather",
 			"how's the weather outside",
 			"what's the temperature outside",
-			"is it raining",
-			"weather in Berlin",
+			"is it raining outside",
+			"is it going to rain today",
+			"what are the conditions outside",
+			"how's the weather in Berlin",
+			"what's the weather in Paris",
+			"what's the temperature in London",
+			"is it cold outside",
+			"is it sunny outside",
+			"is it hot right now",
+			"how windy is it",
+			"should I wear a jacket today",
 		},
 		Extract: extract,
 	}
 }
 
 // Register adds weather.current to the registry.
+// Register adds weather.current and weather.forecast to the registry. The
+// module method is the production entry point; this package-level helper exists
+// for direct and test registration with explicit Deps.
 func Register(r *tool.Registry, deps Deps) error {
-	return tool.Add(r, New(deps))
+	if err := tool.Add(r, New(deps)); err != nil {
+		return err
+	}
+	return tool.Add(r, NewForecast(deps))
 }
 
 // extract fills the optional city from "<something> in <city>".
@@ -354,10 +375,6 @@ func apiKey(deps Deps) (string, bool) {
 
 // fetchCurrent starts fallback on primary failure or delay, keeping the first successful answer.
 func fetchCurrent(ctx context.Context, deps Deps, cache *cache, city string) (Out, error) {
-	type result struct {
-		out Out
-		err error
-	}
 	providers := []func() (Out, error){
 		func() (Out, error) { return primaryCurrent(ctx, deps, cache, city) },
 		func() (Out, error) { return fallbackForecast(ctx, deps, city) },
@@ -368,57 +385,7 @@ func fetchCurrent(ctx context.Context, deps Deps, cache *cache, city string) (Ou
 			func() (Out, error) { return weatherAPICurrent(ctx, deps, key, city) },
 		}, providers...)
 	}
-	// Buffered results let the cancelled loser exit without waiting for a receiver.
-	results := make(chan result, len(providers))
-	started := 0
-	startNext := func() {
-		provider := providers[started]
-		started++
-		go func() {
-			out, err := provider()
-			results <- result{out: out, err: err}
-		}()
-	}
-	startNext()
-	delay := time.NewTimer(deps.FallbackDelay)
-	defer delay.Stop()
-	// A ToolError ("I couldn't find that place") is a definitive answer about
-	// the request, so no further provider starts: wttr.in would otherwise
-	// guess some place for a name the geocoder rejected. It must not cancel a
-	// provider already in flight, though: a fast keyless geocoder miss can
-	// arrive while WeatherAPI is about to answer, and that answer still wins.
-	var lastErr, sayErr error
-	for completed := 0; completed < started; {
-		select {
-		case <-ctx.Done():
-			if sayErr != nil {
-				return Out{}, sayErr
-			}
-			return Out{}, ctx.Err()
-		case reply := <-results:
-			completed++
-			if reply.err == nil {
-				return reply.out, nil
-			}
-			var toolErr *tool.ToolError
-			if errors.As(reply.err, &toolErr) {
-				if sayErr == nil {
-					sayErr = reply.err
-				}
-			} else {
-				lastErr = reply.err
-			}
-		case <-delay.C:
-		}
-		if sayErr == nil && started < len(providers) && ctx.Err() == nil {
-			startNext()
-			delay.Reset(deps.FallbackDelay)
-		}
-	}
-	if sayErr != nil {
-		return Out{}, sayErr
-	}
-	return Out{}, lastErr
+	return raceFetch[Out](ctx, deps, providers)
 }
 
 // primaryCurrent shares the overall deadline across Open-Meteo's two requests.
@@ -451,7 +418,13 @@ func unknownLocation() error {
 // so a plain "what's the weather" can still resolve instead of geocoding an
 // IANA identifier that finds nothing.
 func resolveCity(in In, deps Deps) (string, error) {
-	if city := strings.TrimSpace(in.City); city != "" {
+	return resolveCityName(in.City, deps)
+}
+
+// resolveCityName is the city-resolution core shared by weather.current and
+// weather.forecast.
+func resolveCityName(city string, deps Deps) (string, error) {
+	if city := strings.TrimSpace(city); city != "" {
 		return city, nil
 	}
 	if deps.Location == nil {
@@ -536,12 +509,15 @@ type cache struct {
 	mu        sync.Mutex
 	places    map[string]cacheEntry[place]
 	forecasts map[string]cacheEntry[Out]
+	// daily is the separate 30-minute forecast cache, keyed by city and day.
+	daily map[string]cacheEntry[ForecastOut]
 }
 
 func newCache() *cache {
 	return &cache{
 		places:    make(map[string]cacheEntry[place]),
 		forecasts: make(map[string]cacheEntry[Out]),
+		daily:     make(map[string]cacheEntry[ForecastOut]),
 	}
 }
 
@@ -587,6 +563,11 @@ func insertCapped[K comparable, V any](m map[K]cacheEntry[V], key K, value cache
 
 func cacheKey(city string) string { return strings.ToLower(strings.TrimSpace(city)) }
 
+// cacheKeyDay keys the daily forecast cache by city and the canonical day token.
+func cacheKeyDay(city, day string) string {
+	return cacheKey(city) + "|" + normalizeDay(day)
+}
+
 func cachedGeocode(ctx context.Context, deps Deps, c *cache, city string) (place, error) {
 	key := cacheKey(city)
 	if c != nil {
@@ -611,6 +592,7 @@ type place struct {
 	Name      string
 	Latitude  float64
 	Longitude float64
+	Timezone  string
 }
 
 type geocodingResponse struct {
@@ -618,6 +600,7 @@ type geocodingResponse struct {
 		Name      string  `json:"name"`
 		Latitude  float64 `json:"latitude"`
 		Longitude float64 `json:"longitude"`
+		Timezone  string  `json:"timezone"`
 	} `json:"results"`
 }
 
@@ -638,7 +621,7 @@ func geocode(ctx context.Context, deps Deps, city string) (place, error) {
 	if result.Name == "" || (result.Latitude == 0 && result.Longitude == 0) {
 		return place{}, &tool.ToolError{Say: "I couldn't find that place."}
 	}
-	return place{Name: result.Name, Latitude: result.Latitude, Longitude: result.Longitude}, nil
+	return place{Name: result.Name, Latitude: result.Latitude, Longitude: result.Longitude, Timezone: result.Timezone}, nil
 }
 
 type forecastResponse struct {

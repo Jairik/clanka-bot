@@ -68,6 +68,7 @@ var routingEvalTools = []string{
 	clock.CityName,
 	clock.CountdownName,
 	weather.Name,
+	weather.ForecastName,
 	audiocontrol.VolumeName,
 	audiocontrol.StopName,
 	timer.SetName,
@@ -573,6 +574,16 @@ func evalRegistry(t *testing.T) (*tool.Registry, *timer.Manager, *alarm.Manager,
 	}))
 	t.Cleanup(geo.Close)
 	forecast := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// The single Open-Meteo forecast endpoint answers both weather.current
+		// (current=) and weather.forecast (daily=); serve the right shape.
+		if r.URL.Query().Get("daily") != "" {
+			fmt.Fprint(w, `{"latitude":52.52,"longitude":13.41,"timezone":"Europe/Berlin",
+				"daily":{"time":["2026-11-11","2026-11-12","2026-11-13"],
+				"temperature_2m_max":[12,14,13],"temperature_2m_min":[5,6,4],
+				"precipitation_probability_max":[20,70,30],"weather_code":[2,61,0],
+				"sunrise":["06:42","06:44","06:46"],"sunset":["16:31","16:29","16:27"]}}`)
+			return
+		}
 		fmt.Fprint(w, `{"latitude":52.52,"longitude":13.41,"timezone":"Europe/Berlin",
 			"current":{"time":"2026-11-11T16:00","interval":900,"temperature_2m":8.4,
 			"apparent_temperature":6.1,"relative_humidity_2m":70,"weather_code":2,"wind_speed_10m":9.2}}`)

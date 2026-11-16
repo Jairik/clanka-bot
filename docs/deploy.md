@@ -609,9 +609,15 @@ same pass by hand. The policy is deliberately narrow:
 
 - Only `clanka/*` tags matching a commit SHA (`^[0-9a-f]{7,40}$`) are
   candidates. `dev`, `arm64-*` and other local tags are never touched.
-- The deployed SHA (`GIT_SHA`), the newest `DEPLOY_KEEP_IMAGES` sets (default
-  `3`) and any `DEPLOY_PINNED_SHAS` survive. A rolled-back-to SHA is the
-  deployed SHA, so it stays; sets newer than it are kept by the newest-N rule.
+- The deployed SHA (`GIT_SHA`), the newest `DEPLOY_KEEP_IMAGES` **commits**
+  (default `3`) and any `DEPLOY_PINNED_SHAS` survive. The window counts distinct
+  commits, not tags: a deploy that leaves a commit tagged several ways (a 7-char
+  deploy tag plus its 12- or 40-char spellings, or a short tag left by a partial
+  build) collapses into one slot, so every tag of a kept commit survives and
+  older, distinct rollback sets are not evicted. A rolled-back-to SHA is the
+  deployed SHA, so it stays; commits newer than it are kept by the newest-N
+  rule. A commit that has tags only for some services (a partial build) still
+  counts once, because it is the smallest possible rollback handle.
 - A set with a tag used by a running container is kept whole. A failed
   `docker image rmi` warns and continues.
 - If the image list or the running-container list cannot be read, or the

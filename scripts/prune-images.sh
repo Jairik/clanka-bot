@@ -5,9 +5,11 @@
 # tagged, not dangling: `docker image prune` reclaims nothing and
 # `docker image prune -a` would delete the tags rollback needs.
 #
-# The deployed SHA (GIT_SHA, or HEAD), the newest DEPLOY_KEEP_IMAGES sets and
+# The deployed SHA (GIT_SHA, or HEAD), the newest DEPLOY_KEEP_IMAGES commits and
 # DEPLOY_PINNED_SHAS survive, as does any set with a tag used by a running
-# container. Only tags that look like a commit SHA are candidates: `dev`,
+# container. The window counts distinct commits, not tags, so a commit tagged
+# several ways collapses into one slot. Only tags that look like a commit SHA are
+# candidates: `dev`,
 # `arm64-*` and other local tags are never touched. A failed `rmi` warns; an
 # incomplete inventory removes nothing.
 set -uo pipefail
@@ -32,8 +34,10 @@ usage() {
 Usage: scripts/prune-images.sh [--help]
 
 Remove old clanka/<service>:<sha> image sets, keeping the deployed SHA, the
-newest DEPLOY_KEEP_IMAGES sets (default 3) and any pinned SHA. Non-SHA tags and
-sets used by running containers are never touched.
+newest DEPLOY_KEEP_IMAGES commits (default 3) and any pinned SHA. The window
+counts distinct commits, not tags, so a commit tagged several ways uses one slot
+and every tag of a kept commit survives. Non-SHA tags and sets used by running
+containers are never touched.
 
 Environment:
   GIT_SHA                    deployed commit (default: git rev-parse --short HEAD)
@@ -157,6 +161,43 @@ while IFS='|' read -r repo tag id created; do
 	fi
 done <<<"$inventory"
 
+# Collapse tags that resolve to the same commit into a single retention unit. A
+# 7-char deploy tag and its 12/40-char aliases, or a short tag left behind by a
+# partial build next to the full set, are spellings of one commit and must share
+# one slot in the window: otherwise the aliases burn slots and evict older,
+# distinct rollback sets. Two SHA spellings name the same commit whenever one is
+# a prefix of the other (a short tag vs a full GIT_SHA, or a lengthened
+# rev-parse), which is exactly what `same_commit` checks.
+declare -A commit_rep=() # tag -> representative (canonical) tag of its commit
+reps=()
+for sha in "${!set_newest[@]}"; do
+	placed=0
+	for rep in "${reps[@]}"; do
+		if same_commit "$sha" "$rep"; then
+			commit_rep["$sha"]="$rep"
+			placed=1
+			break
+		fi
+	done
+	if ((placed == 0)); then
+		reps+=("$sha")
+		commit_rep["$sha"]="$sha"
+	fi
+done
+
+# One retention unit per distinct commit, keyed by its representative tag: the
+# newest CreatedAt of any of its spellings and the union of every ref that
+# resolves to it (so a kept commit keeps all of its tags, aliases included).
+declare -A commit_newest=()
+declare -A commit_tags=()
+for sha in "${!set_newest[@]}"; do
+	rep="${commit_rep[$sha]}"
+	commit_tags["$rep"]+="${set_tags[$sha]}"
+	if [[ -z "${commit_newest[$rep]:-}" || "${set_newest[$sha]}" > "${commit_newest[$rep]}" ]]; then
+		commit_newest["$rep"]="${set_newest[$sha]}"
+	fi
+done
+
 running_refs=()
 running_ids=()
 while IFS= read -r ref; do
@@ -178,11 +219,11 @@ if ((${#set_newest[@]} == 0)); then
 	exit 0
 fi
 
-# Newest set first. Every row is formatted by the same daemon in the same
+# Newest commit first. Every row is formatted by the same daemon in the same
 # local zone, so the CreatedAt strings sort consistently.
 mapfile -t ordered < <(
-	for sha in "${!set_newest[@]}"; do
-		printf '%s|%s\n' "${set_newest[$sha]}" "$sha"
+	for sha in "${!commit_newest[@]}"; do
+		printf '%s|%s\n' "${commit_newest[$sha]}" "$sha"
 	done | sort -r | cut -d'|' -f2
 )
 
@@ -230,7 +271,7 @@ for sha in "${ordered[@]}"; do
 			log "keeping $ref (used by a running container)"
 			break
 		fi
-	done <<<"${set_tags[$sha]}"
+	done <<<"${commit_tags[$sha]}"
 done
 
 removed=0
@@ -253,7 +294,7 @@ for sha in "${ordered[@]}"; do
 			failed=$((failed + 1))
 			warn "could not remove $ref; leaving it in place"
 		fi
-	done <<<"${set_tags[$sha]}"
+	done <<<"${commit_tags[$sha]}"
 done
 
 # Build cache is shared by the whole Docker daemon and cannot be scoped to this

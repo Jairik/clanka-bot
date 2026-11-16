@@ -476,6 +476,81 @@ test_disk_usage_is_shown_before_and_after() {
 	assert_calls_contains "df runs once before and once after" "docker system df"
 }
 
+test_window_counts_commits_not_tags() {
+	# One deployed commit spelled 7/12/40 ways, plus two older complete sets.
+	# With KEEP=3 the aliases must collapse into a single slot so both older
+	# rollback sets survive the window.
+	new_case
+	GIT_SHA_TEST=e351f16
+	export DEPLOY_KEEP_IMAGES=3
+	add_image clanka/assistant e351f16 aaaaaaa00001 "2026-11-05 10:00:00 +0000 UTC"
+	add_image clanka/assistant e351f161cf39 aaaaaaa00002 "2026-11-05 10:02:00 +0000 UTC"
+	add_image clanka/assistant e351f161cf39d4a3ae87f7a58f2430872c221fa4 aaaaaaa00003 "2026-11-05 10:04:00 +0000 UTC"
+	add_image clanka/assistant e591cf0 bbbbbbb00001 "2026-11-04 10:00:00 +0000 UTC"
+	add_image clanka/tts e591cf0 bbbbbbb00002 "2026-11-04 10:01:00 +0000 UTC"
+	add_image clanka/assistant a6e373d ccccccc00001 "2026-11-03 10:00:00 +0000 UTC"
+	add_image clanka/tts a6e373d ccccccc00002 "2026-11-03 10:01:00 +0000 UTC"
+	run_prune
+	assert_status 0 "the multi-spelling deploy prunes nothing"
+	assert_calls_not_contains "the 7-char deployed tag survives" "docker image rmi clanka/assistant:e351f16"
+	assert_calls_not_contains "the 12-char deployed alias survives" "docker image rmi clanka/assistant:e351f161cf39"
+	assert_calls_not_contains "the 40-char deployed alias survives" "docker image rmi clanka/assistant:e351f161cf39d4a3ae87f7a58f2430872c221fa4"
+	assert_calls_not_contains "the first older set survives" "docker image rmi clanka/assistant:e591cf0"
+	assert_calls_not_contains "the first older set's tts survives" "docker image rmi clanka/tts:e591cf0"
+	assert_calls_not_contains "the second older set survives" "docker image rmi clanka/assistant:a6e373d"
+	assert_calls_not_contains "the second older set's tts survives" "docker image rmi clanka/tts:a6e373d"
+	assert_out_contains "the first older set is reported kept" "keeping e591cf0 (newest)"
+	assert_out_contains "the second older set is reported kept" "keeping a6e373d (newest)"
+	assert_out_contains "the deployed commit is reported kept" "(deployed)"
+}
+
+test_single_service_alias_does_not_evict_older_set() {
+	# A newer commit carries a complete set (8-char) plus a 12-char partial-build
+	# alias for one service. The alias must not consume a second window slot and
+	# evict an older, complete rollback set.
+	new_case
+	GIT_SHA_TEST=77777777
+	export DEPLOY_KEEP_IMAGES=3
+	add_image clanka/assistant 77777777 111111100001 "2026-11-05 10:00:00 +0000 UTC"
+	add_image clanka/tts 77777777 111111100002 "2026-11-05 10:01:00 +0000 UTC"
+	add_image clanka/assistant 777777771234 111111100003 "2026-11-05 10:02:00 +0000 UTC"
+	add_image clanka/assistant 8888888 222222200001 "2026-11-04 10:00:00 +0000 UTC"
+	add_image clanka/tts 8888888 222222200002 "2026-11-04 10:01:00 +0000 UTC"
+	add_image clanka/assistant 9999999 333333300001 "2026-11-03 10:00:00 +0000 UTC"
+	add_image clanka/tts 9999999 333333300002 "2026-11-03 10:01:00 +0000 UTC"
+	run_prune
+	assert_status 0 "the alias-and-older-set prune succeeds"
+	assert_calls_not_contains "the deployed 8-char tag survives" "docker image rmi clanka/assistant:77777777"
+	assert_calls_not_contains "the partial alias survives" "docker image rmi clanka/assistant:777777771234"
+	assert_calls_not_contains "the first older set survives" "docker image rmi clanka/assistant:8888888"
+	assert_calls_not_contains "the first older set's tts survives" "docker image rmi clanka/tts:8888888"
+	assert_calls_not_contains "the second older set survives" "docker image rmi clanka/assistant:9999999"
+	assert_calls_not_contains "the second older set's tts survives" "docker image rmi clanka/tts:9999999"
+	assert_out_contains "the first older set is reported kept" "keeping 8888888 (newest)"
+	assert_out_contains "the second older set is reported kept" "keeping 9999999 (newest)"
+}
+
+test_every_tag_of_a_kept_commit_survives() {
+	# KEEP=1: the deployed commit has three spellings; all of them must survive
+	# even though the window would only admit one "set" by the old tag-counting
+	# rule, and the single older commit must be the one removed.
+	new_case
+	GIT_SHA_TEST=e351f16
+	export DEPLOY_KEEP_IMAGES=1
+	add_image clanka/assistant e351f16 aaaaaaa00001 "2026-11-05 10:00:00 +0000 UTC"
+	add_image clanka/assistant e351f161cf39 aaaaaaa00002 "2026-11-05 10:02:00 +0000 UTC"
+	add_image clanka/assistant e351f161cf39d4a3ae87f7a58f2430872c221fa4 aaaaaaa00003 "2026-11-05 10:04:00 +0000 UTC"
+	add_image clanka/assistant e591cf0 bbbbbbb00001 "2026-11-04 10:00:00 +0000 UTC"
+	add_image clanka/tts e591cf0 bbbbbbb00002 "2026-11-04 10:01:00 +0000 UTC"
+	run_prune
+	assert_status 0 "the kept-commit spellings prune succeeds"
+	assert_calls_not_contains "the 7-char deployed tag survives" "docker image rmi clanka/assistant:e351f16"
+	assert_calls_not_contains "the 12-char deployed alias survives" "docker image rmi clanka/assistant:e351f161cf39"
+	assert_calls_not_contains "the 40-char deployed alias survives" "docker image rmi clanka/assistant:e351f161cf39d4a3ae87f7a58f2430872c221fa4"
+	assert_calls_contains "the older set is the only thing removed" "docker image rmi clanka/assistant:e591cf0"
+	assert_calls_contains "the older set's tts is removed too" "docker image rmi clanka/tts:e591cf0"
+}
+
 run_test() {
 	local name=$1
 	printf '== %s\n' "$name"
@@ -496,6 +571,9 @@ run_test test_pinned_sha_survives
 run_test test_never_uses_a_broad_prune_command
 run_test test_build_cache_prune_is_opt_in_and_best_effort
 run_test test_disk_usage_is_shown_before_and_after
+run_test test_window_counts_commits_not_tags
+run_test test_single_service_alias_does_not_evict_older_set
+run_test test_every_tag_of_a_kept_commit_survives
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

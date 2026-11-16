@@ -146,8 +146,16 @@ func TestTTSCacheHitServesWithoutTTSAndRunsHookAndMarks(t *testing.T) {
 }
 
 func TestTTSCacheBypassesLongText(t *testing.T) {
-	audioData := bytes.Repeat([]byte{1, 2}, 480)
-	addr, requests := serveTTS(t, okHandler(t, audioData))
+	chunk := bytes.Repeat([]byte{1, 2}, 20000) // 40 KB chunk
+	addr, requests := serveTTS(t, func(c net.Conn) {
+		readLine(t, c)
+		writeEvent(t, c, "audio-start", map[string]any{"rate": 24000, "width": 2, "channels": 1})
+		// A long reply split into several chunks.
+		for i := 0; i < 5; i++ {
+			writeAudio(t, c, chunk)
+		}
+		writeEvent(t, c, "audio-stop", nil)
+	})
 	swap := &swapSink{}
 	swap.Swap(newRecorder())
 	sp := speech.New(wyoming.NewClient(addr), swap, wyoming.Voice{Name: "alba"}, nil)
@@ -161,7 +169,7 @@ func TestTTSCacheBypassesLongText(t *testing.T) {
 		t.Fatalf("first long Say requests = %d, want 1", got)
 	}
 	// A long reply never enters the cache, so an identical second Say still
-	// misses and makes another TTS request.
+	// misses and makes another TTS request (no PCM was buffered).
 	swap.Swap(newRecorder())
 	if _, err := sp.Say(context.Background(), long); err != nil {
 		t.Fatalf("second long Say: %v", err)

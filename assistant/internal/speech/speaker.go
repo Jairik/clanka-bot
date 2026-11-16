@@ -146,10 +146,12 @@ func (s *Speaker) Say(ctx context.Context, text string) (Result, error) {
 	}
 
 	// Short replies may be served from the cache. Longer replies bypass it
-	// entirely (neither looked up nor stored) to keep memory bounded on the Pi.
-	// A voice or rate change misses because both are part of the key; a
+	// entirely (neither looked up, teed, nor stored) to keep memory bounded on
+	// the Pi, so a long Agent answer never buffers its whole PCM in memory. A
+	// voice or rate change misses because both are part of the key; a
 	// Quiet-hours gain change does not, because the stored PCM is pre-gain.
-	if runes := len([]rune(text)); runes <= ttsCacheMaxRunes {
+	cacheable := len([]rune(text)) <= ttsCacheMaxRunes
+	if cacheable {
 		s.cacheMu.Lock()
 		keyFormat := s.ttsFormat
 		s.cacheMu.Unlock()
@@ -159,7 +161,8 @@ func (s *Speaker) Say(ctx context.Context, text string) (Result, error) {
 		}
 	}
 
-	// Miss: synthesise and tee the chunks so a clean stream can be cached.
+	// Miss: synthesise and (only for cacheable replies) tee the chunks so a
+	// clean stream can be cached. Long replies skip the tee entirely.
 	stream, err := s.client.Synthesize(ctx, text, choice.Voice, wyoming.WithRate(rate))
 	if err != nil {
 		return Result{}, err
@@ -186,16 +189,21 @@ func (s *Speaker) Say(ctx context.Context, text string) (Result, error) {
 			playErr = err
 			break
 		}
-		tee.Write(chunk)
+		// Only accumulate PCM worth caching; a long reply streams straight to
+		// the sink without buffering.
+		if cacheable {
+			tee.Write(chunk)
+		}
 	}
 	if err := player.close(); playErr == nil {
 		playErr = err
 	}
 	result := player.result
 
-	// Store only a clean stream that produced audio and was not cancelled, so a
-	// Barge-in or a mid-stream failure never leaves a half-rendered entry.
-	if runes := len([]rune(text)); runes <= ttsCacheMaxRunes && playErr == nil && ctx.Err() == nil && tee.Len() > 0 {
+	// Store only a cacheable, clean stream that produced audio and was not
+	// cancelled, so a Barge-in or a mid-stream failure never leaves a
+	// half-rendered entry.
+	if cacheable && playErr == nil && ctx.Err() == nil && tee.Len() > 0 {
 		s.cacheStore(cacheKey(text, choice.Voice.Name, rate, format), append([]byte(nil), tee.Bytes()...), format)
 	}
 

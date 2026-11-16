@@ -2,7 +2,7 @@
 // flips to the conversation; the History button flips back.
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Button, ToggleButton, ToggleButtonGroup } from "@heroui/react";
-import { AlarmClock, CloudSun, Gauge, HeartPulse, History, Hourglass, KeyRound, Music, ScrollText, Timer, Volume2, Zap } from "lucide-react";
+import { AlarmClock, ArrowDown, CloudSun, Gauge, HeartPulse, History, Hourglass, KeyRound, Music, ScrollText, Timer, Volume2, Zap } from "lucide-react";
 import { getJSON, navigate, useQueryParam } from "../api";
 import { latestDelta, useLive, type LiveName } from "../events";
 import { Composer, Exchange, PendingExchange, fmtMS, isFailed, isTyped, parseMS, totalMS, useChat } from "../chat";
@@ -16,23 +16,80 @@ const greeting = () => {
   return h < 5 ? "Evening" : h < 12 ? "Morning" : h < 18 ? "Afternoon" : "Evening";
 };
 
+/** How close to the end still counts as "following" the conversation. */
+const BOTTOM_SLACK = 80;
+
+/** Reduced-motion readers get the instant jump the old code gave everyone. */
+const scrollBehavior = (): ScrollBehavior =>
+  typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth";
+
 export function Home() {
   const [view, setView] = useQueryParam("view", "overview");
   const { Owner } = useSession();
   const { requests, pending } = useChat();
+  const scroller = useRef<HTMLDivElement>(null);
   const end = useRef<HTMLDivElement>(null);
   const chat = view === "chat";
+  const [newReply, setNewReply] = useState(false);
+
+  // Read the reader's position from scroll events, not in the effect that
+  // appends a turn: by render time the taller content has already changed
+  // scrollHeight, so a fresh measurement would look like a scroll-away.
+  const atBottom = useRef(true);
+  const justSent = useRef(false);
+  const prevPending = useRef(pending.length);
+  const prevRequests = useRef(requests.length);
+  const prevChat = useRef(chat);
+
   useEffect(() => {
     document.title = "clanka";
   }, []);
+
   useEffect(() => {
-    if (chat) end.current?.scrollIntoView({ block: "end" });
+    const entered = chat && !prevChat.current;
+    prevChat.current = chat;
+    if (!chat) return;
+
+    // A send from this composer owns the reply that follows, so it follows
+    // even if the reader had been looking further up.
+    if (pending.length > prevPending.current) justSent.current = true;
+    prevPending.current = pending.length;
+
+    if (entered || atBottom.current || justSent.current) {
+      justSent.current = false;
+      setNewReply(false);
+      // Switching views wants a snap, not a long ride through the history.
+      end.current?.scrollIntoView({ block: "end", behavior: entered ? "auto" : scrollBehavior() });
+    } else if (requests.length > prevRequests.current) {
+      // A voice turn from the Pi landed while the reader was up the thread.
+      setNewReply(true);
+    }
+    // A resync with unchanged content keeps the same length, so it never
+    // reaches here and never fights a scroll the reader chose.
+    prevRequests.current = requests.length;
   }, [requests.length, pending.length, chat]);
+
+  const onScroll = useCallback(() => {
+    const el = scroller.current;
+    if (!el) return;
+    const bottom = el.scrollHeight - el.scrollTop - el.clientHeight < BOTTOM_SLACK;
+    atBottom.current = bottom;
+    // Scrolling away deliberately withdraws the "I just sent this" follow.
+    if (!bottom) justSent.current = false;
+  }, []);
+
+  const jumpToLatest = useCallback(() => {
+    setNewReply(false);
+    atBottom.current = true;
+    justSent.current = false;
+    end.current?.scrollIntoView({ block: "end", behavior: scrollBehavior() });
+  }, []);
+
   const name = Owner.split("@")[0];
 
   return (
     <div className="flex h-full flex-col">
-      <div className="min-h-0 flex-1 overflow-y-auto">
+      <div ref={scroller} onScroll={onScroll} data-testid="chat-scroller" className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto max-w-[1400px] px-4 pt-6 md:px-8 md:pt-10">
           <div className="flex flex-wrap items-end justify-between gap-4">
             <div>
@@ -80,6 +137,17 @@ export function Home() {
       </div>
 
       <div className="mx-auto w-full max-w-3xl shrink-0 px-3 pt-2 pb-3 md:px-4 md:pb-6">
+        {newReply && chat && (
+          <button
+            type="button"
+            onClick={jumpToLatest}
+            aria-label="Scroll to new reply"
+            className="new-reply-pill mx-auto mb-2 flex w-fit items-center gap-1.5 border bg-surface px-3 py-1.5 text-xs text-muted shadow-sm transition-colors hover:bg-surface-secondary hover:text-foreground"
+          >
+            <ArrowDown className="size-3.5" />
+            New reply
+          </button>
+        )}
         {!chat && <QuickActions onSent={() => setView("chat")} />}
         <Composer
           placeholder="Ask clanka to…"

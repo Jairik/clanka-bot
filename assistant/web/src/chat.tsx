@@ -37,6 +37,8 @@ type Chat = {
   sendAudio: (pcm: ArrayBuffer) => void;
   retry: (p: PendingAsk) => void;
   dismiss: (id: string) => void;
+  /** Abort an in-flight pending request (this tab only) and drop its bubble. */
+  cancel: (id: string) => void;
 };
 const ChatCtx = createContext<Chat>(null!);
 export const useChat = () => useContext(ChatCtx);
@@ -126,26 +128,59 @@ export function ChatProvider({ children }: { children: ReactNode }) {
 
   const send = useCallback((text: string) => {
     const id = nextId();
+    const controller = new AbortController();
+    controllers.current.set(id, controller);
     setPending((p) => [...p, { id, source: "dashboard", text, at: new Date() }]);
-    postForm<ActivityView>("/activity/ask", { text }).then((r) => settle(id, r), (e) => fail(id, e));
-  }, [nextId]);
+    postForm<ActivityView>("/activity/ask", { text }, { signal: controller.signal }).then(
+      (r) => {
+        controllers.current.delete(id);
+        settle(id, r);
+      },
+      (e) => {
+        controllers.current.delete(id);
+        fail(id, e);
+      },
+    );
+  }, [nextId, settle, fail]);
 
   const audio = useRef(new Map<string, ArrayBuffer>());
   const sendAudio = useCallback((pcm: ArrayBuffer) => {
     const id = nextId();
     audio.current.set(id, pcm);
+    const controller = new AbortController();
+    controllers.current.set(id, controller);
     setPending((p) => [...p, { id, source: "dashboard_mic", text: "", at: new Date() }]);
     postForm<ActivityView>("/api/ui/ask/audio", undefined, {
       body: pcm,
+      signal: controller.signal,
       headers: { Accept: "application/json", "Content-Type": "audio/L16; rate=16000; channels=1; endianness=little-endian" },
     }).then(
       (r) => {
         if (r.ok) audio.current.delete(id);
+        controllers.current.delete(id);
         settle(id, r);
       },
-      (e) => fail(id, e),
+      (e) => {
+        controllers.current.delete(id);
+        fail(id, e);
+      },
     );
-  }, [nextId]);
+  }, [nextId, settle, fail]);
+
+  // One AbortController per in-flight pending request. The controller's signal
+  // rides the POST, so aborting it cancels the server's pipeline through the
+  // request context — the existing per-request cancellation, no new route.
+  const controllers = useRef(new Map<string, AbortController>());
+
+  const cancel = useCallback((id: string) => {
+    const controller = controllers.current.get(id);
+    // An already-finished request has no controller: cancel is a no-op.
+    if (!controller) return;
+    controller.abort();
+    controllers.current.delete(id);
+    audio.current.delete(id);
+    setPending((p) => p.filter((x) => x.id !== id));
+  }, []);
 
   const dismiss = useCallback((id: string) => {
     audio.current.delete(id);
@@ -164,7 +199,7 @@ export function ChatProvider({ children }: { children: ReactNode }) {
   const requests = useMemo(() => [...(view?.Requests ?? [])].reverse(), [view]);
   const busy = pending.some((p) => !p.error);
   return (
-    <ChatCtx.Provider value={{ view, requests, pending, loadError, busy, send, sendAudio, retry, dismiss }}>{children}</ChatCtx.Provider>
+    <ChatCtx.Provider value={{ view, requests, pending, loadError, busy, send, sendAudio, retry, dismiss, cancel }}>{children}</ChatCtx.Provider>
   );
 }
 
@@ -357,7 +392,7 @@ export function Exchange({ r }: { r: Request }) {
 }
 
 export function PendingExchange({ p }: { p: PendingAsk }) {
-  const { retry, dismiss } = useChat();
+  const { retry, dismiss, cancel } = useChat();
   const mic = p.source === "dashboard_mic";
   // A failed take has no transcript; the error line below says what happened,
   // so the bubble is left empty instead of showing "Recording", which would
@@ -386,10 +421,19 @@ export function PendingExchange({ p }: { p: PendingAsk }) {
             </div>
           </div>
         ) : (
-          <div className="flex gap-1 py-2.5" role="status" aria-label="Thinking">
+          <div className="flex items-center gap-2 py-2.5" role="status" aria-label="Thinking">
             {[0, 1, 2].map((i) => (
               <span key={i} className="size-1.5 animate-bounce rounded-full bg-muted" style={{ animationDelay: `${i * 120}ms` }} />
             ))}
+            <Button
+              size="sm"
+              variant="ghost"
+              className="text-subtle"
+              onPress={() => cancel(p.id)}
+              aria-label="Cancel request"
+            >
+              Cancel
+            </Button>
           </div>
         )}
       </BotRow>

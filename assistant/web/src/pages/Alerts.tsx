@@ -3,6 +3,7 @@ import { Button, Checkbox } from "@heroui/react";
 import { AlarmClock, BellRing, ChevronDown, Hourglass, StickyNote, X } from "lucide-react";
 import { usePageData } from "../api";
 import { useDesktopNotifications } from "../desktop-notify";
+import { DeferredRows, useDeferredQueue } from "../queued-actions";
 import { Field, SelectField, TextField, useActions, type Actions } from "../forms";
 import { PageFrame } from "../shell";
 import type { AlarmEditor, AlertsView } from "../types";
@@ -26,6 +27,7 @@ export function AlertsPage() {
         <div className="space-y-2.5">
           <CreateAlert actions={actions} />
           <DesktopNotifications view={data} />
+          <QueuedActions />
           <Section title="Active" summary={`${data.Alerts?.length ?? 0} scheduled · ${data.ZoneName}`} defaultOpen flush>
             {data.Alerts?.length ? (
               <ul className="divide-y divide-separator">
@@ -110,6 +112,16 @@ export function AlertsPage() {
         </div>
       )}
     </PageFrame>
+  );
+}
+
+// Same queue as the Home card: read-only until the requested event fires (#297).
+function QueuedActions() {
+  const { items, limit, error, pending, cancel } = useDeferredQueue();
+  return (
+    <Section title="Queued actions" summary={`${items.length}/${limit}`} defaultOpen flush>
+      <DeferredRows items={items} error={error} pending={pending} cancel={cancel} />
+    </Section>
   );
 }
 

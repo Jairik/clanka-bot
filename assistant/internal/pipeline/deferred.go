@@ -13,6 +13,9 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 )
 
+// deferredLimit is the queue cap enforced by Add and reported to the Dashboard.
+const deferredLimit = 8
+
 // DeferredAction is an expiring, in-memory request waiting for one completion event.
 type DeferredAction struct {
 	ID      uint64    `json:"id"`
@@ -20,6 +23,13 @@ type DeferredAction struct {
 	Text    string    `json:"text"`
 	Expires time.Time `json:"expires"`
 	ready   bool
+}
+
+// deferredView is the snapshot the Dashboard reads: the live queue and the
+// server-side cap, so the UI never has to duplicate the limit.
+type deferredView struct {
+	Items []DeferredAction `json:"items"`
+	Limit int              `json:"limit"`
 }
 
 // DeferredQueue bounds pending requests and removes them before dispatch for at-most-once execution.
@@ -66,7 +76,7 @@ func (q *DeferredQueue) Add(event, text string) bool {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	q.prune()
-	if len(q.actions) >= 8 {
+	if len(q.actions) >= deferredLimit {
 		return false
 	}
 	q.next++
@@ -74,7 +84,9 @@ func (q *DeferredQueue) Add(event, text string) bool {
 	return true
 }
 
-// ServeHTTP is mounted behind the existing Dashboard identity and same-origin guards.
+// ServeHTTP is mounted behind the existing Dashboard identity and same-origin
+// guards. GET answers {items, limit} so the Dashboard can show the real cap;
+// POST cancels one request by id and answers the same view.
 func (q *DeferredQueue) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost {
 		r.Body = http.MaxBytesReader(w, r.Body, 1024)
@@ -93,7 +105,7 @@ func (q *DeferredQueue) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(q.List())
+	_ = json.NewEncoder(w).Encode(deferredView{Items: q.List(), Limit: deferredLimit})
 }
 
 // BindDeferred shares orchestration state with the Dashboard and completion dispatcher.

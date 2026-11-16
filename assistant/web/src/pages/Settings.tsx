@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { Button } from "@heroui/react";
 import { getJSON, postForm } from "../api";
+import { DEFERRED_POLL_MS, DeferredRows, type DeferredView } from "../queued-actions";
 // Settings shares the global equalizer with every Pi audio client.
 import { Equalizer } from "./Equalizer";
 import { Lock } from "lucide-react";
@@ -217,14 +217,20 @@ function ToolRow({ t, actions }: { t: SettingTool; actions: ReturnType<typeof us
   );
 }
 
-// Pending orchestration shares the authenticated API and stays cancellable from Settings.
-type Deferred = { id: number; event: string; text: string; expires: string };
-
+// Pending orchestration shares the authenticated API and stays cancellable from
+// here as well as the Home card and Alerts (#297).
 function QueuedActions() {
-  const [items, setItems] = useState<Deferred[]>([]);
+  const [view, setView] = useState<DeferredView>({ items: [], limit: 0 });
   const [error, setError] = useState("");
+  const [pending, setPending] = useState<number | null>(null);
   const refresh = useCallback(
-    () => getJSON<Deferred[]>("/api/deferred").then(setItems).catch((e) => setError(String(e))),
+    () =>
+      getJSON<DeferredView>("/api/deferred")
+        .then((v) => {
+          setView(v);
+          setError("");
+        })
+        .catch((e) => setError(String(e))),
     [],
   );
   useEffect(() => {
@@ -232,23 +238,29 @@ function QueuedActions() {
   }, [refresh]);
   // The queue is not on the stream yet, so a poll is still needed. A hidden tab
   // must not ask the Pi for it; one reload on return closes the gap (#281).
-  useVisiblePolling(refresh, 10_000);
+  useVisiblePolling(refresh, DEFERRED_POLL_MS);
+  const cancel = useCallback(
+    async (id: number) => {
+      setPending(id);
+      try {
+        const result = await postForm("/api/deferred", { id: String(id) });
+        if (!result.ok) throw new Error(result.text || `Cancel failed (${result.status})`);
+        await refresh();
+      } catch (e) {
+        setError(String(e));
+      } finally {
+        setPending(null);
+      }
+    },
+    [refresh],
+  );
   return (
-    <div className="p-3.5 space-y-2">
-      <p>Queued actions · {items.length}/8</p>
-      {error && <p role="alert">{error}</p>}
-      {items.map((item) => (
-        <div key={item.id} className="flex items-center justify-between gap-3">
-          <span>{item.text} · after {item.event} · expires {new Date(item.expires).toLocaleTimeString()}</span>
-          <Button variant="secondary" onPress={async () => {
-            try {
-              const result = await postForm("/api/deferred", { id: String(item.id) });
-              if (!result.ok) throw new Error(result.text);
-              await refresh();
-            } catch (e) { setError(String(e)); }
-          }}>Cancel</Button>
-        </div>
-      ))}
+    <div className="border-t border-dashed py-3">
+      <div className="mb-2 flex items-center justify-between gap-3 px-3.5 text-xs text-muted">
+        <span>Queued actions</span>
+        <span className="tabular-nums">{view.items.length}/{view.limit}</span>
+      </div>
+      <DeferredRows items={view.items} error={error} pending={pending} cancel={cancel} />
     </div>
   );
 }

@@ -32,6 +32,11 @@ func main() {
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	// The Dashboard proxies /api/* to the assistant API. Mount the deferred
+	// queue from a stub so the queued-actions surfaces exercise the real route
+	// (and never 404) instead of only the Settings page tolerating it (#297).
+	api := http.NewServeMux()
+	api.Handle("/deferred", &pipeline.DeferredQueue{})
 	handler, err := dashboard.New(dashboard.Options{
 		Owner:       *owner,
 		Logger:      logger,
@@ -41,6 +46,7 @@ func main() {
 		Volume:      &volumeStub{percent: 40},
 		UIURL:       *uiURL,
 		UIVersion:   *uiVersion,
+		API:         api,
 	})
 	if err != nil {
 		log.Fatalf("dashboard: %v", err)

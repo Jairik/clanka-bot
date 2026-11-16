@@ -1011,6 +1011,33 @@ positives:
     - what is 2 liters in gallons
     - convert 5 feet to meters
     - how many grams in a kilogram
+  # units.currency: daily ECB currency conversion. Kept distinct from
+  # units.convert (length/mass/etc.) so celsius/kilometre conversions stay on
+  # units.convert; amount-less currency chatter falls through to the Agent.
+  units.currency:
+    - how much is 50 dollars in euros
+    - what is 100 euros in us dollars
+    - how much is 200 pounds in dollars
+    - 50 euros to us dollars
+    - 1000 yen to us dollars
+    - what is 75 canadian dollars in euros
+    - how much is 500 mexican pesos in dollars
+    - 250 australian dollars in pounds
+    - how much is 30 swiss francs in euros
+    - what is 1000 indian rupees in dollars
+    - 60 dollars to british pounds
+    - 150 euros in japanese yen
+    - what is 40 dollars in canadian dollars
+    - how much is 999 euros in us dollars
+    - 5000 won to us dollars
+    - how much is 10 dollars in swiss francs
+    - 450 singapore dollars in us dollars
+    - what is 100 new zealand dollars in australian dollars
+    - how much is 1 dollar in euros
+    - 300 norwegian kroner to euros
+    - 25 brazilian reais in dollars
+    - how much is 800 hong kong dollars in us dollars
+    - what is 5 dollars in japanese yen
   random.flip:
     - flip a coin
     - toss a coin
@@ -1877,6 +1904,20 @@ negatives:
   - sort the to-do list by priority
   - archive my shopping list
   - what's left to do on my list
+  # units.currency must not claim these. Amount-less or single-currency money
+  # questions fail its Extract and fall through to the Agent; they must not be
+  # guessed as a conversion. (celsius/kilometre conversions are units.convert
+  # positives, not negatives, so units.currency never steals them.)
+  - what's the exchange rate for the euro
+  - how much is a bitcoin worth in dollars
+  - what's the price of gold in euros
+  - how much is my salary in pounds
+  - what's the dollar to euro rate
+  - convert my savings into yen
+  - how many euros make a dollar
+  - what is the conversion rate from pounds to dollars
+  - tell me the current value of bitcoin
+  - how much would 20 cost in euros
 
 # Compound requests ask for more than one thing. They are kept separate so
 # the evaluation can report compound handling on its own.

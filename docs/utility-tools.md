@@ -125,17 +125,45 @@ Each unit converts through its dimension's base (meter, kilogram, liter,
 second, meter per second, square meter). Temperature uses affine formulas with
 Celsius as the base, so `0 C = 32 F`, `100 C = 212 F` and `-40 C = -40 F`.
 Cross-dimension requests such as miles to kilograms are a spoken error naming
-both units. Unknown units, including every currency, are refused with the
-supported dimensions; there is no exchange-rate lookup, no dynamic unit file and
-no network call. Values are finite and bounded to `1e15`, and a result beyond
-that is refused.
+both units. Unknown units are refused with the supported dimensions; there is no
+exchange-rate lookup, no dynamic unit file and no network call. Currency is the
+only thing `units.convert` refuses that another Tool in this module handles:
+`units.currency` converts money using the daily ECB reference rates, so
+"convert 5 miles to dollars" is refused here as a cross-dimension request while
+"50 dollars in euros" is a `units.currency` question. Values are finite and
+bounded to `1e15`, and a result beyond that is refused.
 
 Accepted phrasings include `convert 5 miles to km`, `5 miles in km`,
 `how many km in 5 miles`, `how many minutes in a day` and
 `what is 100 fahrenheit in celsius`. `Extract` requires both units to be known,
-so "how many calories in an apple" and "convert 5 miles to dollars" stay on the
-Agent path; the Tool itself still gives the helpful unknown-unit message when
-the Agent or a direct call reaches it.
+so "how many calories in an apple" stays on the Agent path; the Tool itself
+still gives the helpful unknown-unit message when the Agent or a direct call
+reaches it.
+
+## `units.currency`
+
+`assistant/tools/units/currency.go` converts between currencies with the daily
+ECB reference rates from the keyless Frankfurter API
+(`https://api.frankfurter.app/latest?from=<base>`). It is the only network-touching
+Tool in the module; `units.convert` above stays network-free.
+
+One `GET` is made per base currency and cached for 6 hours, with a 2 s timeout
+and a 64 KiB response cap, and only over https. When a fetch fails, the last
+good rates are reused with an "as of <date>" phrase; if there is no cached rate
+yet, the Tool refuses truthfully instead of inventing one. Unknown currencies
+are a spoken refusal, and ambiguous words with no safe default (for example
+"peso" on its own) are refused rather than guessed — the bare word "dollars"
+defaults to USD, which is the documented choice for that ambiguity.
+
+The reply always says "about", and includes the rate date only when it is not
+today: "50 US dollars is about 46 euros at today's rate." (or "as of
+2026-11-13" when the rate is stale or from another day).
+
+Accepted phrasings include `how much is 50 dollars in euros`,
+`what is 100 euros in us dollars`, `50 euros to us dollars` and
+`how much is 200 pounds in dollars`. `Extract` requires an amount and two
+currencies, so amount-less money questions ("what's the exchange rate for the
+euro") stay on the Agent path.
 
 ## `random`
 

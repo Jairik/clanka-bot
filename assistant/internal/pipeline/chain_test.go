@@ -45,8 +45,20 @@ func TestDeferredQueue(t *testing.T) {
 		t.Fatal("unbounded queue")
 	}
 	q.Cancel(q.List()[0].ID)
-	if len(q.Take("music")) != 0 || len(q.Take("timer")) != 7 || len(q.Take("timer")) != 0 {
-		t.Fatal("incorrect consumption")
+	// Nothing is dispatchable before the completion event, and a wrong event
+	// must not release the timer actions either.
+	q.Trigger("music")
+	if _, ok := q.NextReady(); ok {
+		t.Fatal("dispatched before the matching event")
+	}
+	q.Trigger("timer")
+	for i := 0; i < 7; i++ {
+		if _, ok := q.NextReady(); !ok {
+			t.Fatalf("missing timer action %d", i)
+		}
+	}
+	if _, ok := q.NextReady(); ok {
+		t.Fatal("action dispatched more than once")
 	}
 	q.Add("reply", "test")
 	q.Cancel(0)

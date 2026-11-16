@@ -15,7 +15,8 @@ import (
 func TestRingWaitsForTheCurrentReplySentence(t *testing.T) {
 	gate := playback.NewGate()
 	ctx := context.Background()
-	doneReply, err := gate.BeginReply(ctx)
+	owner := gate.NewOwner()
+	doneReply, err := gate.BeginReply(ctx, owner)
 	if err != nil {
 		t.Fatalf("BeginReply: %v", err)
 	}
@@ -56,7 +57,7 @@ func TestRingWaitsForTheCurrentReplySentence(t *testing.T) {
 	// The reply's next sentence must block while the Ring is active.
 	nextStarted := make(chan struct{})
 	go func() {
-		done, err := gate.BeginReply(ctx)
+		done, err := gate.BeginReply(ctx, owner)
 		if err != nil {
 			close(nextStarted)
 			return
@@ -83,7 +84,8 @@ func TestRingWaitsForTheCurrentReplySentence(t *testing.T) {
 func TestRingWaitsForTheWholeSentenceNotTheFirstClause(t *testing.T) {
 	gate := playback.NewGate()
 	ctx := context.Background()
-	doneClause, err := gate.BeginReply(ctx)
+	owner := gate.NewOwner()
+	doneClause, err := gate.BeginReply(ctx, owner)
 	if err != nil {
 		t.Fatalf("BeginReply: %v", err)
 	}
@@ -106,7 +108,7 @@ func TestRingWaitsForTheWholeSentenceNotTheFirstClause(t *testing.T) {
 	case <-time.After(30 * time.Millisecond):
 	}
 	// The continuation unit is allowed even though the Ring is waiting.
-	doneRest, err := gate.BeginReply(ctx)
+	doneRest, err := gate.BeginReply(ctx, owner)
 	if err != nil {
 		t.Fatalf("continuation BeginReply: %v", err)
 	}
@@ -144,7 +146,8 @@ func TestRingTakesAnIdleFloorImmediately(t *testing.T) {
 func TestWaitingRingBlocksNewSentencesEvenBeforeTheCurrentOneEnds(t *testing.T) {
 	gate := playback.NewGate()
 	ctx := context.Background()
-	doneFirst, err := gate.BeginReply(ctx)
+	owner := gate.NewOwner()
+	doneFirst, err := gate.BeginReply(ctx, owner)
 	if err != nil {
 		t.Fatalf("BeginReply: %v", err)
 	}
@@ -162,7 +165,7 @@ func TestWaitingRingBlocksNewSentencesEvenBeforeTheCurrentOneEnds(t *testing.T) 
 	doneFirst(true)
 	blocked := make(chan struct{})
 	go func() {
-		done, err := gate.BeginReply(ctx)
+		done, err := gate.BeginReply(ctx, owner)
 		if err == nil {
 			done(true)
 		}
@@ -180,7 +183,7 @@ func TestWaitingRingBlocksNewSentencesEvenBeforeTheCurrentOneEnds(t *testing.T) 
 func TestContextCancelsBothWaiters(t *testing.T) {
 	gate := playback.NewGate()
 	ctx, cancel := context.WithCancel(context.Background())
-	done, err := gate.BeginReply(context.Background())
+	done, err := gate.BeginReply(context.Background(), gate.NewOwner())
 	if err != nil {
 		t.Fatalf("BeginReply: %v", err)
 	}
@@ -197,7 +200,7 @@ func TestContextCancelsBothWaiters(t *testing.T) {
 
 	closed := playback.NewGate()
 	closed.Close()
-	if _, err := closed.BeginReply(context.Background()); !errors.Is(err, playback.ErrClosed) {
+	if _, err := closed.BeginReply(context.Background(), 0); !errors.Is(err, playback.ErrClosed) {
 		t.Fatalf("closed BeginReply error = %v, want ErrClosed", err)
 	}
 	if _, err := closed.WaitForReplySentence(context.Background()); !errors.Is(err, playback.ErrClosed) {
@@ -277,13 +280,128 @@ func TestGatedSpeakerObeysRingPriority(t *testing.T) {
 	}
 }
 
+// TestTwoOwnersAndWaitingRing proves the gate is correct under two concurrent
+// reply turns: owner B's new sentence blocks until a waiting Ring runs, the
+// Ring runs only after owner A ends its sentence, and A's end does not clear
+// B's claim.
+func TestTwoOwnersAndWaitingRing(t *testing.T) {
+	gate := playback.NewGate()
+	ctx := context.Background()
+	a := gate.NewOwner()
+	b := gate.NewOwner()
+
+	doneA, err := gate.BeginReply(ctx, a)
+	if err != nil {
+		t.Fatalf("A BeginReply: %v", err)
+	}
+
+	// A Ring asks for the floor and must wait for A's sentence.
+	ringReady := make(chan func(), 1)
+	go func() {
+		release, err := gate.WaitForReplySentence(ctx)
+		if err != nil {
+			ringReady <- nil
+			return
+		}
+		ringReady <- release
+	}()
+	time.Sleep(10 * time.Millisecond)
+	if gate.RingActive() {
+		t.Fatal("the Ring took the floor while A spoke")
+	}
+
+	// B starts a new sentence; it is a different owner, so it must wait for the
+	// Ring and must not skip the floor wait.
+	bStarted := make(chan struct{})
+	bDone := make(chan func(bool), 1)
+	go func() {
+		done, err := gate.BeginReply(ctx, b)
+		if err != nil {
+			close(bStarted)
+			return
+		}
+		bDone <- done
+		close(bStarted)
+	}()
+	select {
+	case <-bStarted:
+		t.Fatal("owner B started before the Ring ran")
+	case <-time.After(30 * time.Millisecond):
+	}
+
+	// A ends its sentence; now the Ring should take the floor.
+	doneA(true)
+	var release func()
+	select {
+	case release = <-ringReady:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the Ring did not take the floor after A ended")
+	}
+	if release == nil {
+		t.Fatal("the Ring waiter failed")
+	}
+	if !gate.RingActive() {
+		t.Fatal("the Ring did not own the floor")
+	}
+
+	// While the Ring owns the floor, B must still be blocked.
+	select {
+	case <-bStarted:
+		t.Fatal("owner B started while the Ring owned the floor")
+	case <-time.After(30 * time.Millisecond):
+	}
+
+	release()
+	select {
+	case <-bStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("owner B did not start after the Ring ended")
+	}
+	if !gate.Speaking() {
+		t.Fatal("owner B is not the speaker after it starts")
+	}
+	// B ends its sentence and clears only its own claim.
+	(<-bDone)(true)
+}
+
+// TestReleaseClearsOnlyTheOwningTurn proves one turn's end never frees the
+// floor out from under a concurrent turn: a late release from A leaves B's
+// claim intact, and only B's own release clears it.
+func TestReleaseClearsOnlyTheOwningTurn(t *testing.T) {
+	gate := playback.NewGate()
+	ctx := context.Background()
+	a := gate.NewOwner()
+	b := gate.NewOwner()
+
+	doneA, err := gate.BeginReply(ctx, a)
+	if err != nil {
+		t.Fatalf("A BeginReply: %v", err)
+	}
+	// B grabs the floor (no Ring, so it proceeds immediately as a new-sentence
+	// owner distinct from A).
+	doneB, err := gate.BeginReply(ctx, b)
+	if err != nil {
+		t.Fatalf("B BeginReply: %v", err)
+	}
+	// A ends its sentence, but B now owns the floor: the claim must survive.
+	doneA(true)
+	if !gate.Speaking() {
+		t.Fatal("owner A's release cleared owner B's claim")
+	}
+	// B ends and clears its own claim.
+	doneB(true)
+	if gate.Speaking() {
+		t.Fatal("owner B's release did not clear the floor")
+	}
+}
+
 // TestNilGateIsSafe keeps text-only and pre-#52 wiring free of nil checks.
 func TestNilGateIsSafe(t *testing.T) {
 	var gate *playback.Gate
 	if gate.Speaking() || gate.RingActive() {
 		t.Fatal("a nil gate reports activity")
 	}
-	done, err := gate.BeginReply(context.Background())
+	done, err := gate.BeginReply(context.Background(), 0)
 	if err != nil {
 		t.Fatalf("nil BeginReply: %v", err)
 	}

@@ -23,12 +23,20 @@ type Gate struct {
 	changed chan struct{}
 
 	speaking bool
+	// speakerOwner is the owner token of the reply sentence currently being
+	// spoken. A continuation unit from the same owner skips the Ring wait; a
+	// unit from a different owner (a second concurrent turn) waits for the
+	// floor. The release clears the claim only when the caller is this owner,
+	// so one turn's end cannot free the floor out from under another.
+	speakerOwner uint64
 	// ringWaiting counts Rings that have asked for the floor. A reply must not
 	// start a new sentence once a Ring is waiting, even before the current
 	// sentence has ended, so the Ring cannot be starved by a fast speaker.
 	ringWaiting int
 	ringActive  bool
 	closed      bool
+	// ownerSeq mints unique owner tokens so concurrent turns never share one.
+	ownerSeq uint64
 }
 
 // NewGate builds an open gate.
@@ -36,13 +44,30 @@ func NewGate() *Gate {
 	return &Gate{changed: make(chan struct{})}
 }
 
-// BeginReply marks the start of one speakable reply unit. A unit that starts a
-// new sentence blocks while a Ring is waiting or active, so the reply yields at
-// the sentence boundary. A continuation unit of the sentence already being
-// spoken does not block: the Ring must wait for the whole sentence, not just
-// its first chunk. The returned function takes whether this unit ends the
+// NewOwner mints a fresh, unique owner token for one reply session or
+// GatedSpeaker. Each concurrent turn (or unprompted speaker) takes its own
+// token so the gate can tell a sentence continuation from a second owner that
+// must wait for the floor. A nil gate returns 0; the nil-safe methods ignore
+// the token.
+func (g *Gate) NewOwner() uint64 {
+	if g == nil {
+		return 0
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.ownerSeq++
+	return g.ownerSeq
+}
+
+// BeginReply marks the start of one speakable reply unit owned by owner. A unit
+// that starts a new sentence blocks while a Ring is waiting or active, so the
+// reply yields at the sentence boundary. A continuation unit of the sentence
+// already being spoken by the same owner does not block: the Ring must wait for
+// the whole sentence, not just its first chunk. A unit from a different owner
+// (a second concurrent turn) is not a continuation and waits for the floor like
+// any other new sentence. The returned function takes whether this unit ends the
 // sentence and must always be called.
-func (g *Gate) BeginReply(ctx context.Context) (func(endSentence bool), error) {
+func (g *Gate) BeginReply(ctx context.Context, owner uint64) (func(endSentence bool), error) {
 	if g == nil {
 		return func(bool) {}, nil
 	}
@@ -51,9 +76,13 @@ func (g *Gate) BeginReply(ctx context.Context) (func(endSentence bool), error) {
 		g.mu.Unlock()
 		return nil, ErrClosed
 	}
-	// speaking already true means this unit continues the current sentence,
-	// so a waiting Ring must not stop it mid-sentence.
-	if !g.speaking {
+	// speaking and the same owner means this unit continues the current
+	// sentence, so a waiting Ring must not stop it mid-sentence and no floor
+	// wait is needed; the state is unchanged. Otherwise wait for the floor and
+	// claim it.
+	if g.speaking && g.speakerOwner == owner {
+		// continuation: no wait, no state change.
+	} else {
 		for {
 			if g.closed {
 				g.mu.Unlock()
@@ -68,6 +97,7 @@ func (g *Gate) BeginReply(ctx context.Context) (func(endSentence bool), error) {
 			}
 		}
 		g.speaking = true
+		g.speakerOwner = owner
 		g.notifyLocked()
 	}
 	g.mu.Unlock()
@@ -79,8 +109,10 @@ func (g *Gate) BeginReply(ctx context.Context) (func(endSentence bool), error) {
 				return
 			}
 			g.mu.Lock()
-			g.speaking = false
-			g.notifyLocked()
+			if g.speaking && g.speakerOwner == owner {
+				g.speaking = false
+				g.notifyLocked()
+			}
 			g.mu.Unlock()
 		})
 	}, nil
@@ -88,13 +120,14 @@ func (g *Gate) BeginReply(ctx context.Context) (func(endSentence bool), error) {
 
 // EndReplySpeech closes a sentence left open by the final chunk (a reply that
 // ended without punctuation). The player calls it on every exit so a Ring can
-// never wait forever.
-func (g *Gate) EndReplySpeech() {
+// never wait forever. It clears the claim only when owner holds it, so one
+// turn's shutdown cannot free the floor out from under a concurrent turn.
+func (g *Gate) EndReplySpeech(owner uint64) {
 	if g == nil {
 		return
 	}
 	g.mu.Lock()
-	if g.speaking {
+	if g.speaking && g.speakerOwner == owner {
 		g.speaking = false
 		g.notifyLocked()
 	}
@@ -176,12 +209,20 @@ type Speaker interface {
 type GatedSpeaker struct {
 	inner Speaker
 	gate  *Gate
+	// owner is this speaker's unique token, so its sentences are never
+	// mistaken for a reply continuation and its release never clears a reply's
+	// claim.
+	owner uint64
 }
 
 // NewGatedSpeaker wraps a speaker. A nil gate or speaker keeps the original
 // behaviour, so a text-only setup needs no wiring change.
 func NewGatedSpeaker(inner Speaker, gate *Gate) *GatedSpeaker {
-	return &GatedSpeaker{inner: inner, gate: gate}
+	s := &GatedSpeaker{inner: inner, gate: gate}
+	if gate != nil {
+		s.owner = gate.NewOwner()
+	}
+	return s
 }
 
 // SayText speaks one announcement after the current reply sentence and behind
@@ -190,7 +231,7 @@ func (s *GatedSpeaker) SayText(ctx context.Context, text string) error {
 	if s == nil || s.inner == nil {
 		return nil
 	}
-	done, err := s.gate.BeginReply(ctx)
+	done, err := s.gate.BeginReply(ctx, s.owner)
 	if err != nil {
 		return err
 	}

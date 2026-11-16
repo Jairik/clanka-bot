@@ -2,7 +2,7 @@
 // the action URLs the server put in each view, and answer with the refreshed
 // view (Error set and a 4xx/5xx status when the write was refused).
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
-import { isLiveName, latestDelta, useLive } from "./events";
+import { isLiveName, latestDelta, piUnreachable, useLive } from "./events";
 import { API_VERSION } from "./api-version";
 import type { DataPage, PageViews, WriteResult } from "./types";
 
@@ -30,7 +30,16 @@ export class APIVersionMismatch extends Error {
 }
 
 export async function getJSON<T>(path: string, signal?: AbortSignal): Promise<T> {
-  const res = await fetch(path, { headers: { Accept: "application/json" }, signal, credentials: "same-origin" });
+  let res: Response;
+  try {
+    res = await fetch(path, { headers: { Accept: "application/json" }, signal, credentials: "same-origin" });
+  } catch (e) {
+    // fetch only rejects when the request never reached the Pi (a dropped
+    // connection, not an HTTP status). Start the shell's grace clock so a long
+    // outage says so instead of leaving the page silently stale (#301).
+    piUnreachable();
+    throw e;
+  }
   if (!res.ok) throw new HttpError(res.status, (await res.text()).trim() || res.statusText);
   const served = Number(res.headers.get("X-Dashboard-API-Version") ?? "");
   if (Number.isFinite(served) && served > 0 && served !== API_VERSION) throw new APIVersionMismatch(served);

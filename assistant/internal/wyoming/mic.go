@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -187,21 +188,50 @@ type TranscriptStream struct {
 	closed atomic.Bool
 	// partials is only touched by Finish, which runs on one goroutine.
 	partials []string
+
+	// refusalDeadline bounds the early read that looks for an immediate busy
+	// refusal right after the stream opens (#368).
+	refusalDeadline time.Duration
+	// finalisationBudget is the total time Finish may keep reading after
+	// audio-stop; finalisationDeadline marks when it runs out (#340).
+	finalisationBudget   time.Duration
+	finalisationDeadline time.Time
 }
 
-// Transcribe opens a transcription stream and announces the audio format.
+// maxTranscriptChunks bounds the partial buffer. Only the last partial is ever
+// used as a fallback, so keeping the most recent ones bounds memory without
+// losing the fallback when a babbling service never sends a final transcript
+// (#340).
+const maxTranscriptChunks = 64
+
+// Transcribe opens a transcription stream and announces the audio format. It
+// then probes once for an immediate busy refusal: some serialising services
+// answer a second session right away, and learning that before the utterance is
+// streamed avoids writing audio into a dead session (#368). A healthy session
+// answers nothing before audio-stop, so the probe simply times out and the
+// stream is returned as usual; a refusal that only arrives later is still caught
+// at Finish.
 func (c *Client) Transcribe(ctx context.Context, opts TranscribeOptions, format Format) (*TranscriptStream, error) {
 	conn, err := c.dial(ctx)
 	if err != nil {
 		return nil, err
 	}
+	budget := c.finalisationBudget
+	if budget <= 0 {
+		budget = 3 * c.readTimeout
+		if budget < 60*time.Second {
+			budget = 60 * time.Second
+		}
+	}
 	s := &TranscriptStream{
-		conn:        conn,
-		reader:      bufio.NewReaderSize(conn, 64<<10),
-		ctx:         ctx,
-		timeout:     c.timeout,
-		readTimeout: c.readTimeout,
-		format:      format,
+		conn:               conn,
+		reader:             bufio.NewReaderSize(conn, 64<<10),
+		ctx:                ctx,
+		timeout:            c.timeout,
+		readTimeout:        c.readTimeout,
+		format:             format,
+		refusalDeadline:    c.refusalDeadline,
+		finalisationBudget: budget,
 	}
 	s.stopContext = context.AfterFunc(ctx, func() { _ = conn.Close() })
 
@@ -219,6 +249,25 @@ func (c *Client) Transcribe(ctx context.Context, opts TranscribeOptions, format 
 	if err := s.write("audio-start", AudioStartData(format.Rate, format.Width, format.Channels)); err != nil {
 		s.Close()
 		return nil, err
+	}
+	if s.refusalDeadline > 0 {
+		ev, err := readEvent(s.reader, s.refusalDeadline)
+		if err != nil {
+			s.Close()
+			// A timeout or a connection that closed before any event means the
+			// session is healthy (or already gone); Finish reports a real
+			// failure if one follows. Anything else is a genuine read error.
+			if isTimeout(err) || isClosed(err) {
+				return s, nil
+			}
+			return nil, s.mapError(err)
+		}
+		if ev.Type == "error" {
+			s.Close()
+			return nil, errorEvent(ev)
+		}
+		// Any other event before audio-stop is unexpected; let Finish handle
+		// it so a misbehaving service cannot drop a real transcript.
 	}
 	return s, nil
 }
@@ -238,8 +287,10 @@ func (s *TranscriptStream) Write(pcm []byte) error {
 
 // Finish marks the end of speech and returns the final transcript. Partial
 // transcript-chunk events are recorded but the service's final transcript wins.
-// Each read gets the client's read-idle timeout: a silent service is bounded,
-// while a long finalisation that keeps sending partials is not capped (#201).
+// Each read gets the client's read-idle timeout, so a slow-but-answering
+// service is still accepted; a total budget from audio-stop stops a babbling or
+// stuck service from wedging the loop and growing partials without bound
+// (#201, #340).
 func (s *TranscriptStream) Finish() (string, error) {
 	s.writeMu.Lock()
 	if s.closed.Load() {
@@ -251,9 +302,13 @@ func (s *TranscriptStream) Finish() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	s.finalisationDeadline = time.Now().Add(s.finalisationBudget)
 
 	text := ""
 	for {
+		if !s.finalisationDeadline.IsZero() && time.Now().After(s.finalisationDeadline) {
+			return "", fmt.Errorf("wyoming: transcribe: no final transcript within %s of audio-stop: %w", s.finalisationBudget, os.ErrDeadlineExceeded)
+		}
 		ev, err := s.readEvent()
 		if err != nil {
 			return "", s.mapError(err)
@@ -266,6 +321,9 @@ func (s *TranscriptStream) Finish() (string, error) {
 		case "transcript-chunk":
 			if value, ok := ev.Data["text"].(string); ok && value != "" {
 				s.partials = append(s.partials, value)
+				if len(s.partials) > maxTranscriptChunks {
+					s.partials = s.partials[len(s.partials)-maxTranscriptChunks:]
+				}
 			}
 		case "transcript-stop":
 			if text == "" && len(s.partials) > 0 {

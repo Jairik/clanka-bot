@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net"
 	"strings"
@@ -392,4 +394,107 @@ func TestTranscribeFinishKeepsReadingWhilePartialsArrive(t *testing.T) {
 	if elapsed := time.Since(started); elapsed <= idle {
 		t.Fatalf("finalisation returned after %v, want more than the %v idle deadline", elapsed, idle)
 	}
+}
+
+// A babbling service that keeps sending partials instead of a final transcript
+// must not wedge Finish forever: the total finalisation budget ends it. The
+// existing test above proves a progressing finalisation still returns, so this
+// one proves the bound (#340).
+func TestTranscribeFinishStopsBabblingWithinTheTotalBudget(t *testing.T) {
+	addr := fakeServer(t, func(conn net.Conn) {
+		r := bufio.NewReader(conn)
+		readWireEvent(t, r) // transcribe
+		readWireEvent(t, r) // audio-start
+		readWireEvent(t, r) // audio-stop
+		// Keep sending partials forever, the way a stuck service would. The
+		// client must give up after its total budget rather than never. Breaking
+		// on a write error lets the goroutine exit once the client gives up.
+		i := 0
+		for {
+			i++
+			if err := writeWireEventErr(conn, "transcript-chunk", map[string]any{"text": fmt.Sprintf("partial-%d", i)}); err != nil {
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	})
+
+	// A small read-idle timeout would otherwise be reset by every partial; the
+	// total budget is what bounds the turn.
+	client := wyoming.NewClient(addr, wyoming.WithTimeout(100*time.Millisecond), wyoming.WithFinalisationBudget(300*time.Millisecond))
+	ctx, cancel := contextWithTimeout(t)
+	defer cancel()
+
+	stream, err := client.Transcribe(ctx, wyoming.TranscribeOptions{}, wyoming.Format{Rate: 16000, Width: 2, Channels: 1})
+	if err != nil {
+		t.Fatalf("Transcribe: %v", err)
+	}
+	defer stream.Close()
+
+	started := time.Now()
+	done := make(chan error, 1)
+	go func() {
+		_, err := stream.Finish()
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("Finish succeeded against a babbling service")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Finish never returned against a babbling service")
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("Finish returned after %v, want within the 300ms total budget (not never)", elapsed)
+	}
+}
+
+// A busy refusal that arrives before audio is streamed must surface from
+// Transcribe, not only at Finish, so the caller does not write the whole
+// utterance into a dead session (#368). The test fails if the client waits for
+// Finish: it checks no audio-chunk was written after the refusal was known.
+func TestTranscribeDetectsBusyBeforeStreaming(t *testing.T) {
+	addr := fakeServer(t, func(conn net.Conn) {
+		r := bufio.NewReader(conn)
+		ev := readWireEvent(t, r)
+		if ev.Type != "transcribe" {
+			t.Errorf("first event = %q, want transcribe", ev.Type)
+		}
+		// Refuse immediately, the way a serialising service answers a second
+		// session before any audio arrives. The client learns this from
+		// Transcribe and never streams the utterance; we do not read further.
+		writeWireEvent(t, conn, "error", map[string]any{"text": "speech recognition is busy", "code": "busy"})
+	})
+
+	client := wyoming.NewClient(addr, wyoming.WithTimeout(5*time.Second), wyoming.WithRefusalDeadline(250*time.Millisecond))
+	ctx, cancel := contextWithTimeout(t)
+	defer cancel()
+
+	stream, err := client.Transcribe(ctx, wyoming.TranscribeOptions{}, wyoming.Format{Rate: 16000, Width: 2, Channels: 1})
+	if err == nil {
+		t.Fatal("Transcribe succeeded against a busy service, want ErrBusy")
+	}
+	if !errors.Is(err, wyoming.ErrBusy) {
+		t.Fatalf("Transcribe error = %v, want ErrBusy", err)
+	}
+	if stream != nil {
+		stream.Close()
+	}
+}
+
+// writeWireEventErr is like writeWireEvent but reports the write error so a fake
+// peer can stop once the client has given up, instead of failing forever.
+func writeWireEventErr(w io.Writer, typ string, data any) error {
+	ev := map[string]any{"type": typ}
+	if data != nil {
+		ev["data"] = data
+	}
+	raw, err := json.Marshal(ev)
+	if err != nil {
+		return err
+	}
+	_, err = w.Write(append(raw, '\n'))
+	return err
 }

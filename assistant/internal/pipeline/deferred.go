@@ -150,7 +150,7 @@ func (p *Pipeline) deferredRequest(ctx context.Context, req tool.Request, text s
 			if name == "" && p.semantic != nil {
 				name = p.semantic.Match(ctx, action).Tool
 			}
-			if info, ok := p.registry.Info(name); ok && info.Permission != tool.PermissionConfirm {
+			if info, ok := p.registry.Info(name); ok && FastPathRoutable(info) {
 				plan = []chainStep{{text: action, name: name}}
 			}
 		}

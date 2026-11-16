@@ -12,6 +12,37 @@
 # Agent requests, questions that sound like a Tool but are not one, and
 # compound requests that ask for more than one thing.
 positives:
+  alerts.next:
+    - "what's next"
+    - "what's scheduled"
+    - "what is scheduled"
+    - "what's scheduled next"
+    - "what do I have scheduled"
+    - "what have I got scheduled"
+    - "what is on the schedule"
+    - "what's on the schedule"
+    - "what's on my schedule"
+    - "what does my schedule look like"
+    - "what's my schedule"
+    - "what am I scheduled for"
+    - "what's scheduled for me"
+    - "what's coming up"
+    - "what is coming up"
+    - "what's coming up next"
+    - "what's coming up today"
+    - "what do I have coming up"
+    - "what have I got coming up"
+    - "what's next on my schedule"
+    - "what's the next thing"
+    - "what's my next alert"
+    - "what is my next alert"
+    - "when's my next alert"
+    - "tell me what's scheduled"
+    - "tell me what's coming up"
+    - "show me what's scheduled"
+    - "show me what's coming up"
+    - "what everything is scheduled"
+    - "read out what's scheduled"
   lights.power:
     # Previously a negative before BLE lights existed; now explicitly supported.
     - turn on the lights
@@ -1469,6 +1500,14 @@ positives:
     - what have I noted about Sam
     - find my note about the batteries
 negatives:
+  - "what's my next alarm"
+  - "when does my next alarm go off"
+  - "which alarm is next"
+  - "which reminder is due next"
+  - "when is the next meeting"
+  - "what should I do next"
+  - "what happens next in the story"
+  - "what's on my calendar tomorrow"
   - how do I turn the lights on
   - why are my lights flickering
   - explain Bluetooth light protocols

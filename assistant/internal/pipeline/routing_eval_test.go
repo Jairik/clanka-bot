@@ -36,6 +36,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/wording"
 	"github.com/Jairik/clanka-bot/assistant/tools"
 	"github.com/Jairik/clanka-bot/assistant/tools/alarm"
+	"github.com/Jairik/clanka-bot/assistant/tools/alerts"
 	"github.com/Jairik/clanka-bot/assistant/tools/assistant"
 	"github.com/Jairik/clanka-bot/assistant/tools/audiocontrol"
 	"github.com/Jairik/clanka-bot/assistant/tools/calc"
@@ -78,6 +79,7 @@ var routingEvalTools = []string{
 	alarm.CancelName,
 	alarm.UpdateName,
 	alarm.SnoozeName,
+	alerts.Name,
 	voice.SetName,
 	voice.ListName,
 	voice.CurrentName,
@@ -638,6 +640,14 @@ func evalRegistry(t *testing.T) (*tool.Registry, *timer.Manager, *alarm.Manager,
 	reminderModule := reminder.NewModule()
 	if err := reminderModule.Register(reg, tool.Deps{Clock: func() time.Time { return fixed }}); err != nil {
 		t.Fatalf("register reminder: %v", err)
+	}
+	// alerts.next composes the same three managers through their list seams.
+	if err := alerts.NewModule(
+		alerts.TimerSource(func() *timer.Manager { return manager }),
+		alerts.AlarmSource(func() *alarm.Manager { return alarmManager }),
+		alerts.ReminderSource(reminderModule.Manager),
+	).Register(reg, tool.Deps{}); err != nil {
+		t.Fatalf("register alerts: %v", err)
 	}
 	// The self-describing Tools are real; the repeat store is empty and the
 	// status seam is deterministic so the corpus never opens a socket.

@@ -6,11 +6,13 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/namematch"
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
+	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 )
 
 // fakeEmbedder gives the name matcher one explicit vector table.
@@ -254,5 +256,72 @@ func TestExtraction(t *testing.T) {
 		if got, ok := extractRemove(text); ok {
 			t.Errorf("extractRemove(%q) = %+v, want no match", text, got)
 		}
+	}
+}
+
+func TestRemoveNearMissAsksWithoutRemovingAnItem(t *testing.T) {
+	ctx := context.Background()
+	embed := &fakeEmbedder{table: map[string][]float32{
+		"oat milk": {1, 0, 0},
+		"zat milk": {0.55, 0.8351646544245033, 0}, // cosine 0.55 with "oat milk"
+		"novel":    {0, 1, 0},
+	}}
+	m := testManager(t, openListStore(t), embed)
+	if _, added, err := m.Add(ctx, KeyShopping, "oat milk"); err != nil || !added {
+		t.Fatalf("Add: %+v, %v", added, err)
+	}
+	_, err := NewRemove(m).Handler(ctx, RemoveIn{List: "shopping", Item: "zat milk"})
+	te, ok := err.(*tool.ToolError)
+	if !ok {
+		t.Fatalf("err = %T %v, want a spoken near-miss ToolError", err, err)
+	}
+	if want := "I couldn't find that. Did you mean the oat milk list item?"; te.Say != want {
+		t.Fatalf("Say = %q, want %q", te.Say, want)
+	}
+	lists, err := m.Read(ctx, KeyShopping)
+	if err != nil || len(lists[0].Items) != 1 || lists[0].Items[0].Text != "oat milk" {
+		t.Fatalf("near miss changed the list: %+v, %v", lists, err)
+	}
+	if _, isConfirm := err.(*tool.ConfirmationRequiredError); isConfirm {
+		t.Fatal("a near miss must not arm a confirmation")
+	}
+}
+
+func TestRemoveFarMissKeepsTheNotFoundSentence(t *testing.T) {
+	ctx := context.Background()
+	embed := &fakeEmbedder{table: map[string][]float32{
+		"oat milk": {1, 0, 0},
+		"novel":    {0, 1, 0}, // far from "oat milk" (cosine 0)
+	}}
+	m := testManager(t, openListStore(t), embed)
+	if _, _, err := m.Add(ctx, KeyShopping, "oat milk"); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	_, err := NewRemove(m).Handler(ctx, RemoveIn{List: "shopping", Item: "novel"})
+	te, ok := err.(*tool.ToolError)
+	if !ok || !strings.Contains(te.Say, "couldn't find that on the shopping list") || strings.Contains(te.Say, "Did you mean") {
+		t.Fatalf("err = %v, want the plain not-found sentence", err)
+	}
+}
+
+func TestRemoveNearMissArmsNoPendingConfirmation(t *testing.T) {
+	ctx := context.Background()
+	embed := &fakeEmbedder{table: map[string][]float32{
+		"oat milk": {1, 0, 0},
+		"zat milk": {0.55, 0.8351646544245033, 0},
+	}}
+	m := testManager(t, openListStore(t), embed)
+	if _, _, err := m.Add(ctx, KeyShopping, "oat milk"); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	reg := tool.NewRegistry(time.Second)
+	if err := tool.Add(reg, NewRemove(m)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reg.Execute(ctx, RemoveName, []byte(`{"list":"shopping","item":"zat milk"}`)); err == nil {
+		t.Fatal("near miss should not remove an item")
+	}
+	if _, ok := reg.Pending(); ok {
+		t.Fatal("a near-miss question must not arm a pending confirmation")
 	}
 }

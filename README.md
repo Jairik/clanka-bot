@@ -1146,6 +1146,16 @@ below the threshold, two names that normalise to the same words and an exact
 score tie all return no match. A caller then keeps its existing value and, where the Tool promises it,
 says aloud that the name did not match.
 
+When a single best candidate sits within a fixed `NearMargin` of `0.10` below
+the floor and nothing tied, the result carries that name in `Near` even though
+the lookup did not match; ambiguous ties, exact ties and far misses carry no
+`Near`. A near miss may be spoken back as one clarifying question ("Did you
+mean the birds sound?") instead of the caller's plain not-found line. That
+question runs no Tool and chooses no name: there is no pending action and no
+Confirmation, so the user simply asks again by the library name. Voice, Spotify
+playlists, list removals and personas speak the shared question; the alarm
+sound keeps its existing default-sound recovery.
+
 `name_match.threshold` is the live similarity floor, default `0.60`, with the
 same override → `config.yaml` → code default layers as every other setting. It
 is read per lookup, so a Dashboard change applies without a restart; it

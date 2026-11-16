@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/namematch"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"gopkg.in/yaml.v3"
 )
@@ -216,9 +217,14 @@ func NewRemove(m *Manager) tool.Tool[RemoveIn, RemoveOut] {
 			if !ok {
 				return RemoveOut{}, &tool.ToolError{Say: "I only have a shopping list and a to-do list."}
 			}
-			item, err := m.Remove(ctx, key, in.Item)
+			item, near, err := m.RemoveWithNear(ctx, key, in.Item)
 			if err != nil {
 				if errors.Is(err, ErrItemNotFound) {
+					// A near miss is one spoken question, not a removed row: no
+					// item changes and no state is kept.
+					if near != "" {
+						return RemoveOut{}, &tool.ToolError{Say: namematch.NearQuestion(near, "list item")}
+					}
 					return RemoveOut{}, &tool.ToolError{Say: "I couldn't find that on the " + strings.ToLower(Title(key)) + " list."}
 				}
 				return RemoveOut{}, toolError(err)

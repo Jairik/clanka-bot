@@ -132,6 +132,73 @@ func TestBelowThresholdReturnsNoMatch(t *testing.T) {
 	}
 }
 
+func TestBelowThresholdWithinMarginReturnsANearCandidateButNoMatch(t *testing.T) {
+	// "bird" scores 0.55 against "birds", below the 0.60 floor but within
+	// NearMargin, so the closest name is offered without becoming a match.
+	embedder := &fakeEmbedder{reply: tableVectors(map[string][]float32{
+		"birds": {1, 0},
+		"bird":  {0.55, 0.8351646544245033}, // unit vector: cosine 0.55 with birds
+	})}
+	matcher := namematch.New(embedder, namematch.Config{Threshold: fixedThreshold(0.60)})
+
+	result := matcher.Match(context.Background(), namematch.SourceSounds, "bird", []string{"birds"})
+	if result.Matched() || result.Name != "" {
+		t.Fatalf("Match = %+v, want no match (Near must not become a match)", result)
+	}
+	if result.Reason != namematch.ReasonBelowThreshold {
+		t.Fatalf("reason = %q, want %q", result.Reason, namematch.ReasonBelowThreshold)
+	}
+	if result.Near != "birds" {
+		t.Fatalf("Near = %q, want %q", result.Near, "birds")
+	}
+	if math.Abs(result.Score-0.55) > 1e-6 {
+		t.Fatalf("score = %.6f, want 0.55", result.Score)
+	}
+}
+
+func TestBelowThresholdBeyondMarginReturnsNoNearCandidate(t *testing.T) {
+	// 0.40 is more than NearMargin (0.10) below the 0.60 floor: a clear miss
+	// must not suggest a name.
+	embedder := &fakeEmbedder{reply: tableVectors(map[string][]float32{
+		"birds": {1, 0},
+		"bird":  {0.4, 0.916515138991168}, // unit vector: cosine 0.40 with birds
+	})}
+	matcher := namematch.New(embedder, namematch.Config{Threshold: fixedThreshold(0.60)})
+
+	result := matcher.Match(context.Background(), namematch.SourceSounds, "bird", []string{"birds"})
+	if result.Matched() || result.Reason != namematch.ReasonBelowThreshold {
+		t.Fatalf("Match = %+v, want a below-threshold miss", result)
+	}
+	if result.Near != "" {
+		t.Fatalf("Near = %q, want empty for a far miss", result.Near)
+	}
+}
+
+func TestAmbiguousExactTieReturnsNoNearCandidate(t *testing.T) {
+	// Two names score equally well: speech cannot choose, so no question is
+	// offered even though both are within reach of the threshold.
+	embedder := &fakeEmbedder{reply: tableVectors(map[string][]float32{
+		"birds": {1, 0},
+		"rain":  {0, 1},
+		"dusk":  {1, 1},
+	})}
+	matcher := namematch.New(embedder, namematch.Config{Threshold: fixedThreshold(0.60)})
+
+	result := matcher.Match(context.Background(), namematch.SourceSounds, "dusk", []string{"birds", "rain"})
+	if result.Matched() || result.Reason != namematch.ReasonAmbiguous {
+		t.Fatalf("Match = %+v, want an ambiguous tie", result)
+	}
+	if result.Near != "" {
+		t.Fatalf("Near = %q, want empty for an ambiguous tie", result.Near)
+	}
+}
+
+func TestNearQuestionSharesTheWording(t *testing.T) {
+	if got, want := namematch.NearQuestion("birds", "sound"), "I couldn't find that. Did you mean the birds sound?"; got != want {
+		t.Fatalf("NearQuestion = %q, want %q", got, want)
+	}
+}
+
 func TestThresholdIsReadOnEveryMatch(t *testing.T) {
 	embedder := &fakeEmbedder{reply: tableVectors(map[string][]float32{
 		"birds": {1, 0},

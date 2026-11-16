@@ -713,7 +713,7 @@ func (m *Manager) resolveSound(ctx context.Context, spoken string) (string, bool
 	result := m.names.Match(ctx, namematch.SourceSounds, spoken, candidates)
 	if !result.Matched() {
 		m.logger.Info("alarm sound not matched; using the kind default",
-			"spoken", spoken, "reason", result.Reason, "score", result.Score, "error", result.Err)
+			"spoken", spoken, "reason", result.Reason, "score", result.Score, "near", result.Near, "error", result.Err)
 		return "", true, nil
 	}
 	if err := m.cues.Validate(sound.RoleAlarmRing, result.Name); err != nil {

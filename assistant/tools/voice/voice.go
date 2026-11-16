@@ -115,11 +115,16 @@ func (m *Module) newSet(deps tool.Deps) tool.Tool[SetIn, SetOut] {
 			if spoken == "" {
 				return SetOut{}, &tool.ToolError{Say: "Which voice should I use?"}
 			}
-			name, ok := resolveVoiceName(ctx, deps, spoken)
-			if !ok {
+			res := resolveVoiceName(ctx, deps, spoken)
+			if !res.Matched() {
+				// A near miss is one spoken question, not a chosen voice: no
+				// setting changes and no state is kept.
+				if res.Near != "" {
+					return SetOut{}, &tool.ToolError{Say: namematch.NearQuestion(res.Near, "voice")}
+				}
 				return SetOut{}, &tool.ToolError{Say: fmt.Sprintf("I couldn't find a voice called %s.", spoken)}
 			}
-			voice, err := service.SetActive(ctx, name)
+			voice, err := service.SetActive(ctx, res.Name)
 			if err != nil {
 				return SetOut{}, voiceFailure(voice, err)
 			}
@@ -352,24 +357,25 @@ func effectiveVoice(service *voicelib.Service) (voicelib.Voice, bool) {
 
 // resolveVoiceName is the one shared name matcher lookup. Exact and normalised
 // spellings win without an embed call; a near miss needs the live threshold.
-func resolveVoiceName(ctx context.Context, deps tool.Deps, spoken string) (string, bool) {
+// The full Result is returned so the Tool can speak a Near candidate without
+// treating it as a match.
+func resolveVoiceName(ctx context.Context, deps tool.Deps, spoken string) namematch.Result {
 	service := deps.Voices
 	if service == nil {
-		return "", false
+		return namematch.Result{}
 	}
 	candidates := service.Candidates()
 	if deps.Names != nil {
-		result := deps.Names.Match(ctx, namematch.SourceVoices, spoken, candidates)
-		return result.Name, result.Matched()
+		return deps.Names.Match(ctx, namematch.SourceVoices, spoken, candidates)
 	}
 	// Conformance and tests may omit the embedder; exact spelling is still a
 	// legitimate match and cannot guess.
 	for _, candidate := range candidates {
 		if strings.EqualFold(strings.TrimSpace(spoken), candidate) {
-			return candidate, true
+			return namematch.Result{Name: candidate, Score: 1, Exact: true, Reason: namematch.ReasonExact}
 		}
 	}
-	return "", false
+	return namematch.Result{}
 }
 
 // voiceFailure maps a library rejection to the one line the user hears.

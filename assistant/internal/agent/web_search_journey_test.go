@@ -123,14 +123,19 @@ func TestAgentAnswersWhoWonTheMatchWithWebSearch(t *testing.T) {
 func TestAgentSaysItCouldNotSearchWhenSearXNGIsDown(t *testing.T) {
 	search := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	searchURL := search.URL
-	search.Close()
 
 	fake := newFakeProvider(t,
 		toolCallReply("",
 			fakeCall{ID: "call-search", Name: "web__search", Args: `{"query":"who won the match last night"}`}),
 		textReply("I couldn't search the web right now."),
 	)
+	// Bind the fake provider before freeing the search port: the two httptest
+	// servers pick ephemeral ports, and a closed listener's port can be reused.
+	// If the fake landed on the old search port, the web Tool's request would
+	// reach it with no body and fail as a decode error instead of a dead
+	// backend.
 	server := fake.start()
+	search.Close()
 
 	a := newTestAgent(t, testSettings(server.URL), webRegistry(t, webModule(t, searchURL)), nil)
 	result := a.Run(context.Background(), tool.Request{ID: "req-web-down", Device: tool.DevicePi},

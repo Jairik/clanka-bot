@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -37,7 +38,7 @@ func (p fakeProbe) Validate(context.Context, string) (string, error) {
 	return p.revision, nil
 }
 
-func newFixture(t *testing.T) *fixture {
+func newFixture(t *testing.T, embedders ...namematch.Embedder) *fixture {
 	t.Helper()
 	dir := t.TempDir()
 	if err := voicelibtest.WriteValid(filepath.Join(dir, "jarvis.safetensors"), 2, true); err != nil {
@@ -62,10 +63,14 @@ func newFixture(t *testing.T) *fixture {
 	if err := lib.Rescan(context.Background(), fakeProbe{revision: "rev-1"}); err != nil {
 		t.Fatalf("Rescan: %v", err)
 	}
+	var embed namematch.Embedder
+	if len(embedders) > 0 {
+		embed = embedders[0]
+	}
 	reg := tool.NewRegistry(5 * 1e9)
 	deps := tool.Deps{
 		Voices: lib,
-		Names:  namematch.New(nil, namematch.Config{Threshold: func() float64 { return 0.6 }}),
+		Names:  namematch.New(embed, namematch.Config{Threshold: func() float64 { return 0.6 }}),
 	}
 	if err := voice.NewModule().Register(reg, deps); err != nil {
 		t.Fatalf("register voice module: %v", err)
@@ -346,4 +351,56 @@ func TestConcurrentVoiceRateWritesAndReads(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+// nearEmbedder places one spoken query a chosen cosine distance from a voice
+// name so the near-miss path can be exercised without the real embed service.
+type nearEmbedder struct{ vectors map[string][]float32 }
+
+func (e nearEmbedder) Embed(_ context.Context, texts []string) ([][]float32, error) {
+	out := make([][]float32, len(texts))
+	for i, text := range texts {
+		vec, ok := e.vectors[text]
+		if !ok {
+			return nil, fmt.Errorf("no fake vector for %q", text)
+		}
+		out[i] = vec
+	}
+	return out, nil
+}
+
+func nearVoiceEmbedder() nearEmbedder {
+	return nearEmbedder{vectors: map[string][]float32{
+		"jarvis": {1, 0, 0},
+		"alba":   {0, 0, 1},
+		"jarviz": {0.55, 0.8351646544245033, 0}, // cosine 0.55 with "jarvis"
+		"nobody": {0, 1, 0},
+	}}
+}
+
+func TestVoiceSetNearMissAsksWithoutChangingTheVoice(t *testing.T) {
+	f := newFixture(t, nearVoiceEmbedder())
+	_, err := f.run(t, voice.SetName, voice.SetIn{Name: "jarviz"})
+	var toolErr *tool.ToolError
+	if !errors.As(err, &toolErr) {
+		t.Fatalf("err = %T %v, want a spoken ToolError", err, err)
+	}
+	if want := "I couldn't find that. Did you mean the jarvis voice?"; toolErr.Say != want {
+		t.Fatalf("Say = %q, want %q", toolErr.Say, want)
+	}
+	if got := f.settings.String(voicelib.KeyName); got != "alba" {
+		t.Fatalf("near miss changed the voice to %q", got)
+	}
+	if _, ok := f.registry.Pending(); ok {
+		t.Fatal("a near-miss question must not arm a pending confirmation")
+	}
+}
+
+func TestVoiceSetFarMissKeepsTheNotFoundSentence(t *testing.T) {
+	f := newFixture(t, nearVoiceEmbedder())
+	_, err := f.run(t, voice.SetName, voice.SetIn{Name: "nobody"})
+	var toolErr *tool.ToolError
+	if !errors.As(err, &toolErr) || !strings.Contains(toolErr.Say, "couldn't find a voice called nobody") || strings.Contains(toolErr.Say, "Did you mean") {
+		t.Fatalf("err = %v, want the plain not-found sentence", err)
+	}
 }

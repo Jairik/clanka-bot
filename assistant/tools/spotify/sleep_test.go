@@ -229,9 +229,11 @@ func TestSleepRejectsUnknownAndNonPositiveDurations(t *testing.T) {
 		{"sleep timer for 20 minutes", 20},
 		{"stop the music in 20 minutes", 20},
 		{"stop the music after 30 minutes", 30},
+		{"turn the music off after 20 minutes", 20},
+		{"stop playing in an hour", 60},
+		{"stop playback in 45 minutes", 45},
 		{"sleep timer for an hour", 60},
 		{"pause the music in an hour", 60},
-		{"stop playback in 45 minutes", 45},
 	}
 	for _, tc := range accepted {
 		in, ok := extractSleep(tc.text)
@@ -239,9 +241,11 @@ func TestSleepRejectsUnknownAndNonPositiveDurations(t *testing.T) {
 			t.Errorf("extractSleep(%q) = %+v, %v; want %d minutes", tc.text, in, ok, tc.minutes)
 		}
 	}
-	cancelled, ok := extractSleep("cancel the sleep timer")
-	if !ok || cancelled.Minutes != 0 {
-		t.Errorf("extractSleep(cancel) = %+v, %v; want zero minutes", cancelled, ok)
+	for _, text := range []string{"cancel the sleep timer", "cancel the music sleep timer", "clear the music sleep timer"} {
+		cancelled, ok := extractSleep(text)
+		if !ok || cancelled.Minutes != 0 {
+			t.Errorf("extractSleep(%q) = %+v, %v; want zero minutes", text, cancelled, ok)
+		}
 	}
 	refused := []string{
 		"stop the music",

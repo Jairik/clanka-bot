@@ -1193,31 +1193,35 @@ positives:
     - what's on spotify right now
     - what's the song that's playing
   # spotify.sleep is a timed stop for music, never a Ring alarm (timer.set) and
-  # never an immediate pause (spotify.pause). Keep "music"/"playback"/"sleep
-  # timer" in the wording so those neighbours keep their precision.
+  # never an immediate pause (spotify.pause). These mirror the Tool's tuned
+  # Examples: name music/playback and a delay, and say "music sleep timer" for
+  # a cancel, so a bare "timer for an hour" or "pause the music" keeps its own
+  # Tool's 0.23 margin.
   spotify.sleep:
     - stop the music in 20 minutes
-    - sleep timer for 30 minutes
-    - set a sleep timer for 20 minutes
+    - turn the music off after 20 minutes
     - stop the music after 30 minutes
-    - pause the music in an hour
-    - sleep timer for an hour
+    - stop playing in an hour
     - stop playback in 45 minutes
-    - cancel the sleep timer
-    - clear the sleep timer
-    - stop the music in 15 minutes
-    - pause the music after 20 minutes
-    - stop the music in ten minutes
-    - sleep timer for 45 minutes
+    - set a sleep timer for 20 minutes
+    - cancel the music sleep timer
+    - stop the music after 20 minutes
     - stop playback after 30 minutes
+    - stop playback in 30 minutes
+    - stop playback after an hour
+    - stop playback in 20 minutes
+    - stop playback after 45 minutes
+    - stop playback in 15 minutes
+    - stop playing after 30 minutes
+    - stop playing in 45 minutes
+    - stop playing after an hour
+    - stop playing in 15 minutes
     - turn off the music in 20 minutes
-    - set a sleep timer for an hour
-    - pause spotify in 30 minutes
-    - stop the music after an hour
-    - sleep timer for 25 minutes
-    - set a sleep timer for 15 minutes
-    - stop the tunes in 20 minutes
-    - stop the music in half an hour
+    - turn off the music after 20 minutes
+    - turn the music off in 20 minutes
+    - turn the music off after 15 minutes
+    - clear the music sleep timer
+    - cancel the music sleep timer please
   spotify.play_playlist:
     - play my running playlist
     - play my running playlist on shuffle

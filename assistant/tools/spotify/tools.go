@@ -348,15 +348,18 @@ func NewSleep(svc *Service) tool.Tool[SleepIn, SleepOut] {
 				return line
 			}
 		},
+		// Each Example must clear the 0.23 margin against every other Tool's
+		// best Example. Avoid "pause the music …" (too close to spotify.pause)
+		// and bare "timer for an hour" (too close to timer.set); a delay plus
+		// music/playback wording is what makes this Tool distinct.
 		Examples: []string{
-			"sleep timer for 30 minutes",
-			"set a sleep timer for 20 minutes",
 			"stop the music in 20 minutes",
+			"turn the music off after 20 minutes",
 			"stop the music after 30 minutes",
-			"pause the music in an hour",
-			"sleep timer for an hour",
+			"stop playing in an hour",
 			"stop playback in 45 minutes",
-			"cancel the sleep timer",
+			"set a sleep timer for 20 minutes",
+			"cancel the music sleep timer",
 		},
 		Extract: extractSleep,
 	}
@@ -468,11 +471,11 @@ func extractVolume(text string) (VolumeIn, bool) {
 }
 
 var (
-	sleepCancelRe = regexp.MustCompile(`(?i)^(?:cancel|clear|turn\s+off)\s+(?:the\s+|my\s+)?sleep\s+timer$`)
+	sleepCancelRe = regexp.MustCompile(`(?i)^(?:cancel|clear|turn\s+off)\s+(?:(?:the|my)\s+)?(?:music\s+)?sleep\s+timer$`)
 	// sleepArmRe requires a sleep/music-stopping subject so a plain "set a timer
 	// for 20 minutes" stays with timer.set and "stop the music" stays with
 	// spotify.pause. The duration itself is read by the shared parse.Duration.
-	sleepArmRe = regexp.MustCompile(`(?i)\b(?:sleep\s+timer|stop\s+(?:(?:the|my)\s+)?(?:music|playback|spotify|song|songs|tunes|playing)|pause\s+(?:(?:the|my)\s+)?(?:music|playback|spotify|song|songs|tunes)|turn\s+off\s+(?:(?:the|my)\s+)?(?:music|playback|spotify))\b`)
+	sleepArmRe = regexp.MustCompile(`(?i)\b(?:sleep\s+timer|stop\s+(?:(?:the|my)\s+)?(?:music|playback|spotify|song|songs|tunes|playing)|pause\s+(?:(?:the|my)\s+)?(?:music|playback|spotify|song|songs|tunes)|turn\s+off\s+(?:(?:the|my)\s+)?(?:music|playback|spotify)|turn\s+(?:(?:the|my)\s+)?music\s+off)\b`)
 )
 
 // extractSleep reads a sleep-timer request. A cancel phrase maps to zero

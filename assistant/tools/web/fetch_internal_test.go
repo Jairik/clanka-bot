@@ -163,6 +163,14 @@ func TestFetchURLPolicy(t *testing.T) {
 		"http://93.184.216.34/story",
 		"https://[2606:2800:220:1:248:1893:25c8:1946]/story",
 		"http://example.com:8080/page",
+		// Public hostnames whose labels use only hex letters and digits are
+		// not legacy numeric spellings, even though every rune is hex.
+		"https://a1.de/story",
+		"https://b2b.cc/story",
+		"https://abc123.de/story",
+		"https://cafe.be/story",
+		"https://deadbeef.com/story",
+		"https://1a2b.example.com/story",
 	}
 	for _, raw := range valid {
 		t.Run("valid "+raw, func(t *testing.T) {
@@ -204,6 +212,8 @@ func TestFetchURLPolicy(t *testing.T) {
 		{"hex ipv4", "http://0x7f000001/", errBlockedAddress},
 		{"short ipv4", "http://127.1/", errBlockedAddress},
 		{"octal ipv4", "http://0177.0.0.1/", errBlockedAddress},
+		{"dotted hex ipv4", "http://0x7f.1/", errBlockedAddress},
+		{"octal single", "http://017700000001/", errBlockedAddress},
 		{"port zero", "http://example.com:0/", errBadFetchURL},
 		{"port too large", "http://example.com:99999/", errBadFetchURL},
 		{"long URL", "http://example.com/" + strings.Repeat("a", maxFetchURLRunes), errBadFetchURL},
@@ -221,6 +231,47 @@ func TestFetchURLPolicy(t *testing.T) {
 			}
 			if err := checkFetchURL(target); !errors.Is(err, tt.cause) {
 				t.Fatalf("checkFetchURL(%s) = %v, want %v", tt.raw, err, tt.cause)
+			}
+		})
+	}
+}
+
+func TestNumericHost(t *testing.T) {
+	tests := []struct {
+		host string
+		want bool
+	}{
+		// Legacy numeric IPv4 spellings are rejected.
+		{"2130706433", true},
+		{"0x7f000001", true},
+		{"127.1", true},
+		{"0x7f.1", true},
+		{"017700000001", true},
+		{"0177.0.0.1", true},
+		{"10.0.0.1", true},
+		{"0xff", true},
+		{"0X7F", true},
+		// Public hostnames whose labels use only hex letters and digits
+		// (and whose TLD is never all-numeric) are accepted.
+		{"example.com", false},
+		{"deadbeef.com", false},
+		{"1a2b.example.com", false},
+		{"a1.de", false},
+		{"b2b.cc", false},
+		{"abc123.de", false},
+		{"cafe.be", false},
+		{"1e100.net", false},
+		{"foo-bar.com", false},
+		{"", false},
+		{"0x", false},
+		{"deadbeef", false},
+		{"example.123", true},
+		{"sub.0x7f", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.host, func(t *testing.T) {
+			if got := numericHost(tt.host); got != tt.want {
+				t.Fatalf("numericHost(%q) = %v, want %v", tt.host, got, tt.want)
 			}
 		})
 	}

@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -13,8 +14,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/audio"
 	"github.com/Jairik/clanka-bot/assistant/internal/persona"
+	"github.com/Jairik/clanka-bot/assistant/internal/quiet"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
+	"github.com/Jairik/clanka-bot/assistant/internal/sound"
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
 	"github.com/Jairik/clanka-bot/assistant/internal/voicelib"
 	"github.com/Jairik/clanka-bot/assistant/internal/wording"
@@ -257,4 +261,105 @@ func (s *staleVoiceLibrary) SpeechRef(name string) (string, error) {
 		return "", voicelib.ErrNotValidated
 	}
 	return voice.Name, nil
+}
+
+// discardSink is a no-op sound.Sink so the sound.Service can be bound in tests
+// without audio hardware.
+type discardSink struct{}
+
+func (discardSink) Open(context.Context, audio.Format) (io.WriteCloser, error) {
+	return discardWriteCloser{}, nil
+}
+
+type discardWriteCloser struct{}
+
+func (discardWriteCloser) Write(p []byte) (int, error) { return len(p), nil }
+func (discardWriteCloser) Close() error                { return nil }
+
+// pcmPeak returns the largest absolute mono PCM16 sample in a buffer.
+func pcmPeak(pcm []byte) int16 {
+	var peak int16
+	for i := 0; i+1 < len(pcm); i += 2 {
+		sample := int16(binary.LittleEndian.Uint16(pcm[i:]))
+		if sample < 0 {
+			sample = -sample
+		}
+		if sample > peak {
+			peak = sample
+		}
+	}
+	return peak
+}
+
+// TestResolveWakeCueFollowsQuietVolume pins the #258 quiet.volume decision:
+// the wake Cue PCM is scaled by quiet.volume while Quiet hours are active and
+// returned unchanged when they are not. A disabled chime yields none.
+func TestResolveWakeCueFollowsQuietVolume(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "assistant.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	cueFormat := audio.Format{Rate: 16000, Width: 2, Channels: 1}
+	sounds, err := sound.New(ctx, st, t.TempDir(), cueFormat, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("sound.New: %v", err)
+	}
+	sett, err := settings.New(ctx, st, append(sounds.Definitions(sound.Config{}), quiet.Definitions(quiet.Config{})...)...)
+	if err != nil {
+		t.Fatalf("settings.New: %v", err)
+	}
+	sounds.Bind(sett, discardSink{})
+
+	quietSvc := quiet.New(quiet.Options{
+		Reader:   sett,
+		Now:      func() time.Time { return time.Date(2026, 11, 12, 12, 0, 0, 0, time.UTC) },
+		Location: func() *time.Location { return time.UTC },
+	})
+	quietSvc.BindWriter(sett)
+
+	// Enable Quiet hours at 25% volume.
+	if _, err := sett.Set(ctx, quiet.EnabledKey, true); err != nil {
+		t.Fatalf("enable quiet: %v", err)
+	}
+	if _, err := sett.Set(ctx, quiet.StartKey, "00:00"); err != nil {
+		t.Fatalf("set start: %v", err)
+	}
+	if _, err := sett.Set(ctx, quiet.EndKey, "23:59"); err != nil {
+		t.Fatalf("set end: %v", err)
+	}
+	if _, err := sett.Set(ctx, quiet.VolumeKey, 25); err != nil {
+		t.Fatalf("set volume: %v", err)
+	}
+
+	raw, ok := sounds.Clip(sound.RoleWake)
+	if !ok || len(raw.PCM) == 0 {
+		t.Fatal("wake cue did not resolve")
+	}
+
+	if _, ok := resolveWakeCue(sounds, quietSvc, false); ok {
+		t.Fatal("disabled chime should resolve to none")
+	}
+
+	scaled, ok := resolveWakeCue(sounds, quietSvc, true)
+	if !ok {
+		t.Fatal("wake cue did not resolve under Quiet hours")
+	}
+	if peak, want := pcmPeak(scaled.PCM), pcmPeak(raw.PCM)/4; peak != want {
+		t.Fatalf("scaled wake peak = %d, want %d (25%%)", peak, want)
+	}
+
+	// Outside Quiet hours the PCM is unchanged.
+	if err := quietSvc.Disable(ctx); err != nil {
+		t.Fatalf("Disable: %v", err)
+	}
+	unscaled, ok := resolveWakeCue(sounds, quietSvc, true)
+	if !ok {
+		t.Fatal("wake cue did not resolve outside Quiet hours")
+	}
+	if peak, want := pcmPeak(unscaled.PCM), pcmPeak(raw.PCM); peak != want {
+		t.Fatalf("unscaled wake peak = %d, want %d", peak, want)
+	}
 }

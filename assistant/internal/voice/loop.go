@@ -144,7 +144,11 @@ type Deps struct {
 	Stats *Stats
 	// FollowUp returns the live no-wake listening window; zero disables it.
 	FollowUp func() time.Duration
-	Logger   *slog.Logger
+	// RingActive reports whether a Timer or Alarm Ring currently owns the
+	// floor (focus.Ring is held). When true the wake Cue is skipped so it does
+	// not play on top of a ringing alert.
+	RingActive func() bool
+	Logger     *slog.Logger
 }
 
 // micFrame is one captured PCM block stamped with its capture time. The stamp
@@ -398,6 +402,14 @@ func (l *Loop) session(ctx context.Context, wakeWord string) (bool, string, erro
 		if pcm, format, ok := l.deps.WakeCue(); ok {
 			wakePCM, wakeFormat = pcm, format
 		}
+	}
+	// While a Timer or Alarm Ring owns the floor, skip the wake Cue: it would
+	// play on top of the ring and the Ring engine never learns about it. The
+	// reply still yields to the Ring through the shared speech gate, so capture
+	// starts immediately with an empty cue.
+	if l.deps.RingActive != nil && l.deps.RingActive() {
+		l.deps.Logger.Debug("voice: wake cue skipped while ring active")
+		wakePCM, wakeFormat = nil, audio.Format{}
 	}
 	chimeDone := make(chan struct{})
 	var chimeEnded atomic.Value // time.Time, stored before chimeDone closes

@@ -149,28 +149,55 @@ func checkFetchURL(target *url.URL) error {
 	return nil
 }
 
-// numericHost reports whether the host is a legacy numeric IPv4 spelling:
-// every rune is a digit, a hex letter or the punctuation those forms use, and
-// at least one digit is present. A real DNS name has a non-hex letter or a
-// hyphen (and its last label is never all-numeric), so this does not reject an
-// ordinary public hostname such as dead.cab.
+// numericHost reports whether the host is a legacy numeric IPv4 spelling
+// (2130706433, 0x7f000001, 127.1). Those forms are not real DNS names, so
+// resolving them only tells you what libc decided; rejecting them closes the
+// resolver-dependent gap where libc would interpret them as loopback.
+//
+// A spelling is numeric only when its last label is numeric, because
+// inet_aton forms always end in a numeric part and a real TLD is never
+// all-numeric. This keeps public hostnames whose labels use only hex letters
+// and digits (a1.de, b2b.cc, cafe.be, deadbeef.com) out of the block.
 func numericHost(host string) bool {
 	if host == "" {
 		return false
 	}
-	hasDigit := false
-	for _, r := range host {
-		switch {
-		case r >= '0' && r <= '9':
-			hasDigit = true
-		case r >= 'a' && r <= 'f':
-		case r >= 'A' && r <= 'F':
-		case r == '.' || r == 'x' || r == 'X':
-		default:
+	lastLabel := host
+	if i := strings.LastIndexByte(host, '.'); i >= 0 {
+		lastLabel = host[i+1:]
+	}
+	return labelNumeric(lastLabel)
+}
+
+// labelNumeric reports whether a single DNS label is a legacy numeric IPv4
+// spelling: either all decimal digits, or "0x" followed by one or more hex
+// digits.
+func labelNumeric(label string) bool {
+	if label == "" {
+		return false
+	}
+	if strings.HasPrefix(label, "0x") || strings.HasPrefix(label, "0X") {
+		body := label[2:]
+		if body == "" {
+			return false
+		}
+		for _, r := range body {
+			switch {
+			case r >= '0' && r <= '9':
+			case r >= 'a' && r <= 'f':
+			case r >= 'A' && r <= 'F':
+			default:
+				return false
+			}
+		}
+		return true
+	}
+	for _, r := range label {
+		if r < '0' || r > '9' {
 			return false
 		}
 	}
-	return hasDigit
+	return true
 }
 
 // resolveHost resolves one hostname once and validates every answer. A mixed

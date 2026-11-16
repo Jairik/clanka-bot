@@ -185,9 +185,12 @@ sends an SSH banner is starved, not down.
 
 Each tick builds a fresh `clanka/<service>:<sha>` set, so `deploy.sh` prunes the
 older sets after the health wait. It keeps the deployed set, the newest
-`DEPLOY_KEEP_IMAGES` sets (default 3) and any pinned ones, never touches
+`DEPLOY_KEEP_IMAGES` **commits** (default 3) and any pinned ones, never touches
 non-SHA tags or sets used by running containers, and only warns if the cleanup
-fails. The full policy and the corrected manual commands are in
+fails. The window counts distinct commits, not tags, so a commit tagged several
+ways (a short deploy tag plus its longer spellings, or a partial-build tag) uses
+a single slot and every tag of a kept commit survives. The full policy and the
+corrected manual commands are in
 [deploy.md](deploy.md#image-retention-and-disk-space); never use
 `docker image prune -a` or `docker system prune`, because rollback needs the
 older tags.

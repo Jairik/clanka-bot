@@ -129,6 +129,50 @@ jobs:
       - name: STT test
         run: python -m pytest stt/tests -q
 
+  scripts-test:
+    # The deploy/auto-deploy path and the Wyoming Python suites are what puts
+    # code on the living-room Pi; a change there must not merge green and only
+    # fail on hardware. Covers the black-box shell suites, the scripts and
+    # wakeword CLIs, and the STT server (which `make tts-test` omits locally).
+    name: Scripts and Python tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install wire-format and test dependencies
+        run: pip install "wyoming==1.11.0" numpy pytest
+      - name: scripts/tests Python suites
+        run: python -m unittest discover -s scripts/tests -p 'test_*.py' -v
+      - name: scripts/prototype-run/tests Python suites
+        run: python -m unittest discover -s scripts/prototype-run/tests -p 'test_*.py' -v
+      - name: wakeword/tests Python suites
+        run: python -m unittest discover -s wakeword/tests -p 'test_*.py' -v
+      - name: TTS and STT server tests
+        run: python -m pytest tts/tests stt/tests -q
+      - name: deploy.sh black-box tests
+        run: bash scripts/tests/deploy_test.sh
+      - name: deploy-watch.sh black-box tests
+        run: bash scripts/tests/deploy_watch_test.sh
+      - name: check-compose.sh black-box tests
+        run: bash scripts/tests/check_compose_test.sh
+
+  compose:
+    # Validates the compose file itself and the deployment conventions the
+    # stack relies on (image tags, least privilege, local-only health checks).
+    # The .env is copied so variable interpolation matches a real deploy.
+    name: Compose validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare .env for interpolation
+        run: cp .env.example .env
+      - name: Validate compose file
+        run: docker compose config --quiet
+      - name: Check compose conventions
+        run: bash scripts/check-compose.sh
+
   routing-eval:
     name: Routing eval (real MiniLM)
     runs-on: ubuntu-latest

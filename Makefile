@@ -76,7 +76,7 @@ web-image: ## Ship a UI-only change: rebuild dashboard-web, no Go rebuild or ass
 web-dev: ## Dashboard dev server; proxies to a local assistant (see assistant/web/README.md).
 	cd assistant/web && pnpm install && pnpm dev
 
-test: ## Run the assistant, deployment, auto-deploy, wakeword-CLI and mic-check suites.
+test: ## Run the assistant, deployment, auto-deploy, wakeword-CLI, STT, prototype-run and mic-check suites, plus the real compose check.
 	cd assistant && go test ./...
 	bash scripts/tests/deploy_test.sh
 	bash scripts/tests/prune_images_test.sh
@@ -84,10 +84,13 @@ test: ## Run the assistant, deployment, auto-deploy, wakeword-CLI and mic-check 
 	bash scripts/tests/check_compose_test.sh
 	bash scripts/tests/check_dockerignore_test.sh
 	python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
+	python3 -m unittest discover -s scripts/prototype-run/tests -p 'test_*.py' -v
 	python3 -m unittest discover -s wakeword/tests -p 'test_*.py' -v
+	python3 -m pytest tts/tests stt/tests -q
+	bash scripts/check-compose.sh
 
-tts-test: ## Run the Wyoming/pcm Python tests (needs wyoming and numpy installed).
-	python3 -m pytest tts/tests -q
+tts-test: ## Run the Wyoming/pcm and STT Python tests (needs wyoming and numpy installed).
+	python3 -m pytest tts/tests stt/tests -q
 
 stt-test: ## Run the STT Wyoming server tests (needs wyoming and pytest installed).
 	python3 -m pytest stt/tests -q

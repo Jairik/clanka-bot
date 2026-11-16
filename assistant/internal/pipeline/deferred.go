@@ -74,24 +74,6 @@ func (q *DeferredQueue) Add(event, text string) bool {
 	return true
 }
 
-// Take consumes matching actions atomically; callbacks execute outside the lock.
-func (q *DeferredQueue) Take(event string) []DeferredAction {
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	q.prune()
-	var ready []DeferredAction
-	live := q.actions[:0]
-	for _, a := range q.actions {
-		if a.Event == event {
-			ready = append(ready, a)
-		} else {
-			live = append(live, a)
-		}
-	}
-	q.actions = live
-	return ready
-}
-
 // ServeHTTP is mounted behind the existing Dashboard identity and same-origin guards.
 func (q *DeferredQueue) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPost {

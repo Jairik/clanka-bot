@@ -3,9 +3,11 @@ package wakesample
 import (
 	"archive/tar"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"os"
 	"os/exec"
@@ -142,6 +144,88 @@ func newStore(t *testing.T, opts Options) *Service {
 		t.Fatalf("New: %v", err)
 	}
 	return service
+}
+
+// captureHandler records every log message it receives so a test can assert a
+// startup warning fired without coupling to a global logger.
+type captureHandler struct {
+	mu      sync.Mutex
+	records []string
+}
+
+func (c *captureHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (c *captureHandler) Handle(_ context.Context, r slog.Record) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.records = append(c.records, r.Message)
+	return nil
+}
+func (c *captureHandler) WithAttrs([]slog.Attr) slog.Handler   { return c }
+func (c *captureHandler) WithGroup(string) slog.Handler         { return c }
+
+// TestNewWarnsWhenExportDirUnwritable proves a root-owned bind mount is
+// reported at startup without blocking New: New still succeeds, and exactly one
+// warning names the chown remediation. Root can write anything, so skip there.
+func TestNewWarnsWhenExportDirUnwritable(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: a non-writable export dir cannot be created")
+	}
+	dir := t.TempDir()
+	exports := filepath.Join(dir, "exports")
+	if err := os.MkdirAll(exports, 0o755); err != nil {
+		t.Fatalf("mkdir exports: %v", err)
+	}
+	// Drop write permission so the writability probe fails, mimicking the
+	// root-owned ./exports a fresh `docker compose up` can leave behind.
+	if err := os.Chmod(exports, 0o555); err != nil {
+		t.Fatalf("chmod exports: %v", err)
+	}
+	defer os.Chmod(exports, 0o755)
+
+	handler := &captureHandler{}
+	svc, err := New(Options{
+		Dir:       filepath.Join(dir, "samples"),
+		ExportDir: exports,
+		Log:       slog.New(handler),
+		Now:       func() time.Time { return time.Date(2026, 11, 12, 9, 30, 0, 0, time.UTC) },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if svc == nil {
+		t.Fatal("New returned a nil service")
+	}
+	found := false
+	for _, msg := range handler.records {
+		if strings.Contains(msg, "sudo chown -R") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected a startup warning naming the chown remediation, got: %v", handler.records)
+	}
+}
+
+// TestNewLogsNoWarningWhenExportDirWritable proves the common, healthy case
+// stays silent: a writable export dir produces no export-directory warning.
+func TestNewLogsNoWarningWhenExportDirWritable(t *testing.T) {
+	dir := t.TempDir()
+	handler := &captureHandler{}
+	_, err := New(Options{
+		Dir:       filepath.Join(dir, "samples"),
+		ExportDir: filepath.Join(dir, "exports"),
+		Log:       slog.New(handler),
+		Now:       func() time.Time { return time.Date(2026, 11, 12, 9, 30, 0, 0, time.UTC) },
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	for _, msg := range handler.records {
+		if strings.Contains(msg, "export directory") {
+			t.Errorf("unexpected export-directory warning for a writable dir: %q", msg)
+		}
+	}
 }
 
 var takeSeq int

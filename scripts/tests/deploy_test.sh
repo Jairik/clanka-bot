@@ -616,6 +616,24 @@ test_does_not_prune_when_health_fails() {
 	assert_calls_not_contains "a failed deploy does not remove images" "docker image rmi"
 }
 
+test_refuses_non_writable_exports() {
+	local repo
+	repo=$(new_repo)
+	new_scenario
+	# A previous `docker compose up` can leave ./exports root-owned; mkdir -p
+	# will not repair it, so deploy must fail with the exact remediation
+	# before any build runs. Root can write regardless of mode, so skip there.
+	if [[ "$(id -u)" == "0" ]]; then
+		skip "running as root: a non-writable exports cannot be created"
+		return
+	fi
+	mkdir -p "$repo/exports"
+	chmod 0555 "$repo/exports"
+	run_deploy "$repo"
+	assert_nonzero "non-writable exports is refused"
+	assert_out_contains "non-writable exports names the chown fix" "sudo chown -R $(id -u):$(id -g) exports"
+}
+
 run_test() {
 	local name=$1
 	printf '== %s\n' "$name"
@@ -638,6 +656,7 @@ run_test test_rollback_refuses_dirty_worktree
 run_test test_default_deploy_recovers_from_detached_rollback
 run_test test_refuses_non_fast_forward_pull
 run_test test_refuses_unpushed_local_commit
+run_test test_refuses_non_writable_exports
 run_test test_deploys_pushed_feature_branch
 run_test test_make_build_arm64
 run_test test_make_prune_images

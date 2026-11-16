@@ -11,6 +11,11 @@ build: ## Build every service image for this host.
 
 up: ## Start the stack in the background.
 	mkdir -p exports
+	@if [ ! -w exports ]; then \
+		echo "error: ./exports is not writable (likely owned by root from a previous docker compose up)." >&2; \
+		echo "fix it with: sudo chown -R $$(id -u):$$(id -g) exports" >&2; \
+		exit 1; \
+	fi
 	bash scripts/soloist-setup.sh
 	docker compose up -d
 

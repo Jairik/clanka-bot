@@ -387,15 +387,22 @@ func (s *Service) SetActive(ctx context.Context, name string) (Voice, error) {
 }
 
 // SetRate persists a clamped, rounded multiplier and returns the stored value.
+// A request that resolves to the rate already stored (e.g. "speak faster" past
+// MaxRate or "speak slower" past MinRate, or a normal reset that is already
+// 1.0) returns early without rewriting the setting, so it both avoids a needless
+// settings write and lets the caller see that nothing changed.
 func (s *Service) SetRate(ctx context.Context, rate float64) (float64, error) {
 	if s.settings == nil {
 		return DefaultRate, errors.New("voice: settings service is not bound")
 	}
-	rate = roundRate(clampRate(rate))
-	if _, err := s.settings.Set(ctx, KeyRate, rate); err != nil {
+	applied := roundRate(clampRate(rate))
+	if applied == roundRate(clampRate(s.Rate())) {
+		return applied, nil
+	}
+	if _, err := s.settings.Set(ctx, KeyRate, applied); err != nil {
 		return DefaultRate, err
 	}
-	return rate, nil
+	return applied, nil
 }
 
 // EnsureActive replaces an unusable persisted voice with the default built-in.

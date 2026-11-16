@@ -1192,6 +1192,36 @@ positives:
     - what's playing right now
     - what's on spotify right now
     - what's the song that's playing
+  # spotify.sleep is a timed stop for music, never a Ring alarm (timer.set) and
+  # never an immediate pause (spotify.pause). These mirror the Tool's tuned
+  # Examples: name music/playback and a delay, and say "music sleep timer" for
+  # a cancel, so a bare "timer for an hour" or "pause the music" keeps its own
+  # Tool's 0.23 margin.
+  spotify.sleep:
+    - stop the music in 20 minutes
+    - turn the music off after 20 minutes
+    - stop the music after 30 minutes
+    - stop playing in an hour
+    - stop playback in 45 minutes
+    - set a sleep timer for 20 minutes
+    - cancel the music sleep timer
+    - stop the music after 20 minutes
+    - stop playback after 30 minutes
+    - stop playback in 30 minutes
+    - stop playback after an hour
+    - stop playback in 20 minutes
+    - stop playback after 45 minutes
+    - stop playback in 15 minutes
+    - stop playing after 30 minutes
+    - stop playing in 45 minutes
+    - stop playing after an hour
+    - stop playing in 15 minutes
+    - turn off the music in 20 minutes
+    - turn off the music after 20 minutes
+    - turn the music off in 20 minutes
+    - turn the music off after 15 minutes
+    - clear the music sleep timer
+    - cancel the music sleep timer please
   spotify.play_playlist:
     - play my running playlist
     - play my running playlist on shuffle
@@ -1535,6 +1565,14 @@ negatives:
   - good night
   - how many hours until morning
   - set quiet hours
+  # Sleep-timer-shaped but not a music stop: questions and descriptions about
+  # sleep timers must stay off the Fast path (spotify.pause keeps "stop the
+  # music", timer.set keeps a plain timed Ring).
+  - what is a sleep timer
+  - how do sleep timers work
+  - tell me about sleep timers
+  - does Spotify have a sleep timer
+  - is the sleep timer still running
   # Notification-shaped but not a send request: device settings, questions,
   # another transport, or another recipient.
   - what's my phone number

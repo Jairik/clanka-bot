@@ -279,6 +279,16 @@ the same. Paused music keeps
 that claim so a bare "resume" still works; "stop" or a missing device releases
 it. Playing, pausing and volume need Spotify Premium and a paired device.
 
+`spotify.sleep` arms one sleep timer ("stop the music in 20 minutes", "stop
+playing in an hour", "set a sleep timer for 20 minutes") that pauses playback
+after the duration and announces "Music stopped." — without dropping music's
+Focus claim, so a bare "resume" still works. "cancel the sleep timer" clears
+it; a manual pause, a stop or a lost device clears it too, and a replacement
+deadline supersedes the first.
+The deadline lives in memory, so a Dashboard page change cannot lose it, but a
+restart drops it (a restart stops Soloist too). It is not a Ring, and it only
+arms while music holds Focus.
+
 Music ducks locally (ADR-0004): while a reply, a Ring or the turn after the
 wake word is active, the Assistant lowers Soloist's Pulse stream
 (`pactl set-sink-input-volume`, matched by application name `spotify`) to 25%

@@ -290,6 +290,19 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("notify: %w", err)
 	}
+	// Recovery pushes are debounced for a short hold, so an exit before it
+	// expires would otherwise drop the only copy of a missed-alert summary:
+	// the alert rows are already terminal. Drain it on every exit path after
+	// this point, including a startup failure after StartAll and SIGTERM. Use
+	// a fresh bounded context because the signal context is already cancelled
+	// on a signal; the notify client caps one publish as well.
+	defer func() {
+		flushCtx, cancel := context.WithTimeout(context.Background(), notify.FlushTimeout)
+		defer cancel()
+		if err := notifySvc.Close(flushCtx); err != nil {
+			logger.Warn("notify shutdown flush", "error", err.Error())
+		}
+	}()
 	// The previous reply stays in memory with its provenance so a follow-up
 	// "send that to my phone" can resolve it without persisting private text.
 	lastReplyStore := lastreply.New()
@@ -690,8 +703,9 @@ func run() error {
 	}
 
 	// Timer and Alarm installed the Notify missed hook before Start's
-	// recovery, so open/downtime rows already reached ntfy. Only the shutdown
-	// waits remain, and Close waits for the final history write.
+	// recovery, so open/downtime rows were reported to Notify; a recovered
+	// summary may still be held in its debounce window until the deferred
+	// Close above drains it. The waits below are for the final history write.
 	if module, ok := toolSet.Module("timer").(*timer.Module); ok {
 		if manager := module.Manager(); manager != nil {
 			defer manager.Close()

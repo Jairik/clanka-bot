@@ -308,7 +308,7 @@ re-synthesizes the cached Agent Filler). Connection-level settings (`http.addr`,
 `dashboard.addr`, `tts.addr`, `wakeword.addr`, `stt.addr`, `embed.url`,
 `capture.source`, `playback.sink`) are marked `restart_required`: the override
 is stored, but only the next process start reads it, and the page says so. See
-the README for the curl examples. The Settings page's **Wake word** section is
+the [main guide](guides/README.md) for the curl examples. The Settings page's **Wake word** section is
 read-only: the allowlist and per-model thresholds are connection settings
 (`WAKEWORD_MODELS`, `WAKEWORD_THRESHOLD`, `WAKEWORD_THRESHOLDS`), so change
 `.env` and restart; the Health page's Wake word rows show what the service
@@ -332,7 +332,7 @@ previews one in the browser, chooses the active voice and speech rate, and
 records an optional source/consent note. An upload is staged and header-checked
 before TTS is called, then smoke-tested and published atomically; a rejected
 file leaves the library unchanged. Previews synthesize one short phrase to WAV
-and never play on the Pi speaker or change the active voice. See the README for
+and never play on the Pi speaker or change the active voice. See the [main guide](guides/README.md) for
 the validation and rollback sequence.
 
 The **Personas** page at `/personas` creates, edits and selects a persistent
@@ -344,7 +344,7 @@ prompt builder's labelled system part. The active voice and the active
 Persona's voice both warm-load at startup; a stale Persona voice is skipped and
 reported, while the speaking voice keeps #63's single fallback Announcement.
 Creating or editing a Persona makes no model call, and the page needs no TTS
-service to list or edit the library. See the README for the spoken examples.
+service to list or edit the library. See the [main guide](guides/README.md) for the spoken examples.
 
 The **Secrets** page at `/secrets` lists every declared secret (Tool modules
 and the active Agent provider) with `set`, `last4`, update time and source
@@ -375,7 +375,8 @@ is generated once into that secrets table on first use, so it is never in
 self-hosted ntfy with access control needs a server-issued token in
 `NTFY_TOKEN`; a random local token is not accepted, and the assistant never
 invents one. Outbound HTTPS to the configured ntfy server must be reachable
-from the Pi. See the README's **Notifications** section for the security
+from the Pi. See **Notifications** in the [main guide](guides/README.md) for
+the security
 caveat and the self-hosted token steps.
 
 The Health page shows the seven current Compose services (`embed`, `assistant`,

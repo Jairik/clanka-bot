@@ -3,7 +3,8 @@
 #
 # The assistant image does `COPY . .`, so anything left in the context reaches
 # the builder and its cache. A local run outside Compose creates data/, whose
-# unencrypted secrets table holds the write-only values (README "Secrets"), and
+# unencrypted secrets table holds the write-only values (docs/guides/README.md
+# "Secrets"), and
 # `go build` leaves the dev binary behind; a build that exports its cache would
 # carry both off the machine. The assertions below pin the ignore file, then
 # build a scratch context through Docker when it is available so the real

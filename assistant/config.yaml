@@ -164,7 +164,7 @@ tools:
     # checks reads commit statuses and check runs on the allowed repos.
     # notifications uses only the optional classic GITHUB_NOTIFICATIONS_TOKEN
     # (notifications scope) because GitHub's notifications API rejects
-    # fine-grained tokens (see README.md "GitHub").
+    # fine-grained tokens (see docs/guides/README.md "GitHub").
     base_url: "https://api.github.com"
     # A plain-http base_url is refused unless it is a loopback fake: the
     # fine-grained PAT is a bearer token on every call. A LAN GitHub Enterprise
@@ -233,7 +233,7 @@ semantic:
 # This value is the config layer of the live `name_match.threshold` setting; a
 # Dashboard or voice override wins. Exact and normalised names always resolve
 # first; only a near miss needs the embed service. Raise it to be stricter,
-# lower it to accept looser wording. See README.md "Name matching".
+# lower it to accept looser wording. See docs/guides/README.md "Name matching".
 name_match:
   threshold: 0.60
 

@@ -2,7 +2,7 @@
 
 The recipe for every Tool in this repo. Use it for a new Tool module yourself,
 and hand it to Hermes or OpenCode when the assistant is asked to extend itself.
-Terms follow [GLOSSARY.md](../../GLOSSARY.md); architecture decisions are in
+Terms follow [the glossary](../guides/glossary.md); architecture decisions are in
 [docs/adr](../adr/).
 
 ## 1. Pick the canonical name and module
@@ -323,7 +323,7 @@ intentional.
 
 ## 8. Update the glossary if a new term appeared
 
-If the Tool introduces a domain word, add it to `GLOSSARY.md` with a definition
+If the Tool introduces a domain word, add it to `docs/guides/glossary.md` with a definition
 and the words to avoid, following [domain.md](domain.md). If the new word is
 just an implementation detail, leave the glossary alone rather than inventing a
 synonym for an existing term.
@@ -346,6 +346,6 @@ synonym for an existing term.
 - [ ] The module conformance test passes offline and with
       `ROUTING_EVAL_EMBED_URL` set.
 - [ ] `go vet ./...`, `go test ./...` and `make check` pass.
-- [ ] `GLOSSARY.md` is updated if a new term appeared.
+- [ ] `docs/guides/glossary.md` is updated if a new term appeared.
 - [ ] `assistant/tools/tools.go` has exactly the one generated module line; no
       other registration was touched.

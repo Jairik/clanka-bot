@@ -37,6 +37,32 @@ func TestHistoryKeepsLastTurnsAndClearsAfterQuiet(t *testing.T) {
 	}
 }
 
+// TestHistoryResetDropsAllTurns is the first test for History.Reset, the seam
+// assistant.forget calls. Reset must clear the turns and the quiet clock so the
+// next Add starts a genuinely fresh conversation even inside the quiet window.
+func TestHistoryResetDropsAllTurns(t *testing.T) {
+	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
+	history := agent.NewHistory(10, 5*time.Minute, func() time.Time { return now })
+
+	history.Add(agent.Turn{Utterance: "remember the blue one", Reply: "Okay."})
+	history.Add(agent.Turn{Utterance: "and the red one", Reply: "Got it."})
+	if got := len(history.Recent()); got != 2 {
+		t.Fatalf("history has %d turns before Reset, want 2", got)
+	}
+
+	history.Reset()
+	if turns := history.Recent(); len(turns) != 0 {
+		t.Fatalf("turns after Reset = %+v, want none", turns)
+	}
+
+	// Reset also clears the quiet clock: a turn added immediately after is
+	// kept on its own, not compared against the pre-reset last timestamp.
+	history.Add(agent.Turn{Utterance: "fresh start", Reply: "Hi."})
+	if turns := history.Recent(); len(turns) != 1 || turns[0].Utterance != "fresh start" {
+		t.Fatalf("turns after a post-Reset Add = %+v, want just the fresh turn", turns)
+	}
+}
+
 func TestPromptDropsLocalOnlyTurns(t *testing.T) {
 	builder := agent.NewPromptBuilder("system")
 	messages := builder.Messages("and tomorrow?", []agent.Turn{

@@ -16,5 +16,6 @@ func (*Module) ConformanceSamples() map[string]any {
 			Tools: []HelpTool{{Name: "time.now", Description: "Get the current local time.", Permission: "read"}},
 			Text:  "Here's what I can do: Get the current local time.",
 		},
+		ForgetName: ForgetOut{Text: "Forgotten."},
 	}
 }

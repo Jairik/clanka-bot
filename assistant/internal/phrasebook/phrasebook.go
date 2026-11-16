@@ -116,6 +116,7 @@ var defaults = map[string]string{
 	"spotify.like":          "Liked.",
 	"note.remember":         "Saved.",
 	"note.forget":           "Forgotten.",
+	"assistant.forget":      "Forgotten.",
 	"list.add":              "Added.",
 	"list.remove":           "Removed.",
 	"lights.power":          "Done.",

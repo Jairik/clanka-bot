@@ -60,6 +60,11 @@ type Settings struct {
 	MaxSteps               int
 	HistoryTurns           int
 	HistoryQuiet           time.Duration
+	// History, when set, is the shared rolling history to use instead of one
+	// built from HistoryTurns and HistoryQuiet. main builds it before Tools
+	// register so assistant.forget can hold the same instance the Agent path
+	// reads; a nil value keeps the original NewHistory construction.
+	History *History
 }
 
 // PendingConfirm is a confirm Tool call the model asked for, armed in the
@@ -147,11 +152,15 @@ func New(settings Settings, registry *tool.Registry, logger *slog.Logger) (*Agen
 		}
 		return settings.UnavailableMessage
 	}
+	history := settings.History
+	if history == nil {
+		history = NewHistory(settings.HistoryTurns, settings.HistoryQuiet, nil)
+	}
 	return &Agent{
 		provider:    newProvider(settings),
 		registry:    registry,
 		prompt:      prompt,
-		history:     NewHistory(settings.HistoryTurns, settings.HistoryQuiet, nil),
+		history:     history,
 		logger:      logger,
 		maxSteps:    settings.MaxSteps,
 		unavailable: unavailable,

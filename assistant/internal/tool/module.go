@@ -97,7 +97,17 @@ type Deps struct {
 	// because the Tool is registered before the live module list has finished
 	// registering; a Tool reads it per call. Nil means status is unavailable.
 	Status func(context.Context) StatusReport
+	// History clears the shared conversation history. assistant.forget uses it
+	// so "forget the conversation" can drop stale context on the Pi without a
+	// provider call. It is an interface rather than *agent.History because
+	// agent imports tool, and a nil value means there is no history to clear.
+	History HistoryResetter
 }
+
+// HistoryResetter is the conversation-history seam. *agent.History satisfies
+// it; declaring it here keeps internal/agent (which imports tool) out of this
+// package's imports and avoids an import cycle.
+type HistoryResetter interface{ Reset() }
 
 // Notifier is the shared Notification seam. The production implementation is
 // internal/notify.Service; tests may supply a fake.

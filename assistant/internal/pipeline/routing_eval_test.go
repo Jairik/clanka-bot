@@ -93,6 +93,7 @@ var routingEvalTools = []string{
 	reminder.CancelName,
 	assistant.RepeatName,
 	assistant.HelpName,
+	assistant.ForgetName,
 	system.Name,
 	system.DiagnoseName,
 	notifytools.Name,

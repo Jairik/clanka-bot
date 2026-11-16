@@ -164,6 +164,33 @@ func TestSetToolExtractsDecimalDuration(t *testing.T) {
 	}
 }
 
+// TestSetToolExtractsSpokenZeroFraction keeps a spoken zero in the fraction from
+// falling back to the trailing integer: "one point oh five hours" is 1.05 hours
+// (3780 s), never the trailing 5 hours (18000 s). See #362.
+func TestSetToolExtractsSpokenZeroFraction(t *testing.T) {
+	reg := newRegistry(t, newManager(nil))
+	for _, text := range []string{
+		"set a timer for one point oh five hours",
+		"set a timer for one point o five hours",
+		"set a timer for one point nought five hours",
+	} {
+		raw, ok := reg.Extract(timer.SetName, text)
+		if !ok {
+			t.Fatalf("Extract(%q) failed, want success", text)
+		}
+		var in timer.SetIn
+		if err := json.Unmarshal(raw, &in); err != nil {
+			t.Fatalf("decode Extract(%q) result: %v", text, err)
+		}
+		if in.DurationSeconds == 18000 {
+			t.Fatalf("Extract(%q) DurationSeconds = 18000, the trailing 5 hours leaked in", text)
+		}
+		if in.DurationSeconds != 3780 {
+			t.Fatalf("Extract(%q) DurationSeconds = %d, want 3780 (1.05 hours)", text, in.DurationSeconds)
+		}
+	}
+}
+
 func TestListToolSpeaksWhenEmpty(t *testing.T) {
 	m := newManager(nil)
 	reg := newRegistry(t, m)

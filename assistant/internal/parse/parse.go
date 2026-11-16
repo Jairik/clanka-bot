@@ -16,7 +16,9 @@ var units = map[string]time.Duration{
 	"h": time.Hour, "hr": time.Hour, "hrs": time.Hour, "hour": time.Hour, "hours": time.Hour,
 }
 
-// smallNumbers covers the number words a short utterance uses.
+// smallNumbers covers the number words a short utterance uses. The spoken zero
+// forms ("oh", "o", "nought") are included so a fraction word a user actually
+// says is readable; see valueAt for how a leading zero keeps its digit.
 var smallNumbers = map[string]int{
 	"zero": 0, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
 	"six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
@@ -24,6 +26,7 @@ var smallNumbers = map[string]int{
 	"sixteen": 16, "seventeen": 17, "eighteen": 18, "nineteen": 19,
 	"twenty": 20, "thirty": 30, "forty": 40, "fifty": 50,
 	"sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
+	"oh": 0, "o": 0, "nought": 0,
 }
 
 var (
@@ -300,7 +303,15 @@ func valueAt(tokens []string, i int) (whole, frac, fracDigits, next int, ok bool
 		if !fine {
 			return 0, 0, 0, i, false
 		}
-		return whole, frac, decimalDigits(frac), after, true
+		// The fraction's digit count is not just decimalDigits(frac): a leading
+		// zero word ("oh", "o", "nought") holds a digit position, so "one point
+		// oh five" is 1.05 (two fraction digits), never 1.5. Count the words
+		// after "point" when that is more than the integer's digit count.
+		fracDigits := decimalDigits(frac)
+		if n := after - (next + 1); n > fracDigits {
+			fracDigits = n
+		}
+		return whole, frac, fracDigits, after, true
 	}
 	return whole, 0, 0, next, true
 }

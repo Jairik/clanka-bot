@@ -47,6 +47,14 @@ func TestDuration(t *testing.T) {
 		{"zero point five hours", time.Minute, 30 * time.Minute, true},
 		{"one point five", time.Minute, 90 * time.Second, true},
 		{"one point five minutes", time.Minute, 90 * time.Second, true},
+		// A spoken zero in the fraction keeps its digit position, so "one point
+		// oh five" is 1.05 hours (1h3m), never the trailing 5 hours. See #362.
+		{"one point oh five hours", time.Minute, 63 * time.Minute, true},
+		{"one point o five hours", time.Minute, 63 * time.Minute, true},
+		{"one point nought five hours", time.Minute, 63 * time.Minute, true},
+		{"zero point oh five hours", time.Minute, 3 * time.Minute, true},
+		{"two point oh five hours", time.Minute, 123 * time.Minute, true},
+		{"two point o five hours", time.Minute, 123 * time.Minute, true},
 		// A conjunction inside a compound number keeps the hundreds.
 		{"one hundred and twenty minutes", time.Minute, 120 * time.Minute, true},
 		{"one hundred twenty minutes", time.Minute, 120 * time.Minute, true},

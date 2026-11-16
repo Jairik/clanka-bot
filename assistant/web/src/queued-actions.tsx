@@ -2,7 +2,7 @@
 // answers {items, limit}, so every surface shows the server's real cap (#297).
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@heroui/react";
-import { getJSON, postForm } from "./api";
+import { HttpError, getJSON, postForm } from "./api";
 import { useVisiblePolling } from "./visibility";
 
 export type DeferredItem = { id: number; event: string; text: string; expires: string };
@@ -44,7 +44,16 @@ export function useDeferredQueue() {
           setView(v);
           setError("");
         })
-        .catch((e) => setError(String(e))),
+        .catch((e) => {
+          // A deployment without the queue answers 404. That is an empty
+          // queue, not a failure — the smoke harness does not mount it.
+          if (e instanceof HttpError && e.status === 404) {
+            setView({ items: [], limit: 0 });
+            setError("");
+          } else {
+            setError(String(e));
+          }
+        }),
     [],
   );
   useEffect(() => {

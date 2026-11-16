@@ -87,6 +87,29 @@ describe("Home queued actions card", () => {
   });
 });
 
+describe("deferred queue availability", () => {
+  it("treats a 404 as an empty queue with no alert", async () => {
+    stubFetch({
+      "/api/ui/session": () => json(session()),
+      "/api/deferred": () => json("404 page not found", 404),
+    });
+    render(<Providers><QueuedActionsCard /></Providers>);
+    await act(async () => {});
+    expect(screen.getByText("Nothing is queued.")).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(screen.getByText("0/0")).toBeTruthy();
+  });
+
+  it("still shows an alert on 500", async () => {
+    stubFetch({
+      "/api/ui/session": () => json(session()),
+      "/api/deferred": () => json("boom", 500),
+    });
+    render(<Providers><QueuedActionsCard /></Providers>);
+    expect(await screen.findByRole("alert")).toBeTruthy();
+  });
+});
+
 describe("Alerts queued actions section", () => {
   it("renders the label, event, expiry and server cap", async () => {
     const expires = new Date(Date.now() + 43 * 60_000).toISOString();

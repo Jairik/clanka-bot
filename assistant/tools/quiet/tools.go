@@ -69,7 +69,7 @@ type StatusOut struct {
 	End   string `json:"end"`
 	// DNDUntil and AwakeUntil are the stored instants, localised to the user's
 	// timezone; zero when absent.
-	DNDUntil time.Time `json:"dnd_until"`
+	DNDUntil   time.Time `json:"dnd_until"`
 	AwakeUntil time.Time `json:"awake_until"`
 	// Volume is the absolute quiet volume percent.
 	Volume int `json:"volume"`

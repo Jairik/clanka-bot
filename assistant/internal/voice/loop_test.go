@@ -243,6 +243,11 @@ type fakeSTT struct {
 	opens   int
 	finish  int
 	closing bool
+	// loudPerStream counts the voiced (non-silent) frames written to each STT
+	// stream, keyed by its 1-based Open number. It lets a test tie a reply to
+	// the frames its own capture session recorded, independent of the frames
+	// earlier sessions wrote into the shared received() slice (#347).
+	loudPerStream map[int]int
 }
 
 func (f *fakeSTT) Open(ctx context.Context) (voice.STTStream, error) {
@@ -257,6 +262,16 @@ func (f *fakeSTT) received() [][]byte {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([][]byte(nil), f.frames...)
+}
+
+// loudFramesForStream returns the number of voiced frames the given STT stream
+// recorded. A silence-only capture records none, which is how #347 proves the
+// staged utterance actually reached the no-wake session rather than a turn that
+// ended on MaxUtterance silence.
+func (f *fakeSTT) loudFramesForStream(stream int) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.loudPerStream[stream]
 }
 
 func (f *fakeSTT) finishCount() int {
@@ -279,6 +294,12 @@ type fakeSTTStream struct {
 func (s *fakeSTTStream) Write(pcm []byte) error {
 	s.owner.mu.Lock()
 	s.owner.frames = append(s.owner.frames, append([]byte(nil), pcm...))
+	if !isSilent(pcm) {
+		if s.owner.loudPerStream == nil {
+			s.owner.loudPerStream = make(map[int]int)
+		}
+		s.owner.loudPerStream[s.stream]++
+	}
 	hook := s.owner.onWrite
 	s.owner.mu.Unlock()
 	if hook != nil {
@@ -1002,6 +1023,12 @@ func (f *followUpFixture) waitForLoudFrames(t *testing.T) {
 // window leave the wake gate closed. The second utterance is staged at a real
 // loop transition, never padded with silence: silence padding ties the fixture
 // to scheduler pace and expired under load (#332).
+//
+// Only the enabled (accepts) case proves the staged speech reached the service:
+// it asserts the no-wake STT session recorded a voiced frame, so a silence-only
+// MaxUtterance turn cannot satisfy it. The disabled and expired cases instead
+// prove the loop refused the staged speech (it never opened a turn), not that
+// the speech arrived at an open window (#347).
 func TestFollowUpWithoutWakeAndDisable(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -1012,7 +1039,7 @@ func TestFollowUpWithoutWakeAndDisable(t *testing.T) {
 		// no-wake session when a live window opens.
 		wantSTTOpens int
 	}{
-		{name: "accepts", window: time.Second, accepts: true, wantSTTOpens: 2},
+		{name: "accepts", window: 5 * time.Second, accepts: true, wantSTTOpens: 2},
 		{name: "disabled", window: 0, wantSTTOpens: 1},
 		// Shorter than the first reply's window: the no-wake session must expire
 		// before its utterance cap turns the silence into a request.
@@ -1042,6 +1069,12 @@ func TestFollowUpWithoutWakeAndDisable(t *testing.T) {
 				words := fixture.responder.wakeWords()
 				if len(words) != 2 || words[1] != "" {
 					t.Fatalf("follow-up wake provenance = %v, want the second turn with no wake word", words)
+				}
+				// The reply must be tied to the staged speech: the no-wake
+				// session (STT stream 2) must have recorded a voiced frame,
+				// not a silence-only turn that ended on MaxUtterance (#347).
+				if got := fixture.stt.loudFramesForStream(2); got == 0 {
+					t.Fatal("the no-wake session never recorded a voiced frame")
 				}
 				return
 			}

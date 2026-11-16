@@ -87,6 +87,42 @@ func TestUnavailableCuePlaysAfterAStreamedPreamble(t *testing.T) {
 	}
 }
 
+// TestStreamedAnswerThenUnavailableSpeaksNoCue covers #342: a streamed answer
+// that then loses its stream is followed by no error Cue and no Unavailable
+// line. The Agent returned Unavailable with TextNotStreamed false because the
+// failing step had already spoken, so the reply session must keep only the
+// streamed text.
+func TestStreamedAnswerThenUnavailableSpeaksNoCue(t *testing.T) {
+	log := &eventLog{}
+	cues := &fakeCues{
+		clip: sound.Clip{PCM: []byte{1, 2, 3, 4}, Format: audio.Format{Rate: 16000, Width: 2, Channels: 1}},
+		ok:   true,
+	}
+	routed := &fakePipeline{}
+	routed.handle = func(events pipeline.Events) pipeline.Reply {
+		events.Delta("It is sunny. ")
+		return pipeline.Reply{
+			Text:            "Sorry, I can't answer that right now.",
+			Unavailable:     true,
+			TextNotStreamed: false,
+		}
+	}
+
+	session := reply.New(routed, speakingLog{log}, cueSink{log}, nil, reply.WithCues(cues))
+	if _, err := session.Ask(context.Background(), request(), "ask the agent"); err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	// The answer already reached the user; the failure must not append an
+	// apology or play the error Cue.
+	want := []string{"say:It is sunny."}
+	if got := log.all(); !equal(got, want) {
+		t.Fatalf("playback order = %q, want %q", got, want)
+	}
+	if len(cues.roles) != 0 {
+		t.Fatalf("cue roles = %v, want no error cue played", cues.roles)
+	}
+}
+
 // TestStreamedAnswerIsNotRepeated keeps a normal or multi-step answer from
 // being spoken twice now that unstreamed fallbacks are always said (#193).
 func TestStreamedAnswerIsNotRepeated(t *testing.T) {

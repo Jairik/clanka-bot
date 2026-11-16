@@ -37,6 +37,13 @@ type fakeProvider struct {
 	// hang keeps the response open after writing the scripted chunks, so a
 	// test can stall after a role-only prologue.
 	hang bool
+	// hangSelective gates hangOnReply: when true, only that reply index is
+	// kept open after its chunks (the others complete normally). It is ignored
+	// when hang is also set, which hangs on every reply. A stall fires the
+	// request timeout after any first token.
+	hangSelective bool
+	// hangOnReply is the reply index to stall when hangSelective is true.
+	hangOnReply int
 }
 
 type fakeRequest struct {
@@ -69,11 +76,16 @@ func (f *fakeProvider) serve(w http.ResponseWriter, r *http.Request) {
 	status := f.status
 	delay := f.delay
 	hang := f.hang
+	hangSelective := f.hangSelective
+	hangOnReply := f.hangOnReply
 	reply := ""
 	if len(f.replies) > 0 {
 		reply = f.replies[0]
 		f.replies = f.replies[1:]
 	}
+	// replyIndex is the index of the reply being served now, used to decide
+	// whether this specific response should stall.
+	replyIndex := len(f.requests) - 1
 	f.mu.Unlock()
 
 	if status != 0 {
@@ -95,7 +107,7 @@ func (f *fakeProvider) serve(w http.ResponseWriter, r *http.Request) {
 	if flusher, ok := w.(http.Flusher); ok {
 		flusher.Flush()
 	}
-	if hang {
+	if hang || (hangSelective && replyIndex == hangOnReply) {
 		<-r.Context().Done()
 	}
 }
@@ -174,6 +186,54 @@ func writeChunk(b *strings.Builder, chunk map[string]any) {
 		panic(err)
 	}
 	fmt.Fprintf(b, "data: %s\n\n", raw)
+}
+
+// streamChunk writes a single content chunk and no [DONE], so the client reads
+// the delta but the stream never completes. Used with the fake provider's
+// hang to model a response that drops after its first token (a request
+// timeout, not a first-token timeout).
+func streamChunk(content string) string {
+	var b strings.Builder
+	chunk := map[string]any{
+		"id": "chatcmpl-test", "object": "chat.completion.chunk", "created": 1, "model": "test",
+		"choices": []any{map[string]any{
+			"index":         0,
+			"delta":         map[string]any{"role": "assistant", "content": content},
+			"finish_reason": nil,
+		}},
+	}
+	writeChunk(&b, chunk)
+	return b.String()
+}
+
+// toolCallChunk writes a single tool-call delta and no [DONE. The client sees a
+// first token (so the request timer, not the first-token timer, applies) but no
+// content and no completion, so the follow-up step stalls into a request
+// timeout without having streamed any spoken text (#193/#342).
+func toolCallChunk(calls ...fakeCall) string {
+	var b strings.Builder
+	deltas := make([]any, 0, len(calls))
+	for i, call := range calls {
+		deltas = append(deltas, map[string]any{
+			"index": i,
+			"id":    call.ID,
+			"type":  "function",
+			"function": map[string]any{
+				"name":      call.Name,
+				"arguments": call.Args,
+			},
+		})
+	}
+	chunk := map[string]any{
+		"id": "chatcmpl-test", "object": "chat.completion.chunk", "created": 1, "model": "test",
+		"choices": []any{map[string]any{
+			"index":         0,
+			"delta":         map[string]any{"role": "assistant", "content": "", "tool_calls": deltas},
+			"finish_reason": nil,
+		}},
+	}
+	writeChunk(&b, chunk)
+	return b.String()
 }
 
 func writeFinish(b *strings.Builder, reason string) {
@@ -892,6 +952,9 @@ func TestResultFlagsMarkUnstreamedFallbacks(t *testing.T) {
 		status          int
 		delay           time.Duration
 		firstToken      time.Duration
+		requestTimeout  time.Duration
+		hangSelective   bool
+		hangOnReply     int
 		maxSteps        int
 		cancel          bool
 		wantText        string
@@ -908,22 +971,36 @@ func TestResultFlagsMarkUnstreamedFallbacks(t *testing.T) {
 		{name: "first token timeout", replies: []string{textReply("too late")}, delay: 3 * time.Second, firstToken: 100 * time.Millisecond, wantText: agent.FirstTokenTimeoutMessage, wantNotStreamed: true, wantTimedOut: true},
 		{name: "provider failure", replies: []string{textReply("unused")}, status: 500, wantText: "Sorry, I can't answer that right now.", wantNotStreamed: true, wantUnavailable: true},
 		{name: "cancelled", replies: []string{textReply("too late")}, delay: 2 * time.Second, cancel: true, wantCancelled: true},
+		// #342: a streamed answer that then loses its stream is not followed by
+		// an apology. The single step streams content then stalls past the
+		// request timeout, so the failure carries the text but not the flag.
+		{name: "content then request timeout", replies: []string{streamChunk("It is sunny. ")}, hangSelective: true, hangOnReply: 0, requestTimeout: 200 * time.Millisecond, wantText: "Sorry, I can't answer that right now.", wantNotStreamed: false, wantUnavailable: true},
+		// #193: a preamble in step 1 (which completes) followed by a request
+		// timeout in step 2 that streams nothing must still set the flag, so
+		// the fixed Unavailable line is spoken.
+		{name: "preamble then request timeout", replies: []string{preambleCall, toolCallChunk(fakeCall{ID: "2", Name: "time__now", Args: "{}"})}, hangSelective: true, hangOnReply: 1, requestTimeout: 200 * time.Millisecond, wantText: "Sorry, I can't answer that right now.", wantNotStreamed: true, wantUnavailable: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			fake := newFakeProvider(t, test.replies...)
 			fake.status = test.status
 			fake.delay = test.delay
+			fake.hangSelective = test.hangSelective
+			fake.hangOnReply = test.hangOnReply
 			settings := testSettings(fake.start().URL)
 			if test.firstToken > 0 {
 				settings.FirstTokenTimeout = test.firstToken
+			}
+			if test.requestTimeout > 0 {
+				settings.RequestTimeout = test.requestTimeout
 			}
 			if test.maxSteps > 0 {
 				settings.MaxSteps = test.maxSteps
 			}
 			var registry *tool.Registry
-			if test.maxSteps > 0 {
-				// The step-limit turn needs a Tool the model can keep calling.
+			if test.maxSteps > 0 || test.name == "preamble then request timeout" {
+				// The step-limit and the preamble-then-timeout turns need a
+				// Tool the model can call (time__now in preambleCall).
 				registry = newRegistry(t)
 			}
 			a := newTestAgent(t, settings, registry, nil)

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/agent"
+	"github.com/Jairik/clanka-bot/assistant/internal/briefing"
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/lastreply"
 	"github.com/Jairik/clanka-bot/assistant/internal/latency"
@@ -185,6 +186,13 @@ func WithLastReply(store *lastreply.Store) Option {
 	return func(p *Pipeline) { p.lastReply = store }
 }
 
+// WithBriefing wires the morning-briefing stage. When set, route matches a
+// normalised exact phrase against the composer before the deferred and chain
+// stages, and replies with one composed, Local-only reply.
+func WithBriefing(composer *briefing.Composer) Option {
+	return func(p *Pipeline) { p.briefing = composer }
+}
+
 // DropPending discards a waiting Confirmation. Barge-in (#25) calls it when
 // the wake word interrupts a reply so a stale yes cannot run later.
 func (p *Pipeline) DropPending() (tool.PendingConfirmation, bool) {
@@ -212,6 +220,7 @@ type Pipeline struct {
 	lastReply    *lastreply.Store
 	chainEnabled func() bool
 	deferred     *DeferredQueue
+	briefing     *briefing.Composer
 }
 
 // New builds a pipeline and rejects a Control phrase table that points at
@@ -400,6 +409,31 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 		return reply
 	}
 
+	// Morning briefing: a fixed phrase composes several Tools into one spoken
+	// reply, before the deferred, chain and Agent stages can claim it. A
+	// briefing phrase that also looks compound is taken here, not by the chain
+	// planner.
+	if p.briefing != nil && p.briefing.Matches(normalized) {
+		markRouting()
+		record.reason = ""
+		reply.Path = tool.PathBriefing
+		result := p.briefing.Compose(ctx)
+		localOnly := false
+		calls := make([]agent.ToolCall, 0, len(result.Parts))
+		for _, part := range result.Parts {
+			if part.LocalOnly {
+				localOnly = true
+			}
+			payload, _ := json.Marshal(part.Text)
+			calls = append(calls, agent.ToolCall{Name: part.Name, Result: payload, LocalOnly: part.LocalOnly})
+			latency.AddToolCall(ctx, latency.ToolCallDetail{Name: part.Name, LocalOnly: part.LocalOnly, Result: part.Text})
+		}
+		reply.LocalOnly = localOnly
+		reply.Text = result.Text
+		p.recordTurn(transcript, reply.Text, calls)
+		return reply
+	}
+
 	// Explicit deferred requests and cancellation precede ordinary Tool routing.
 	// Deferring is the routing decision; an action that has no safe leaf or
 	// chain falls back to the Agent path, and that model call is work, not
@@ -414,6 +448,7 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 		}
 		return deferredReply
 	}
+
 	// Validate the whole chain before executing any of its Tools.
 	if p.chainEnabled != nil && p.chainEnabled() {
 		if steps := p.chainPlan(ctx, transcript, phrases); len(steps) > 1 {

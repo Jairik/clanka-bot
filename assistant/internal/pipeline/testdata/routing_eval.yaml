@@ -1790,6 +1790,15 @@ negatives:
   - what failed in my sourdough starter
   - which airline is down right now
   - why is the traffic so slow today
+  # Morning-briefing phrases: a fixed pipeline stage composes these above the
+  # Tool registry, so the semantic router must not capture them as time.now,
+  # weather.current or alarm.list. They are negatives here to prove the router
+  # leaves them alone; in production the briefing stage intercepts them first.
+  - good morning
+  - what's my day
+  - what does my day look like
+  - brief me
+  - morning briefing
 
 # Compound requests ask for more than one thing. They are kept separate so
 # the evaluation can report compound handling on its own.

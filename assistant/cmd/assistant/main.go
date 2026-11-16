@@ -21,6 +21,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/announce"
 	"github.com/Jairik/clanka-bot/assistant/internal/api"
 	"github.com/Jairik/clanka-bot/assistant/internal/audio"
+	"github.com/Jairik/clanka-bot/assistant/internal/briefing"
 	"github.com/Jairik/clanka-bot/assistant/internal/completion"
 	"github.com/Jairik/clanka-bot/assistant/internal/config"
 	"github.com/Jairik/clanka-bot/assistant/internal/connections"
@@ -855,6 +856,9 @@ func run() error {
 		// Keep the previous completed reply and its provenance so
 		// assistant.repeat and notify.phone can resolve it.
 		pipeline.WithLastReply(lastReplyStore),
+		// Morning briefing: one spoken reply composed above the Tool registry
+		// from the weather, alarms, timers, reminders and to-do list.
+		pipeline.WithBriefing(briefing.New(registry, time.Now, logger)),
 	}
 	// Compute Tool example vectors from the effective Examples (a stored
 	// override may already exist). A dead embed service only disables semantic

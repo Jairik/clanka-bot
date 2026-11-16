@@ -462,6 +462,8 @@ func pathLabel(path string) string {
 		return "Focus intent"
 	case "fallthrough":
 		return "Fallthrough"
+	case "briefing":
+		return "Briefing"
 	default:
 		if path == "" {
 			return "Unrouted"

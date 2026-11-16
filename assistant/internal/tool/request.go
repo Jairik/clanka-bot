@@ -14,6 +14,10 @@ const (
 	PathFast        Path = "fast_path"
 	PathAgent       Path = "agent_path"
 	PathFallthrough Path = "fallthrough"
+	// PathBriefing is the pipeline stage that composes several Tools into one
+	// spoken morning briefing. It is a stage, not a Tool, so it has no Tool
+	// surface and is never indexed by the semantic router.
+	PathBriefing Path = "briefing"
 )
 
 // Device is the originating device for a request.

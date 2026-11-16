@@ -4,6 +4,11 @@ on:
   push:
   pull_request:
 
+# One run per ref; a newer push cancels the older, superseded run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 # Read-only: the workflow only checks out code and runs Go tests.
 permissions:
   contents: read
@@ -12,6 +17,7 @@ jobs:
   go-test:
     name: Go tests
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: assistant
@@ -23,8 +29,8 @@ jobs:
           cache-dependency-path: assistant/go.sum
       - name: Vet
         run: go vet ./...
-      - name: Test
-        run: go test -count=1 ./...
+      - name: Test with race detector
+        run: go test -race -count=1 ./...
 
   web:
     name: Dashboard web app
@@ -156,11 +162,15 @@ jobs:
           echo "embed service did not become healthy" >&2
           docker logs clanka-embed-ci >&2
           exit 1
-      - name: Test with conformance Example routing
+      # Only the routing/conformance packages read ROUTING_EVAL_EMBED_URL: the
+      # Example suites under tools/... and the routing eval in internal/pipeline.
+      # A non-conformance package that starts using the variable later would not
+      # be covered here; the full suite with the race detector runs in go-test.
+      - name: Test conformance & routing packages with real MiniLM
         working-directory: assistant
         env:
           ROUTING_EVAL_EMBED_URL: http://127.0.0.1:18085
-        run: go test -count=1 ./...
+        run: go test -count=1 ./tools/... ./internal/pipeline
       - name: Routing eval baseline gate
         working-directory: assistant
         env:

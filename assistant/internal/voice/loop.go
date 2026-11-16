@@ -138,6 +138,10 @@ type Deps struct {
 	// moment the structured request log line is written. It feeds the
 	// Dashboard Activity page; nil leaves the loop unchanged.
 	Observer latency.Observer
+	// Stats, when set, counts false wakes for threshold tuning (#299). The loop
+	// records total wakes and the no-speech kind; the main observer fan-out
+	// records the unroutable kind on the same value. Nil leaves counting off.
+	Stats *Stats
 	// FollowUp returns the live no-wake listening window; zero disables it.
 	FollowUp func() time.Duration
 	Logger   *slog.Logger
@@ -240,6 +244,10 @@ func (l *Loop) listen(ctx context.Context) error {
 		}
 		l.inTurn = true
 		l.sampleMu.Unlock()
+		// A wake word (including a Barge-in one) that actually starts a turn is
+		// the denominator of the false-wake rate. An empty pending name is a
+		// no-wake follow-up turn and is ignored by Stats.Wake.
+		l.deps.Stats.Wake(pending)
 		bargeIn, name, err := l.session(ctx, pending)
 		l.sampleMu.Lock()
 		l.inTurn = false
@@ -488,6 +496,7 @@ func (l *Loop) session(ctx context.Context, wakeWord string) (bool, string, erro
 	transcript = strings.TrimSpace(transcript)
 	if transcript == "" {
 		l.deps.Logger.Info("voice: no speech", "request_id", timeline.ID(), "wake_word", wakeWord)
+		l.deps.Stats.NoSpeech(wakeWord)
 		timeline.Complete(l.deps.Logger, latency.OutcomeNoAudio, nil)
 		return false, "", nil
 	}

@@ -1,6 +1,6 @@
 import { Button, Checkbox } from "@heroui/react";
 import { Download, RefreshCw } from "lucide-react";
-import { useState } from "react";
+import { Fragment, useState } from "react";
 import { downloadDiagnostics, usePageData } from "../api";
 import { PageFrame } from "../shell";
 import type { Check } from "../types";
@@ -85,36 +85,65 @@ export function HealthPage() {
           ].filter(Boolean);
           const summary = checks.length ? parts.join(" · ") : "none";
           return (
-            <Section
-              key={title}
-              title={title}
-              tone={bad ? "bad" : ok ? "ok" : "neutral"}
-              defaultOpen={bad > 0 || title === "Compose services"}
-              flush
-              summary={summary}
-            >
-              {note && <p className="px-3.5 pt-3 text-xs text-muted">{note}</p>}
-              {checks.length ? (
-                <ul className="divide-y divide-separator">
-                  {checks.map((c) => (
-                    <li key={c.Name} className="flex min-h-12 items-start gap-3 px-3.5 py-3">
-                      <span className="mt-1.5">
-                        <Dot tone={TONE[c.Status] ?? "neutral"} pulse={failing(c)} />
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-baseline gap-x-2">
-                          <span className="font-mono text-sm">{c.Name}</span>
-                          <span className={cn("text-xs", failing(c) ? "text-danger" : "text-muted")}>{c.StatusLabel}</span>
+            <Fragment key={title}>
+              <Section
+                title={title}
+                tone={bad ? "bad" : ok ? "ok" : "neutral"}
+                defaultOpen={bad > 0 || title === "Compose services"}
+                flush
+                summary={summary}
+              >
+                {note && <p className="px-3.5 pt-3 text-xs text-muted">{note}</p>}
+                {checks.length ? (
+                  <ul className="divide-y divide-separator">
+                    {checks.map((c) => (
+                      <li key={c.Name} className="flex min-h-12 items-start gap-3 px-3.5 py-3">
+                        <span className="mt-1.5">
+                          <Dot tone={TONE[c.Status] ?? "neutral"} pulse={failing(c)} />
+                        </span>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-baseline gap-x-2">
+                            <span className="font-mono text-sm">{c.Name}</span>
+                            <span className={cn("text-xs", failing(c) ? "text-danger" : "text-muted")}>{c.StatusLabel}</span>
+                          </div>
+                          {c.Detail && <p className="mt-0.5 text-xs break-words text-muted">{c.Detail}</p>}
                         </div>
-                        {c.Detail && <p className="mt-0.5 text-xs break-words text-muted">{c.Detail}</p>}
-                      </div>
-                    </li>
-                  ))}
-                </ul>
-              ) : (
-                <Empty>No checks are wired.</Empty>
-              )}
-            </Section>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <Empty>No checks are wired.</Empty>
+                )}
+              </Section>
+              {title === "Wake word" && data?.FalseWakes?.length ? (
+                <Section
+                  title="False wakes (since restart)"
+                  tone="neutral"
+                  defaultOpen
+                  flush
+                  summary={`${data.FalseWakes.length} model${data.FalseWakes.length === 1 ? "" : "s"}`}
+                >
+                  <p className="px-3.5 pt-3 text-xs text-muted">
+                    Wakes that produced no speech or nothing routable, counted in memory since the Assistant restarted.
+                  </p>
+                  <ul className="divide-y divide-separator">
+                    {data.FalseWakes.map((fw) => (
+                      <li key={fw.Model} className="flex min-h-12 items-start gap-3 px-3.5 py-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-baseline gap-x-2">
+                            <span className="font-mono text-sm">{fw.Model}</span>
+                            <span className="text-xs text-muted">false-wake rate {fw.Rate}</span>
+                          </div>
+                          <p className="mt-0.5 text-xs break-words text-muted">
+                            {fw.NoSpeech} no speech · {fw.Unroutable} unroutable · {fw.Wakes} wakes
+                          </p>
+                        </div>
+                      </li>
+                    ))}
+                  </ul>
+                </Section>
+              ) : null}
+            </Fragment>
           );
         })}
       </div>

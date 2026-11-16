@@ -19,6 +19,7 @@ const health = (routing: Check): HealthView => ({
   Modules: [],
   Spotify: [],
   Routing: routing,
+  FalseWakes: null,
   DiagnosticsURL: "/api/ui/diagnostics",
 });
 

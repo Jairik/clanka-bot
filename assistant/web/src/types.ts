@@ -111,6 +111,14 @@ export type EqualizerView = {
   Error: string;
 };
 
+export type FalseWake = {
+  Model: string;
+  Wakes: number;
+  NoSpeech: number;
+  Unroutable: number;
+  Rate: string;
+};
+
 export type HealthView = {
   Owner: string;
   Page: string;
@@ -120,6 +128,10 @@ export type HealthView = {
   // Wakeword has one row per configured model and is probed from the same
   // config the voice loop uses.
   Wakeword: Check[] | null;
+  // FalseWakes is one row per wake model: the false-wake counts and rate
+  // since the process restarted. Nil when voice input is off, which hides
+  // the row. Numbers and a model name only — no transcript or private text.
+  FalseWakes: FalseWake[] | null;
   Location: Check;
   Modules: Check[] | null;
   // Spotify keeps Connect pairing and Web API auth separate; they are

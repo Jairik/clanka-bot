@@ -3,6 +3,7 @@ package dashboard
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/spotify"
 	"github.com/Jairik/clanka-bot/assistant/internal/status"
@@ -22,8 +23,12 @@ type healthView struct {
 	// Wakeword has one row per configured model and is probed from the same
 	// config the voice loop uses.
 	Wakeword []checkView
-	Location checkView
-	Modules  []checkView
+	// FalseWakes is one row per wake model: the false-wake counts and rate
+	// since the process restarted. Nil when voice input is off, which hides
+	// the row. Numbers and a model name only — no transcript or private text.
+	FalseWakes []falseWakeView
+	Location   checkView
+	Modules    []checkView
 	// Spotify keeps Connect pairing and Web API auth separate; they are
 	// different grants and one can be healthy while the other is not.
 	Spotify []checkView
@@ -44,6 +49,17 @@ type checkView struct {
 	Detail      string
 }
 
+// falseWakeView is one wake model's false-wake measurement since restart. Only
+// the model name, counts and a rate string are exposed: never a transcript or
+// any private text.
+type falseWakeView struct {
+	Model      string
+	Wakes      int64
+	NoSpeech   int64
+	Unroutable int64
+	Rate       string
+}
+
 // health runs the shared checks inside one bounded snapshot and maps them to
 // the template's rows.
 func (h *Handler) health(ctx context.Context) healthView {
@@ -55,6 +71,7 @@ func (h *Handler) health(ctx context.Context) healthView {
 		HealthTimeout:  report.Timeout.String(),
 		Services:       checkViews(report.Services),
 		Wakeword:       h.wakewordChecks(ctx),
+		FalseWakes:     h.falseWakeRows(),
 		Location:       checkViewOf(report.Location),
 		Modules:        checkViews(report.Modules),
 		Spotify:        h.spotifyChecks(),
@@ -78,6 +95,36 @@ func checkViewOf(check tool.StatusCheck) checkView {
 		StatusLabel: status.Label(check.State),
 		Detail:      check.Detail,
 	}
+}
+
+// falseWakeRows maps the voice loop's in-memory counters onto one Health row
+// per configured wake model, in config order for stable rendering. The row is
+// omitted entirely when voice input is off (no Stats or no wakeword address):
+// a disabled loop has no measurement to show, not an error. Command models
+// never start a turn, so they are not false-wake candidates.
+func (h *Handler) falseWakeRows() []falseWakeView {
+	if h.falseWakes == nil || strings.TrimSpace(h.wakeword.Addr) == "" {
+		return nil
+	}
+	snapshot := h.falseWakes.Snapshot()
+	rows := make([]falseWakeView, 0, len(h.wakeword.Models))
+	for _, model := range h.wakeword.Models {
+		if model.Command || !model.Enabled {
+			continue
+		}
+		counts := snapshot[model.Name]
+		rows = append(rows, falseWakeView{
+			Model:      model.Name,
+			Wakes:      counts.Wakes,
+			NoSpeech:   counts.NoSpeech,
+			Unroutable: counts.Unroutable,
+			Rate:       counts.Rate(),
+		})
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	return rows
 }
 
 // spotifyChecks reports the two Spotify grants independently. It reads only

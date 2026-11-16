@@ -64,6 +64,8 @@ type Config struct {
 	// Feeds is the owner-configured news sources for news.headlines. Empty by
 	// default, which makes the Tool refuse honestly until a feed is set.
 	Feeds []FeedConfig `yaml:"feeds"`
+	// Wiki holds wiki.summary's bounds. An omitted block uses the code defaults.
+	Wiki WikiConfig `yaml:"wiki"`
 }
 
 // DefaultConfig is the shipped SearXNG service and its answer-sized bounds.
@@ -75,6 +77,7 @@ func DefaultConfig() Config {
 		Results:    defaultResults,
 		MaxResults: defaultMaxResult,
 		Fetch:      DefaultFetchConfig(),
+		Wiki:       DefaultWikiConfig(),
 	}
 }
 
@@ -87,7 +90,10 @@ func (c Config) validate() error {
 	if err := c.Fetch.validate(); err != nil {
 		return err
 	}
-	return c.validateFeeds()
+	if err := c.validateFeeds(); err != nil {
+		return err
+	}
+	return c.Wiki.validate()
 }
 
 // validateFeeds rejects an owner-configured feed list the Tool cannot honour:
@@ -166,6 +172,11 @@ func (c Config) normalize() Config {
 		c.Backend = defaultBackend
 	}
 	c.BaseURL = strings.TrimRight(strings.TrimSpace(c.BaseURL), "/")
+	if c.Wiki.BaseURL == "" {
+		c.Wiki.BaseURL = defaultWikiBaseURL
+	} else {
+		c.Wiki.BaseURL = strings.TrimRight(strings.TrimSpace(c.Wiki.BaseURL), "/")
+	}
 	return c
 }
 
@@ -246,22 +257,13 @@ func (m *Module) Register(r *tool.Registry, deps tool.Deps) error {
 	}
 	// news.headlines is Fast path eligible and also offered to the Agent path;
 	// it carries the shared name matcher so a spoken feed name resolves.
-	return tool.Add(r, NewHeadlines(m.cfg, fetcher, provenance, m.logger, deps.Names))
-}
-
-// ConformanceSamples returns one representative output per Speak Tool so the
-// conformance suite can exercise the real renderer. Only news.headlines speaks;
-// web.search and web.fetch are AgentOnly and carry no Speak.
-func (m *Module) ConformanceSamples() map[string]any {
-	return map[string]any{
-		HeadlinesName: HeadlinesOut{
-			Source: "Example",
-			Items: []HeadlineItem{
-				{Title: "Sample headline one", Link: "https://example.com/1", Source: "Example", Published: "2026-11-11T15:00:00Z"},
-				{Title: "Sample headline two", Link: "https://example.com/2", Source: "Example", Published: "2026-11-11T14:00:00Z"},
-			},
-		},
+	if err := tool.Add(r, NewHeadlines(m.cfg, fetcher, provenance, m.logger, deps.Names)); err != nil {
+		return err
 	}
+	// wiki.summary shares the module's keep-alive client defaults through
+	// NewWiki's own constructor; it is offered to the Agent path and, for a
+	// strict "who/what is X" grammar, the Fast path.
+	return tool.Add(r, NewWiki(m.cfg.Wiki, nil, nil, m.logger))
 }
 
 // Health probes the configured backend's local /healthz. It shares the same

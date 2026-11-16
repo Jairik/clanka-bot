@@ -176,6 +176,20 @@ shared provenance cache, so a later `web.fetch` can open it. With no feeds
 configured the Tool refuses honestly, and an unknown or ambiguous feed name is a
 spoken refusal, never a guess.
 
+### Wikipedia summary
+
+`wiki.summary` answers short "who is X" / "what is a/an X" questions straight on
+the Fast path (no Agent round-trip). The grammar Extract accepts only those
+strict forms and refuses anything with extra clause words after the noun phrase
+("what is the capital of France" is not a Fast-path match). It looks up the
+single closest Wikipedia title, returns its title, the first two sentences of
+the article extract (≤400 runes, abbreviation-aware), and the page URL. A
+disambiguation page is refused with a fixed "That could mean several things.
+Can you be more specific?", and a missing page with a refusal naming the topic.
+Results are cached for 24 hours (LRU of 128 entries), and both upstream calls
+share a 2.5 s total budget. It refuses non-secure origins and needs no Agent
+path, so it is a read-only, Local-only Tool.
+
 ### GitHub
 
 The Agent can answer "any PRs waiting on me", read "what are my GitHub

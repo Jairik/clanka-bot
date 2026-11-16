@@ -290,6 +290,7 @@ func (s *Source) checkModules(ctx context.Context) []tool.StatusCheck {
 	}()
 
 	var health []tools.Health
+	graceExpired := false
 	select {
 	case health = <-results:
 	case <-ctx.Done():
@@ -301,15 +302,25 @@ func (s *Source) checkModules(ctx context.Context) []tool.StatusCheck {
 		select {
 		case health = <-results:
 		case <-timer.C:
+			graceExpired = true
+			// A check that landed just as the timer fired is still usable.
+			// The channel is buffered and gets exactly one send, so this
+			// never blocks and keeps whichever results did arrive.
+			select {
+			case health = <-results:
+			default:
+			}
 		}
 	}
-	return moduleChecks(names, health, s.timeout)
+	return moduleChecks(names, health, s.timeout, graceExpired)
 }
 
 // moduleChecks maps per-module results to the report's rows, keeping the module
-// order. Only a module the list marked TimedOut reads as timed out; every module
-// that answered keeps its own real state.
-func moduleChecks(names []string, health []tools.Health, timeout time.Duration) []tool.StatusCheck {
+// order. A module the list marked TimedOut, or one left without a result after
+// the list's grace expired, reads as timed out; every module that answered keeps
+// its own real state. Only a list that actually returned, with a name genuinely
+// absent, reads as no-check.
+func moduleChecks(names []string, health []tools.Health, timeout time.Duration, graceExpired bool) []tool.StatusCheck {
 	known := make(map[string]bool, len(names))
 	for _, name := range names {
 		known[name] = true
@@ -352,7 +363,14 @@ func moduleChecks(names []string, health []tools.Health, timeout time.Duration) 
 		err, checked := byName[name]
 		switch {
 		case !checked:
-			views = append(views, tool.StatusCheck{Name: name, State: tool.StatusNoCheck, Detail: "No health check declared."})
+			// The list was abandoned after its grace expired, so a missing
+			// result means the check never came back — not that no check was
+			// declared. Keep the report honest and OK() false.
+			if graceExpired {
+				views = append(views, timedOutCheck(name, timeout))
+			} else {
+				views = append(views, tool.StatusCheck{Name: name, State: tool.StatusNoCheck, Detail: "No health check declared."})
+			}
 		case err == nil:
 			views = append(views, tool.StatusCheck{Name: name, State: tool.StatusOK, Detail: "Health check passed."})
 		default:

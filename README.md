@@ -659,12 +659,15 @@ line when the window ends; a model is not called to write it. Dashboard audio
 previews keep their own queue slots and are played, never narrated as text. The
 summary and previews still wait for the current reply, a pending Confirmation
 and a ringing alert, and Barge-in cancels them like any other unprompted sound.
+A wake during a Ring is still heard, but the chime is skipped while the Ring
+owns the floor, so the reply yields to the Ring through the shared speech gate.
 Notifications are muted through `quiet.Service.AllowDelivery` before any
 network request; a suppressed missed Notification is dropped, not retried when
-the window ends. Replies, Fillers, the Unavailable cue, Timer Rings and
-Reminders use `quiet.volume` as an **absolute** software gain; the host media
-volume is never changed, so there is nothing to restore. Alarms Ring at their
-normal volume, including a Ring recovered during startup.
+the window ends. Replies, Fillers, the Unavailable cue, the wake Cue, the
+volume-command acknowledgement and Timer Rings and Reminders use `quiet.volume`
+as an **absolute** software gain; the host media volume is never changed, so
+there is nothing to restore. Alarms Ring at their normal volume, including a
+Ring recovered during startup.
 
 Say any of these; each is an `act` Local-only Tool that confirms what changed:
 

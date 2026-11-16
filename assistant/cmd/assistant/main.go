@@ -981,10 +981,7 @@ func run() error {
 		// Read the wake role per detection so a Dashboard write applies live.
 		// wakeword.chime.enabled stays the master switch it was before #55.
 		wakeCue := func() ([]byte, audio.Format, bool) {
-			if !cfg.Wakeword.Chime.Enabled {
-				return nil, audio.Format{}, false
-			}
-			clip, ok := cues.Clip(sound.RoleWake)
+			clip, ok := resolveWakeCue(cues, quietSvc, cfg.Wakeword.Chime.Enabled)
 			if !ok {
 				return nil, audio.Format{}, false
 			}
@@ -1008,7 +1005,12 @@ func run() error {
 					// would widen the settings surface for no new choice.
 					Cue: func(cueCtx context.Context) {
 						go func() {
-							if err := cues.Play(cueCtx, sound.RoleWake); err != nil {
+							clip, ok := resolveWakeCue(cues, quietSvc, cfg.Wakeword.Chime.Enabled)
+							if !ok {
+								return
+							}
+							// Follow quiet.volume like every other spoken path.
+							if err := cues.PlayClip(cueCtx, clip); err != nil {
 								logger.Warn("voice command cue", "error", err.Error())
 							}
 						}()
@@ -1030,7 +1032,7 @@ func run() error {
 				"thresholds", cfg.Wakeword.ModelThresholds(),
 			)
 		}
-		loop, err := newVoiceLoop(cfg, session, p, sink, announcements, wakeCue, voiceObserver, voiceStats, musicDucker, wakeCommands, logger)
+		loop, err := newVoiceLoop(cfg, session, p, sink, announcements, wakeCue, voiceObserver, voiceStats, musicDucker, wakeCommands, func() bool { return focusRegistry.Held(focus.Ring) }, logger)
 		if loop != nil {
 			// With music holding Focus, require a wake word instead of trusting unverified AEC.
 			loop.BindFollowUp(func() time.Duration {
@@ -1280,7 +1282,7 @@ func run() error {
 // STT, the live wake Cue, and the shared reply Session. The pipeline is the
 // Barge-in seam that drops a waiting Confirmation, and the Announcement queue
 // stops unprompted speech as soon as a wake word starts a turn.
-func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingDropper, sink audio.Sink, announcements *announce.Queue, wakeCue func() ([]byte, audio.Format, bool), observer latency.Observer, stats *voice.Stats, ducker voice.Ducker, wakeCommands map[string]voice.WakeCommand, logger *slog.Logger) (*voice.Loop, error) {
+func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingDropper, sink audio.Sink, announcements *announce.Queue, wakeCue func() ([]byte, audio.Format, bool), observer latency.Observer, stats *voice.Stats, ducker voice.Ducker, wakeCommands map[string]voice.WakeCommand, ringActive func() bool, logger *slog.Logger) (*voice.Loop, error) {
 	captureFormat := audio.Format{Rate: cfg.Capture.Rate, Width: cfg.Capture.Width, Channels: cfg.Capture.Channels}
 	frameBytes := cfg.Capture.Rate * cfg.Capture.Width * cfg.Capture.Channels * cfg.Capture.FrameMS / 1000
 	if frameBytes <= 0 {
@@ -1327,11 +1329,12 @@ func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingD
 		Responder: voice.NewPipelineResponder(session, tool.DevicePi),
 		WakeWords: names,
 		Dropper:   pending,
-		WakeCue:   wakeCue,
-		Observer:  observer,
-		Stats:     stats,
-		Ducker:    ducker,
-		Logger:    logger,
+		WakeCue:    wakeCue,
+		Observer:   observer,
+		Stats:      stats,
+		Ducker:     ducker,
+		RingActive: ringActive,
+		Logger:     logger,
 	}
 	deps.WakeCommands = wakeCommands
 	// Leave the seam absent rather than storing a typed nil: a text-only setup
@@ -1340,6 +1343,22 @@ func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingD
 		deps.Announcer = announcements
 	}
 	return voice.New(voiceCfg, deps)
+}
+
+// resolveWakeCue resolves the wake role and scales it for Quiet hours, so a
+// Quiet-hours change applies to the next wake. It returns ok=false when the
+// chime is disabled or no sound is assigned. Both wake paths (the spoken-wake
+// Cue and the wake-free command acknowledgement) resolve through it, so they
+// share the quiet.volume decision (#258).
+func resolveWakeCue(cues *sound.Service, quietSvc *quiet.Service, enabled bool) (sound.Clip, bool) {
+	if !enabled {
+		return sound.Clip{}, false
+	}
+	clip, ok := cues.Clip(sound.RoleWake)
+	if !ok {
+		return sound.Clip{}, false
+	}
+	return quietSvc.Clip(clip), true
 }
 
 // loadAgentFiller caches the Agent path cue before the HTTP server starts. A

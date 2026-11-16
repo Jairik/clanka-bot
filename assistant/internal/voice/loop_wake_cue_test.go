@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -172,8 +173,61 @@ func TestLoopUsesTheLiveWakeCueInsteadOfTheStaticChime(t *testing.T) {
 	}
 }
 
-func TestLoopTreatsNoneWakeCueAsSilence(t *testing.T) {
-	source := &scriptSource{frames: append(repeat(loudFrame(), 8), repeat(silentFrame(), 40)...)}
+// TestLoopSkipsWakeCueWhileRingActive pins the #258 Ring-overlap decision: a
+// wake during a Ring plays no chime, yet capture and the reply still happen.
+// Outside a Ring the cue plays.
+func TestLoopSkipsWakeCueWhileRingActive(t *testing.T) {
+	for _, ring := range []bool{true, false} {
+		ring := ring
+		t.Run(fmt.Sprintf("ringActive=%v", ring), func(t *testing.T) {
+			source := &scriptSource{frames: append(repeat(loudFrame(), 8), repeat(silentFrame(), 40)...)}
+			wake := &fakeWake{afterWords: 5, maxFires: 1}
+			stt := &fakeSTT{text: "hello"}
+			player := &capturePlayer{}
+			responder := &fakeResponder{calls: make(chan string, 1)}
+			active := ring
+			cue := []byte{1, 2, 3, 4}
+
+			loop := newLoop(t, voice.Config{
+				FrameBytes:  frameBytes,
+				Endpoint:    endpointConfig(500 * time.Millisecond),
+				Chime:       []byte{9, 9},
+				ChimeFormat: audio.Format{Rate: 16000, Width: 2, Channels: 1},
+			}, voice.Deps{
+				Source: source, Wake: wake, STT: stt, Player: player, Responder: responder,
+				RingActive: func() bool { return active },
+				WakeCue: func() ([]byte, audio.Format, bool) {
+					return cue, audio.Format{Rate: 16000, Width: 2, Channels: 1}, true
+				},
+			})
+			runLoop(t, loop)
+
+			select {
+			case <-responder.calls:
+			case <-time.After(5 * time.Second):
+				t.Fatal("no reply")
+			}
+			// Give the cue goroutine time to settle either way.
+			time.Sleep(200 * time.Millisecond)
+
+			buffers, _ := player.snapshot()
+			if ring {
+				if len(buffers) != 0 {
+					t.Fatalf("wake cue played %d times during a Ring, want none", len(buffers))
+				}
+				return
+			}
+			if len(buffers) != 1 {
+				t.Fatalf("wake cue played %d times, want one outside a Ring", len(buffers))
+			}
+			if !bytes.Equal(buffers[0], cue) {
+				t.Fatalf("wake cue = %v, want %v", buffers[0], cue)
+			}
+		})
+	}
+}
+
+func TestLoopTreatsNoneWakeCueAsSilence(t *testing.T) {	source := &scriptSource{frames: append(repeat(loudFrame(), 8), repeat(silentFrame(), 40)...)}
 	wake := &fakeWake{afterWords: 5, maxFires: 1}
 	stt := &fakeSTT{text: "hello"}
 	player := &capturePlayer{}

@@ -28,18 +28,22 @@ func (l *Loop) RecordSample(ctx context.Context) ([]byte, error) {
 	ctx, cancel := context.WithTimeout(ctx, 6*time.Second)
 	defer cancel()
 	// The quiet cue ends before capture so it cannot become a training example.
-	if l.deps.Player != nil {
-		cue := make([]byte, 1600)
-		for i := 0; i < len(cue)/2; i++ {
-			envelope := math.Sin(math.Pi * float64(i) / 800)
-			binary.LittleEndian.PutUint16(cue[i*2:], uint16(int16(650*envelope*math.Sin(2*math.Pi*880*float64(i)/16000))))
+	// Skip it while a Ring owns the floor (and skip the cue-tail settle that
+	// exists only to let it decay): capture can start immediately.
+	if l.deps.RingActive == nil || !l.deps.RingActive() {
+		if l.deps.Player != nil {
+			cue := make([]byte, 1600)
+			for i := 0; i < len(cue)/2; i++ {
+				envelope := math.Sin(math.Pi * float64(i) / 800)
+				binary.LittleEndian.PutUint16(cue[i*2:], uint16(int16(650*envelope*math.Sin(2*math.Pi*880*float64(i)/16000))))
+			}
+			if err := l.deps.Player.Play(ctx, cue, audio.Format{Rate: 16000, Width: 2, Channels: 1}); err != nil {
+				return nil, err
+			}
 		}
-		if err := l.deps.Player.Play(ctx, cue, audio.Format{Rate: 16000, Width: 2, Channels: 1}); err != nil {
-			return nil, err
+		if !sleep(ctx, 150*time.Millisecond) {
+			return nil, ctx.Err()
 		}
-	}
-	if !sleep(ctx, 150*time.Millisecond) {
-		return nil, ctx.Err()
 	}
 	frames := make(chan []byte, 160)
 	l.sampleMu.Lock()

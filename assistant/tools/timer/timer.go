@@ -125,6 +125,12 @@ type Manager struct {
 	// List and Remaining can answer about the alert the user hears instead of
 	// claiming nothing is scheduled.
 	ringing map[string]Timer
+
+	// fireGateHook, when set, runs at the exact point where the live entry is
+	// gone and the active Ring is registered but the history transaction has not
+	// yet run and the Ring has not started. Tests use it to make the
+	// cancel-against-mid-fire race deterministic without a sleep.
+	fireGateHook func(id string)
 }
 
 // MissedAlert is the notification hook payload for a Timer that ran to
@@ -204,6 +210,15 @@ func (m *Manager) SetMissedHook(hook func(MissedAlert)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.missed = hook
+}
+
+// SetFireGateHook installs a test-only hook that runs inside fire at the point
+// where the live entry is gone and the active Ring is registered but the Ring
+// has not started. A nil hook disables it. It is not part of the production API.
+func (m *Manager) SetFireGateHook(hook func(id string)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.fireGateHook = hook
 }
 
 // WithFocus makes a ringing alert hold Focus, so a shared "stop" or "cancel"
@@ -351,9 +366,33 @@ func (m *Manager) fire(id string) {
 	db := m.db
 	rootCtx := m.ctx
 	fallback := m.alertText
+	timer := e.timer
+	// Register the cancellable Ring now, before the history transaction, so a
+	// cancel that lands while beginFire is in flight finds the live alert and
+	// counts it. The original window — entry deleted, active not yet set — let
+	// CancelTimers answer "nothing to cancel" while the Timer kept ringing.
+	ringCtx, ringCancel := context.WithCancel(rootCtx)
+	m.active[id] = ringCancel
+	m.activeLabels[id] = timer.Label
+	gate := m.fireGateHook
 	m.mu.Unlock()
 
-	timer := e.timer
+	defer func() {
+		ringCancel()
+		m.mu.Lock()
+		delete(m.active, id)
+		delete(m.ringCancelled, id)
+		delete(m.activeLabels, id)
+		delete(m.ringing, id)
+		m.mu.Unlock()
+	}()
+
+	// Test hook: keep the fire paused at the precise point between the entry
+	// delete and the Ring so a cancel can be asserted to win the race.
+	if gate != nil {
+		gate(id)
+	}
+
 	eventID := int64(0)
 	if db != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), storeTimeout)
@@ -368,28 +407,21 @@ func (m *Manager) fire(id string) {
 		}
 	}
 
-	// One cancellable context per fired Timer lets a page or voice cancel end
-	// a Ring whose pending row and live entry are already gone.
-	ringCtx, ringCancel := context.WithCancel(rootCtx)
+	// A cancel that won the race during the transaction has marked this Ring
+	// cancelled (or the manager closed): close the history row accordingly and
+	// never start the Ring. The defer above already cleaned both maps.
 	m.mu.Lock()
-	if m.closed {
-		m.mu.Unlock()
-		ringCancel()
-		m.finishEvent(eventID, alertstore.StateInterrupted, "shutdown")
+	cancelled := m.ringCancelled[id]
+	closed := m.closed
+	m.mu.Unlock()
+	if cancelled || closed {
+		if cancelled {
+			m.finishEvent(eventID, alertstore.StateStopped, "cancel")
+		} else {
+			m.finishEvent(eventID, alertstore.StateInterrupted, "shutdown")
+		}
 		return
 	}
-	m.active[timer.ID] = ringCancel
-	m.activeLabels[timer.ID] = timer.Label
-	m.mu.Unlock()
-	defer func() {
-		ringCancel()
-		m.mu.Lock()
-		delete(m.active, timer.ID)
-		delete(m.ringCancelled, timer.ID)
-		delete(m.activeLabels, timer.ID)
-		delete(m.ringing, timer.ID)
-		m.mu.Unlock()
-	}()
 
 	if engine != nil {
 		result := engine.Ring(ringCtx, ring.Request{

@@ -319,7 +319,7 @@ func TestTranscribeFinishTimesOutWhenTheServiceGoesSilent(t *testing.T) {
 		_, _ = io.Copy(io.Discard, conn)
 	})
 
-	client := wyoming.NewClient(addr, wyoming.WithTimeout(100*time.Millisecond))
+	client := wyoming.NewClient(addr, wyoming.WithTimeout(100*time.Millisecond), wyoming.WithFinalisationBudget(300*time.Millisecond))
 	ctx, cancel := contextWithTimeout(t)
 	defer cancel()
 
@@ -342,10 +342,10 @@ func TestTranscribeFinishTimesOutWhenTheServiceGoesSilent(t *testing.T) {
 			t.Fatal("Finish succeeded against a silent service")
 		}
 		if !strings.Contains(err.Error(), "wyoming: transcribe:") {
-			t.Fatalf("error = %v, want a short transcribe timeout", err)
+			t.Fatalf("error = %v, want the total finalisation budget message", err)
 		}
 		if elapsed := time.Since(started); elapsed < 50*time.Millisecond || elapsed > time.Second {
-			t.Fatalf("Finish returned after %v, want about the 100ms read timeout", elapsed)
+			t.Fatalf("Finish returned after %v, want about the 300ms total budget", elapsed)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Finish blocked after the service stopped answering")
@@ -481,6 +481,58 @@ func TestTranscribeDetectsBusyBeforeStreaming(t *testing.T) {
 	}
 	if stream != nil {
 		stream.Close()
+	}
+}
+
+// A busy refusal that only arrives after the model is released (the real server
+// waits SESSION_WAIT before refusing a second session) must still reach the
+// caller while audio is streaming, so the voice loop can stop sending the rest of
+// the utterance instead of writing it into a dead session (#368). The fast-path
+// probe times out on a healthy session and misses this; the background reader
+// surfaces it on Refused without waiting for Finish.
+func TestTranscribeReportsBusyMidStreamViaRefused(t *testing.T) {
+	const busyAfter = 3
+	addr := fakeServer(t, func(conn net.Conn) {
+		r := bufio.NewReader(conn)
+		readWireEvent(t, r) // transcribe
+		readWireEvent(t, r) // audio-start
+		for i := 0; i < busyAfter; i++ {
+			readAudioEvent(t, r) // audio-chunk
+		}
+		// Refuse only after the session has been held a while, the way a
+		// serialising service answers a second session after SESSION_WAIT.
+		time.Sleep(200 * time.Millisecond)
+		writeWireEvent(t, conn, "error", map[string]any{"text": "speech recognition is busy", "code": "busy"})
+		// The client should stop sending once it sees the refusal.
+		_, _ = io.Copy(io.Discard, conn)
+	})
+
+	// A short probe proves it is the reader, not the probe, that catches this.
+	client := wyoming.NewClient(addr, wyoming.WithTimeout(2*time.Second), wyoming.WithRefusalDeadline(50*time.Millisecond))
+	ctx, cancel := contextWithTimeout(t)
+	defer cancel()
+
+	stream, err := client.Transcribe(ctx, wyoming.TranscribeOptions{}, wyoming.Format{Rate: 16000, Width: 2, Channels: 1})
+	if err != nil {
+		t.Fatalf("Transcribe: %v", err)
+	}
+	defer stream.Close()
+
+	// Stream the frames that precede the refusal.
+	for i := 0; i < busyAfter; i++ {
+		if err := stream.Write([]byte{1, 2}); err != nil {
+			t.Fatalf("Write %d: %v", i, err)
+		}
+	}
+	// The refusal must arrive on Refused while we would still be streaming, not
+	// only at Finish.
+	select {
+	case err := <-stream.Refused():
+		if !errors.Is(err, wyoming.ErrBusy) {
+			t.Fatalf("Refused = %v, want ErrBusy", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Refused never delivered a busy refusal mid-stream")
 	}
 }
 

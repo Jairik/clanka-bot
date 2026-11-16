@@ -237,6 +237,10 @@ type fakeSTT struct {
 	err error
 	// openErr, when set, makes Open fail, simulating an immediate refusal.
 	openErr error
+	// busyAfter, when > 0, makes the stream refuse as busy on Refused after this
+	// many frames are written, simulating a serialising service that only refuses
+	// a second session after the model is released (#368).
+	busyAfter int
 	// onWrite, when set, runs after each frame with its 1-based Open number, so
 	// a test can synchronize on a capture session starting to record audio.
 	onWrite func(stream int)
@@ -261,7 +265,7 @@ func (f *fakeSTT) Open(ctx context.Context) (voice.STTStream, error) {
 	if f.openErr != nil {
 		return nil, f.openErr
 	}
-	return &fakeSTTStream{owner: f, stream: stream}, nil
+	return &fakeSTTStream{owner: f, stream: stream, refused: make(chan error, 1)}, nil
 }
 
 func (f *fakeSTT) received() [][]byte {
@@ -295,6 +299,8 @@ func (f *fakeSTT) openCount() int {
 type fakeSTTStream struct {
 	owner  *fakeSTT
 	stream int
+	// refused delivers the busy refusal the caller selects on mid-stream.
+	refused chan error
 }
 
 func (s *fakeSTTStream) Write(pcm []byte) error {
@@ -306,10 +312,20 @@ func (s *fakeSTTStream) Write(pcm []byte) error {
 		}
 		s.owner.loudPerStream[s.stream]++
 	}
+	writes := len(s.owner.frames)
+	busyAfter := s.owner.busyAfter
 	hook := s.owner.onWrite
 	s.owner.mu.Unlock()
 	if hook != nil {
 		hook(s.stream)
+	}
+	if busyAfter > 0 && writes == busyAfter {
+		// Refuse as busy exactly once, after the requested number of frames, the
+		// way a real service refuses a second session partway through the turn.
+		select {
+		case s.refused <- wyoming.ErrBusy:
+		default:
+		}
 	}
 	return nil
 }
@@ -320,6 +336,8 @@ func (s *fakeSTTStream) Finish() (string, error) {
 	s.owner.finish++
 	return s.owner.text, s.owner.err
 }
+
+func (s *fakeSTTStream) Refused() <-chan error { return s.refused }
 
 func (s *fakeSTTStream) Close() error { return nil }
 
@@ -360,6 +378,13 @@ func (s *fakeSpeaker) SayText(ctx context.Context, text string) error {
 		}
 	}
 	return nil
+}
+
+// saidCount reports how many phrases the speaker has spoken.
+func (s *fakeSpeaker) saidCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.said)
 }
 
 // fakeResponder records transcripts and what the wake service looked like when
@@ -627,6 +652,67 @@ func TestLoopSpeaksWhenSttRefusesAsBusyAtFinish(t *testing.T) {
 	}
 	if opens := stt.openCount(); opens != 1 {
 		t.Fatalf("STT opens = %d, want 1", opens)
+	}
+
+	cancel()
+	<-stopped
+}
+
+// A refusal that arrives mid-utterance (after the model is released, which is how
+// the real server answers a second session) must stop the loop streaming frames
+// at once: it speaks the busy line exactly once and never reaches the rest of the
+// utterance or opens the barge-in wake stream (#368).
+func TestLoopStopsStreamingWhenSttRefusesAsBusyMidUtterance(t *testing.T) {
+	const busyAfter = 4
+	source := &scriptSource{frames: append(repeat(loudFrame(), 8), repeat(silentFrame(), 40)...)}
+	wake := &fakeWake{afterWords: 5, maxFires: 1}
+	stt := &fakeSTT{text: "what time is it", busyAfter: busyAfter}
+	speaker := &fakeSpeaker{called: make(chan string, 1)}
+	player := &fakePlayer{}
+	responder := &fakeResponder{calls: make(chan string, 1)}
+
+	loop := newLoop(t, voice.Config{
+		FrameBytes: frameBytes,
+		Endpoint:   endpointConfig(500 * time.Millisecond),
+		Chime:      []byte{1, 2, 3, 4},
+		ChimeFormat: audio.Format{Rate: 16000, Width: 2, Channels: 1},
+	}, voice.Deps{
+		Source:    source,
+		Wake:      wake,
+		STT:       stt,
+		Player:    player,
+		Responder: responder,
+		Speaker:   speaker,
+	})
+	cancel, stopped := runLoop(t, loop)
+
+	select {
+	case got := <-speaker.called:
+		if !strings.Contains(strings.ToLower(got), "busy") {
+			t.Fatalf("busy message = %q, want it to mention busy", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the busy refusal was never spoken")
+	}
+
+	// The loop stopped streaming well before the utterance ended: only the frames
+	// up to the refusal reached STT, not the whole 48-frame request.
+	received := stt.received()
+	if len(received) == 0 {
+		t.Fatal("STT received no audio; expected a few frames before the refusal")
+	}
+	if len(received) > busyAfter+2 {
+		t.Fatalf("STT received %d frames, want it to stop streaming well before the utterance ended (<= %d)", len(received), busyAfter+2)
+	}
+	// The busy line was spoken exactly once.
+	if got := speaker.saidCount(); got != 1 {
+		t.Fatalf("busy messages spoken = %d, want 1", got)
+	}
+	// No reply ran for a refused turn.
+	select {
+	case <-responder.calls:
+		t.Fatal("the loop produced a reply despite the busy refusal")
+	default:
 	}
 
 	cancel()

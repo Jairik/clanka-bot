@@ -59,6 +59,10 @@ type STTStream interface {
 	Write(pcm []byte) error
 	Finish() (string, error)
 	Close() error
+	// Refused reports a server refusal (for example a busy error) seen while the
+	// utterance is still streaming, so the loop can stop early instead of writing
+	// the whole request into a refused session (#368).
+	Refused() <-chan error
 }
 
 // Player plays one complete PCM buffer, such as the wake chime.
@@ -502,6 +506,17 @@ func (l *Loop) session(ctx context.Context, wakeWord string) (bool, string, erro
 				return false, "", err
 			}
 			ended = endpointer.Add(fr.pcm)
+		case err := <-stt.Refused():
+			// The speech-to-text service refused the turn (most often because
+			// another session holds the model). A busy refusal is the expected
+			// answer: say so and end the turn, without opening the wake stream or
+			// streaming the rest of the utterance (#368). Any other refusal is a
+			// real failure, so Finish would report it; return it directly.
+			if errors.Is(err, wyoming.ErrBusy) {
+				l.speakBusy(sessCtx)
+				return false, "", nil
+			}
+			return false, "", err
 		}
 	}
 	// One timeline spans endpointing, STT, routing, the Agent path and

@@ -94,8 +94,16 @@ check_repo() {
 }
 
 install_units() {
-	local user=$1
+	local user=$1 uid
 	mkdir -p "$UNIT_DIR" || die "cannot create $UNIT_DIR"
+
+	# Resolve the run-time dir honestly: a *system* unit with User= does not
+	# inherit XDG_RUNTIME_DIR, so Compose's `${XDG_RUNTIME_DIR:-/run/user/1000}`
+	# Pulse mount would silently assume UID 1000. Export the real path for this
+	# user so the assistant and Soloist bind the correct host socket. Assume
+	# nothing: if the UID cannot be resolved, fail loudly rather than guess 1000.
+	uid="$(id -u "$user" 2>/dev/null || true)"
+	[[ -n "$uid" ]] || die "cannot resolve UID for user '$user'; refusing to guess XDG_RUNTIME_DIR"
 
 	{
 		printf '%s\n' '[Unit]'
@@ -108,6 +116,11 @@ install_units() {
 		# A system unit with User= keeps none of the account's groups, so the
 		# docker group must be granted here or compose cannot reach the socket.
 		printf '%s\n' 'SupplementaryGroups=docker'
+		# A system timer unit does not set XDG_RUNTIME_DIR (that is the user
+		# manager's job, or a system service using PAMName= with pam_systemd).
+		# Export the real run-time dir for this user so the Pulse mount points
+		# at /run/user/<uid>/pulse instead of silently assuming 1000.
+		printf 'Environment=XDG_RUNTIME_DIR=/run/user/%s\n' "$uid"
 		printf 'WorkingDirectory=%s\n' "$REPO_ROOT"
 		printf 'ExecStart=%s/scripts/deploy-watch.sh\n' "$REPO_ROOT"
 		printf '%s\n' 'Environment=DEPLOY_HEALTH_TIMEOUT=300'

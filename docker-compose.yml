@@ -199,7 +199,13 @@ services:
       interval: 10s
       timeout: 3s
       retries: 5
-      start_period: 5s
+      # First-boot cold start is heavy: the assistant loads settings, probes
+      # TTS, warms the active voice, synthesizes the Agent Filler and starts
+      # every Tool module before /healthz answers. 90s keeps Docker from
+      # marking it unhealthy (first possible verdict: 90 + 5*10 = 140s) during a
+      # slow load; deploy.sh then tolerates a transient 'unhealthy' for
+      # DEPLOY_COLD_START_GRACE (default 150s) past this start.
+      start_period: 90s
 
   # The Dashboard UI as its own versioned artifact (#105). The assistant is the
   # only client and proxies on the same origin, so identity, Host and CSP stay

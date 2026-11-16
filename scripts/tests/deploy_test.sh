@@ -96,6 +96,20 @@ compose)
 	;;
 inspect)
 	for last; do :; done
+	# Per-cid call counter so a fixture can flip a service's status after the
+	# first poll (e.g. an assistant that becomes healthy once it has warmed up).
+	cfile="$dir/inspect-count/$last"
+	mkdir -p "$dir/inspect-count"
+	cnt=$(cat "$cfile" 2>/dev/null || echo 0)
+	cnt=$((cnt + 1))
+	echo "$cnt" >"$cfile"
+	if [[ -f "$dir/flip/$last" ]]; then
+		after=$(cat "$dir/flip-after/$last" 2>/dev/null || echo 1)
+		if ((cnt <= after)); then
+			cat "$dir/flip/$last"
+			exit 0
+		fi
+	fi
 	if [[ -f "$dir/health/$last" ]]; then
 		cat "$dir/health/$last"
 	else
@@ -180,8 +194,22 @@ set_services() {
 }
 
 set_health() {
-	local svc=$1 status=$2
-	echo "$status" >"$SCENARIO/health/cid-$svc"
+	local svc=$1 status=$2 started=${3:-}
+	if [[ -n "$started" ]]; then
+		echo "$status $started" >"$SCENARIO/health/cid-$svc"
+	else
+		echo "$status" >"$SCENARIO/health/cid-$svc"
+	fi
+}
+
+# Return `status startedAt` from `flip/cid-$svc` for the first `after` inspect
+# calls (default 1), then fall through to the normal health file. Used to model a
+# container that is still warming up on the first poll but healthy on the next.
+set_health_flip() {
+	local svc=$1 status=$2 started=$3 after=${4:-1}
+	mkdir -p "$SCENARIO/flip" "$SCENARIO/flip-after"
+	echo "$status $started" >"$SCENARIO/flip/cid-$svc"
+	echo "$after" >"$SCENARIO/flip-after/cid-$svc"
 }
 
 git_config() {
@@ -224,6 +252,7 @@ run_deploy() {
 		STUB_DOCKER_DIR="$SCENARIO" PATH="$STUB_BIN:$PATH" \
 			DEPLOY_HEALTH_TIMEOUT="${DEPLOY_HEALTH_TIMEOUT:-5}" \
 			DEPLOY_POLL_INTERVAL="${DEPLOY_POLL_INTERVAL:-0.1}" \
+			DEPLOY_COLD_START_GRACE="${DEPLOY_COLD_START_GRACE:-150}" \
 			SOLOIST_DIR="$SCENARIO/soloist" \
 			SOLOIST_BINARY="$SCENARIO/soloist/soloist" \
 			SOLOIST_LEGACY_DIR="$SCENARIO/legacy" \
@@ -463,16 +492,65 @@ test_reports_timeout_with_diagnostics() {
 }
 
 test_reports_unhealthy_service() {
-	local repo start
+	local repo start old
 	repo=$(new_repo)
 	new_scenario
-	echo unhealthy >"$SCENARIO/health/default"
+	# Started two hours ago, so even the cold-start grace has long expired:
+	# the deploy must still fail immediately with the existing diagnostics.
+	old="$(date -u -d '2 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
+	echo "unhealthy $old" >"$SCENARIO/health/default"
 	start=$(date +%s)
 	DEPLOY_HEALTH_TIMEOUT=30 run_deploy "$repo"
 	assert_nonzero "unhealthy service fails the deploy"
 	assert_out_contains "failure names the unhealthy state" "unhealthy"
 	assert_out_contains "failure dumps the failing service logs" "stub logs for assistant"
 	assert_elapsed_under "unhealthy state is not waited out" 8 "$start"
+}
+
+test_cold_start_grace_then_healthy() {
+	local repo start recent
+	repo=$(new_repo)
+	new_scenario
+	# The assistant started 5s ago and is briefly unhealthy while it warms up
+	# (loads settings, probes TTS, warms the voice, starts Tools): that is
+	# inside DEPLOY_COLD_START_GRACE, so wait_for_health must keep polling
+	# rather than fail. The fixture flips it to healthy on the second poll.
+	recent="$(date -u -d '5 seconds ago' +%Y-%m-%dT%H:%M:%SZ)"
+	set_health assistant healthy "$recent"
+	set_health_flip assistant unhealthy "$recent"
+	start=$(date +%s)
+	DEPLOY_HEALTH_TIMEOUT=30 run_deploy "$repo"
+	assert_status 0 "unhealthy within the cold-start grace then healthy succeeds"
+	assert_out_contains "cold-start grace keeps waiting" "still waiting"
+	assert_out_contains "deploy reports all services healthy" "all 1 service"
+	assert_elapsed_under "deploy completes after the flip" 30 "$start"
+}
+
+test_crash_loop_fails_immediately() {
+	local repo start recent
+	repo=$(new_repo)
+	new_scenario
+	# A crash-loop reports 'exited'/'dead' regardless of how recently it
+	# started; wait_for_health must never treat that as a slow cold start.
+	recent="$(date -u -d '2 seconds ago' +%Y-%m-%dT%H:%M:%SZ)"
+	echo "exited $recent" >"$SCENARIO/health/cid-assistant"
+	start=$(date +%s)
+	DEPLOY_HEALTH_TIMEOUT=30 run_deploy "$repo"
+	assert_nonzero "a crashed container fails the deploy immediately"
+	assert_out_contains "failure names the crash state" "exited"
+	assert_elapsed_under "crash-loop is not waited out" 8 "$start"
+}
+
+test_warns_when_pulse_socket_missing() {
+	local repo
+	repo=$(new_repo)
+	new_scenario
+	# Point XDG_RUNTIME_DIR at a directory with no Pulse socket so the preflight
+	# warns. The deploy must still succeed: a deaf assistant is worse than a
+	# failed deploy, and /healthz does not need Pulse.
+	XDG_RUNTIME_DIR="$SCENARIO/no-pulse" run_deploy "$repo"
+	assert_status 0 "missing Pulse socket only warns, the deploy still succeeds"
+	assert_out_contains "preflight warns about the missing Pulse socket" "Pulse native socket not found"
 }
 
 test_rollback_reuses_images_without_build() {
@@ -709,6 +787,9 @@ run_test test_make_up_runs_optional_setup_without_key
 run_test test_rollback_removes_orphans_from_a_newer_service_set
 run_test test_reports_timeout_with_diagnostics
 run_test test_reports_unhealthy_service
+run_test test_cold_start_grace_then_healthy
+run_test test_crash_loop_fails_immediately
+run_test test_warns_when_pulse_socket_missing
 run_test test_rollback_reuses_images_without_build
 run_test test_rollback_refuses_missing_image
 run_test test_rollback_refuses_unknown_commit

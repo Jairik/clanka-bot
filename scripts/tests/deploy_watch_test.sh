@@ -67,6 +67,10 @@ compose)
 			if grep -qxF "${2:-}" "$dir/containers" 2>/dev/null; then
 				echo "cid-${2:-}"
 			fi
+		elif [[ "${1:-}" == "--services" ]]; then
+			# Only running, defined services: `docker compose ps --services`
+			# drops orphans and profiled services whose profile is inactive.
+			grep -xF -f "$dir/services" "$dir/containers" 2>/dev/null || true
 		else
 			echo "stub compose ps"
 		fi

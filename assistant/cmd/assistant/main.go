@@ -396,6 +396,12 @@ func run() error {
 	if ttsClient != nil {
 		speechSpeaker = speech.New(ttsClient, playSink, ttsVoice, logger)
 	}
+	// A nil *speech.Speaker would still satisfy voice.Speaker as a non-nil
+	// interface and panic on call, so pass a typed-nil interface instead.
+	var busySpeaker voice.Speaker
+	if speechSpeaker != nil {
+		busySpeaker = speechSpeaker
+	}
 
 	// The speech gate lets a Ring wait for the current reply sentence and then
 	// take the one speaker; the reply's next sentence waits for the Ring.
@@ -1074,7 +1080,7 @@ func run() error {
 				"thresholds", cfg.Wakeword.ModelThresholds(),
 			)
 		}
-		loop, err := newVoiceLoop(cfg, session, p, sink, announcements, wakeCue, voiceObserver, voiceStats, musicDucker, wakeCommands, func() bool { return focusRegistry.Held(focus.Ring) }, logger)
+		loop, err := newVoiceLoop(cfg, session, p, sink, announcements, wakeCue, voiceObserver, voiceStats, musicDucker, wakeCommands, func() bool { return focusRegistry.Held(focus.Ring) }, busySpeaker, logger)
 		if loop != nil {
 			// With music holding Focus, require a wake word instead of trusting unverified AEC.
 			loop.BindFollowUp(func() time.Duration {
@@ -1330,7 +1336,7 @@ func run() error {
 // STT, the live wake Cue, and the shared reply Session. The pipeline is the
 // Barge-in seam that drops a waiting Confirmation, and the Announcement queue
 // stops unprompted speech as soon as a wake word starts a turn.
-func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingDropper, sink audio.Sink, announcements *announce.Queue, wakeCue func() ([]byte, audio.Format, bool), observer latency.Observer, stats *voice.Stats, ducker voice.Ducker, wakeCommands map[string]voice.WakeCommand, ringActive func() bool, logger *slog.Logger) (*voice.Loop, error) {
+func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingDropper, sink audio.Sink, announcements *announce.Queue, wakeCue func() ([]byte, audio.Format, bool), observer latency.Observer, stats *voice.Stats, ducker voice.Ducker, wakeCommands map[string]voice.WakeCommand, ringActive func() bool, busySpeaker voice.Speaker, logger *slog.Logger) (*voice.Loop, error) {
 	captureFormat := audio.Format{Rate: cfg.Capture.Rate, Width: cfg.Capture.Width, Channels: cfg.Capture.Channels}
 	frameBytes := cfg.Capture.Rate * cfg.Capture.Width * cfg.Capture.Channels * cfg.Capture.FrameMS / 1000
 	if frameBytes <= 0 {
@@ -1345,7 +1351,11 @@ func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingD
 	names := cfg.Wakeword.WakeModels()
 	detectModels := cfg.Wakeword.DetectModels()
 	wakeClient := wyoming.NewClient(cfg.Wakeword.Addr, wyoming.WithTimeout(cfg.Wakeword.Timeout.Duration()))
-	sttClient := wyoming.NewClient(cfg.STT.Addr, wyoming.WithTimeout(cfg.STT.Timeout.Duration()))
+	// The refusal probe lets a busy (model-held) refusal surface before the
+	// utterance is streamed, instead of only at Finish (#368). A small window
+	// keeps the success path quick; a refusal that arrives later is still
+	// caught at Finish.
+	sttClient := wyoming.NewClient(cfg.STT.Addr, wyoming.WithTimeout(cfg.STT.Timeout.Duration()), wyoming.WithRefusalDeadline(250*time.Millisecond))
 
 	voiceCfg := voice.Config{
 		FrameBytes: frameBytes,
@@ -1375,6 +1385,7 @@ func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingD
 		STT:        voice.NewWyomingSTT(sttClient, wyoming.TranscribeOptions{Name: cfg.STT.Model, Language: cfg.STT.Language}, wireFormat),
 		Player:     audio.NewPCMPlayer(sink),
 		Responder:  voice.NewPipelineResponder(session, tool.DevicePi),
+		Speaker:    busySpeaker,
 		WakeWords:  names,
 		Dropper:    pending,
 		WakeCue:    wakeCue,
@@ -1552,7 +1563,7 @@ func dashboardTranscriber(cfg config.Config) dashboard.Transcriber {
 		return nil
 	}
 	return wyomingTranscriber{
-		client: wyoming.NewClient(cfg.STT.Addr, wyoming.WithTimeout(cfg.STT.Timeout.Duration())),
+		client: wyoming.NewClient(cfg.STT.Addr, wyoming.WithTimeout(cfg.STT.Timeout.Duration()), wyoming.WithRefusalDeadline(250*time.Millisecond)),
 		opts:   wyoming.TranscribeOptions{Name: cfg.STT.Model, Language: cfg.STT.Language},
 	}
 }

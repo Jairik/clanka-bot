@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/latency"
+	"github.com/Jairik/clanka-bot/assistant/internal/wyoming"
 )
 
 // The browser records the mic, resamples it and uploads the whole utterance
@@ -80,6 +81,13 @@ func (h *Handler) activityAskAudio(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		h.logger.Warn("dashboard mic transcribe", "error", err.Error())
+		if errors.Is(err, wyoming.ErrBusy) {
+			// The model is held by another session (typically a voice turn); a
+			// retry in a moment will succeed. This is distinct from a real
+			// model failure, which keeps the generic unavailable line.
+			h.activityFail(w, r, http.StatusServiceUnavailable, "Speech recognition is busy. Try again in a moment.", "")
+			return
+		}
 		h.activityFail(w, r, http.StatusBadGateway, "Speech recognition is unavailable right now. Try typing instead.", "")
 		return
 	}

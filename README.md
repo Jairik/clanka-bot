@@ -1352,8 +1352,8 @@ are in [`docs/latency.md`](docs/latency.md). The latest dev-box numbers are in
 ## Tests
 
 ```sh
-make test       # Go tests, Compose checker and shell script tests
-make tts-test   # Wyoming/pcm Python tests; needs `pip install wyoming pytest numpy`
+make test       # Go tests, real Compose check, shell script tests and the Python suites (incl. stt and prototype-run)
+make tts-test   # Wyoming/pcm and STT Python tests; needs `pip install wyoming pytest numpy`
 python -m pytest tts/tests stt/tests
 ```
 

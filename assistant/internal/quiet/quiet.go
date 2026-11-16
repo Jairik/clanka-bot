@@ -514,6 +514,17 @@ func (s *Service) nowValue() time.Time {
 	return s.now()
 }
 
+// Location returns the effective timezone used for window evaluation. A nil or
+// unset location falls back to the clock's own location. The read Tools call it
+// to render stored RFC3339 instants (do-not-disturb, awake) in the user's local
+// time instead of the UTC the settings store.
+func (s *Service) Location() *time.Location {
+	if s == nil {
+		return time.UTC
+	}
+	return s.locationValue(s.nowValue())
+}
+
 // locationValue returns the effective timezone for a clock instant.
 func (s *Service) locationValue(at time.Time) *time.Location {
 	if s != nil && s.location != nil {

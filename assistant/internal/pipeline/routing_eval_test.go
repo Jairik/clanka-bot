@@ -91,6 +91,7 @@ var routingEvalTools = []string{
 	quiettools.OffName,
 	quiettools.DNDName,
 	quiettools.AwakeName,
+	quiettools.StatusName,
 	reminder.SetName,
 	reminder.ListName,
 	reminder.CancelName,

@@ -4,18 +4,29 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"math"
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/audio"
 )
 
+// ErrMicBusy reports that a take could not start because a turn or another take
+// already holds the microphone. The Dashboard maps it to an honest "busy"
+// sentence instead of a generic failure.
+var ErrMicBusy = errors.New("microphone busy")
+
+// ErrSampleOverflow reports that a started take produced more audio than the
+// bounded buffer holds; the caller must redo the take. The Dashboard maps it to
+// a "redo the take" sentence.
+var ErrSampleOverflow = errors.New("sample capture overflow")
+
 // RecordSample taps three seconds of the configured 16 kHz mono PCM16 mic without routing speech.
 func (l *Loop) RecordSample(ctx context.Context) ([]byte, error) {
 	l.sampleMu.Lock()
 	if l.sampling || l.inTurn {
 		l.sampleMu.Unlock()
-		return nil, errors.New("microphone busy; wait for the current turn or take to finish")
+		return nil, fmt.Errorf("microphone busy; wait for the current turn or take to finish: %w", ErrMicBusy)
 	}
 	l.sampling = true
 	l.sampleOverflow = false
@@ -62,7 +73,7 @@ func (l *Loop) RecordSample(ctx context.Context) ([]byte, error) {
 	overflow := l.sampleOverflow
 	l.sampleMu.Unlock()
 	if overflow {
-		return nil, errors.New("sample capture overflow; redo the take")
+		return nil, fmt.Errorf("sample capture overflow; redo the take: %w", ErrSampleOverflow)
 	}
 	return pcm[:96000], nil
 }

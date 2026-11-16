@@ -264,7 +264,7 @@ func (a *Agent) Run(ctx context.Context, req tool.Request, utterance string, onD
 			reply, err = a.provider.stream(ctx, messages, tools, trackedDelta)
 		}
 		if err != nil {
-			result := a.failure(ctx, req, err)
+			result := a.failure(ctx, req, err, streamed)
 			result.Retries = retries
 			usage.steps = step + 1
 			usage.apply(&result)
@@ -512,7 +512,13 @@ func providerStatus(err error) int {
 	return 0
 }
 
-func (a *Agent) failure(ctx context.Context, req tool.Request, err error) Result {
+// failure classifies a provider/stream error into the spoken Result. streamed
+// is whether the failing step already delivered content deltas: a request that
+// stalls or drops after it started speaking must not be followed by an
+// apology, so a final failure that streamed text leaves TextNotStreamed false
+// (#342). A preamble carried by an earlier completed step still sets the flag,
+// because the failing step itself delivered nothing (the #193 case).
+func (a *Agent) failure(ctx context.Context, req tool.Request, err error, streamed bool) Result {
 	// A Barge-in or shutdown cancels the request context. That is the caller's
 	// intention, not a provider failure: no error log, no Unavailable flag and
 	// no agent_error/MarkFailed on the request line (F5 / #33-36 follow-up).
@@ -522,11 +528,15 @@ func (a *Agent) failure(ctx context.Context, req tool.Request, err error) Result
 	switch {
 	case errors.Is(err, errFirstTokenTimeout):
 		a.logger.Error("agent first token timeout", "request_id", req.ID)
-		// The timeout line is a fixed fallback no delta carried.
+		// The timeout line is a fixed fallback no delta carried: by
+		// definition no first token arrived.
 		return Result{Text: FirstTokenTimeoutMessage, TimedOut: true, TextNotStreamed: true}
 	case errors.Is(err, errRequestTimeout):
 		a.logger.Error("agent request timeout", "request_id", req.ID)
-		return Result{Text: a.unavailable(), Unavailable: true, TextNotStreamed: true}
+		// The Unavailable line is a fixed fallback only when the failing step
+		// never spoke; a stream that dropped after its text already reached
+		// the user is not followed by an apology (#342).
+		return Result{Text: a.unavailable(), Unavailable: true, TextNotStreamed: !streamed}
 	}
 	status := 0
 	var providerErr *providerError
@@ -534,9 +544,11 @@ func (a *Agent) failure(ctx context.Context, req tool.Request, err error) Result
 		status = providerErr.Status
 	}
 	// The status code is logged; the user hears only the configured message.
-	// The Unavailable line is a fixed fallback no delta carried.
+	// The Unavailable line is a fixed fallback only when the failing step
+	// streamed nothing; a stream that errored after delivering its text keeps
+	// the text and stays silent (#342).
 	a.logger.Error("agent request failed", "request_id", req.ID, "status", status, "error", err.Error())
-	return Result{Text: a.unavailable(), Unavailable: true, TextNotStreamed: true}
+	return Result{Text: a.unavailable(), Unavailable: true, TextNotStreamed: !streamed}
 }
 
 func errorPayload(message string) json.RawMessage {

@@ -481,6 +481,9 @@ type player struct {
 	speaker Speaker
 	sink    speech.Sink
 	gate    *playback.Gate
+	// owner is this turn's token, so a continuation chunk skips the Ring wait
+	// and this turn's release never clears a concurrent turn's claim.
+	owner   uint64
 	turn    context.Context
 	ctx     context.Context
 	cancel  context.CancelFunc
@@ -497,6 +500,7 @@ func newPlayer(ctx context.Context, speaker Speaker, sink speech.Sink, gate *pla
 		speaker: speaker,
 		sink:    sink,
 		gate:    gate,
+		owner:   gate.NewOwner(),
 		turn:    ctx,
 		ctx:     playCtx,
 		cancel:  cancel,
@@ -511,7 +515,7 @@ func (p *player) run() {
 	defer func() {
 		// A reply that ends without punctuation still ends its sentence; never
 		// leave a Ring waiting on a turn that is over.
-		p.gate.EndReplySpeech()
+		p.gate.EndReplySpeech(p.owner)
 		close(p.done)
 	}()
 	for next := range p.items {
@@ -521,7 +525,7 @@ func (p *player) run() {
 		// A Ring waits for the current sentence and then owns the floor. This
 		// call blocks the next sentence, not the model stream behind it, and
 		// lets the rest of a sentence already under way finish first.
-		done, gateErr := p.gate.BeginReply(p.ctx)
+		done, gateErr := p.gate.BeginReply(p.ctx, p.owner)
 		if gateErr != nil {
 			continue
 		}

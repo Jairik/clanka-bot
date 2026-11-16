@@ -711,7 +711,7 @@ func TestInterruptedOnShutdown(t *testing.T) {
 // playback.Gate, not only a fake boundary.
 func TestGateIntegrationUsesTheRealSentenceSeam(t *testing.T) {
 	gate := playback.NewGate()
-	doneSentence, err := gate.BeginReply(context.Background())
+	doneSentence, err := gate.BeginReply(context.Background(), gate.NewOwner())
 	if err != nil {
 		t.Fatalf("BeginReply: %v", err)
 	}

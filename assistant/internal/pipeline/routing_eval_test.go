@@ -122,6 +122,7 @@ var routingEvalTools = []string{
 	listtools.AddName,
 	listtools.ReadName,
 	listtools.RemoveName,
+	listtools.DoneName,
 }
 
 const (

@@ -8,5 +8,6 @@ func (*Module) ConformanceSamples() map[string]any {
 		AddName:    AddOut{Item: item, Added: true},
 		ReadName:   ReadOut{Lists: []List{{Key: KeyShopping, Title: Title(KeyShopping), Items: []Item{item}}}},
 		RemoveName: RemoveOut{Removed: true, Item: item},
+		DoneName:   DoneOut{Ticked: true, Item: item},
 	}
 }

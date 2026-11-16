@@ -25,6 +25,7 @@ const (
 	AddName    = "list.add"
 	ReadName   = "list.read"
 	RemoveName = "list.remove"
+	DoneName   = "list.done"
 )
 
 // The fixed List keys. They are also the database CHECK values.
@@ -114,6 +115,20 @@ type RemoveIn struct {
 type RemoveOut struct {
 	Removed bool `json:"removed"`
 	Item    Item `json:"item"`
+}
+
+// DoneIn names the list and the spoken item to tick. An empty List searches
+// both fixed lists for the one match.
+type DoneIn struct {
+	List string `json:"list"`
+	Item string `json:"item"`
+}
+
+// DoneOut is the ticked item. Ticked is false when nothing matched, which is a
+// spoken refusal rather than a guess.
+type DoneOut struct {
+	Ticked bool `json:"ticked"`
+	Item   Item `json:"item"`
 }
 
 // NewAdd builds list.add. It is act: an added item is easy to remove.
@@ -263,6 +278,74 @@ func NewRemove(m *Manager) tool.Tool[RemoveIn, RemoveOut] {
 	}
 }
 
+// NewDone builds list.done. It is act: a ticked item is easy to untick from the
+// Dashboard (or a later "put it back" direction), and the manager only sets the
+// done flag rather than deleting the row. The spoken item is resolved through
+// the shared name matcher; it never forces a guess, so an unknown or ambiguous
+// item is a spoken refusal with no write.
+func NewDone(m *Manager) tool.Tool[DoneIn, DoneOut] {
+	return tool.Tool[DoneIn, DoneOut]{
+		Name:        DoneName,
+		Description: "Tick one item off the shopping list or the to-do list.",
+		Permission:  tool.PermissionAct,
+		LocalOnly:   tool.LocalOnlyNo,
+		Handler: func(ctx context.Context, in DoneIn) (DoneOut, error) {
+			key := ""
+			if strings.TrimSpace(in.List) != "" {
+				var ok bool
+				key, ok = ParseKey(in.List)
+				if !ok {
+					return DoneOut{}, &tool.ToolError{Say: "I only have a shopping list and a to-do list."}
+				}
+			}
+			item, near, err := m.DoneWithNear(ctx, key, in.Item)
+			if err != nil {
+				if errors.Is(err, ErrItemNotFound) {
+					if near != "" {
+						return DoneOut{}, &tool.ToolError{Say: namematch.NearQuestion(near, "list item")}
+					}
+					if key == "" {
+						return DoneOut{}, &tool.ToolError{Say: "I couldn't find that on either list."}
+					}
+					return DoneOut{}, &tool.ToolError{Say: "I couldn't find that on the " + strings.ToLower(Title(key)) + " list."}
+				}
+				return DoneOut{}, toolError(err)
+			}
+			return DoneOut{Ticked: true, Item: item}, nil
+		},
+		Speak: func(out DoneOut) string {
+			if !out.Ticked {
+				return "I couldn't find that on the list."
+			}
+			return "Ticked " + out.Item.Text + " off the " + strings.ToLower(Title(out.Item.List)) + " list."
+		},
+		Examples: []string{
+			"I got the milk",
+			"I got the eggs",
+			"I got the parcel",
+			"I've got the bins",
+			"I got the bread",
+			"I finished the milk",
+			"I finished the eggs",
+			"I've finished the parcel",
+			"I completed the bins",
+			"I've done the laundry",
+			"I did the tax return",
+			"the eggs are done",
+			"I'm done with the bins",
+			"ticked off the eggs",
+			"got the milk",
+			"got the parcel",
+			"tick the bins off my to-do list",
+			"the parcel is done",
+			"I finished the bread",
+			"I've done the bins",
+			"ticked off the parcel",
+		},
+		Extract: extractDone,
+	}
+}
+
 // Register adds every list Tool.
 func (m *Module) Register(r *tool.Registry, deps tool.Deps) error {
 	m.manager = NewManager(Options{
@@ -278,7 +361,10 @@ func (m *Module) Register(r *tool.Registry, deps tool.Deps) error {
 	if err := tool.Add(r, NewRead(m.manager)); err != nil {
 		return err
 	}
-	return tool.Add(r, NewRemove(m.manager))
+	if err := tool.Add(r, NewRemove(m.manager)); err != nil {
+		return err
+	}
+	return tool.Add(r, NewDone(m.manager))
 }
 
 // List is one fixed list and its open items.
@@ -421,6 +507,57 @@ func extractRemove(text string) (RemoveIn, bool) {
 		return RemoveIn{List: key, Item: item}, true
 	}
 	return RemoveIn{}, false
+}
+
+// donePatterns capture (item, list) from the Fast path phrasing. The shapes
+// that name no list ("I got the X", "the X is done", "ticked off the X") let the
+// handler search both fixed lists; only the "tick ... off the <list> list" and
+// "mark ... done on the <list> list" shapes carry a list. "cross" is
+// deliberately absent: that phrasing belongs to list.remove.
+var donePatterns = []*regexp.Regexp{
+	// tick ... off the <list> list
+	regexp.MustCompile(`(?i)^\s*(?:please\s+)?tick\s+off\s+(.+?)\s+(?:on|from|off)\s+(?:the\s+|my\s+)?(shopping|to[-\s]?do|todo)\s+list\s*[.!]?\s*$`),
+	regexp.MustCompile(`(?i)^\s*(?:please\s+)?tick\s+(.+?)\s+off\s+(?:the\s+|my\s+)?(shopping|to[-\s]?do|todo)\s+list\s*[.!]?\s*$`),
+	// ticked off <item> (no list)
+	regexp.MustCompile(`(?i)^\s*(?:please\s+)?ticked\s+off\s+(.+?)\s*[.!]?\s*$`),
+	// I got / finished / completed / did the <item> (no list)
+	regexp.MustCompile(`(?i)^\s*(?:please\s+)?i\s+(?:got|finished|completed|did)\s+(?:the\s+|my\s+)?(.+?)\s*[.!]?\s*$`),
+	// I've got / finished / done the <item> (no list)
+	regexp.MustCompile(`(?i)^\s*(?:please\s+)?i'?ve\s+(?:got|finished|done)\s+(?:the\s+|my\s+)?(.+?)\s*[.!]?\s*$`),
+	// got the <item> (no list)
+	regexp.MustCompile(`(?i)^\s*(?:please\s+)?got\s+(?:the\s+|my\s+)?(.+?)\s*[.!]?\s*$`),
+	// the <item> is/are done (no list)
+	regexp.MustCompile(`(?i)^\s*(?:please\s+)?the\s+(.+?)\s+(?:is|are)\s+done\s*[.!]?\s*$`),
+	// <item> is ticked off (no list)
+	regexp.MustCompile(`(?i)^\s*(?:please\s+)?(.+?)\s+is\s+ticked\s+off\s*[.!]?\s*$`),
+	// I'm done with the <item> (no list)
+	regexp.MustCompile(`(?i)^\s*(?:please\s+)?i'?m\s+done\s+with\s+(?:the\s+|my\s+)?(.+?)\s*[.!]?\s*$`),
+	// mark <item> (as) done on/from/off the <list> list (issue Extract coverage)
+	regexp.MustCompile(`(?i)^\s*(?:please\s+)?mark\s+(?:the\s+|my\s+)?(.+?)\s+(?:as\s+)?done\s+(?:on|from|off)\s+(?:the\s+|my\s+)?(shopping|to[-\s]?do|todo)\s+list\s*[.!]?\s*$`),
+}
+
+func extractDone(text string) (DoneIn, bool) {
+	for _, pattern := range donePatterns {
+		match := pattern.FindStringSubmatch(text)
+		if match == nil {
+			continue
+		}
+		item := cleanItem(match[1])
+		if item == "" {
+			return DoneIn{}, false
+		}
+		// Patterns with a second capture group carry an explicit list key.
+		if len(match) > 2 && strings.TrimSpace(match[2]) != "" {
+			key, ok := ParseKey(match[2])
+			if !ok {
+				return DoneIn{}, false
+			}
+			return DoneIn{List: key, Item: item}, true
+		}
+		// Every other shape names no list, so the handler searches both.
+		return DoneIn{List: "", Item: item}, true
+	}
+	return DoneIn{}, false
 }
 
 // cleanItem strips the leading article the phrasing carries but the stored

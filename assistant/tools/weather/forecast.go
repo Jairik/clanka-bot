@@ -47,6 +47,10 @@ type ForecastOut struct {
 	RainChance int     `json:"rain_chance"`
 	Sunrise    string  `json:"sunrise"`
 	Sunset     string  `json:"sunset"`
+	// timez is the forecast's own place timezone (not coordinates). It is
+	// unexported and never serialized; Speak reads it to resolve the "auto"
+	// temperature-unit preference per reply (#318).
+	timez string `json:"-"`
 	// Umbrella marks an umbrella question so Speak can answer yes or no from
 	// RainChance (>= 40%). It is a request intent, cleared before caching.
 	Umbrella bool `json:"umbrella,omitempty"`
@@ -109,7 +113,7 @@ func NewForecast(deps Deps) tool.Tool[ForecastIn, ForecastOut] {
 		Handler: func(ctx context.Context, in ForecastIn) (ForecastOut, error) {
 			return forecastHandler(ctx, deps, in, cache)
 		},
-		Speak: forecastSpeak,
+		Speak: forecastSpeakFor(deps),
 		Examples: []string{
 			"what's the forecast for today",
 			"what's the forecast for tomorrow",
@@ -151,10 +155,11 @@ func forecastHandler(ctx context.Context, deps Deps, in ForecastIn, cache *cache
 	}
 	day := normalizeDay(in.Day)
 	key := cacheKeyDay(city, day)
+	now := deps.Now()
 	cache.mu.Lock()
 	entry, ok := cache.daily[key]
 	cache.mu.Unlock()
-	if ok && time.Since(entry.at) < dailyTTL {
+	if ok && now.Sub(entry.at) < dailyTTL {
 		out := entry.value
 		out.Umbrella = in.Umbrella // the umbrella intent is per request, not cached
 		return out, nil
@@ -171,7 +176,7 @@ func forecastHandler(ctx context.Context, deps Deps, in ForecastIn, cache *cache
 	store := out
 	store.Umbrella = false
 	cache.mu.Lock()
-	cache.daily[key] = cacheEntry[ForecastOut]{value: store, at: time.Now()}
+	cache.daily[key] = cacheEntry[ForecastOut]{value: store, at: now}
 	cache.mu.Unlock()
 	return out, nil
 }
@@ -202,9 +207,10 @@ func primaryForecast(ctx context.Context, deps Deps, c *cache, city, day string,
 		HighC:      block.TemperatureMax[idx],
 		LowC:       block.TemperatureMin[idx],
 		RainChance: block.PrecipProbabilityMax[idx],
-		Sunrise:    block.Sunrise[idx],
-		Sunset:     block.Sunset[idx],
+		Sunrise:    clockTime(block.Sunrise[idx]),
+		Sunset:     clockTime(block.Sunset[idx]),
 		Umbrella:   umbrella,
+		timez:      place.Timezone,
 	}, nil
 }
 
@@ -303,6 +309,7 @@ func fallbackForecastDaily(ctx context.Context, deps Deps, c *cache, city, day s
 		Sunrise:    sunrise,
 		Sunset:     sunset,
 		Umbrella:   umbrella,
+		timez:      place.Timezone,
 	}, nil
 }
 
@@ -417,25 +424,53 @@ func forecastExtract(text string) (ForecastIn, bool) {
 		}
 	}
 	in.Umbrella = strings.Contains(lower, "umbrella") || strings.Contains(lower, "raincoat")
-	if idx := strings.Index(lower, " in "); idx >= 0 {
-		// The original-cased text shares the ASCII " in " offset with lower.
-		city := strings.TrimSpace(text[idx+len(" in "):])
-		// Drop the day token (e.g. "Berlin tomorrow") and any leftover
-		// preposition so the geocoder gets a clean city name.
-		if in.Day != "today" {
-			city = removeWordCI(city, in.Day)
-			city = strings.TrimSpace(city)
-			if strings.HasPrefix(strings.ToLower(city), "on ") {
-				city = strings.TrimSpace(city[3:])
-			}
-			if strings.HasPrefix(strings.ToLower(city), "for ") {
-				city = strings.TrimSpace(city[4:])
-			}
-		}
-		city = strings.Trim(city, " ?.!,;:")
+
+	// A city may follow " for " or " in ". Strip a trailing day token so
+	// "for London tomorrow" -> London and "for tomorrow" -> no city, keeping the
+	// day intact for the forecast.
+	if city := extractCityAfter(text, " for ", in.Day); city != "" {
+		in.City = city
+	} else if city := extractCityAfter(text, " in ", in.Day); city != "" {
 		in.City = city
 	}
 	return in, true
+}
+
+// extractCityAfter returns the city named after sep (for example " for "), or ""
+// when there is none or the text after sep is only a day token. A trailing day
+// word (e.g. "London tomorrow") is removed so the geocoder gets a clean name.
+func extractCityAfter(text, sep, day string) string {
+	idx := strings.Index(strings.ToLower(text), sep)
+	if idx < 0 {
+		return ""
+	}
+	city := strings.TrimSpace(text[idx+len(sep):])
+	if isDayToken(strings.ToLower(city)) {
+		return ""
+	}
+	if day != "today" {
+		city = removeWordCI(city, day)
+		city = strings.TrimSpace(city)
+	}
+	if strings.HasPrefix(strings.ToLower(city), "on ") {
+		city = strings.TrimSpace(city[3:])
+	}
+	if strings.HasPrefix(strings.ToLower(city), "for ") {
+		city = strings.TrimSpace(city[4:])
+	}
+	return strings.Trim(city, " ?.!,;:")
+}
+
+// isDayToken reports whether s (already lower-cased) is exactly a day name with
+// no other words, so a bare "for tomorrow" or "in Friday" leaves the city empty.
+func isDayToken(s string) bool {
+	s = strings.Trim(s, " ?.!,;:")
+	switch s {
+	case "today", "tomorrow":
+		return true
+	}
+	_, ok := weekdayNames[s]
+	return ok
 }
 
 // removeWordCI drops the first case-insensitive occurrence of word from s.
@@ -471,17 +506,79 @@ func convertClock(s string) string {
 	return s
 }
 
+// clockTime normalises an Open-Meteo sunrise/sunset value to a local "15:04"
+// clock. Open-Meteo returns RFC3339 ("2026-11-11T06:42:00Z") or
+// "2006-01-02T15:04" local datetimes; a pre-normalised "15:04" passes through
+// unchanged. The date and zone are dropped because only the wall-clock time is
+// spoken.
+func clockTime(s string) string {
+	s = strings.TrimSpace(s)
+	if t, err := time.Parse(time.RFC3339, s); err == nil {
+		return t.Format("15:04")
+	}
+	if t, err := time.Parse("2006-01-02T15:04", s); err == nil {
+		return t.Format("15:04")
+	}
+	if t, err := time.Parse("15:04", s); err == nil {
+		return t.Format("15:04")
+	}
+	return s
+}
+
+// forecastSpeakFor builds the Fast path renderer. Like weather.current's
+// speakFor, it reads the live unit setting per reply, so a Dashboard change
+// applies to the next forecast without rebuilding the Tool (#318). On "auto" it
+// follows the forecast's own place timezone (not the home location), falling
+// back to effectiveUnit when that is empty.
+func forecastSpeakFor(deps Deps) func(ForecastOut) string {
+	return func(out ForecastOut) string {
+		return forecastSpeak(out, unitForForecast(deps, out.timez))
+	}
+}
+
+// unitForForecast resolves the temperature unit for one forecast reply. An
+// explicit celsius/fahrenheit preference always wins; "auto" follows the
+// forecast's own place timezone (usTimezones) and falls back to effectiveUnit
+// when that is empty (#318).
+func unitForForecast(deps Deps, tz string) string {
+	preference := UnitAuto
+	if deps.Settings != nil {
+		if svc := deps.Settings(); svc != nil {
+			preference = UnitFrom(svc)
+		}
+	}
+	if preference != UnitAuto {
+		return preference
+	}
+	if tz != "" && usTimezones[tz] {
+		return UnitFahrenheit
+	}
+	if tz == "" {
+		return effectiveUnit(deps)
+	}
+	return UnitCelsius
+}
+
 // forecastSpeak renders the Fast path reply. An umbrella question answers yes or
-// no from the rain probability; otherwise it spells out the day's forecast.
-func forecastSpeak(out ForecastOut) string {
+// no from the rain probability; otherwise it spells out the day's forecast,
+// naming the unit once and converting both bounds when it is Fahrenheit.
+func forecastSpeak(out ForecastOut, unit string) string {
 	if out.Umbrella {
 		if out.RainChance >= umbrellaThreshold {
 			return fmt.Sprintf("Yes, you'll likely need an umbrella in %s %s — there's a %d percent chance of rain.", out.City, dayPhrase(out.Day), out.RainChance)
 		}
 		return fmt.Sprintf("No, you shouldn't need an umbrella in %s %s.", out.City, dayPhrase(out.Day))
 	}
-	return fmt.Sprintf("%s in %s: %s, high of %.0f, low of %.0f, %d percent chance of rain. Sunrise %s, sunset %s.",
-		capitalize(out.Day), out.City, out.Condition, out.HighC, out.LowC, out.RainChance, out.Sunrise, out.Sunset)
+	high := out.HighC
+	low := out.LowC
+	unitWord := "Celsius"
+	if unit == UnitFahrenheit {
+		high = ToFahrenheit(out.HighC)
+		low = ToFahrenheit(out.LowC)
+		unitWord = "Fahrenheit"
+	}
+	return fmt.Sprintf("%s in %s: %s, high of %.0f degrees %s, low of %.0f. %d percent chance of rain. Sunrise %s, sunset %s.",
+		capitalize(out.Day), out.City, out.Condition, high, unitWord, low, out.RainChance, out.Sunrise, out.Sunset)
 }
 
 // dayPhrase turns a day token into a spoken phrase fragment.

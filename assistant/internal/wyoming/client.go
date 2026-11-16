@@ -73,6 +73,13 @@ type Client struct {
 	addr        string
 	timeout     time.Duration
 	readTimeout time.Duration
+	// refusalDeadline bounds the one read right after Transcribe that looks for
+	// an immediate busy refusal. Zero disables the probe; the caller then learns
+	// about a refusal only at Finish (#368).
+	refusalDeadline time.Duration
+	// finalisationBudget overrides the total time Finish may keep reading after
+	// audio-stop. Zero selects the default formula in TranscriptStream (#340).
+	finalisationBudget time.Duration
 }
 
 // Option configures a Client.
@@ -84,6 +91,32 @@ func WithTimeout(d time.Duration) Option {
 		if d > 0 {
 			c.timeout = d
 			c.readTimeout = d
+		}
+	}
+}
+
+// WithRefusalDeadline bounds the early read Transcribe performs to catch an
+// immediate busy refusal before the utterance is streamed. Zero disables the
+// probe, so the caller falls back to detecting the refusal at Finish. A small
+// value keeps the success path quick; a value at or above the service's session
+// wait also catches a refusal that only arrives after the model is released
+// (#368).
+func WithRefusalDeadline(d time.Duration) Option {
+	return func(c *Client) {
+		if d > 0 {
+			c.refusalDeadline = d
+		}
+	}
+}
+
+// WithFinalisationBudget overrides the total time Finish may keep reading after
+// audio-stop before giving up on a babbling or stuck service. Zero selects the
+// default formula (the larger of three read-idle timeouts and a minute), which
+// is generous because the shipped server sends no progress events (#340).
+func WithFinalisationBudget(d time.Duration) Option {
+	return func(c *Client) {
+		if d > 0 {
+			c.finalisationBudget = d
 		}
 	}
 }

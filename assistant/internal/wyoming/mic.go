@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -185,23 +186,76 @@ type TranscriptStream struct {
 	// closed is atomic so Close can unblock a concurrent Write or Finish
 	// without racing it.
 	closed atomic.Bool
-	// partials is only touched by Finish, which runs on one goroutine.
+	// partials is only touched by the background reader; Finish reads it once
+	// the reader has delivered a transcript-stop, so the access is ordered by
+	// recvMu.
 	partials []string
+
+	// refusalDeadline bounds the early read that looks for an immediate busy
+	// refusal right after the stream opens (#368). Zero disables the probe.
+	refusalDeadline time.Duration
+	// finalisationBudget is the total time Finish may keep reading after
+	// audio-stop before giving up on a babbling or stuck service (#340).
+	finalisationBudget time.Duration
+
+	// errCh hands the first server refusal (for example a busy error event) to
+	// the caller while audio is still streaming, so the voice loop can stop
+	// early instead of writing the whole utterance into a refused session
+	// (#368). It is buffered and delivers at most one refusal.
+	errCh chan error
+	// reader owns every read from the connection so the caller can learn about
+	// a refusal mid-utterance. It buffers transcript events for Finish and
+	// surfaces a refusal on errCh; because it is the only reader, Finish never
+	// reads the same bytes and needs no read deadline of its own.
+	recvMu     sync.Mutex
+	recv       []event
+	finalErr   error
+	recvNotify chan struct{}
+	readerDone chan struct{}
 }
 
-// Transcribe opens a transcription stream and announces the audio format.
+// maxTranscriptChunks bounds the partial buffer. Only the last partial is ever
+// used as a fallback, so keeping the most recent ones bounds memory without
+// losing the fallback when a babbling service never sends a final transcript
+// (#340).
+const maxTranscriptChunks = 64
+
+// Transcribe opens a transcription stream and announces the audio format. A
+// background reader then owns every read from the connection: it buffers the
+// final transcript for Finish and surfaces a busy refusal on Refused while audio
+// is still streaming, so the voice loop can stop early instead of writing the
+// whole utterance into a dead session (#368).
+//
+// As a fast path, Transcribe also probes once for an immediate busy refusal: a
+// serialising service that answers a second session before any audio arrives is
+// caught here and returned at once. A healthy session answers nothing before
+// audio-stop, so the probe simply times out and the stream is returned as usual;
+// a refusal that only arrives after the model is released is still caught by the
+// reader during streaming.
 func (c *Client) Transcribe(ctx context.Context, opts TranscribeOptions, format Format) (*TranscriptStream, error) {
 	conn, err := c.dial(ctx)
 	if err != nil {
 		return nil, err
 	}
+	budget := c.finalisationBudget
+	if budget <= 0 {
+		budget = 3 * c.readTimeout
+		if budget < 60*time.Second {
+			budget = 60 * time.Second
+		}
+	}
 	s := &TranscriptStream{
-		conn:        conn,
-		reader:      bufio.NewReaderSize(conn, 64<<10),
-		ctx:         ctx,
-		timeout:     c.timeout,
-		readTimeout: c.readTimeout,
-		format:      format,
+		conn:               conn,
+		reader:             bufio.NewReaderSize(conn, 64<<10),
+		ctx:                ctx,
+		timeout:            c.timeout,
+		readTimeout:        c.readTimeout,
+		format:             format,
+		refusalDeadline:    c.refusalDeadline,
+		finalisationBudget: budget,
+		errCh:              make(chan error, 1),
+		recvNotify:         make(chan struct{}, 1),
+		readerDone:         make(chan struct{}),
 	}
 	s.stopContext = context.AfterFunc(ctx, func() { _ = conn.Close() })
 
@@ -220,6 +274,23 @@ func (c *Client) Transcribe(ctx context.Context, opts TranscribeOptions, format 
 		s.Close()
 		return nil, err
 	}
+
+	// The reader owns every read from here on. It delivers a busy refusal while
+	// audio is still streaming and buffers the final transcript for Finish.
+	go s.readLoop()
+
+	// Fast path: some serialising services refuse a second session before any
+	// audio arrives. A short probe catches that immediately; the reader catches
+	// the refusal that only arrives after the model is released.
+	if s.refusalDeadline > 0 {
+		select {
+		case err := <-s.errCh:
+			s.Close()
+			return nil, err
+		case <-time.After(s.refusalDeadline):
+			// Healthy so far; keep streaming, the reader stays live.
+		}
+	}
 	return s, nil
 }
 
@@ -236,10 +307,11 @@ func (s *TranscriptStream) Write(pcm []byte) error {
 	return writeEvent(s.conn, s.timeout, "audio-chunk", AudioStartData(s.format.Rate, s.format.Width, s.format.Channels), pcm)
 }
 
-// Finish marks the end of speech and returns the final transcript. Partial
-// transcript-chunk events are recorded but the service's final transcript wins.
-// Each read gets the client's read-idle timeout: a silent service is bounded,
-// while a long finalisation that keeps sending partials is not capped (#201).
+// Finish marks the end of speech and returns the final transcript. It writes
+// audio-stop and then drains the events the background reader has buffered,
+// applying the partial cap and the total finalisation budget from #340. A busy
+// refusal the reader already surfaced on Refused is still returned here if the
+// caller reaches Finish first.
 func (s *TranscriptStream) Finish() (string, error) {
 	s.writeMu.Lock()
 	if s.closed.Load() {
@@ -252,31 +324,130 @@ func (s *TranscriptStream) Finish() (string, error) {
 		return "", err
 	}
 
+	deadline := time.Now().Add(s.finalisationBudget)
 	text := ""
+	idx := 0
 	for {
-		ev, err := s.readEvent()
-		if err != nil {
-			return "", s.mapError(err)
+		// Drain every event the reader has buffered so far, in order.
+		s.recvMu.Lock()
+		for ; idx < len(s.recv); idx++ {
+			ev := s.recv[idx]
+			switch ev.Type {
+			case "transcript":
+				if value, ok := ev.Data["text"].(string); ok && value != "" {
+					text = value
+				}
+			case "transcript-stop":
+				if text == "" && len(s.partials) > 0 {
+					text = s.partials[len(s.partials)-1]
+				}
+				s.recvMu.Unlock()
+				return text, nil
+			}
 		}
-		switch ev.Type {
-		case "transcript":
-			if value, ok := ev.Data["text"].(string); ok && value != "" {
-				text = value
-			}
-		case "transcript-chunk":
-			if value, ok := ev.Data["text"].(string); ok && value != "" {
-				s.partials = append(s.partials, value)
-			}
-		case "transcript-stop":
-			if text == "" && len(s.partials) > 0 {
-				text = s.partials[len(s.partials)-1]
-			}
-			return text, nil
-		case "error":
-			return "", errorEvent(ev)
+		if s.finalErr != nil {
+			err := s.finalErr
+			s.recvMu.Unlock()
+			return "", err
+		}
+		s.recvMu.Unlock()
+
+		// No decision yet: wait for the reader to land an event, the stream to
+		// end, or the total budget to run out.
+		if err := s.ctx.Err(); err != nil {
+			return "", err
+		}
+		if remaining := time.Until(deadline); remaining <= 0 {
+			return "", fmt.Errorf("wyoming: transcribe: no final transcript within %s of audio-stop: %w", s.finalisationBudget, os.ErrDeadlineExceeded)
+		}
+		// The reader notify()s once more as it exits, so a session that ends
+		// without a transcript still wakes Finish; otherwise we wait out the
+		// total budget as a hard cap.
+		select {
+		case <-s.recvNotify:
+		case <-s.ctx.Done():
+		case <-time.After(time.Until(deadline)):
 		}
 	}
 }
+
+// readLoop owns every read from the connection for the lifetime of the stream. It
+// buffers transcript events for Finish and hands the first server refusal to
+// Refused so the caller can abort streaming early (#368). Because it is the only
+// reader, Finish never contends with it for bytes and needs no read deadline.
+func (s *TranscriptStream) readLoop() {
+	defer func() {
+		s.notify()
+		close(s.readerDone)
+	}()
+	for {
+		if s.closed.Load() {
+			return
+		}
+		ev, err := readEvent(s.reader, 0)
+		if err != nil {
+			s.recvMu.Lock()
+			if s.finalErr == nil {
+				s.finalErr = s.mapError(err)
+			}
+			s.recvMu.Unlock()
+			return
+		}
+		switch ev.Type {
+		case "transcript":
+			s.recvMu.Lock()
+			s.recv = append(s.recv, ev)
+			s.recvMu.Unlock()
+			s.notify()
+		case "transcript-chunk":
+			if value, ok := ev.Data["text"].(string); ok && value != "" {
+				s.recvMu.Lock()
+				s.partials = append(s.partials, value)
+				if len(s.partials) > maxTranscriptChunks {
+					s.partials = s.partials[len(s.partials)-maxTranscriptChunks:]
+				}
+				s.recvMu.Unlock()
+			}
+		case "transcript-stop":
+			s.recvMu.Lock()
+			s.recv = append(s.recv, ev)
+			s.recvMu.Unlock()
+			s.notify()
+		case "error":
+			serverErr := errorEvent(ev)
+			s.recvMu.Lock()
+			if s.finalErr == nil {
+				s.finalErr = serverErr
+			}
+			s.recvMu.Unlock()
+			// Hand the refusal to the caller for early abort. A buffered channel
+			// delivers at most one refusal without blocking the reader.
+			select {
+			case s.errCh <- serverErr:
+			default:
+			}
+			return
+		default:
+			// Ignore other event types (for example an unexpected echo).
+		}
+	}
+}
+
+// notify wakes a blocked Finish. recvNotify is buffered so the send never blocks
+// the reader, and Finish drains every buffered event on each wake, so a dropped
+// notify cannot lose data.
+func (s *TranscriptStream) notify() {
+	select {
+	case s.recvNotify <- struct{}{}:
+	default:
+	}
+}
+
+// Refused reports a server refusal (for example a busy error event) seen while
+// the stream is open, so the caller can stop streaming and answer the user
+// instead of writing the whole utterance into a refused session (#368). It is
+// buffered and delivers at most one refusal; a nil read means none arrived.
+func (s *TranscriptStream) Refused() <-chan error { return s.errCh }
 
 // Close ends the transcription stream and releases the connection. The atomic
 // swap makes it idempotent without holding writeMu, so Close can still unblock
@@ -298,14 +469,6 @@ func (s *TranscriptStream) write(typ string, data map[string]any) error {
 		return errors.New("wyoming: transcript stream is closed")
 	}
 	return writeEvent(s.conn, s.timeout, typ, data, nil)
-}
-
-// readEvent applies the read-idle deadline, then decodes one event.
-func (s *TranscriptStream) readEvent() (event, error) {
-	if s.readTimeout > 0 {
-		_ = s.conn.SetReadDeadline(time.Now().Add(s.readTimeout))
-	}
-	return readEvent(s.reader, 0)
 }
 
 func (s *TranscriptStream) mapError(err error) error {

@@ -17,6 +17,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/audio"
 	"github.com/Jairik/clanka-bot/assistant/internal/latency"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
+	"github.com/Jairik/clanka-bot/assistant/internal/wyoming"
 )
 
 // Detection is one wake word firing.
@@ -58,6 +59,10 @@ type STTStream interface {
 	Write(pcm []byte) error
 	Finish() (string, error)
 	Close() error
+	// Refused reports a server refusal (for example a busy error) seen while the
+	// utterance is still streaming, so the loop can stop early instead of writing
+	// the whole request into a refused session (#368).
+	Refused() <-chan error
 }
 
 // Player plays one complete PCM buffer, such as the wake chime.
@@ -100,6 +105,9 @@ type Config struct {
 	// Chime plays on wake detection; nil disables it.
 	Chime       []byte
 	ChimeFormat audio.Format
+	// BusyMessage is spoken when the speech-to-text service refuses the turn as
+	// busy instead of transcribing it. Empty selects DefaultBusyMessage (#368).
+	BusyMessage string
 }
 
 // Deps are the loop's collaborators, separated from Config so tests can fake
@@ -148,7 +156,16 @@ type Deps struct {
 	// floor (focus.Ring is held). When true the wake Cue is skipped so it does
 	// not play on top of a ringing alert.
 	RingActive func() bool
-	Logger     *slog.Logger
+	// Speaker speaks one short phrase, used to tell the user the turn was
+	// refused as busy. Nil leaves the refusal silent except for the log line
+	// (#368).
+	Speaker Speaker
+	Logger  *slog.Logger
+}
+
+// Speaker speaks one short phrase. speech.Speaker satisfies it through SayText.
+type Speaker interface {
+	SayText(ctx context.Context, text string) error
 }
 
 // micFrame is one captured PCM block stamped with its capture time. The stamp
@@ -158,6 +175,11 @@ type micFrame struct {
 	pcm []byte
 	at  time.Time
 }
+
+// DefaultBusyMessage is spoken when the speech-to-text service refuses the turn
+// as busy. It is clearer than the generic "unavailable" line because the model
+// is simply held by another session and will free up (#368).
+const DefaultBusyMessage = "Speech recognition is busy. Try again in a moment."
 
 // Loop is the microphone state machine. Run is called once; it is safe for the
 // capture goroutine and the session code to share the frame channel.
@@ -187,6 +209,9 @@ func New(cfg Config, deps Deps) (*Loop, error) {
 	}
 	if deps.Logger == nil {
 		deps.Logger = slog.Default()
+	}
+	if cfg.BusyMessage == "" {
+		cfg.BusyMessage = DefaultBusyMessage
 	}
 	return &Loop{cfg: cfg, deps: deps}, nil
 }
@@ -427,6 +452,12 @@ func (l *Loop) session(ctx context.Context, wakeWord string) (bool, string, erro
 
 	stt, err := l.deps.STT.Open(sessCtx)
 	if err != nil {
+		// A busy refusal is a clear, expected answer, not a failure: say so and
+		// end the turn instead of silently reopening the wake stream (#368).
+		if errors.Is(err, wyoming.ErrBusy) {
+			l.speakBusy(sessCtx)
+			return false, "", nil
+		}
 		return false, "", err
 	}
 	defer stt.Close()
@@ -475,6 +506,17 @@ func (l *Loop) session(ctx context.Context, wakeWord string) (bool, string, erro
 				return false, "", err
 			}
 			ended = endpointer.Add(fr.pcm)
+		case err := <-stt.Refused():
+			// The speech-to-text service refused the turn (most often because
+			// another session holds the model). A busy refusal is the expected
+			// answer: say so and end the turn, without opening the wake stream or
+			// streaming the rest of the utterance (#368). Any other refusal is a
+			// real failure, so Finish would report it; return it directly.
+			if errors.Is(err, wyoming.ErrBusy) {
+				l.speakBusy(sessCtx)
+				return false, "", nil
+			}
+			return false, "", err
 		}
 	}
 	// One timeline spans endpointing, STT, routing, the Agent path and
@@ -501,6 +543,14 @@ func (l *Loop) session(ctx context.Context, wakeWord string) (bool, string, erro
 	started := time.Now()
 	transcript, err := stt.Finish()
 	if err != nil {
+		// Same busy refusal can also arrive at Finish when the service only
+		// refuses after the model is released; answer clearly rather than
+		// failing the turn silently (#368).
+		if errors.Is(err, wyoming.ErrBusy) {
+			timeline.Complete(l.deps.Logger, latency.OutcomeFailed, err)
+			l.speakBusy(sessCtx)
+			return false, "", nil
+		}
 		timeline.Complete(l.deps.Logger, latency.OutcomeFailed, err)
 		return false, "", err
 	}
@@ -591,6 +641,21 @@ func (l *Loop) session(ctx context.Context, wakeWord string) (bool, string, erro
 			l.dropPending()
 			return true, detection.Name, nil
 		}
+	}
+}
+
+// speakBusy tells the user the turn was refused because the speech-to-text
+// service is busy with another session. It logs the refusal once and, when a
+// Speaker is wired, speaks a short line; without one it stays a log line. The
+// turn then ends normally rather than failing silently and reopening the wake
+// stream (#368).
+func (l *Loop) speakBusy(ctx context.Context) {
+	l.deps.Logger.Warn("voice: speech recognition refused the turn as busy", "event", "stt_busy")
+	if l.deps.Speaker == nil {
+		return
+	}
+	if err := l.deps.Speaker.SayText(ctx, l.cfg.BusyMessage); err != nil && ctx.Err() == nil {
+		l.deps.Logger.Warn("voice: busy message", "error", err.Error())
 	}
 }
 

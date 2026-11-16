@@ -6,12 +6,14 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/activity"
 	"github.com/Jairik/clanka-bot/assistant/internal/dashboard"
 	"github.com/Jairik/clanka-bot/assistant/internal/latency"
+	"github.com/Jairik/clanka-bot/assistant/internal/wyoming"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 )
@@ -246,6 +248,32 @@ func TestMicTranscriberFailureIsABadGatewayWithoutLeakingTheCause(t *testing.T) 
 	}
 	if len(f.typed.questions()) != 0 {
 		t.Error("a failed transcription reached the pipeline")
+	}
+}
+
+// A busy refusal (the model held by another session) is reported as a distinct
+// retry message, not the generic "unavailable" line a real model failure gets
+// (#368).
+func TestMicBusyRefusalIsDistinctFromUnavailable(t *testing.T) {
+	f := newMicFixture(t)
+	f.transcriber.err = &wyoming.ServerError{Text: "speech recognition is busy", Code: "busy"}
+	rec := micPost(f.handler, micContentType, make([]byte, micBytesPerSecond), nil)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503 for a busy refusal", rec.Code)
+	}
+	var v activityResp
+	decodeJSON(t, rec, &v)
+	if v.Error == "" {
+		t.Fatal("503 carried no message")
+	}
+	if !strings.Contains(strings.ToLower(v.Error), "busy") {
+		t.Fatalf("busy message = %q, want it to mention busy", v.Error)
+	}
+	if bytes.Contains(rec.Body.Bytes(), []byte("10.0.0.5")) {
+		t.Error("the STT error text leaked to the client")
+	}
+	if len(f.typed.questions()) != 0 {
+		t.Error("a refused transcription reached the pipeline")
 	}
 }
 

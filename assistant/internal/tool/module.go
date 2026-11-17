@@ -139,16 +139,40 @@ const (
 type StatusCheck struct {
 	Name   string
 	State  StatusState
+	Label  string
 	Detail string
+}
+
+// HostStatus is the structured host vitals snapshot for the debug/JSON caller and the Agent.
+type HostStatus struct {
+	TemperatureC         *float64    `json:"temperature_c,omitempty"`
+	Load                 *[3]float64 `json:"load,omitempty"`
+	MemoryAvailableBytes *uint64     `json:"memory_available_bytes,omitempty"`
+	UptimeSeconds        *float64    `json:"uptime_seconds,omitempty"`
+}
+
+// StorageStatus is the structured data-volume and database storage snapshot for the debug/JSON caller and the Agent.
+type StorageStatus struct {
+	DatabaseSizeBytes *int64     `json:"database_size_bytes,omitempty"`
+	WALSizeBytes      *int64     `json:"wal_size_bytes,omitempty"`
+	ActivityRows      *int       `json:"activity_rows,omitempty"`
+	OldestActivityAt  *time.Time `json:"oldest_activity_at,omitempty"`
+	FreeBytes         *uint64    `json:"free_bytes,omitempty"`
+	TotalBytes        *uint64    `json:"total_bytes,omitempty"`
+	FreePercent       *float64   `json:"free_percent,omitempty"`
+	State             string     `json:"state,omitempty"`
 }
 
 // StatusReport is one bounded snapshot of the shared health boundaries.
 type StatusReport struct {
-	CheckedAt time.Time
-	Timeout   time.Duration
-	Services  []StatusCheck
-	Location  StatusCheck
-	Modules   []StatusCheck
+	CheckedAt  time.Time
+	Timeout    time.Duration
+	Services   []StatusCheck
+	Location   StatusCheck
+	Modules    []StatusCheck
+	Host       *HostStatus
+	Storage    *StorageStatus
+	HostChecks []StatusCheck
 }
 
 // OK reports whether at least one check ran and every check that can fail is

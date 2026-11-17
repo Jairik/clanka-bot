@@ -13,6 +13,7 @@ const health = (falseWakes: HealthView["FalseWakes"]): HealthView => ({
   CheckedAt: "now",
   HealthTimeout: "3s",
   Services: [],
+  Host: [],
   Wakeword: [],
   FalseWakes: falseWakes,
   Location: { Name: "pi", Status: "ok", StatusLabel: "OK", Detail: "" },

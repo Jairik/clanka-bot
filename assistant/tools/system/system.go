@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 )
@@ -33,12 +34,14 @@ type Check struct {
 
 // Out is one bounded snapshot plus the spoken summary built from it.
 type Out struct {
-	OK        bool      `json:"ok"`
-	CheckedAt time.Time `json:"checked_at"`
-	Services  []Check   `json:"services,omitempty"`
-	Location  *Check    `json:"location,omitempty"`
-	Modules   []Check   `json:"modules,omitempty"`
-	Summary   string    `json:"summary"`
+	OK        bool                `json:"ok"`
+	CheckedAt time.Time           `json:"checked_at"`
+	Services  []Check             `json:"services,omitempty"`
+	Location  *Check              `json:"location,omitempty"`
+	Modules   []Check             `json:"modules,omitempty"`
+	Host      *tool.HostStatus    `json:"host,omitempty"`
+	Storage   *tool.StorageStatus `json:"storage,omitempty"`
+	Summary   string              `json:"summary"`
 }
 
 // DiagnoseIn has no fields: asking what is wrong needs no arguments.
@@ -164,6 +167,8 @@ func summarize(report tool.StatusReport) Out {
 		CheckedAt: report.CheckedAt,
 		Services:  checks(report.Services),
 		Modules:   checks(report.Modules),
+		Host:      report.Host,
+		Storage:   report.Storage,
 	}
 	if report.Location.Name != "" {
 		location := check(report.Location)
@@ -182,7 +187,53 @@ func summarize(report tool.StatusReport) Out {
 			strconv.Itoa(len(failed)) + " " +
 			plural(len(failed), "check needs", "checks need") + " attention."
 	}
+	if warn := vitalsWarning(report); warn != "" {
+		out.Summary += " " + warn
+	}
 	return out
+}
+
+// vitalsWarning builds exactly one short spoken warning sentence when a vitals
+// threshold (CPU temperature > 80 °C, available memory < 300 MB) or storage
+// threshold (free space < 10% or < 500 MB for low, < 2% for full) is crossed.
+func vitalsWarning(report tool.StatusReport) string {
+	var clauses []string
+	if report.Host != nil {
+		if report.Host.TemperatureC != nil && *report.Host.TemperatureC > 80.0 {
+			clauses = append(clauses, "the CPU is running hot")
+		}
+		if report.Host.MemoryAvailableBytes != nil && *report.Host.MemoryAvailableBytes < 300*1024*1024 {
+			clauses = append(clauses, "available memory is low")
+		}
+	}
+	if report.Storage != nil {
+		switch report.Storage.State {
+		case "full":
+			clauses = append(clauses, "storage space is full")
+		case "low":
+			clauses = append(clauses, "storage space is running low")
+		}
+	}
+	if len(clauses) == 0 {
+		return ""
+	}
+	return joinClauses(clauses)
+}
+
+// joinClauses combines multiple warning clauses into exactly one sentence.
+func joinClauses(clauses []string) string {
+	var body string
+	switch len(clauses) {
+	case 1:
+		body = clauses[0]
+	case 2:
+		body = clauses[0] + " and " + clauses[1]
+	default:
+		body = strings.Join(clauses[:len(clauses)-1], ", ") + " and " + clauses[len(clauses)-1]
+	}
+	r := []rune(body)
+	r[0] = unicode.ToUpper(r[0])
+	return string(r) + "."
 }
 
 // checked counts the outcomes that can actually fail or pass. A service that

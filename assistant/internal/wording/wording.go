@@ -198,7 +198,8 @@ func Build(reg *tool.Registry, cfg Config) (Setup, error) {
 
 	// Shared Focus intents have no Tool, so each fixed intent gets its own live
 	// phrase list. The pipeline routes a phrase to whatever holds Focus; with
-	// nothing in Focus it falls through to the semantic Fast path.
+	// nothing in Focus a bare "stop" ends the session and the other intents
+	// fall through to the semantic Fast path.
 	for _, intent := range focus.Intents() {
 		options := []settings.Option{
 			settings.WithDescription("Exact phrases that act on whatever holds Focus for the " + string(intent) + " intent. They apply on the next request."),

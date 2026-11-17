@@ -177,7 +177,7 @@ func (s *Session) ask(ctx context.Context, req tool.Request, transcript string, 
 	}
 	if s.speaker == nil {
 		reply := s.pipeline.HandleEvents(ctx, req, transcript, pipeline.Events{})
-		s.complete(ctx, nil, reply.Ignored)
+		s.complete(ctx, nil, reply.Ignored, reply.Suspend)
 		if s.textCompleted != nil && ctx.Err() == nil {
 			s.textCompleted()
 		}
@@ -294,6 +294,14 @@ func (s *Session) ask(ctx context.Context, req tool.Request, transcript string, 
 	// and a pending Confirmation question is always spoken, even if the model
 	// said something before proposing the call.
 	switch {
+	case reply.Suspend && strings.TrimSpace(reply.Text) == "" && !stopped:
+		// A standalone "stop" with nothing in Focus speaks nothing. The same
+		// optional soft Cue acknowledges it, and the voice loop then ends the
+		// session (#501). A Focus holder's line still goes through the normal
+		// spoken path below.
+		if clip, ok := s.ignoreClip(); ok {
+			player.play(item{cue: &clip, sentenceEnd: true})
+		}
 	case reply.Ignored && !stopped:
 		// The speech was not for the Assistant: no words reach TTS, and the Last
 		// reply is untouched. A short soft Cue, when one is assigned, is the only
@@ -331,13 +339,14 @@ func (s *Session) ask(ctx context.Context, req tool.Request, transcript string, 
 	// Complete with the turn context: a shared "stop" cancels only this turn,
 	// so the parent can still be live while the reply was cancelled. Using the
 	// parent would log a stopped reply as ok/no_audio in Activity and telemetry.
-	s.complete(turnCtx, err, reply.Ignored)
+	s.complete(turnCtx, err, reply.Ignored, reply.Suspend)
 	return reply, err
 }
 
-// ignoreClip resolves the soft Cue for an ignored turn. A nil Cue source, an
-// unassigned role or a `none` assignment returns false, so the turn stays
-// silent. Quiet hours' gain applies, like every other Cue.
+// ignoreClip resolves the soft Cue shared by an ignored turn and a standalone
+// "stop". A nil Cue source, an unassigned role or a `none` assignment returns
+// false, so the turn stays silent. Quiet hours' gain applies, like every other
+// Cue.
 func (s *Session) ignoreClip() (sound.Clip, bool) {
 	if s.cues == nil || s.sink == nil {
 		return sound.Clip{}, false
@@ -411,18 +420,19 @@ func (s *Session) focusClaim(turnCtx context.Context, cancel context.CancelFunc)
 
 // complete writes the one request log line for this turn, if the caller
 // attached a timeline. Missing reply audio is never recorded as success.
-func (s *Session) complete(ctx context.Context, err error, ignored bool) {
+func (s *Session) complete(ctx context.Context, err error, ignored, suspended bool) {
 	timeline := latency.FromContext(ctx)
 	if timeline == nil {
 		return
 	}
-	latency.Complete(ctx, s.logger, outcome(ctx, timeline, err, ignored), err)
+	latency.Complete(ctx, s.logger, outcome(ctx, timeline, err, ignored, suspended), err)
 }
 
 // outcome classifies the turn: a cancelled request is Barge-in or shutdown,
-// not a slow failure, an ignored turn is a deliberate silence rather than a
-// failure or a missing reply, and a turn with no reply audio is not a success.
-func outcome(ctx context.Context, timeline *latency.Timeline, err error, ignored bool) latency.Outcome {
+// not a slow failure, an ignored turn is a deliberate silence and a suspended
+// one is a deliberate session end, and a turn with no reply audio is not a
+// success.
+func outcome(ctx context.Context, timeline *latency.Timeline, err error, ignored, suspended bool) latency.Outcome {
 	switch {
 	case err != nil && isCancellation(ctx, err):
 		return latency.OutcomeCancelled
@@ -432,6 +442,8 @@ func outcome(ctx context.Context, timeline *latency.Timeline, err error, ignored
 		return latency.OutcomeFailed
 	case ignored:
 		return latency.OutcomeIgnored
+	case suspended:
+		return latency.OutcomeSuspended
 	case !timeline.HasReplyAudio():
 		return latency.OutcomeNoAudio
 	default:

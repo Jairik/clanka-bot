@@ -403,6 +403,9 @@ type fakeResponder struct {
 	block  time.Duration
 	calls  chan string
 	onCall func(ctx context.Context)
+	// err, when set, is returned by Respond, so a test can simulate a turn that
+	// ended the session (#501).
+	err error
 
 	mu        sync.Mutex
 	wakes     []string
@@ -448,6 +451,9 @@ func (r *fakeResponder) Respond(ctx context.Context, req voice.Request) error {
 	select {
 	case r.calls <- req.Transcript:
 	default:
+	}
+	if r.err != nil {
+		return r.err
 	}
 	return ctx.Err()
 }

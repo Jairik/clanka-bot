@@ -149,6 +149,10 @@ type Deps struct {
 	// Dropper is optional: when set, a Barge-in also drops a waiting
 	// Confirmation so a stale yes cannot run later.
 	Dropper PendingDropper
+	// SessionEnd is optional: it clears the shared Agent history when the
+	// session ends, and later turns conversation mode off. endSession calls it
+	// for a standalone "stop" (#501) and the stop command model (#503).
+	SessionEnd func()
 	// Announcer is optional: when set, a wake word stops unprompted speech
 	// before capture starts.
 	Announcer Announcer
@@ -722,6 +726,12 @@ func (l *Loop) session(ctx context.Context, wakeWord string) (bool, string, erro
 			<-done
 			return false, "", ctx.Err()
 		case err := <-done:
+			if errors.Is(err, ErrSessionSuspended) {
+				// A standalone "stop" ended the session: no follow-up window
+				// opens, and the next wake word starts a fresh history (#501).
+				l.endSession(cancel)
+				return false, "", nil
+			}
 			if err != nil && sessCtx.Err() == nil {
 				return false, "", err
 			}
@@ -816,6 +826,21 @@ func (l *Loop) watch(ctx context.Context) (WakeStream, <-chan Detection) {
 	return wake, wake.Detections()
 }
 
+// endSession suspends the session: in-flight work is cancelled, the follow-up
+// window closes, and the shared Agent history is cleared so the loop waits for
+// the next wake word. A standalone "stop" (#501), the stop command model (#503)
+// and, later, conversation mode all use it, so there is one way to end a
+// session. cancel may be nil when there is no live turn.
+func (l *Loop) endSession(cancel context.CancelFunc) {
+	if cancel != nil {
+		cancel()
+	}
+	l.followUntil = time.Time{}
+	if l.deps.SessionEnd != nil {
+		l.deps.SessionEnd()
+	}
+}
+
 // dropPending discards a waiting Confirmation after a Barge-in.
 func (l *Loop) dropPending() {
 	if l.deps.Dropper == nil {
@@ -898,6 +923,10 @@ func (l *Loop) BindFollowUp(source func() time.Duration) { l.deps.FollowUp = sou
 
 // BindListening installs the live wake-word listening source before Run starts.
 func (l *Loop) BindListening(source func() bool) { l.deps.Listening = source }
+
+// BindSessionEnd installs the shared end-session action before Run starts. main
+// clears the history and, later, conversation mode will turn itself off here.
+func (l *Loop) BindSessionEnd(end func()) { l.deps.SessionEnd = end }
 
 // isListening reports whether wake detection is enabled. Nil source reports true.
 func (l *Loop) isListening() bool {

@@ -959,7 +959,8 @@ func run() error {
 		// Control phrases and Agent request prefixes are read per request.
 		pipeline.WithWording(wordingMgr),
 		// Shared Control phrases reach whatever holds Focus; with nothing in
-		// Focus they fall through to the semantic Fast path.
+		// Focus a bare "stop" ends the session and the others fall through to
+		// the semantic Fast path.
 		pipeline.WithFocus(focusRegistry),
 		// Keep the previous completed reply and its provenance so
 		// assistant.repeat and notify.phone can resolve it.
@@ -1153,6 +1154,10 @@ func run() error {
 				active, _ := voice.ListeningState(settingsSvc, time.Now())
 				return active
 			})
+			// A standalone "stop" and the stop command model end the session,
+			// so the next wake word starts with a fresh history. Conversation
+			// mode (#499) will also be turned off here.
+			loop.BindSessionEnd(conversationHistory.Reset)
 			// With music holding Focus, require a wake word instead of trusting unverified AEC.
 			loop.BindFollowUp(func() time.Duration {
 				if focusRegistry.Held(focus.Music) {

@@ -86,6 +86,9 @@ const (
 	// the Assistant. Nothing was spoken beyond an optional soft Cue, so the turn
 	// carries no response latency and is never a success (#498).
 	OutcomeIgnored Outcome = "ignored"
+	// OutcomeSuspended means a standalone "stop" ended the session without a
+	// spoken answer. It is deliberate, not a missing reply or a failure (#501).
+	OutcomeSuspended Outcome = "suspended"
 )
 
 // timelineStage is one stage's accumulated duration.

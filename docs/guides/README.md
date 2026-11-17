@@ -690,8 +690,9 @@ The Control phrases `stop`, `pause`, `cancel`, `snooze`, `louder`, `quieter`
 and `mute` are matched exactly, so they answer without waiting on the embed
 service. `stop`, `pause`, `cancel` and `snooze` are shared Focus intents: they
 act on a ringing alert first, then the current reply, then playing music. With
-nothing in Focus they fall through to the semantic Fast path, so `cancel` still
-reaches `timer.cancel` and `louder` still steps the volume up. A volume phrase
+nothing in Focus a bare `stop` ends the session, while the others fall through
+to the semantic Fast path, so `cancel` still reaches `timer.cancel` and `louder`
+still steps the volume up. A volume phrase
 runs the Tool's extraction even though it matched exactly, so `quieter` steps
 down and `mute` sets the sink mute flag. `unmute` clears that flag and restores
 whatever level was playing; when the level was already 0 — an absolute "volume
@@ -1206,7 +1207,7 @@ There is no general hot-reload framework.
 | Key | Live effect |
 | --- | --- |
 | `tools.<name>.control_phrases` | The exact phrases that route to that Tool. A replacement applies to the next request. |
-| `focus.<intent>.phrases` | Exact phrases for one shared Focus intent (`stop`, `pause`, `resume`, `next`, `cancel`, `snooze`). They act on a ringing alert, the current reply or music; with nothing in Focus they fall through to the semantic Fast path. |
+| `focus.<intent>.phrases` | Exact phrases for one shared Focus intent (`stop`, `pause`, `resume`, `next`, `cancel`, `snooze`). They act on a ringing alert, the current reply or music; with nothing in Focus a bare `stop` ends the session and the others fall through to the semantic Fast path. |
 | `tools.<name>.examples` | Semantic Fast path Examples. A change re-embeds in the background; routing keeps the old vectors until the new ones are ready, a superseded rebuild is discarded, and a failed rebuild retries with bounded backoff (a startup failure recovers without a restart). |
 | `agent.request_prefixes` | Prefixes that go straight to the Agent path. A change applies to the next request. |
 | `agent.filler` | The phrase played while the Agent path waits. A change re-synthesizes the cached audio in the background; the old audio plays until the new clip is ready, and at most one Filler still plays per request. |

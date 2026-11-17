@@ -11,11 +11,14 @@ import (
 	"strings"
 )
 
-// maxResponseBytes bounds one embed response. The semantic index is embedded
-// in one batch at startup, so the cap must fit the whole index: 559 examples at
-// 768 dimensions is about 8.6 MB of JSON. 32 MB keeps a real index with room to
-// grow while still refusing an unbounded body.
+// maxResponseBytes bounds one embed response. One request is at most
+// maxBatchTexts vectors, which stays well under this cap. 32 MB still refuses
+// an unbounded body.
 const maxResponseBytes = 32 << 20
+
+// maxBatchTexts matches MAX_BATCH_SIZE in embed/app.py. The semantic index is
+// larger than one request, so Embed splits it and concatenates the vectors.
+const maxBatchTexts = 256
 
 // Client calls one embed service. Timeouts come from the caller's context.
 type Client struct {
@@ -36,11 +39,33 @@ func NewClient(baseURL, model string) *Client {
 // Model returns the configured model name.
 func (c *Client) Model() string { return c.model }
 
-// Embed returns one vector per text. It makes no request for an empty batch.
+// Embed returns one vector per text, in the same order. It makes no request
+// for an empty batch. A list longer than the service accepts is sent as
+// successive batches so the semantic index still loads.
 func (c *Client) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	if len(texts) == 0 {
 		return nil, nil
 	}
+	if len(texts) <= maxBatchTexts {
+		return c.embedOnce(ctx, texts)
+	}
+	out := make([][]float32, 0, len(texts))
+	for start := 0; start < len(texts); start += maxBatchTexts {
+		end := start + maxBatchTexts
+		if end > len(texts) {
+			end = len(texts)
+		}
+		part, err := c.embedOnce(ctx, texts[start:end])
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, part...)
+	}
+	return out, nil
+}
+
+// embedOnce posts one batch that already fits the service limit.
+func (c *Client) embedOnce(ctx context.Context, texts []string) ([][]float32, error) {
 	body, err := json.Marshal(map[string][]string{"texts": texts})
 	if err != nil {
 		return nil, fmt.Errorf("embed: marshal request: %w", err)

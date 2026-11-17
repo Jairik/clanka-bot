@@ -302,18 +302,23 @@ and any other setting the service exposes (including the sound and voice
 settings, which appear without a page change). Wording settings
 (`tools.<name>.control_phrases`, `tools.<name>.examples`,
 `agent.request_prefixes`, `agent.filler`, `agent.unavailable_message`), the
-model name (`agent.model`), `voice.name` and `voice.rate` are marked `live` and
+model name (`agent.model`), `voice.name`, `voice.rate` and
+`wakeword.threshold.<model>` are marked `live` and
 apply to the next request or in the background (a voice/rate change also
-re-synthesizes the cached Agent Filler). Connection-level settings (`http.addr`, `debug.addr`,
+re-synthesizes the cached Agent Filler; a threshold change reopens the idle
+detect stream). Connection-level settings (`http.addr`, `debug.addr`,
 `dashboard.addr`, `tts.addr`, `wakeword.addr`, `stt.addr`, `embed.url`,
 `capture.source`, `playback.sink`) are marked `restart_required`: the override
 is stored, but only the next process start reads it, and the page says so. See
-the [main guide](guides/README.md) for the curl examples. The Settings page's **Wake word** section is
-read-only: the allowlist and per-model thresholds are connection settings
-(`WAKEWORD_MODELS`, `WAKEWORD_THRESHOLD`, `WAKEWORD_THRESHOLDS`), so change
-`.env` and restart; the Health page's Wake word rows show what the service
-advertises. The wake-free command models (#81) are shown there too, with `off`
-when `WAKEWORD_COMMANDS_ENABLED` is false.
+the [main guide](guides/README.md) for the curl examples. The Settings page's **Wake word** section
+shows the allowlist and address read-only: those are connection settings
+(`WAKEWORD_MODELS`, `wakeword.addr`), so change `.env` and restart. Each
+per-model threshold (`wakeword.threshold.<model>`) is live and editable there;
+Reset returns to `WAKEWORD_THRESHOLD`/`WAKEWORD_THRESHOLDS` or `config.yaml`, and
+a change reopens the idle detect stream so it applies to the next detection.
+The Health page's Wake word rows show what the service advertises. The
+wake-free command models (#81) are shown there too, with `off` when
+`WAKEWORD_COMMANDS_ENABLED` is false.
 
 The **Activity** page at `/activity` lists recent requests from a bounded
 in-memory ring plus the durable SQLite history fed by the same completion that

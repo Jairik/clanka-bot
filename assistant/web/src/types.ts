@@ -602,8 +602,8 @@ export type SettingsView = {
   Voice: string;
   CanPreview: boolean;
   PreviewMaxRunes: number;
-  // Wakeword is read-only: the allowlist and thresholds are connection
-  // settings read once at startup.
+  // Wakeword is the Wake word section: the model list and address read-only,
+  // with one live threshold form per configured model.
   Wakeword: WakewordSettings;
 };
 
@@ -854,6 +854,10 @@ export type WakewordModel = {
   Threshold: string;
   Command: boolean;
   Enabled: boolean;
+  // Setting is the live threshold editor. It is nil when the Dashboard was
+  // built without the settings service, and the row then shows the
+  // configured value read-only.
+  Setting: Setting | null;
 };
 
 export type WakewordSettings = {

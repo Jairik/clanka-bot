@@ -86,15 +86,22 @@ export function SettingsPage() {
             flush
           >
             <Lede>{data.Wakeword.Note}</Lede>
+            {data.Wakeword.Enabled && (
+              <div className="flex items-center justify-between gap-3 px-3.5 py-2.5">
+                <span className="text-xs text-muted">Address</span>
+                <span className="font-mono text-xs">{data.Wakeword.Addr || "—"}</span>
+              </div>
+            )}
             {data.Wakeword.Models?.length ? (
               <ul className="divide-y divide-separator">
                 {data.Wakeword.Models.map((model) => (
-                  <li key={model.Name} className="flex items-center justify-between gap-3 px-3.5 py-3">
-                    <span className="flex flex-wrap items-center gap-2">
+                  <li key={model.Name} id={model.Setting?.Anchor} tabIndex={-1} className="px-3.5 py-3">
+                    <div className="flex flex-wrap items-center gap-2">
                       <span className="font-mono text-sm">{model.Name}</span>
                       {model.Command && <Badge tone={model.Enabled ? "neutral" : "warn"}>command{model.Enabled ? "" : " · off"}</Badge>}
-                    </span>
-                    <span className="text-xs text-muted">threshold {model.Threshold}</span>
+                      {!model.Setting && <span className="ml-auto text-xs text-muted">threshold {model.Threshold}</span>}
+                    </div>
+                    {model.Setting && <SettingRow s={model.Setting} actions={actions} />}
                   </li>
                 ))}
               </ul>

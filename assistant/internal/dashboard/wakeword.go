@@ -9,6 +9,7 @@ import (
 
 	"github.com/Jairik/clanka-bot/assistant/internal/config"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
+	"github.com/Jairik/clanka-bot/assistant/internal/wakethreshold"
 	"github.com/Jairik/clanka-bot/assistant/internal/wyoming"
 )
 
@@ -57,10 +58,11 @@ func WakewordFromConfig(cfg config.Config) WakewordInfo {
 	return info
 }
 
-// wakewordSettingsView is the read-only Wake word section on Settings. These
-// values are connection-level (restart required) and live in .env or
-// config.yaml, so the page reports them rather than offering a write that
-// would only take effect after a restart.
+// wakewordSettingsView is the Wake word section on Settings. The model list and
+// address are connection-level (restart required) and live in .env or
+// config.yaml, so they are reported rather than offered as a write. Each
+// threshold is a live setting (wakeword.threshold.<model>), so its row is a
+// form with a Reset.
 type wakewordSettingsView struct {
 	Enabled bool
 	Addr    string
@@ -73,6 +75,10 @@ type wakewordModelView struct {
 	Threshold string
 	Command   bool
 	Enabled   bool
+	// Setting is the live threshold editor. It is nil when the Dashboard was
+	// built without the settings service, and the row then shows the
+	// configured value read-only.
+	Setting *settingView
 }
 
 func (h *Handler) wakewordSettings() wakewordSettingsView {
@@ -92,8 +98,27 @@ func (h *Handler) wakewordSettings() wakewordSettingsView {
 		view.Note = "Voice input is off: wakeword.addr is empty. Set the wakeword address and at least one model to enable it."
 		return view
 	}
-	view.Note = "Use WAKEWORD_MODELS for the comma-separated list and WAKEWORD_THRESHOLDS (for example clanker:0.6,okay_nabu:0.5) for per-model overrides. Wake-free commands are controlled by WAKEWORD_COMMANDS_ENABLED and are off by default. These are connection settings: change them in .env or config.yaml and restart the assistant."
+	view.Note = "The model list (WAKEWORD_MODELS) and address are connection settings: change them in .env or config.yaml and restart the assistant. Each threshold is live: save wakeword.threshold.<model> and it applies to the next detection, and Reset returns to WAKEWORD_THRESHOLDS or config.yaml. Wake-free commands are controlled by WAKEWORD_COMMANDS_ENABLED and are off by default."
 	return view
+}
+
+// takeThreshold attaches one live threshold value to its model row. The Wake
+// word section owns every wakeword.* key, so the generic Live and Restart
+// groups never show a second copy; the address stays read-only above.
+func (v *wakewordSettingsView) takeThreshold(key string, setting settingView) {
+	name, ok := strings.CutPrefix(key, wakethreshold.Prefix)
+	if !ok {
+		return
+	}
+	for index := range v.Models {
+		if v.Models[index].Name != name {
+			continue
+		}
+		setting.Label = "Threshold"
+		v.Models[index].Setting = &setting
+		v.Models[index].Threshold = setting.Display
+		return
+	}
 }
 
 // wakewordChecks reports one row per configured model, with the service's

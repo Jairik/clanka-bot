@@ -13,15 +13,16 @@ type WyomingWake struct {
 	client     *wyoming.Client
 	names      []string
 	allowed    map[string]bool
-	thresholds map[string]float64
+	thresholds Thresholds
 	format     wyoming.Format
 }
 
 // NewWyomingWake builds a wake word service adapter. names is the allowlist of
 // models that may fire; it is sent with the detect request and enforced again
 // on the reply, so a service that returns another name cannot wake the
-// Assistant. thresholds is the per-model map the service applies.
-func NewWyomingWake(client *wyoming.Client, names []string, format wyoming.Format, thresholds map[string]float64) *WyomingWake {
+// Assistant. thresholds is read on every Open, so a live edit applies to the
+// next detect stream without a restart.
+func NewWyomingWake(client *wyoming.Client, names []string, format wyoming.Format, thresholds Thresholds) *WyomingWake {
 	allowed := make(map[string]bool, len(names))
 	for _, name := range names {
 		allowed[name] = true
@@ -29,9 +30,13 @@ func NewWyomingWake(client *wyoming.Client, names []string, format wyoming.Forma
 	return &WyomingWake{client: client, names: names, allowed: allowed, thresholds: thresholds, format: format}
 }
 
-// Open starts a detection stream.
+// Open starts a detection stream with the thresholds that are live now.
 func (w *WyomingWake) Open(ctx context.Context) (WakeStream, error) {
-	stream, err := w.client.Detect(ctx, w.names, w.format, wyoming.WithDetectThresholds(w.thresholds))
+	var opts []wyoming.DetectOption
+	if w.thresholds != nil {
+		opts = append(opts, wyoming.WithDetectThresholds(w.thresholds.Map()))
+	}
+	stream, err := w.client.Detect(ctx, w.names, w.format, opts...)
 	if err != nil {
 		return nil, err
 	}

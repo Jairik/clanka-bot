@@ -451,6 +451,15 @@ the complete per-model map on every detect stream, and the wrapper image patches
 the pinned upstream handler to apply it per model. The old single-value
 `WAKEWORD_MODEL` (and `wakeword.model`) is still accepted.
 
+Those values are only the config layer. Each configured model's threshold is
+also a live setting, `wakeword.threshold.<model>`: change it on the Dashboard's
+Settings page (Wake word section) or through the settings API and it applies to
+the next detection, with no restart and no wait for the next turn. The idle
+detect stream is reopened with the new map as soon as the value changes; a
+value you never touched never causes a reopen. Reset returns to
+`WAKEWORD_THRESHOLDS` (or `wakeword.thresholds` in `assistant/config.yaml`).
+The model list and the `wakeword` address remain restart-required.
+
 **Wake-free volume commands (#81)** are off by default. With
 `WAKEWORD_COMMANDS_ENABLED=true`, the Assistant also asks `wakeword` for the
 `volume_up` and `volume_down` models (baked from `wakeword/models/*.tflite`)
@@ -476,7 +485,8 @@ the service, not for a model: openWakeWord loads a detector on the first
 the upstream built-ins, so `WAKEWORD_MODELS` can name `okay_nabu` (or another
 upstream name) too; see `wakeword/training/README.md`
 for how it is trained and how to add the owner's own voice. The Dashboard's
-Settings page lists the configured models and thresholds, and its Health page
+Settings page lists the configured models and lets you edit each live threshold,
+and its Health page
 checks that the service advertises each one. Moonshine weights are downloaded anonymously from
 `download.moonshine.ai` at build time and baked in; the container starts
 offline. Rebuild `stt` after changing `STT_MODELS` or `STT_MODEL`. Set
@@ -1158,6 +1168,7 @@ There is no general hot-reload framework.
 | `agent.filler` | The phrase played while the Agent path waits. A change re-synthesizes the cached audio in the background; the old audio plays until the new clip is ready, and at most one Filler still plays per request. |
 | `agent.unavailable_message` | The phrase spoken when the model is unreachable. A change applies to the next failure. |
 | `agent.model` | The model name sent to the configured provider. A change applies to the next turn (the model is resolved per request); there is no automatic failover. |
+| `wakeword.threshold.<model>` | Detection threshold for one configured wake model (0 < t ≤ 1). A change reopens the idle detect stream with the new map, so it applies to the next detection. Reset returns to `WAKEWORD_THRESHOLDS` or `config.yaml`. The model list and address stay `restart_required`. |
 | `http.addr`, `debug.addr`, `dashboard.addr`, `tts.addr`, `wakeword.addr`, `stt.addr`, `embed.url`, `capture.source`, `playback.sink` | Connection-level settings, reported as `restart_required`. A stored override is applied on the next process start. |
 
 ```sh

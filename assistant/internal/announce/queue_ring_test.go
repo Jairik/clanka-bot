@@ -201,20 +201,17 @@ func TestSoundPreviewIsNotRecorded(t *testing.T) {
 	queue := announce.New(speaker, testLogger())
 	t.Cleanup(queue.Close)
 
-	played := false
+	// The preview runs on the queue worker. A channel is the handoff, so the
+	// test does not read a bool the worker is still writing.
+	played := make(chan struct{}, 1)
 	queue.EnqueuePlay(func(context.Context) error {
-		played = true
+		played <- struct{}{}
 		return nil
 	})
 
-	for range 20 {
-		if played {
-			break
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
-
-	if !played {
+	select {
+	case <-played:
+	case <-time.After(200 * time.Millisecond):
 		t.Fatal("audio item did not play")
 	}
 

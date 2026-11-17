@@ -24,6 +24,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/lastreply"
 	lightcore "github.com/Jairik/clanka-bot/assistant/internal/lights"
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
+	monstercore "github.com/Jairik/clanka-bot/assistant/internal/monster"
 	corenotify "github.com/Jairik/clanka-bot/assistant/internal/notify"
 	personacore "github.com/Jairik/clanka-bot/assistant/internal/persona"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
@@ -47,7 +48,6 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/tools/github"
 	lighttools "github.com/Jairik/clanka-bot/assistant/tools/lights"
 	listtools "github.com/Jairik/clanka-bot/assistant/tools/list"
-	monstercore "github.com/Jairik/clanka-bot/assistant/internal/monster"
 	monstertools "github.com/Jairik/clanka-bot/assistant/tools/monster"
 	notetools "github.com/Jairik/clanka-bot/assistant/tools/note"
 	notifytools "github.com/Jairik/clanka-bot/assistant/tools/notify"
@@ -946,10 +946,11 @@ func (evalPlaylists) Lookup(name string) (spotifycore.Playlist, bool) {
 }
 
 type evalVerdict struct {
-	Tool   string
-	Path   tool.Path
-	Reason string
-	Top    []pipeline.ToolScore
+	Suspend bool
+	Tool    string
+	Path    tool.Path
+	Reason  string
+	Top     []pipeline.ToolScore
 }
 
 type evalCounts struct {
@@ -1096,7 +1097,7 @@ func TestRoutingEvalAgainstMiniLM(t *testing.T) {
 				top = record.Top
 			}
 		}
-		return evalVerdict{Tool: reply.Tool, Path: reply.Path, Reason: reason, Top: top}
+		return evalVerdict{Suspend: reply.Suspend, Tool: reply.Tool, Path: reply.Path, Reason: reason, Top: top}
 	}
 
 	counts := make(map[string]*evalCounts, len(routingEvalTools))

@@ -28,6 +28,8 @@ services:
     environment:
       EMBED_MODEL: ${EMBED_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
       EMBED_PORT: "8085"
+      # Pi benchmarks favor bounded threads so encode does not grab every core during routing.
+      OMP_NUM_THREADS: ${EMBED_THREADS:-2}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8085/healthz')"]
       interval: 10s

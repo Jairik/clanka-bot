@@ -131,7 +131,7 @@ var deferredTriggers = []deferredTrigger{
 // is neither a safe leaf nor a chain: the caller then owns the Agent call, so
 // the model request happens after routing is marked and the request's real
 // streaming events reach the reply session.
-func (p *Pipeline) deferredRequest(ctx context.Context, req tool.Request, text string, phrases map[string]string) (Reply, bool, string) {
+func (p *Pipeline) deferredRequest(ctx context.Context, req tool.Request, text string, phrases, intentPhrases map[string]string) (Reply, bool, string) {
 	if p.deferred == nil {
 		return Reply{}, false, ""
 	}
@@ -153,7 +153,7 @@ func (p *Pipeline) deferredRequest(ctx context.Context, req tool.Request, text s
 		// Validate a single safe leaf as well as chains; ambiguous deferred requests stay with the Agent.
 		var plan []chainStep
 		if strings.Contains(action, " and ") || strings.Contains(action, " then ") {
-			plan = p.chainPlan(ctx, action, phrases)
+			plan = p.chainPlan(ctx, action, phrases, intentPhrases)
 		} else {
 			name := phrases[NormalizePhrase(action)]
 			if name == "" && p.semantic != nil {

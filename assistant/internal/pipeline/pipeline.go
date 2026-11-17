@@ -450,7 +450,7 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 	// chain falls back to the Agent path, and that model call is work, not
 	// routing, so it runs after the stage is marked and with the request's real
 	// streaming events.
-	deferredReply, handled, agentFallback := p.deferredRequest(ctx, req, transcript, phrases)
+	deferredReply, handled, agentFallback := p.deferredRequest(ctx, req, transcript, phrases, intentPhrases)
 	if handled {
 		markRouting()
 		record.reason = ""
@@ -462,7 +462,7 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 
 	// Validate the whole chain before executing any of its Tools.
 	if p.chainEnabled != nil && p.chainEnabled() {
-		if steps := p.chainPlan(ctx, transcript, phrases); len(steps) > 1 {
+		if steps := p.chainPlan(ctx, transcript, phrases, intentPhrases); len(steps) > 1 {
 			markRouting()
 			record.reason = ""
 			return p.runChain(ctx, req, steps, events, record)

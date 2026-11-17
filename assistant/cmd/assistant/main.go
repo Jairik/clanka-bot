@@ -606,6 +606,7 @@ func run() error {
 	// config layer, so Reset returns to it; the model allowlist itself stays
 	// restart-required.
 	defs = append(defs, wakethreshold.Definitions(baseCfg.Wakeword)...)
+	defs = append(defs, voice.ListeningDefinitions()...)
 	defs = append(defs, tz.Definition(baseCfg.Timezone))
 	defs = append(defs, namematch.Definition(baseCfg.NameMatch.Threshold))
 	// Sound role assignments are live settings too, so the Dashboard write and
@@ -1101,6 +1102,10 @@ func run() error {
 		wakeThresholds := wakethreshold.NewSource(settingsSvc, cfg.Wakeword)
 		loop, err := newVoiceLoop(cfg, session, p, sink, announcements, wakeCue, voiceObserver, voiceStats, musicDucker, wakeCommands, wakeThresholds, func() bool { return focusRegistry.Held(focus.Ring) }, busySpeaker, logger)
 		if loop != nil {
+			loop.BindListening(func() bool {
+				active, _ := voice.ListeningState(settingsSvc, time.Now())
+				return active
+			})
 			// With music holding Focus, require a wake word instead of trusting unverified AEC.
 			loop.BindFollowUp(func() time.Duration {
 				if focusRegistry.Held(focus.Music) {

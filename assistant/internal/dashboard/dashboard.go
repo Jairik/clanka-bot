@@ -506,6 +506,8 @@ func New(opts Options) (*Handler, error) {
 	h.Mutating("POST /api/ui/equalizer", h.equalizerSet)
 	h.Handle("GET /api/ui/volume", h.volumeGet)
 	h.Mutating("POST /api/ui/volume", h.volumeSet)
+	h.Handle("GET /api/ui/listening", h.listeningGet)
+	h.Mutating("POST /api/ui/listening", h.listeningSet)
 	// The Sounds page owns uploads, role assignment, Ring settings and the two
 	// previews. Every write goes through Mutating for identity and same-origin.
 	h.Handle("/sounds/audio/{name}", h.soundsAudio)
@@ -707,6 +709,7 @@ type sessionView struct {
 	Typed    bool
 	Mic      bool
 	Volume   bool
+	Wakeword bool
 	Activity bool
 	CanSpeak bool
 	Speak    bool
@@ -731,6 +734,7 @@ func (h *Handler) sessionInfo(w http.ResponseWriter, r *http.Request) {
 		Typed:          h.typed != nil,
 		Mic:            h.typed != nil && h.transcriber != nil,
 		Volume:         h.volume != nil,
+		Wakeword:       strings.TrimSpace(h.wakeword.Addr) != "",
 		Activity:       h.activity != nil,
 		CanSpeak:       h.spoken != nil && h.settings != nil,
 		Speak:          h.speaking(),

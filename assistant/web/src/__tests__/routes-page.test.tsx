@@ -123,3 +123,30 @@ it("shows a failed read", async () => {
   const alert = await screen.findByRole("alert");
   expect(alert.textContent).toContain("The registry did not answer.");
 });
+
+it("filters without error when Description is absent", async () => {
+  const customView = view({
+    Rows: [
+      {
+        Name: "custom.tool",
+        Description: undefined as unknown as string,
+        Permission: "act",
+        FastPath: true,
+        AgentOnly: false,
+        LocalOnly: false,
+        Confirm: false,
+        Enabled: true,
+        Hermes: false,
+        ControlPhrases: 1,
+        Examples: 1,
+      },
+    ],
+  });
+  stubFetch({ "/api/ui/routes": () => json(customView) });
+  const user = userEvent.setup();
+  render(<RoutesPage />);
+  await screen.findByText("custom.tool");
+
+  await user.type(screen.getByLabelText("Filter tools"), "custom");
+  expect(screen.getByText("custom.tool")).toBeTruthy();
+});

@@ -14,6 +14,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/internal/toolpolicy"
 	"github.com/Jairik/clanka-bot/assistant/internal/voicesample"
+	"github.com/Jairik/clanka-bot/assistant/internal/wakethreshold"
 	"github.com/Jairik/clanka-bot/assistant/internal/wording"
 )
 
@@ -416,7 +417,8 @@ func (h *Handler) buildSettingsView(flash, errorText string, edit *editState) se
 		}
 		// The Wake word section owns wakeword.threshold.<model> forms; the
 		// address stays read-only there rather than a second row here.
-		if strings.HasPrefix(value.Key, "wakeword.") {
+		// Other wakeword.* keys (listening, listening_until) stay ordinary live settings.
+		if strings.HasPrefix(value.Key, wakethreshold.Prefix) || value.Key == "wakeword.addr" {
 			view.Wakeword.takeThreshold(value.Key, setting)
 			continue
 		}

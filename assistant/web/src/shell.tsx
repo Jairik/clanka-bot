@@ -3,14 +3,14 @@
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Button, Drawer, Popover, SearchField } from "@heroui/react";
 import {
-  Activity, AlarmClock, Bell, BookOpenText, Bot, HeartPulse, KeyRound, Lamp, Lightbulb, MessageSquare, Mic, Minus, MoreHorizontal, Music, Plus,
+  Activity, AlarmClock, Bell, BookOpenText, Bot, HeartPulse, KeyRound, Lamp, Lightbulb, MessageSquare, Mic, MicOff, Minus, MoreHorizontal, Music, Plus,
   Settings, Smile, StickyNote, Volume, Volume1, Volume2, VolumeX, Waves, Waypoints, type LucideIcon,
 } from "lucide-react";
 import { APIVersionMismatch, getJSON, navigate, postForm, restoreKey, useHash, useLocation } from "./api";
 import { API_VERSION } from "./api-version";
 import { latestDelta, piUnreachableAfter, useLive, usePiStatus } from "./events";
-import type { HealthView, Session, Volume as VolumeState } from "./types";
-import { Dot, Range, Tip, cn } from "./ui";
+import type { HealthView, Listening, Session, Volume as VolumeState } from "./types";
+import { Badge, Dot, Range, Tip, cn } from "./ui";
 import { SpeakToggle } from "./speak";
 import { prefetch } from "./routes";
 import { snapVolume, VOL_STEP } from "./volume";
@@ -47,6 +47,7 @@ const SessionCtx = createContext<Session>({
   Typed: false,
   Mic: false,
   Volume: false,
+  Wakeword: false,
   Activity: false,
   CanSpeak: false,
   Speak: false,
@@ -218,6 +219,7 @@ export function Shell({ children }: { children: ReactNode }) {
               </SearchField.Group>
             </SearchField>
           </form>
+          <ListeningControl />
           <SpeakToggle />
           <VolumeControl />
         </header>
@@ -381,6 +383,172 @@ export function PageFrame({ id, children, right }: { id: PageId; children: React
         </div>
         {children}
       </div>
+    </div>
+  );
+}
+
+// ---------- listening ----------
+
+/**
+ * Wake-word listening toggle and pause controls in the top bar.
+ * Reads the effective value and allows pausing indefinitely or for 15/30/60 minutes.
+ * Shows a paused badge when paused.
+ */
+export function ListeningControl() {
+  const { Wakeword: wired } = useSession();
+  const [state, setState] = useState<Listening | null>(null);
+  const [error, setError] = useState("");
+  const [pending, setPending] = useState(false);
+
+  const load = useCallback(() => {
+    if (!wired) return;
+    getJSON<Listening>("/api/ui/listening").then(
+      (v) => {
+        setState(v);
+        setError(v.Error || "");
+      },
+      () => {},
+    );
+  }, [wired]);
+
+  useEffect(() => {
+    if (!wired) return;
+    void load();
+    const id = setInterval(() => {
+      if (document.visibilityState === "visible") load();
+    }, 15_000);
+    return () => clearInterval(id);
+  }, [wired, load]);
+
+  // When until timestamp is present, reload when it expires.
+  useEffect(() => {
+    if (!state?.Until) return;
+    const diff = new Date(state.Until).getTime() - Date.now();
+    if (diff <= 0) {
+      load();
+      return;
+    }
+    const timer = setTimeout(() => void load(), diff + 500);
+    return () => clearTimeout(timer);
+  }, [state?.Until, load]);
+
+  const update = useCallback((body: Record<string, string>) => {
+    setPending(true);
+    setError("");
+    postForm<Listening>("/api/ui/listening", body).then(
+      (res) => {
+        setPending(false);
+        if (res.view) setState(res.view);
+        if (!res.ok) {
+          setError(res.text || "The setting was not saved.");
+        }
+      },
+      () => {
+        setPending(false);
+        setError("Could not reach the assistant.");
+      },
+    );
+  }, []);
+
+  if (!wired || !state?.Available) return null;
+
+  const isFuture = state.Until ? new Date(state.Until).getTime() > Date.now() : false;
+  const isListening = state.Listening && !isFuture;
+
+  return (
+    <div className="flex items-center gap-1.5">
+      {!isListening && <Badge tone="warn">paused</Badge>}
+      <Popover>
+        <Tip label={isListening ? "Wake-word listening active" : "Wake-word listening paused"}>
+          <Button
+            size="sm"
+            variant="ghost"
+            isIconOnly
+            aria-label={isListening ? "Pause wake-word listening" : "Resume wake-word listening"}
+            aria-pressed={!isListening}
+          >
+            {isListening ? (
+              <Mic className="size-5 text-foreground" strokeWidth={1.5} />
+            ) : (
+              <MicOff className="size-5 text-warning" strokeWidth={1.5} />
+            )}
+          </Button>
+        </Tip>
+        <Popover.Content placement="bottom end" className="w-[min(18rem,calc(100vw-1.5rem))]">
+          <Popover.Dialog className="p-4">
+            <div className="mb-3 flex items-center justify-between">
+              <Popover.Heading className="text-sm font-semibold">Listening</Popover.Heading>
+              {!isListening && <Badge tone="warn">paused</Badge>}
+            </div>
+            {isListening ? (
+              <div className="space-y-3">
+                <p className="text-xs text-muted">
+                  Pause wake-word listening. Audio is still captured and discarded while paused. Only the Dashboard resumes it.
+                </p>
+                <div className="flex flex-col gap-2">
+                  <Button
+                    fullWidth
+                    variant="secondary"
+                    size="sm"
+                    isDisabled={pending}
+                    onPress={() => update({ listening: "false" })}
+                  >
+                    Pause indefinitely
+                  </Button>
+                  <div className="grid grid-cols-3 gap-1.5">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      isDisabled={pending}
+                      onPress={() => update({ duration: "15m" })}
+                    >
+                      15m
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      isDisabled={pending}
+                      onPress={() => update({ duration: "30m" })}
+                    >
+                      30m
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      isDisabled={pending}
+                      onPress={() => update({ duration: "60m" })}
+                    >
+                      60m
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <p className="text-xs text-muted">
+                  {state.Until && isFuture
+                    ? `Paused until ${new Date(state.Until).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}. Audio is still captured and discarded.`
+                    : "Paused indefinitely. Audio is still captured and discarded."}
+                </p>
+                <Button
+                  fullWidth
+                  variant="primary"
+                  size="sm"
+                  isDisabled={pending}
+                  onPress={() => update({ listening: "true" })}
+                >
+                  Resume listening
+                </Button>
+              </div>
+            )}
+            {error && (
+              <span role="status" className="mt-2 block text-[11px] text-danger">
+                {error}
+              </span>
+            )}
+          </Popover.Dialog>
+        </Popover.Content>
+      </Popover>
     </div>
   );
 }

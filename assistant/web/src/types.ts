@@ -277,6 +277,13 @@ export type LightsView = {
   status: string;
 };
 
+export type Listening = {
+  Available: boolean;
+  Listening: boolean;
+  Until: string;
+  Error: string;
+};
+
 export type MissedAlert = {
   Kind: string;
   Label: string;
@@ -549,6 +556,7 @@ export type Session = {
   Typed: boolean;
   Mic: boolean;
   Volume: boolean;
+  Wakeword: boolean;
   Activity: boolean;
   CanSpeak: boolean;
   Speak: boolean;

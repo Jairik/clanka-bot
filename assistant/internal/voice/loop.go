@@ -168,6 +168,10 @@ type Deps struct {
 	Stats *Stats
 	// FollowUp returns the live no-wake listening window; zero disables it.
 	FollowUp func() time.Duration
+	// Listening reports whether wake-word listening is active. When false,
+	// wake detection is paused, no detect streams are opened, and stale frames
+	// are drained. Nil reports true (always listening).
+	Listening func() bool
 	// RingActive reports whether a Timer or Alarm Ring currently owns the
 	// floor (focus.Ring is held). When true the wake Cue is skipped so it does
 	// not play on top of a ringing alert.
@@ -291,6 +295,10 @@ func (l *Loop) listen(ctx context.Context) error {
 	pending := ""
 	haveTurn := false
 	for {
+		if !l.isListening() {
+			haveTurn = false
+			l.followUntil = time.Time{}
+		}
 		if !haveTurn {
 			name, detected, err := l.waitForWake(ctx)
 			if err != nil {
@@ -298,6 +306,9 @@ func (l *Loop) listen(ctx context.Context) error {
 			}
 			if !detected {
 				return nil // the stream ended without firing; reopen it
+			}
+			if !l.isListening() {
+				continue
 			}
 			pending = name
 			haveTurn = true
@@ -330,7 +341,7 @@ func (l *Loop) listen(ctx context.Context) error {
 		pending = ""
 		haveTurn = false
 		// Only a completed spoken turn can open the next listening window.
-		if !l.followUntil.IsZero() && time.Now().Before(l.followUntil) {
+		if !l.followUntil.IsZero() && time.Now().Before(l.followUntil) && l.isListening() {
 			haveTurn = true
 		}
 	}
@@ -343,6 +354,14 @@ func (l *Loop) listen(ctx context.Context) error {
 // itself cannot interrupt the reply.
 func (l *Loop) waitForWake(ctx context.Context) (string, bool, error) {
 	for {
+		if !l.isListening() {
+			l.drainFrames()
+			if !sleep(ctx, 200*time.Millisecond) {
+				return "", false, ctx.Err()
+			}
+			l.drainFrames()
+			continue
+		}
 		// Read the signature before opening, so the map the service receives
 		// and the value compared against it describe the same edit.
 		var signature string
@@ -350,6 +369,7 @@ func (l *Loop) waitForWake(ctx context.Context) (string, bool, error) {
 			signature = l.deps.Thresholds.Signature()
 		}
 		name, fired, err := func() (string, bool, error) {
+			l.drainFrames()
 			wake, err := l.deps.Wake.Open(ctx)
 			if err != nil {
 				return "", false, err
@@ -366,6 +386,9 @@ func (l *Loop) waitForWake(ctx context.Context) (string, bool, error) {
 		}
 		if !fired {
 			return "", false, nil
+		}
+		if !l.isListening() {
+			continue
 		}
 		l.sampleMu.Lock()
 		sampling := l.sampling
@@ -400,6 +423,9 @@ func (l *Loop) readWake(ctx context.Context, wake WakeStream, signature string) 
 		case <-ctx.Done():
 			return "", false, ctx.Err()
 		case fr := <-l.frames:
+			if !l.isListening() {
+				return "", false, nil
+			}
 			if l.deps.Thresholds != nil && l.deps.Thresholds.Signature() != signature {
 				return "", false, errThresholdsChanged
 			}
@@ -411,6 +437,9 @@ func (l *Loop) readWake(ctx context.Context, wake WakeStream, signature string) 
 				if err := wake.Err(); err != nil {
 					return "", false, err
 				}
+				return "", false, nil
+			}
+			if !l.isListening() {
 				return "", false, nil
 			}
 			return detection.Name, true, nil
@@ -697,13 +726,20 @@ func (l *Loop) session(ctx context.Context, wakeWord string) (bool, string, erro
 				return false, "", err
 			}
 			// Playback has drained; keep music ducked by skipping follow-ups when music safety is unknown.
-			if l.deps.FollowUp != nil {
+			if l.deps.FollowUp != nil && l.isListening() {
 				if window := l.deps.FollowUp(); window > 0 {
 					l.followUntil = time.Now().Add(window)
 				}
 			}
 			return false, "", nil
 		case fr := <-l.frames:
+			if !l.isListening() {
+				if watch != nil {
+					_ = watch.Close()
+					watch, detections = nil, nil
+				}
+				continue
+			}
 			if watch == nil {
 				continue // no way to interrupt; drain the capture
 			}
@@ -716,6 +752,13 @@ func (l *Loop) session(ctx context.Context, wakeWord string) (bool, string, erro
 			if !ok {
 				// The watch stream ended without firing; keep the reply going.
 				watch, detections = nil, nil
+				continue
+			}
+			if !l.isListening() {
+				if watch != nil {
+					_ = watch.Close()
+					watch, detections = nil, nil
+				}
 				continue
 			}
 			// A command model (#81) acts without interrupting the reply. The
@@ -762,7 +805,7 @@ func (l *Loop) speakBusy(ctx context.Context) {
 // watch opens the playback-time wake stream. A failure is logged, not fatal:
 // the reply still plays, just without the ability to interrupt it.
 func (l *Loop) watch(ctx context.Context) (WakeStream, <-chan Detection) {
-	if l.deps.Wake == nil {
+	if l.deps.Wake == nil || !l.isListening() {
 		return nil, nil
 	}
 	wake, err := l.deps.Wake.Open(ctx)
@@ -852,3 +895,28 @@ func sleep(ctx context.Context, d time.Duration) bool {
 
 // BindFollowUp installs the live window source before Run starts.
 func (l *Loop) BindFollowUp(source func() time.Duration) { l.deps.FollowUp = source }
+
+// BindListening installs the live wake-word listening source before Run starts.
+func (l *Loop) BindListening(source func() bool) { l.deps.Listening = source }
+
+// isListening reports whether wake detection is enabled. Nil source reports true.
+func (l *Loop) isListening() bool {
+	if l.deps.Listening == nil {
+		return true
+	}
+	return l.deps.Listening()
+}
+
+// drainFrames discards any buffered microphone frames without blocking.
+func (l *Loop) drainFrames() {
+	if l.frames == nil {
+		return
+	}
+	for {
+		select {
+		case <-l.frames:
+		default:
+			return
+		}
+	}
+}

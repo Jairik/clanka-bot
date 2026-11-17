@@ -30,7 +30,7 @@ var roots = []string{
 	"activityView", "alertsView", "equalizerView", "healthView", "hermesView", "latencyView", "lightsView",
 	"monsterView", "notesView", "personasView", "phrasebookView", "routesView", "secretsView",
 	"sessionView", "settingsView", "soundsView", "spotifyView",
-	"voiceSamplesView", "voicesView", "volumeView", "focusView",
+	"voiceSamplesView", "voicesView", "volumeView", "focusView", "listeningView",
 }
 
 // names pins the TypeScript names the app already imports where the Go name
@@ -39,6 +39,7 @@ var roots = []string{
 var names = map[string]string{
 	"sessionView":      "Session",
 	"volumeView":       "Volume",
+	"listeningView":    "Listening",
 	"settingsToolView": "SettingTool",
 	"permissionChoice": "Choice",
 	"voicePhraseView":  "VoiceSamplePhrase",

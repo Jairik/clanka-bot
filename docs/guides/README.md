@@ -438,6 +438,8 @@ Say the wake word (**"clanker"**, the default), ask a question, and hear the ans
 
 **Morning briefing (#226)** — Say "good morning", "what's my day", "what does my day look like", "brief me", or "morning briefing" and the Assistant composes one spoken answer from the weather, your alarms, timers, reminders and to-do list, in that order, as a single TTS request. It is Local-only (the private sources stay on the Pi), so `notify.phone` never forwards it. A clause that would push the reply past 600 characters is dropped with "Ask me for the rest." The to-do list is the only list it reads.
 
+**Pausing wake-word listening (#239)** — Wake-word listening can be paused from the Dashboard's top bar toggle, either indefinitely or for a timed duration (15, 30, or 60 minutes). While paused, audio capture continues uninterrupted but captured frames are drained and discarded without opening a detection stream to `wakeword`, replies ignore barge-in detections, and follow-up listening windows do not open. The top bar displays a paused badge indicating the remaining time or indefinite pause. Only the Dashboard can resume listening (or let a timed pause expire); there is intentionally no spoken voice command to pause or resume wake-word detection.
+
 The webcam mic has no hardware echo cancellation, so the Assistant can in
 principle hear itself. The dev-box run, with its own reply looped back at full
 level, produced no false barge-in; if that changes in a louder room,

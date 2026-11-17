@@ -3,7 +3,7 @@
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it } from "vitest";
-import { PhrasebookPage } from "../pages/Phrasebook";
+import { CommonPhrases } from "../pages/Phrasebook";
 import type { PhrasebookView } from "../types";
 import { json, stubFetch } from "./harness";
 
@@ -53,7 +53,7 @@ function stub(write: (path: string) => PhrasebookView, get: () => PhrasebookView
 beforeEach(() => stub(() => view()));
 
 it("groups the phrases and shows the counts and the active persona", async () => {
-  render(<PhrasebookPage />);
+  render(<CommonPhrases />);
 
   expect(await screen.findByText("lights.power")).toBeTruthy();
   expect(screen.getByText("timer.set")).toBeTruthy();
@@ -76,7 +76,7 @@ it("saves an edited phrase with the Tool name and the new text", async () => {
       Overridden: 2,
     }),
   );  const user = userEvent.setup();
-  render(<PhrasebookPage />);
+  render(<CommonPhrases />);
   await screen.findByText("lights.power");
 
   const field = screen.getByLabelText("lights.power phrase") as HTMLInputElement;
@@ -95,7 +95,7 @@ it("saves an edited phrase with the Tool name and the new text", async () => {
 it("asks for a whole generated set with no body", async () => {
   stub(() => view({ Flash: "Phrase book generated. Review the rows before the next request." }));
   const user = userEvent.setup();
-  render(<PhrasebookPage />);
+  render(<CommonPhrases />);
   await screen.findByText("lights.power");
 
   await user.click(screen.getByRole("button", { name: "Generate from persona" }));
@@ -116,7 +116,7 @@ it("switches persona through a read of the same view", async () => {
     },
   });
   const user = userEvent.setup();
-  render(<PhrasebookPage />);
+  render(<CommonPhrases />);
   await screen.findByText("lights.power");
 
   await user.click(screen.getByRole("button", { name: /^Show Bo 0 overrides/ }));
@@ -139,7 +139,7 @@ it("shows the shipped defaults read-only when no persona is active", async () =>
     Manual: 0,
   });
   stub(() => defaults, () => defaults);
-  render(<PhrasebookPage />);
+  render(<CommonPhrases />);
 
   expect(await screen.findByText(/No Persona is active/)).toBeTruthy();
   expect(screen.getByText("Done.")).toBeTruthy();
@@ -151,9 +151,9 @@ it("shows the shipped defaults read-only when no persona is active", async () =>
 it("explains an unconfigured phrase book", async () => {
   const none = view({ HasService: false, Personas: [], Slots: [], Total: 0, Overridden: 0 });
   stub(() => none, () => none);
-  render(<PhrasebookPage />);
+  render(<CommonPhrases />);
 
-  expect(await screen.findByText(/built without the phrase book/)).toBeTruthy();
+  expect(await screen.findByText(/common phrases or persona service is unavailable/)).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Generate from persona" })).toBeNull();
 });
 
@@ -167,7 +167,7 @@ it("shows a refused save as an error and keeps the page", async () => {
     },
   });
   const user = userEvent.setup();
-  render(<PhrasebookPage />);
+  render(<CommonPhrases />);
   await screen.findByText("lights.power");
 
   const field = screen.getByLabelText("lights.power phrase") as HTMLInputElement;

@@ -60,6 +60,13 @@ type Entry struct {
 	UpdatedAt time.Time
 }
 
+// PortablePhrase stores an override without its owning Persona or timestamp.
+type PortablePhrase struct {
+	Tool   string `json:"tool"`
+	Phrase string `json:"phrase"`
+	Source Source `json:"source"`
+}
+
 // Slot is one overridable Tool as the page and the generator see it.
 type Slot struct {
 	Tool        string
@@ -240,6 +247,53 @@ func (s *Service) Get(persona, name string) (Entry, bool) {
 	defer s.mu.RUnlock()
 	e, ok := s.byPersona[key][name]
 	return e, ok
+}
+
+// InsertForPersona commits a new Persona and its overrides in the same transaction.
+func (s *Service) InsertForPersona(ctx context.Context, persona string, phrases []PortablePhrase, insertPersona func(*sql.Tx) error) error {
+	key := personaKey(persona)
+	now := time.Now().UTC().Truncate(time.Second)
+	set := make(map[string]Entry, len(phrases))
+	for _, phrase := range phrases {
+		if !Overridable(phrase.Tool) {
+			return fmt.Errorf("%w: %s", ErrUnknownTool, phrase.Tool)
+		}
+		// Preserve quotes in exported phrases, which were already cleaned when saved.
+		value := strings.TrimSpace(phrase.Phrase)
+		if _, duplicate := set[phrase.Tool]; duplicate || !phrase.Source.Valid() {
+			return fmt.Errorf("%w: duplicate tool or invalid source", ErrInvalidPhrase)
+		}
+		if err := validatePhrase(value); err != nil {
+			return err
+		}
+		set[phrase.Tool] = Entry{Persona: key, Tool: phrase.Tool, Phrase: value, Source: phrase.Source, UpdatedAt: now}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.byPersona[key]) != 0 {
+		return fmt.Errorf("phrasebook: phrases already exist for %s", persona)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := insertPersona(tx); err != nil {
+		return err
+	}
+	for _, entry := range set {
+		if _, err := tx.ExecContext(ctx,
+			`INSERT INTO persona_phrases (persona, tool, phrase, source, updated_at) VALUES (?, ?, ?, ?, ?)`,
+			key, entry.Tool, entry.Phrase, string(entry.Source), now.UnixMilli()); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.byPersona[key] = set
+	return nil
 }
 
 // Set writes one override after validating the Tool and the text.
@@ -517,14 +571,21 @@ func cleanPhrase(text string) (string, error) {
 	if len(text) >= 2 && (text[0] == '"' || text[0] == '\'') && text[len(text)-1] == text[0] {
 		text = strings.TrimSpace(text[1 : len(text)-1])
 	}
-	if text == "" {
-		return "", fmt.Errorf("%w: phrase is empty", ErrInvalidPhrase)
-	}
-	if utf8.RuneCountInString(text) > MaxPhraseRunes {
-		return "", fmt.Errorf("%w: phrase is longer than %d characters", ErrInvalidPhrase, MaxPhraseRunes)
-	}
-	if strings.ContainsAny(text, "\r\n") {
-		return "", fmt.Errorf("%w: phrase must be one line", ErrInvalidPhrase)
+	if err := validatePhrase(text); err != nil {
+		return "", err
 	}
 	return text, nil
+}
+
+func validatePhrase(text string) error {
+	if text == "" {
+		return fmt.Errorf("%w: phrase is empty", ErrInvalidPhrase)
+	}
+	if utf8.RuneCountInString(text) > MaxPhraseRunes {
+		return fmt.Errorf("%w: phrase is longer than %d characters", ErrInvalidPhrase, MaxPhraseRunes)
+	}
+	if strings.ContainsAny(text, "\r\n") {
+		return fmt.Errorf("%w: phrase must be one line", ErrInvalidPhrase)
+	}
+	return nil
 }

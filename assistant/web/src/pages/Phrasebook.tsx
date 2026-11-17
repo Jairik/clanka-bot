@@ -1,16 +1,17 @@
-// The Phrase book: the short confirmation each Tool speaks, per Persona.
+// Common phrases are the short confirmations each Tool speaks, per Persona.
 // Selecting a Persona loads its own overrides; the shipped defaults are what
 // is spoken when no Persona is active.
 import { useEffect, useState } from "react";
 import { Button } from "@heroui/react";
 import { getJSON, usePageData } from "../api";
 import { ResetButton, TextField, useActions, type Actions } from "../forms";
-import { PageFrame } from "../shell";
 import type { PhrasebookSlot, PhrasebookView } from "../types";
 import { Empty, Lede, Notice, Section, SourceBadge, cn } from "../ui";
 
-export function PhrasebookPage() {
-  const { data, error, set } = usePageData("phrasebook");
+export function CommonPhrases({ initialPersona = "" }: { initialPersona?: string }) {
+  const { data, error, set } = usePageData("phrasebook", {
+    query: initialPersona ? new URLSearchParams({ persona: initialPersona }).toString() : undefined,
+  });
   const actions = useActions<PhrasebookView>(set);
   const [selectError, setSelectError] = useState("");
   const [switching, setSwitching] = useState("");
@@ -24,7 +25,7 @@ export function PhrasebookPage() {
   // Switching Persona is a plain read that answers the whole view. `query`
   // only applies to the first load, so it cannot be used here.
   const pick = async (name: string) => {
-    if (!data || switching || name === data.Selected) return;
+    if (!data || switching || actions.pending || name === data.Selected) return;
     // A flash from the previous Persona ("Phrase saved.") must not sit over the
     // newly selected one.
     actions.clear();
@@ -41,15 +42,15 @@ export function PhrasebookPage() {
   };
 
   return (
-    <PageFrame id="phrasebook">
+    <div id="common-phrases" className="space-y-2.5">
       <Notice error={error || actions.error || selectError} flash={actions.flash} onDismiss={dismiss} />
       {data && !data.HasService && (
-        <Section title="The phrase book is not configured" defaultOpen>
-          <Empty>This Dashboard was built without the phrase book or persona service, so there is nothing to edit.</Empty>
+        <Section title="Common phrases are unavailable" defaultOpen>
+          <Empty>The common phrases or persona service is unavailable.</Empty>
         </Section>
       )}
       {data?.HasService && <PhrasebookBody data={data} actions={actions} switching={switching} onPick={pick} />}
-    </PageFrame>
+    </div>
   );
 }
 
@@ -72,7 +73,7 @@ function PhrasebookBody({
 
   return (
     <div className="space-y-2.5">
-      <Section title="Persona" summary={data.Selected || "shipped defaults"} defaultOpen flush>
+      <Section title="Common phrases" summary={data.Selected || "shipped defaults"} defaultOpen flush>
         <Lede>
           A phrase replaces the short confirmation one Tool speaks: one line, up to 80 characters. Every Persona keeps its own set; the
           shipped defaults are used when no Persona is active.
@@ -87,7 +88,7 @@ function PhrasebookBody({
                   type="button"
                   aria-pressed={on}
                   aria-label={`Show ${p.Name}${p.Active ? " active" : ""} ${count(p.Count, "override")}`}
-                  disabled={!!switching}
+                  disabled={!!switching || !!actions.pending}
                   onClick={() => void onPick(p.Name)}
                   className={cn(
                     "flex min-h-9 items-center gap-1.5 border px-2.5 py-1 text-xs",

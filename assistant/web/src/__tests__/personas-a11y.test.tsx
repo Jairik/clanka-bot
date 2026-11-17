@@ -57,7 +57,7 @@ const view = (over: Partial<PersonasView> = {}): PersonasView => ({
 
 /** The disclosure trigger button that wraps a row's header. */
 function rowTrigger(rowName: string): HTMLElement {
-  const li = screen.getByText(rowName).closest("li")!;
+  const li = screen.getByText(rowName, { selector: "li div" }).closest("li")!;
   // The trigger button is the one whose text is the row name; the separate
   // "Use this persona" button is a sibling, not nested inside it.
   return within(li)
@@ -118,4 +118,51 @@ it("selecting a persona leaves the row's expand state unchanged", async () => {
   });
   // After the write the row is now active, so the Select control is gone.
   await waitFor(() => expect(screen.queryByRole("button", { name: "Use this persona" })).toBeNull());
+});
+
+it("shows common phrases, export, and named copies on the personas page", async () => {
+  let copy: URLSearchParams | undefined;
+  stubFetch({
+    "/api/ui/personas": () => json(view()),
+    "/api/ui/phrasebook": () => json({ HasService: true, Selected: "Ada", Slots: [], Personas: [] }),
+    "/api/ui/persona-bundles/copy": (init) => {
+      copy = new URLSearchParams(String(init?.body));
+      return json(view({ Flash: "Saved a copy as Ada backup." }), 201);
+    },
+  });
+  const user = userEvent.setup();
+  render(<PersonasPage />);
+  expect(await screen.findByText("Common phrases")).toBeTruthy();
+  await user.click(rowTrigger("Ada"));
+  expect(screen.getByRole("link", { name: "Export persona and common phrases" }).getAttribute("href"))
+    .toBe("/api/ui/persona-bundles/export?name=Ada");
+  await user.type(screen.getByRole("textbox", { name: "Copy name for Ada" }), "Ada backup");
+  await user.click(screen.getByRole("button", { name: "Save a copy" }));
+  expect(await screen.findByText("Saved a copy as Ada backup.")).toBeTruthy();
+  expect(copy?.get("source")).toBe("Ada");
+  expect(copy?.get("name")).toBe("Ada backup");
+});
+
+it("imports a JSON file under the requested name", async () => {
+  let posted: URLSearchParams | undefined;
+  stubFetch({
+    "/api/ui/personas": () => json(view()),
+    "/api/ui/phrasebook": () => json({ HasService: true, Slots: [], Personas: [] }),
+    "/api/ui/persona-bundles/import": (init) => {
+      posted = new URLSearchParams(String(init?.body));
+      return json(view({ Flash: "Imported as Ada from Pi." }), 201);
+    },
+  });
+  const user = userEvent.setup();
+  const body = '{"version":1,"persona":{"name":"Ada"},"phrases":[]}';
+  const file = new File([body], "Ada.json", { type: "application/json" });
+  Object.defineProperty(file, "text", { value: async () => body });
+  render(<PersonasPage />);
+  await user.click(await screen.findByRole("button", { name: "Import persona and common phrases" }));
+  await user.upload(screen.getByLabelText("Persona JSON file"), file);
+  await user.type(screen.getByRole("textbox", { name: "Import as (optional)" }), "Ada from Pi");
+  await user.click(screen.getByRole("button", { name: "Import" }));
+  expect(await screen.findByText("Imported as Ada from Pi.")).toBeTruthy();
+  expect(posted?.get("bundle")).toBe(body);
+  expect(posted?.get("name")).toBe("Ada from Pi");
 });

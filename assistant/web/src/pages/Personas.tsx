@@ -1,15 +1,22 @@
 import { useEffect, useState } from "react";
 import { Button } from "@heroui/react";
 import { Check, ChevronDown, Plus } from "lucide-react";
-import { usePageData } from "../api";
+import { useLocation, usePageData } from "../api";
 import { Field, SelectField, TextField, useActions, type Actions } from "../forms";
 import { PageFrame } from "../shell";
 import type { PersonaForm, PersonasView } from "../types";
 import { Badge, Empty, Fold, Lede, Notice, Section, cn, foldOpen } from "../ui";
+import { CommonPhrases } from "./Phrasebook";
+
+const bundlePath = "/api/ui/persona-bundles";
 
 export function PersonasPage() {
   const { data, error, set } = usePageData("personas");
   const actions = useActions<PersonasView>(set);
+  const { params } = useLocation();
+  const phrasePersona = params.get("persona") ?? "";
+  // Refresh the phrase picker when the active persona or library membership changes.
+  const phrasesKey = JSON.stringify([data?.Active?.Name, phrasePersona, data?.Rows?.map((row) => row.Name)]);
   return (
     <PageFrame id="personas">
       <Notice error={error || actions.error} flash={actions.flash} onDismiss={actions.clear} />
@@ -88,6 +95,7 @@ export function PersonasPage() {
                         </div>
                       )}
                       <PersonaEditor form={r.Edit} actions={actions} />
+                      <BundleCopy name={r.Name} actions={actions} />
                     </Fold>
                   </li>
                 ))}
@@ -103,9 +111,90 @@ export function PersonasPage() {
               <PersonaEditor form={data.New} actions={actions} />
             </div>
           </Section>
+          <BundleImport actions={actions} />
+          <CommonPhrases key={phrasesKey} initialPersona={phrasePersona} />
         </div>
       )}
     </PageFrame>
+  );
+}
+
+// A copy keeps the stored persona and its phrases together under a new name.
+function BundleCopy({ name, actions }: { name: string; actions: Actions<PersonasView> }) {
+  const [copyName, setCopyName] = useState("");
+  const exportURL = `${bundlePath}/export?name=${encodeURIComponent(name)}`;
+  const copyURL = `${bundlePath}/copy`;
+  return (
+    <div className="mt-4 space-y-3 border-t pt-3">
+      <a href={exportURL} download className="inline-block text-sm underline">
+        Export persona and common phrases
+      </a>
+      <form
+        className="flex flex-wrap items-end gap-2"
+        onSubmit={async (e) => {
+          e.preventDefault();
+          if (await actions.run(copyURL, { source: name, name: copyName }, undefined, name)) setCopyName("");
+        }}
+      >
+        <Field label="Copy name">
+          <TextField label={`Copy name for ${name}`} value={copyName} onChange={setCopyName} />
+        </Field>
+        <Button size="sm" type="submit" variant="secondary" isDisabled={!copyName.trim()} isPending={actions.pending === copyURL && actions.pendingKey === name}>
+          Save a copy
+        </Button>
+      </form>
+    </div>
+  );
+}
+
+// Import creates a library entry without applying its voice or phrases.
+function BundleImport({ actions }: { actions: Actions<PersonasView> }) {
+  const [file, setFile] = useState<File | null>(null);
+  const [name, setName] = useState("");
+  const [problem, setProblem] = useState("");
+  const [reading, setReading] = useState(false);
+  const action = `${bundlePath}/import`;
+  return (
+    <Section title="Import persona and common phrases" flush>
+      <Lede>Choose an exported JSON file. Give it a new name if one already exists in the library.</Lede>
+      <form
+        className="space-y-3 px-3.5 pb-3"
+        onSubmit={async (e) => {
+          e.preventDefault();
+          const form = e.currentTarget;
+          if (!file || reading) return;
+          if (file.size > 256 * 1024) {
+            setProblem("Choose a JSON export smaller than 256 KiB.");
+            return;
+          }
+          setProblem("");
+          setReading(true);
+          try {
+            if (await actions.run(action, { bundle: await file.text(), name })) {
+              form.reset();
+              setFile(null);
+              setName("");
+            }
+          } catch {
+            setProblem("The selected file could not be read.");
+          } finally {
+            setReading(false);
+          }
+        }}
+      >
+        <label className="block space-y-1 text-sm">
+          <span>Persona JSON file</span>
+          <input type="file" accept=".json,application/json" className="block max-w-full text-sm" disabled={reading} onChange={(e) => setFile(e.currentTarget.files?.[0] ?? null)} />
+        </label>
+        <Field label="Import as (optional)">
+          <TextField label="Import as (optional)" value={name} onChange={setName} />
+        </Field>
+        {problem && <p role="alert" className="text-sm text-danger">{problem}</p>}
+        <Button size="sm" type="submit" isDisabled={!file} isPending={reading || actions.pending === action}>
+          Import
+        </Button>
+      </form>
+    </Section>
   );
 }
 

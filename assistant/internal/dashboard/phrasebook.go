@@ -205,7 +205,7 @@ func phrasebookErrorStatus(err error) (int, string) {
 	case errors.Is(err, phrasebook.ErrInvalidPhrase):
 		return http.StatusBadRequest, "A phrase must be one non-empty line up to 80 characters."
 	default:
-		return http.StatusInternalServerError, "The phrase book could not be saved."
+		return http.StatusInternalServerError, "The common phrase could not be saved."
 	}
 }
 

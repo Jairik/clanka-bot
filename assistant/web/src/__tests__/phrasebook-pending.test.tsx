@@ -4,7 +4,7 @@
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, it } from "vitest";
-import { PhrasebookPage } from "../pages/Phrasebook";
+import { CommonPhrases } from "../pages/Phrasebook";
 import type { PhrasebookView } from "../types";
 import { json, stubFetch } from "./harness";
 
@@ -38,7 +38,7 @@ it("shows the spinner only on the row that was saved", async () => {
     }),
   });
   const user = userEvent.setup();
-  render(<PhrasebookPage />);
+  render(<CommonPhrases />);
   await screen.findByText("lights.power");
 
   // Both overrides are edited so each row shows its own Save button.

@@ -300,7 +300,7 @@ type Handler struct {
 	notesDepsOverride func() notesDeps
 	// activityHistoryOverride, when non-nil, overrides history queries for testing.
 	activityHistoryOverride activityHistoryReader
-	mux      *http.ServeMux
+	mux                     *http.ServeMux
 	// routes records every registration made through Handle and Mutating at New
 	// time, so a test can prove the same-origin guard wraps every
 	// state-changing pattern without re-listing the handlers. guarded reports
@@ -543,7 +543,10 @@ func New(opts Options) (*Handler, error) {
 	h.Mutating("POST /personas/{name}", h.personasUpdate)
 	h.Mutating("POST /personas/{name}/select", h.personasSelect)
 	h.Mutating("POST /personas/active/reset", h.personasClear)
-	// The Phrase book page overrides the short Fast path confirmation per
+	h.Handle("GET /api/ui/persona-bundles/export", h.personaBundleExport)
+	h.Mutating("POST /api/ui/persona-bundles/copy", h.personaBundleCopy)
+	h.Mutating("POST /api/ui/persona-bundles/import", h.personaBundleImport)
+	// Common phrases override the short Fast path confirmation per
 	// Persona. Generation uses the one Agent provider and replaces every
 	// override for that Persona; each write is same-origin.
 	h.Handle("GET /api/ui/phrasebook", h.page("phrasebook", h.phrasebookPage))

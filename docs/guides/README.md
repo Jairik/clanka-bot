@@ -999,11 +999,11 @@ what differs instead of claiming the exact bundle. Clearing the active Persona
 removes only the `persona.active` marker; the applied voice and wording stay as
 they are.
 
-#### Phrase book
+#### Common phrases
 
-Every Fast path Tool still renders its own full sentence. The **Phrase book**
-page at `/phrasebook` replaces the acknowledgements with the shortest useful
-line: `timer.set` → "Set.", `spotify.play` → "Playing.", and so on. A Persona
+Every Fast path Tool still renders its own full sentence. The **Common phrases**
+section at `/personas` replaces acknowledgements with a short line.
+For example, `timer.set` says "Set." and `spotify.play` says "Playing." A Persona
 can override any of them; **Generate from persona** asks the one Agent provider
 for a complete in-character set (1–4 words per Tool); it is applied immediately,
 and the page lets you edit or reset any row. Content-bearing replies

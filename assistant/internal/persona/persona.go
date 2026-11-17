@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/phrasebook"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
 	"github.com/Jairik/clanka-bot/assistant/internal/voicelib"
@@ -82,11 +83,16 @@ type Persona struct {
 
 // Input is a create or edit form. It contains no times; the service owns them.
 type Input struct {
-	Name        string
-	Voice       string
-	Personality string
-	Filler      string
-	Unavailable string
+	Name        string `json:"name"`
+	Voice       string `json:"voice"`
+	Personality string `json:"personality"`
+	Filler      string `json:"filler"`
+	Unavailable string `json:"unavailable"`
+}
+
+// Input returns the portable fields of a stored Persona.
+func (p Persona) Input() Input {
+	return Input{Name: p.Name, Voice: p.Voice, Personality: p.Personality, Filler: p.Filler, Unavailable: p.Unavailable}
 }
 
 // VoiceLibrary is the read-only voice seam the Persona service validates
@@ -227,12 +233,29 @@ func (s *Service) Get(name string) (Persona, bool) {
 // Create validates the bundle and inserts one Persona. A duplicate name,
 // including a case-only duplicate, is refused before any row is written.
 func (s *Service) Create(ctx context.Context, in Input) (Persona, error) {
-	clean, err := s.validate(in)
+	clean, err := s.validate(in, true)
 	if err != nil {
 		return Persona{}, err
 	}
-	if _, exists := s.Get(clean.Name); exists {
-		return Persona{}, &Error{Kind: ErrPersonaExists, Message: fmt.Sprintf("A persona called %s already exists.", clean.Name)}
+	return s.create(ctx, clean, nil, nil)
+}
+
+// Import saves a new Persona and its phrases together without selecting it.
+func (s *Service) Import(ctx context.Context, in Input, book *phrasebook.Service, phrases []phrasebook.PortablePhrase) (Persona, error) {
+	clean, err := s.validate(in, false)
+	if err != nil {
+		return Persona{}, err
+	}
+	return s.create(ctx, clean, book, phrases)
+}
+
+func (s *Service) create(ctx context.Context, clean Input, book *phrasebook.Service, phrases []phrasebook.PortablePhrase) (Persona, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for name := range s.personas {
+		if strings.EqualFold(name, clean.Name) || strings.ToLower(name) == strings.ToLower(clean.Name) {
+			return Persona{}, &Error{Kind: ErrPersonaExists, Message: fmt.Sprintf("A persona called %s already exists. Choose a new name.", clean.Name)}
+		}
 	}
 	now := time.Now().UTC().Truncate(time.Second)
 	p := Persona{
@@ -244,20 +267,25 @@ func (s *Service) Create(ctx context.Context, in Input) (Persona, error) {
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
-	if _, err := s.db.ExecContext(ctx,
-		`INSERT INTO personas (name, voice, personality, filler, unavailable, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		p.Name, p.Voice, p.Personality, p.Filler, p.Unavailable, stamp(p.CreatedAt), stamp(p.UpdatedAt)); err != nil {
-		// The primary key collation is the last guard against a concurrent
-		// create; the snapshot is only updated after a successful write.
-		if strings.Contains(strings.ToLower(err.Error()), "unique") {
-			return Persona{}, &Error{Kind: ErrPersonaExists, Message: fmt.Sprintf("A persona called %s already exists.", clean.Name)}
-		}
+	insert := func(db interface {
+		ExecContext(context.Context, string, ...any) (sql.Result, error)
+	}) error {
+		_, err := db.ExecContext(ctx,
+			`INSERT INTO personas (name, voice, personality, filler, unavailable, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+			p.Name, p.Voice, p.Personality, p.Filler, p.Unavailable, stamp(p.CreatedAt), stamp(p.UpdatedAt))
+		return err
+	}
+	var err error
+	if book == nil {
+		err = insert(s.db)
+	} else {
+		err = book.InsertForPersona(ctx, p.Name, phrases, func(tx *sql.Tx) error { return insert(tx) })
+	}
+	if err != nil {
 		return Persona{}, fmt.Errorf("persona: create %s: %w", clean.Name, err)
 	}
-	s.mu.Lock()
 	s.personas[p.Name] = p
-	s.mu.Unlock()
 	s.logger.Info("persona created", "name", p.Name, "voice", p.Voice)
 	return p, nil
 }
@@ -272,7 +300,7 @@ func (s *Service) Update(ctx context.Context, name string, in Input) (Persona, e
 		return Persona{}, &Error{Kind: ErrUnknownPersona, Message: fmt.Sprintf("I couldn't find a persona called %s.", name)}
 	}
 	in.Name = existing.Name
-	clean, err := s.validate(in)
+	clean, err := s.validate(in, true)
 	if err != nil {
 		return Persona{}, err
 	}
@@ -412,7 +440,7 @@ func (s *Service) settingsService() *settings.Service {
 
 // validate normalises and checks every field plus the voice state before a
 // create or update writes anything.
-func (s *Service) validate(in Input) (Input, error) {
+func (s *Service) validate(in Input, requireReadyVoice bool) (Input, error) {
 	clean := Input{
 		Name:        cleanName(in.Name),
 		Voice:       strings.TrimSpace(in.Voice),
@@ -447,13 +475,12 @@ func (s *Service) validate(in Input) (Input, error) {
 	if err := checkText(clean.Unavailable, MaxWordingRunes, false, "Unavailable message"); err != nil {
 		return Input{}, err
 	}
-	if err := s.validateBundle(Persona{
-		Name:        clean.Name,
-		Voice:       clean.Voice,
-		Personality: clean.Personality,
-		Filler:      clean.Filler,
-		Unavailable: clean.Unavailable,
-	}); err != nil {
+	// Portable bundles may refer to voices from another installation.
+	if requireReadyVoice {
+		if err := s.validateVoice(clean.Voice); err != nil {
+			return Input{}, err
+		}
+	} else if err := checkText(clean.Voice, MaxWordingRunes, false, "voice name"); err != nil {
 		return Input{}, err
 	}
 	return clean, nil
@@ -475,9 +502,13 @@ func (s *Service) validateBundle(p Persona) error {
 	if err := checkText(p.Unavailable, MaxWordingRunes, false, "Unavailable message"); err != nil {
 		return err
 	}
-	voice, ok := s.voices.Get(p.Voice)
+	return s.validateVoice(p.Voice)
+}
+
+func (s *Service) validateVoice(name string) error {
+	voice, ok := s.voices.Get(name)
 	if !ok {
-		return &Error{Kind: ErrVoiceUnavailable, Message: fmt.Sprintf("The voice %s isn't in the library.", p.Voice)}
+		return &Error{Kind: ErrVoiceUnavailable, Message: fmt.Sprintf("The voice %s isn't in the library.", name)}
 	}
 	if !voice.Ready() {
 		if voice.Stale {

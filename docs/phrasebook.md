@@ -1,8 +1,8 @@
-# Phrase book: short deterministic replies
+# Common phrases
 
 The Fast path answers a Tool call with a fixed sentence rendered in Go. Many of
 those sentences are only an acknowledgement ("Timer set for ten minutes.",
-"Okay, switching to the GLaDOS persona."). The phrase book replaces the
+"Okay, switching to the GLaDOS persona."). Common phrases replace the
 acknowledgement with the shortest useful line and lets each Persona say it in
 character.
 
@@ -13,7 +13,7 @@ character.
    This layer applies even when no Persona is selected, so the assistant is
    brief out of the box.
 2. **Persona override.** A Persona may replace any of those phrases. The
-   Phrase book page edits them, and "Generate from persona" asks the one Agent
+   Personas & common phrases page edits them, and "Generate from persona" asks the one Agent
    provider for a complete in-character set. Selecting a Persona applies its
    overrides to the next reply; no restart is needed.
 
@@ -59,6 +59,16 @@ provider key is a clear page error, not a retry loop.
 Replacing a set **overwrites manual edits** for that Persona. The page says so
 before the button runs. Reset one row to restore the shipped default; "Clear
 all overrides" removes the Persona's whole set.
+
+## Saving and moving personas
+
+On **Personas & common phrases**, expand a persona in the library to export
+its configuration and all phrase overrides as one JSON file, or save a copy
+under a new name. **Import persona and common phrases** adds an exported bundle
+to the library. If the name is in use, enter a new name. Imports and copies
+leave the active persona as-is. The bundle references the voice by name. If
+that voice is unavailable, add it in Voices or edit the persona to choose a
+ready voice before selecting it.
 
 ## Loading the starter Personas
 

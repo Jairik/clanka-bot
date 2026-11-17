@@ -138,10 +138,13 @@ func run() error {
 	go func() {
 		// Enforce retention now and then hourly, so the file is bounded even
 		// without another request and the read path never prunes.
-		ticker := time.NewTicker(time.Hour)
-		defer ticker.Stop()
-		for {
-			result, err := activityHistory.Prune(ctx)
+		// At startup the process is not serving yet, so allow a larger catch-up
+		// budget (2s); on the hourly tick use the smaller 500ms budget, and
+		// continue from where the previous pass stopped.
+		prune := func(budget time.Duration) {
+			pruneCtx, cancel := context.WithTimeout(ctx, budget)
+			defer cancel()
+			result, err := activityHistory.Prune(pruneCtx)
 			if err != nil {
 				logger.Warn("activity history prune", "error", err.Error())
 			} else if result.Deleted > 0 || result.Trimmed > 0 {
@@ -151,10 +154,18 @@ func run() error {
 					"remaining", result.Remaining,
 				)
 			}
+		}
+
+		prune(2 * time.Second)
+
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				prune(500 * time.Millisecond)
 			}
 		}
 	}()

@@ -11,6 +11,7 @@ import (
 	"database/sql"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -42,8 +43,8 @@ const (
 	// maxQueryRunes bounds the free-text query so one request cannot make the
 	// database scan an unbounded pattern.
 	maxQueryRunes = 120
-	// pruneBatch bounds one retention pass, so an hourly tick never holds the
-	// single writer for long.
+	// pruneBatch bounds one statement, and the per-call deadline bounds the
+	// loop, so an hourly tick never holds the single writer for long.
 	pruneBatch = 500
 
 	// DefaultPageLimit is one page of durable history; the handler clamps a
@@ -461,39 +462,60 @@ func (h *History) Prune(ctx context.Context) (PruneResult, error) {
 	result.Deleted += capped
 
 	fullCutoff := now.Add(-h.fullWindow).UnixMilli()
-	// Tool, path and call names stay on the trimmed row, so the read keeps them
-	// for the search column below.
-	rows, err := h.db.QueryContext(ctx, `
-		SELECT id, transcript, reply, error, tool, path, calls
-		FROM activity WHERE summary = 0 AND at < ? ORDER BY at ASC LIMIT ?`,
-		fullCutoff, pruneBatch)
-	if err != nil {
-		return result, fmt.Errorf("activity history: trim read: %w", err)
-	}
 	type trimmable struct {
 		id                                            int64
 		transcript, reply, failure, tool, path, calls string
 	}
-	var batch []trimmable
-	for rows.Next() {
-		var row trimmable
-		if err := rows.Scan(&row.id, &row.transcript, &row.reply, &row.failure, &row.tool, &row.path, &row.calls); err != nil {
-			rows.Close()
-			return result, fmt.Errorf("activity history: trim scan: %w", err)
+	for {
+		if ctx.Err() != nil {
+			break
 		}
-		batch = append(batch, row)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return result, fmt.Errorf("activity history: trim read: %w", err)
-	}
-	rows.Close()
+		if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+			break
+		}
 
-	if len(batch) > 0 {
+		// Tool, path and call names stay on the trimmed row, so the read keeps them
+		// for the search column below.
+		rows, err := h.db.QueryContext(ctx, `
+			SELECT id, transcript, reply, error, tool, path, calls
+			FROM activity WHERE summary = 0 AND at < ? ORDER BY at ASC LIMIT ?`,
+			fullCutoff, pruneBatch)
+		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+				break
+			}
+			return result, fmt.Errorf("activity history: trim read: %w", err)
+		}
+		var batch []trimmable
+		for rows.Next() {
+			var row trimmable
+			if err := rows.Scan(&row.id, &row.transcript, &row.reply, &row.failure, &row.tool, &row.path, &row.calls); err != nil {
+				rows.Close()
+				return result, fmt.Errorf("activity history: trim scan: %w", err)
+			}
+			batch = append(batch, row)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+				break
+			}
+			return result, fmt.Errorf("activity history: trim read: %w", err)
+		}
+		rows.Close()
+
+		if len(batch) == 0 {
+			break
+		}
+
 		tx, err := h.db.BeginTx(ctx, nil)
 		if err != nil {
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+				break
+			}
 			return result, fmt.Errorf("activity history: trim begin: %w", err)
 		}
+		var txErr error
 		for _, row := range batch {
 			transcript := truncate(row.transcript, summaryRunes)
 			reply := truncate(row.reply, summaryRunes)
@@ -508,25 +530,47 @@ func (h *History) Prune(ctx context.Context) (PruneResult, error) {
 				UPDATE activity SET transcript = ?, reply = ?, error = ?, calls = ?,
 					search = ?, summary = 1 WHERE id = ?`,
 				transcript, reply, failure, calls, haystack, row.id); err != nil {
-				tx.Rollback()
-				return result, fmt.Errorf("activity history: trim update: %w", err)
+				txErr = fmt.Errorf("activity history: trim update: %w", err)
+				break
 			}
 			if indexed {
 				// The index entry follows the shortened haystack: dropped text
 				// stops matching, kept text keeps matching.
 				if err := indexEntry(ctx, tx, row.id, haystack); err != nil {
-					tx.Rollback()
-					return result, fmt.Errorf("activity history: trim index: %w", err)
+					txErr = fmt.Errorf("activity history: trim index: %w", err)
+					break
 				}
 			}
-			result.Trimmed++
+		}
+		if txErr != nil {
+			_ = tx.Rollback()
+			if errors.Is(txErr, context.DeadlineExceeded) || errors.Is(txErr, context.Canceled) {
+				break
+			}
+			return result, txErr
 		}
 		if err := tx.Commit(); err != nil {
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+				break
+			}
 			return result, fmt.Errorf("activity history: trim commit: %w", err)
+		}
+		// Count only committed rows: increment Trimmed after a batch commits.
+		result.Trimmed += int64(len(batch))
+		if len(batch) < pruneBatch {
+			break
 		}
 	}
 
-	if err := h.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM activity`).Scan(&result.Remaining); err != nil {
+	countCtx := ctx
+	if ctx.Err() != nil {
+		// When the per-call deadline bounds the loop, read remaining rows and
+		// maintain index under a fresh bounded context so reporting succeeds.
+		var cancel context.CancelFunc
+		countCtx, cancel = context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+	}
+	if err := h.db.QueryRowContext(countCtx, `SELECT COUNT(*) FROM activity`).Scan(&result.Remaining); err != nil {
 		return result, fmt.Errorf("activity history: count after prune: %w", err)
 	}
 	if indexed && (result.Deleted > 0 || result.Trimmed > 0) {
@@ -535,7 +579,7 @@ func (h *History) Prune(ctx context.Context) (PruneResult, error) {
 		// every searchOptimizeInterval, keeps that space reusable instead of
 		// ratcheting the file to the peak haystack. It runs here, after the
 		// retention writes, and never on the request goroutine.
-		h.compactSearchIndex(ctx, false)
+		h.compactSearchIndex(countCtx, false)
 	}
 	return result, nil
 }

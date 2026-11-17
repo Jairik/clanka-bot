@@ -12,6 +12,7 @@ and how to pause it. The checklist below is for provisioning a fresh host.
 ## Everyday commands
 
 ```sh
+make doctor      # host, Pulse, disk and key preflight (run before deploy)
 make build       # build every service image for this host
 make up          # start the stack in the background
 make test        # assistant tests + deployment tests
@@ -29,6 +30,9 @@ sudo bash scripts/install-deploy-watch.sh  # opt in to the auto-deploy timer (au
 
 **No argument — deploy the current branch**
 
+0. Run `make doctor` (or `scripts/doctor.sh`) to preflight host prerequisites
+   (Docker, `.env`, Pulse socket/cookie, runtime dir, exports, disk space,
+   Soloist key, D-Bus, git status and Tailscale serve).
 1. Refuses to run when the checkout has local changes (tracked or untracked,
    except gitignored files such as `.env`).
 2. If HEAD is detached after an earlier rollback, returns to the tracked branch.
@@ -849,6 +853,10 @@ Use it as a build/smoke check only. QEMU cannot reproduce Pi 5 speed, 16K-page
 breakage or Bluetooth, so latency work stays on the Pi.
 
 ## Troubleshooting
+ 
+After every failed deploy, run `make doctor` to verify host prerequisites
+(Pulse socket and cookie, Docker daemon and disk space, `.env`, permissions).
+Then:
 
 - **Deploy says the tree has local changes**: commit/stash them, or move
   scratch files out of the repo. `.env` is ignored and does not count.

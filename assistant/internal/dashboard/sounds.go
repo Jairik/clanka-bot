@@ -55,7 +55,6 @@ type soundRoleView struct {
 	Role        string
 	Label       string
 	Key         string
-	Cap         string
 	Display     string
 	Source      string
 	SourceLabel string
@@ -398,7 +397,6 @@ func (h *Handler) buildSoundsView(flash, errorText string, edit *editState) soun
 			Role:        string(role),
 			Label:       soundRoleLabel(role),
 			Key:         key,
-			Cap:         displayDuration(sound.Cap(role)),
 			Display:     displayValue(current),
 			Source:      string(value.Source),
 			SourceLabel: sourceLabel(value.Source),

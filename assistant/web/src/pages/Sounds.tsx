@@ -79,7 +79,7 @@ export function SoundsPage() {
           </Section>
 
           <Section title="Cue roles" summary={`${data.Roles?.length ?? 0} roles`} flush>
-            <Lede>Each role is one live setting. A sound longer than the role's cap is rejected.</Lede>
+            <Lede>Each role is one live setting. Sounds of any length are accepted.</Lede>
             {data.HasRoles ? (
               <ul className="divide-y divide-separator">
                 {(data.Roles ?? []).map((r) => {
@@ -90,7 +90,6 @@ export function SoundsPage() {
                         <div className="flex flex-wrap items-center gap-1.5">
                           <span className="text-sm">{r.Label}</span>
                           <SourceBadge source={r.Source} label={r.SourceLabel} />
-                          <Badge>max {r.Cap}</Badge>
                         </div>
                         <div className="font-mono text-[11px] text-subtle">{r.Key}</div>
                       </div>

@@ -168,7 +168,7 @@ function AlarmItem({ a, actions }: { a: AlarmEditor; actions: Actions<AlertsView
           }}
         >
           <div className="grid gap-4 sm:grid-cols-3">
-            <Field label="Sound" hint={<>Now {a.SoundEffective} · default {a.SoundDefault} · cap {a.SoundCap}</>}>
+            <Field label="Sound" hint={<>Now {a.SoundEffective} · default {a.SoundDefault}</>}>
               {a.HasLibrary ? (
                 <SelectField label="Sound" value={f.sound} onChange={(v) => setF((s) => ({ ...s, sound: v }))} options={(a.Sounds ?? []).map((o) => ({ value: o.Value, label: o.Label }))} className="sm:w-full" />
               ) : (

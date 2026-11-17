@@ -52,7 +52,6 @@ export type AlarmEditor = {
   SoundKey: string;
   VolumeKey: string;
   RampKey: string;
-  SoundCap: string;
   HasLibrary: boolean;
   Sounds: SoundOption[] | null;
   Action: string;
@@ -651,7 +650,6 @@ export type SoundRole = {
   Role: string;
   Label: string;
   Key: string;
-  Cap: string;
   Display: string;
   Source: string;
   SourceLabel: string;

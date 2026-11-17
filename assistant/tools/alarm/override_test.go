@@ -195,18 +195,22 @@ func TestSetExtractsSoundVolumeAndRamp(t *testing.T) {
 		t.Fatalf("unknown reply guessed a sound: %q", text)
 	}
 
-	// An over-cap library sound is refused before the Alarm is written.
+	// A long library sound has no length limit.
 	args, ok := reg.Extract(alarm.SetName, "wake me at 9 with the long sound")
 	if !ok {
 		t.Fatal("long-sound Extract failed")
 	}
-	if _, err := reg.Execute(context.Background(), alarm.SetName, args); err == nil {
-		t.Fatal("an over-cap sound was accepted")
+	if _, err := reg.Execute(context.Background(), alarm.SetName, args); err != nil {
+		t.Fatalf("a long sound was refused: %v", err)
 	}
+	written := false
 	for _, saved := range manager.List() {
-		if saved.Hour == 9 {
-			t.Fatalf("over-cap Alarm was written: %+v", saved)
+		if saved.Hour == 9 && saved.Sound == "long" {
+			written = true
 		}
+	}
+	if !written {
+		t.Fatalf("long-sound Alarm was not written: %+v", manager.List())
 	}
 
 	// A plain wake phrase has no overrides.
@@ -432,9 +436,9 @@ func TestUpdateSelectorsAmbiguityAndPreservation(t *testing.T) {
 	if err != nil || none.Matched != 0 {
 		t.Fatalf("no-match update = %+v, %v; want 0", none, err)
 	}
-	// An over-cap sound is refused before the row changes.
-	if _, err := manager.Update(ctx, alarm.UpdateIn{ID: work.ID, Sound: "long"}); err == nil {
-		t.Fatal("an over-cap sound was accepted")
+	// A long sound has no length limit.
+	if _, err := manager.Update(ctx, alarm.UpdateIn{ID: work.ID, Sound: "long"}); err != nil {
+		t.Fatalf("a long sound was refused: %v", err)
 	}
 	// An unknown sound falls back to the default and reports it.
 	unknown, err := manager.Update(ctx, alarm.UpdateIn{ID: work.ID, Sound: "cowbell"})

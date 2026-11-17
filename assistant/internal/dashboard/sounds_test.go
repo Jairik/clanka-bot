@@ -134,9 +134,9 @@ type soundsResp struct {
 	Sounds     []struct{ Name, Duration, Added, Origin, AudioURL string }
 	HasRoles   bool
 	Roles      []struct {
-		Role, Label, Key, Cap, Display, Source, SourceLabel, LowerLabel string
-		Override                                                        bool
-		Options                                                         []struct {
+		Role, Label, Key, Display, Source, SourceLabel, LowerLabel string
+		Override                                                   bool
+		Options                                                    []struct {
 			Value, Label string
 			Selected     bool
 		}
@@ -417,29 +417,22 @@ func TestSoundsUploadRejectsUndecodableOversizeAndLeavesNoFile(t *testing.T) {
 	}
 }
 
-func TestSoundsRoleAssignmentEnforcesCapAndReset(t *testing.T) {
+func TestSoundsRoleAssignmentAcceptsLongSoundsAndReset(t *testing.T) {
 	f := newSoundsFixture(t, nil)
 	if rec := f.upload("long.wav", testWAV(16000, 1, 1500*time.Millisecond, 0.2)); rec.Code != http.StatusOK {
 		t.Fatalf("upload status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 
 	rec := f.post("/sounds/roles/wake", url.Values{"value": {"long"}})
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("wake assignment status = %d", rec.Code)
-	}
-	if v := decodeSounds(t, rec); !strings.Contains(v.Error, "cap") || !strings.Contains(v.Error, "500ms") {
-		t.Fatalf("wake error = %q", v.Error)
-	}
-	value, _ := f.settings.Get(sound.Key(sound.RoleWake))
-	if value.Source != settings.SourceDefault {
-		t.Fatalf("rejected wake assignment changed the setting: %+v", value)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("wake assignment status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 
 	rec = f.post("/sounds/roles/timer_ring", url.Values{"value": {"long"}})
 	if rec.Code != http.StatusOK {
 		t.Fatalf("Timer Ring assignment status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	value, _ = f.settings.Get(sound.Key(sound.RoleTimerRing))
+	value, _ := f.settings.Get(sound.Key(sound.RoleTimerRing))
 	if value.Source != settings.SourceOverride || value.Value != "long" {
 		t.Fatalf("Timer Ring setting = %+v", value)
 	}
@@ -634,17 +627,13 @@ func TestSoundsWritesAnswerJSONWithTheRealStatus(t *testing.T) {
 		t.Fatalf("upload view = flash %q sounds %+v", v.Flash, v.Sounds)
 	}
 
-	// A cap rejection on upload is not a failure of the upload itself (the
-	// library has no cap), but on a role it is a 400 with the message.
-	if rec := f.upload("long.wav", testWAV(16000, 1, 1500*time.Millisecond, 0.2)); rec.Code != http.StatusOK {
-		t.Fatalf("long upload status = %d", rec.Code)
-	}
-	rec = f.post("/sounds/roles/wake", url.Values{"value": {"long"}})
+	// An unknown sound on a role is a 400 with the message.
+	rec = f.post("/sounds/roles/wake", url.Values{"value": {"missing"}})
 	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("cap error status = %d, want 400", rec.Code)
+		t.Fatalf("unknown sound status = %d, want 400", rec.Code)
 	}
-	if v := decodeSounds(t, rec); !strings.Contains(v.Error, "cap") || v.Flash != "" {
-		t.Fatalf("cap error view = error %q flash %q", v.Error, v.Flash)
+	if v := decodeSounds(t, rec); v.Error == "" || v.Flash != "" {
+		t.Fatalf("unknown sound view = error %q flash %q", v.Error, v.Flash)
 	}
 }
 

@@ -141,34 +141,11 @@ func newFixtureAt(t *testing.T, dir string, cfg sound.Config) *fixture {
 	return &fixture{dir: dir, store: st, sounds: sounds, settings: sett, sink: sink}
 }
 
-// TestWakeCapIsHalfSecondAndDocumentsDroppedSpeech pins the #298 cap and the
-// user-facing wording: speech during the cue is echo, not a clipped request.
-func TestWakeCapIsHalfSecondAndDocumentsDroppedSpeech(t *testing.T) {
+// TestWakeAcceptsAnyLengthAndDocumentsDroppedSpeech pins the user-facing
+// wording (speech during the cue is echo, not a clipped request) and that no
+// role has a length limit.
+func TestWakeAcceptsAnyLengthAndDocumentsDroppedSpeech(t *testing.T) {
 	f := newFixture(t, sound.Config{})
-	if got := sound.Cap(sound.RoleWake); got != 500*time.Millisecond {
-		t.Fatalf("Cap(wake) = %v, want 500ms", got)
-	}
-	// The other roles keep their caps.
-	if got := sound.Cap(sound.RoleReminder); got != 3*time.Second {
-		t.Fatalf("Cap(reminder) = %v, want 3s", got)
-	}
-	if got := sound.Cap(sound.RoleError); got != 3*time.Second {
-		t.Fatalf("Cap(error) = %v, want 3s", got)
-	}
-	if got := sound.Cap(sound.RoleTimerRing); got != time.Minute {
-		t.Fatalf("Cap(timer_ring) = %v, want 1m", got)
-	}
-	if got := sound.Cap(sound.RoleAlarmRing); got != time.Minute {
-		t.Fatalf("Cap(alarm_ring) = %v, want 1m", got)
-	}
-
-	// The built-in chime still fits under the shorter wake cap.
-	chime, ok := f.sounds.Clip(sound.RoleWake)
-	if !ok || chime.Duration > sound.Cap(sound.RoleWake) {
-		t.Fatalf("built-in chime = %+v, %v, does not fit the wake cap", chime.Duration, ok)
-	}
-
-	// The live setting's description names the new cap and the dropped speech.
 	findDescription := func(role sound.Role) string {
 		t.Helper()
 		for _, def := range f.sounds.Definitions(sound.Config{}) {
@@ -180,7 +157,7 @@ func TestWakeCapIsHalfSecondAndDocumentsDroppedSpeech(t *testing.T) {
 		return ""
 	}
 	wakeDesc := findDescription(sound.RoleWake)
-	if !strings.Contains(wakeDesc, "Maximum 500ms") ||
+	if strings.Contains(wakeDesc, "Maximum") ||
 		!strings.Contains(wakeDesc, "not sent to speech recognition") {
 		t.Fatalf("wake description = %q", wakeDesc)
 	}
@@ -189,23 +166,16 @@ func TestWakeCapIsHalfSecondAndDocumentsDroppedSpeech(t *testing.T) {
 		t.Fatalf("non-wake description mentions dropped speech: %q", ringDesc)
 	}
 
-	// The validator accepts exactly 500 ms and rejects 600 ms with the cap.
-	dir := f.sounds.LibraryDir()
-	writeLibraryWAV(t, dir, "half.wav", 500*time.Millisecond)
-	writeLibraryWAV(t, dir, "too_long.wav", 600*time.Millisecond)
+	writeLibraryWAV(t, f.sounds.LibraryDir(), "long.wav", 5*time.Second)
 	if err := f.sounds.Rescan(context.Background()); err != nil {
 		t.Fatalf("Rescan: %v", err)
 	}
-	if err := f.sounds.Validate(sound.RoleWake, "half"); err != nil {
-		t.Fatalf("Validate(500ms wake) = %v", err)
-	}
-	if err := f.sounds.Validate(sound.RoleWake, "too_long"); err == nil ||
-		!strings.Contains(err.Error(), "over the 500ms cap") {
-		t.Fatalf("Validate(600ms wake) = %v, want the 500ms cap error", err)
+	if err := f.sounds.Validate(sound.RoleWake, "long"); err != nil {
+		t.Fatalf("Validate(5s wake) = %v", err)
 	}
 }
 
-func TestClipNameResolvesLibrarySoundAndAppliesTheRoleCap(t *testing.T) {
+func TestClipNameResolvesLibrarySoundOfAnyLength(t *testing.T) {
 	f := newFixture(t, sound.Config{})
 	writeLibraryWAV(t, f.sounds.LibraryDir(), "birds.wav", 500*time.Millisecond)
 	writeLibraryWAV(t, f.sounds.LibraryDir(), "long.wav", 61*time.Second)
@@ -222,9 +192,9 @@ func TestClipNameResolvesLibrarySoundAndAppliesTheRoleCap(t *testing.T) {
 	if _, ok := f.sounds.ClipName(sound.RoleAlarmRing, "missing"); ok {
 		t.Fatal("ClipName(missing) resolved")
 	}
-	// The Alarm Ring cap refuses the 61 s sound.
-	if _, ok := f.sounds.ClipName(sound.RoleAlarmRing, "long"); ok {
-		t.Fatal("ClipName(long) accepted an over-cap sound")
+	// A long sound resolves whole.
+	if clip, ok := f.sounds.ClipName(sound.RoleAlarmRing, "long"); !ok || clip.Duration != 61*time.Second {
+		t.Fatalf("ClipName(long) = %v, %v", clip.Duration, ok)
 	}
 	// ClipName never accepts a path, even one under the data volume.
 	if _, ok := f.sounds.ClipName(sound.RoleAlarmRing, "sounds/birds.wav"); ok {
@@ -322,56 +292,21 @@ func TestInvalidLibraryWavIsSkipped(t *testing.T) {
 	}
 }
 
-func TestRoleCapsRejectRatherThanTrim(t *testing.T) {
+// TestEveryRoleAcceptsLongSounds pins that no role has a length limit and a
+// long assignment plays whole.
+func TestEveryRoleAcceptsLongSounds(t *testing.T) {
 	f := newFixture(t, sound.Config{})
-	dir := f.sounds.LibraryDir()
-	long := writeLibraryWAV(t, dir, "long.wav", 600*time.Millisecond)
-	just := writeLibraryWAV(t, dir, "just.wav", 501*time.Millisecond)
-	exact := writeLibraryWAV(t, dir, "exact.wav", 500*time.Millisecond)
-	long3 := writeLibraryWAV(t, dir, "long3.wav", 4*time.Second)
-	ring := writeLibraryWAV(t, dir, "ring.wav", 61*time.Second)
-	edge := writeLibraryWAV(t, dir, "edge.wav", 59*time.Second)
+	writeLibraryWAV(t, f.sounds.LibraryDir(), "long.wav", 90*time.Second)
 	if err := f.sounds.Rescan(context.Background()); err != nil {
 		t.Fatalf("Rescan: %v", err)
 	}
-
 	ctx := context.Background()
-	if _, err := f.settings.Set(ctx, sound.Key(sound.RoleWake), "long"); err == nil ||
-		!strings.Contains(err.Error(), "over the 500ms cap") {
-		t.Fatalf("wake assignment error = %v, want the 500ms cap error", err)
-	}
-	// A millisecond over the cap is still over, even though the index column
-	// could truncate it to exactly 500 ms; exactly 0.5 s is accepted.
-	if _, err := f.settings.Set(ctx, sound.Key(sound.RoleWake), "just"); err == nil {
-		t.Fatal("501 ms wake sound was accepted")
-	}
-	if _, err := f.settings.Set(ctx, sound.Key(sound.RoleWake), "exact"); err != nil {
-		t.Fatalf("exactly 500 ms wake sound was rejected: %v", err)
-	}
-	if _, err := f.settings.Set(ctx, sound.Key(sound.RoleReminder), "long3"); err == nil ||
-		!strings.Contains(err.Error(), "over the 3s cap") {
-		t.Fatalf("reminder assignment error = %v, want the 3s cap error", err)
-	}
-	if _, err := f.settings.Set(ctx, sound.Key(sound.RoleError), "long3"); err == nil ||
-		!strings.Contains(err.Error(), "over the 3s cap") {
-		t.Fatalf("error assignment error = %v, want the 3s cap error", err)
-	}
-	if _, err := f.settings.Set(ctx, sound.Key(sound.RoleTimerRing), "ring"); err == nil ||
-		!strings.Contains(err.Error(), "over the 1m0s cap") {
-		t.Fatalf("ring assignment error = %v, want the 1m0s cap error", err)
-	}
-	if _, err := f.settings.Set(ctx, sound.Key(sound.RoleTimerRing), "edge"); err != nil {
-		t.Fatalf("59 s Ring assignment was rejected: %v", err)
-	}
-
-	// Rejection never trims the source: the file still holds its full length.
-	for _, path := range []string{long, just, exact, long3, ring, edge} {
-		info, err := audio.InspectWAV(path)
-		if err != nil {
-			t.Fatalf("InspectWAV %s: %v", path, err)
+	for _, role := range sound.Roles {
+		if _, err := f.settings.Set(ctx, sound.Key(role), "long"); err != nil {
+			t.Fatalf("%s assignment rejected: %v", role, err)
 		}
-		if path == long && info.Duration != 600*time.Millisecond {
-			t.Fatalf("long.wav duration = %v after rejection", info.Duration)
+		if clip, ok := f.sounds.Clip(role); !ok || clip.Duration != 90*time.Second {
+			t.Fatalf("%s Clip = %v, %v", role, clip.Duration, ok)
 		}
 	}
 }
@@ -729,10 +664,10 @@ func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-// TestSettingsAPIRejectsAnOverCapCue is the Dashboard/API seam: the same live
-// service the page writes rejects an oversized assignment with the cap in the
-// response, and accepts a valid one that the next Clip resolves.
-func TestSettingsAPIRejectsAnOverCapCue(t *testing.T) {
+// TestSettingsAPIAcceptsALongCue is the Dashboard/API seam: the same live
+// service the page writes accepts a long assignment that the next Clip
+// resolves whole.
+func TestSettingsAPIAcceptsALongCue(t *testing.T) {
 	f := newFixture(t, sound.Config{})
 	writeLibraryWAV(t, f.sounds.LibraryDir(), "long.wav", 600*time.Millisecond)
 	writeLibraryWAV(t, f.sounds.LibraryDir(), "birds.wav", 400*time.Millisecond)
@@ -764,8 +699,8 @@ func TestSettingsAPIRejectsAnOverCapCue(t *testing.T) {
 	}
 
 	status, body := put("sounds.wake", "long")
-	if status != http.StatusBadRequest || !strings.Contains(body, "over the 500ms cap") {
-		t.Fatalf("oversized PUT = %d %s", status, body)
+	if status != http.StatusOK || !strings.Contains(body, `"source":"override"`) {
+		t.Fatalf("long PUT = %d %s", status, body)
 	}
 	status, body = put("sounds.wake", "birds")
 	if status != http.StatusOK || !strings.Contains(body, `"source":"override"`) {

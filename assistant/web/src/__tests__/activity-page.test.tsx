@@ -1,7 +1,7 @@
 // The Activity page's filter chips, driven through the real page.
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ActivityPage } from "../pages/Activity";
 import { emptyActivity, json, Providers, req, session, stubFetch } from "./harness";
 
@@ -201,3 +201,149 @@ it("renders the Focus strip from the focus route", async () => {
   // The Activity header reads /api/ui/focus and shows the idle state.
   expect(await screen.findByText("Listening")).toBeTruthy();
 });
+
+describe("ActivityPage search debounce", () => {
+  const live = req({ ID: "live", Transcript: "live at the pi", TimeISO: "2026-11-13T12:00:00" });
+  const match = req({ ID: "match", Transcript: "hello world request", TimeISO: "2026-11-06T09:00:00" });
+
+  it("debounces typing: five characters produce one replaceState call and one request", async () => {
+    const queryHandler = vi.fn(() =>
+      json({ ...emptyActivity([match]), HasHistory: true, Query: "hello" }),
+    );
+    stubFetch({
+      "/api/ui/session": () => json(session()),
+      "/api/ui/activity": () => json({ ...emptyActivity([live]), HasHistory: true }),
+      "/api/ui/activity?q=hello": queryHandler,
+    });
+    const replaceSpy = vi.spyOn(history, "replaceState");
+    const user = userEvent.setup();
+    render(
+      <Providers>
+        <ActivityPage />
+      </Providers>,
+    );
+    expect(await screen.findByText("live at the pi")).toBeTruthy();
+    expect(replaceSpy).not.toHaveBeenCalled();
+
+    const search = screen.getByRole("searchbox", { name: "Search activity" });
+    await user.type(search, "hello");
+
+    // Immediately after typing, history.replaceState must not have been called once per character.
+    expect(replaceSpy).not.toHaveBeenCalled();
+    expect(queryHandler).not.toHaveBeenCalled();
+
+    // After the 250 ms debounce, the URL catches up once and the request is sent once.
+    expect(await screen.findByText("hello world request")).toBeTruthy();
+    expect(replaceSpy).toHaveBeenCalledTimes(1);
+    expect(queryHandler).toHaveBeenCalledTimes(1);
+  });
+
+  it("flushes immediately on blur without waiting for the debounce", async () => {
+    const blurMatch = req({ ID: "bm", Transcript: "fast blur match", TimeISO: "2026-11-06T09:00:00" });
+    const queryHandler = vi.fn(() =>
+      json({ ...emptyActivity([blurMatch]), HasHistory: true, Query: "fast" }),
+    );
+    stubFetch({
+      "/api/ui/session": () => json(session()),
+      "/api/ui/activity": () => json({ ...emptyActivity([live]), HasHistory: true }),
+      "/api/ui/activity?q=fast": queryHandler,
+    });
+    const replaceSpy = vi.spyOn(history, "replaceState");
+    const user = userEvent.setup();
+    render(
+      <Providers>
+        <ActivityPage />
+      </Providers>,
+    );
+    expect(await screen.findByText("live at the pi")).toBeTruthy();
+
+    const search = screen.getByRole("searchbox", { name: "Search activity" });
+    await user.type(search, "fast");
+    expect(replaceSpy).not.toHaveBeenCalled();
+
+    // Blurring immediately flushes to the URL without waiting 250 ms.
+    await user.tab();
+    expect(replaceSpy).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText("fast blur match")).toBeTruthy();
+    // No second replaceState call when the debounce timeout finishes.
+    expect(replaceSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("flushes immediately on Enter without waiting for the debounce", async () => {
+    const enterMatch = req({ ID: "em", Transcript: "enter match", TimeISO: "2026-11-06T09:00:00" });
+    const queryHandler = vi.fn(() =>
+      json({ ...emptyActivity([enterMatch]), HasHistory: true, Query: "enter" }),
+    );
+    stubFetch({
+      "/api/ui/session": () => json(session()),
+      "/api/ui/activity": () => json({ ...emptyActivity([live]), HasHistory: true }),
+      "/api/ui/activity?q=enter": queryHandler,
+    });
+    const replaceSpy = vi.spyOn(history, "replaceState");
+    const user = userEvent.setup();
+    render(
+      <Providers>
+        <ActivityPage />
+      </Providers>,
+    );
+    expect(await screen.findByText("live at the pi")).toBeTruthy();
+
+    const search = screen.getByRole("searchbox", { name: "Search activity" });
+    await user.type(search, "enter{Enter}");
+    expect(replaceSpy).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText("enter match")).toBeTruthy();
+    // No second replaceState call after debounce expires.
+    expect(replaceSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("restores the query into the field on back/forward navigation", async () => {
+    const q1Req = req({ ID: "q1", Transcript: "first result", TimeISO: "2026-11-06T09:00:00" });
+    const q2Req = req({ ID: "q2", Transcript: "second result", TimeISO: "2026-11-06T08:00:00" });
+    stubFetch({
+      "/api/ui/session": () => json(session()),
+      "/api/ui/activity": () => json({ ...emptyActivity([live]), HasHistory: true }),
+      "/api/ui/activity?q=first": () => json({ ...emptyActivity([q1Req]), HasHistory: true, Query: "first" }),
+      "/api/ui/activity?q=second": () => json({ ...emptyActivity([q2Req]), HasHistory: true, Query: "second" }),
+    });
+    const user = userEvent.setup();
+    render(
+      <Providers>
+        <ActivityPage />
+      </Providers>,
+    );
+    expect(await screen.findByText("live at the pi")).toBeTruthy();
+
+    const search = screen.getByRole("searchbox", { name: "Search activity" }) as HTMLInputElement;
+    await user.type(search, "first{Enter}");
+    expect(await screen.findByText("first result")).toBeTruthy();
+    expect(search.value).toBe("first");
+
+    // Navigate to second query.
+    await user.clear(search);
+    await user.type(search, "second{Enter}");
+    expect(await screen.findByText("second result")).toBeTruthy();
+    expect(search.value).toBe("second");
+
+    // Simulate Back navigation restoring the first query.
+    history.replaceState(null, "", "/activity?q=first");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+
+    await waitFor(() => expect(search.value).toBe("first"));
+    expect(await screen.findByText("first result")).toBeTruthy();
+
+    // Simulate Forward navigation restoring the second query.
+    history.replaceState(null, "", "/activity?q=second");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+
+    await waitFor(() => expect(search.value).toBe("second"));
+    expect(await screen.findByText("second result")).toBeTruthy();
+
+    // Simulate Back navigation to empty query.
+    history.replaceState(null, "", "/activity");
+    window.dispatchEvent(new PopStateEvent("popstate"));
+
+    await waitFor(() => expect(search.value).toBe(""));
+    expect(await screen.findByText("live at the pi")).toBeTruthy();
+  });
+});
+

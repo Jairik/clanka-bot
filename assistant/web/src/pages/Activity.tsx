@@ -19,6 +19,28 @@ export function ActivityPage() {
   // The focus and announcement state, refreshed live by the "focus" SSE delta.
   const { data: focus } = usePageData("focus");
   const [q, setQ] = useQueryParam("q");
+  // Keep the field value in component state and flush it to the URL on a 250 ms debounce.
+  const [draft, setDraft] = useState(q);
+
+  // Synchronize draft with the query param on external navigation (e.g. Back/Forward).
+  const [prevQ, setPrevQ] = useState(q);
+  if (q !== prevQ) {
+    setPrevQ(q);
+    setDraft(q);
+  }
+
+  // Typing must not be one history write per character; the URL catches up once.
+  useEffect(() => {
+    if (draft === q) return;
+    const id = setTimeout(() => setQ(draft), 250);
+    return () => clearTimeout(id);
+  }, [draft, q, setQ]);
+
+  /** Flushes the draft search query to the URL query param immediately. */
+  const flush = () => {
+    if (draft !== q) setQ(draft);
+  };
+
   const [f, setF] = useQueryParam("filter", "all");
   const filter = asFilter(f);
   const key = `${filter}\u0000${q.trim()}`;
@@ -98,10 +120,26 @@ export function ActivityPage() {
       <Notice error={loadError || error} />
       {view && !view.HasActivity && <Notice error="The activity store is not wired in this deployment." />}
       <div className="sticky top-0 z-10 -mx-4 mb-3 flex flex-wrap items-center gap-2 bg-background/95 px-4 pt-1 pb-2 backdrop-blur md:static md:mx-0 md:px-0">
-        <SearchField aria-label="Search activity" value={q} onChange={setQ} className="min-w-0 flex-1 basis-60">
+        <SearchField
+          aria-label="Search activity"
+          value={draft}
+          onChange={setDraft}
+          onSubmit={flush}
+          onClear={() => {
+            setDraft("");
+            setQ("");
+          }}
+          className="min-w-0 flex-1 basis-60"
+        >
           <SearchField.Group>
             <SearchField.SearchIcon />
-            <SearchField.Input placeholder={durable ? "Search all activity" : "Search requests, replies or tools"} />
+            <SearchField.Input
+              placeholder={durable ? "Search all activity" : "Search requests, replies or tools"}
+              onBlur={flush}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") flush();
+              }}
+            />
             <SearchField.ClearButton />
           </SearchField.Group>
         </SearchField>
@@ -163,6 +201,7 @@ export function ActivityPage() {
                 {searchNotice ? " in the searched window" : ""}.
                 <button
                   onClick={() => {
+                    setDraft("");
                     setQ("");
                     setF("all");
                   }}

@@ -55,6 +55,41 @@ func WithHoldSummary() Option {
 	return func(q *Queue) { q.summarize = true }
 }
 
+// WithNow sets the time source for recording enqueue times, used in tests.
+func WithNow(now func() time.Time) Option {
+	return func(q *Queue) { q.now = now }
+}
+
+// RingSize is the bounded capacity of the announcements ring.
+const RingSize = 20
+
+// Kind identifies the category of an Announcement.
+type Kind string
+
+const (
+	KindGeneric  Kind = "generic"
+	KindReminder Kind = "reminder"
+	KindSummary  Kind = "summary"
+)
+
+// State tracks the lifecycle state of an Announcement line in the ring.
+type State string
+
+const (
+	StateQueued      State = "queued"
+	StateHeld        State = "held"
+	StateSpoken      State = "spoken"
+	StateInterrupted State = "interrupted"
+)
+
+// Line represents one spoken announcement line tracked in the ring.
+type Line struct {
+	Text       string    `json:"text"`
+	EnqueuedAt time.Time `json:"enqueued_at"`
+	Kind       Kind      `json:"kind"`
+	State      State     `json:"state"`
+}
+
 // item is one queued unprompted action: a line to speak, or a sound to play.
 // Both obey the same turn, hold and blocked gates, so a Pi preview cannot cut
 // a reply or a pending Confirmation. urgent marks a scheduled alert (a
@@ -64,6 +99,8 @@ type item struct {
 	text   string
 	play   func(context.Context) error
 	urgent bool
+	kind   Kind
+	line   *Line
 }
 
 // Queue plays Announcements one at a time, in the order they were queued. The
@@ -86,12 +123,15 @@ type Queue struct {
 	// callback may call Snapshot but must not re-enter a mutating method.
 	OnChange func()
 
-	mu      sync.Mutex
-	items   []item
-	held    bool
-	closed  bool
-	turns   int
-	playing bool
+	mu          sync.Mutex
+	items       []item
+	ring        []*Line
+	currentLine *Line
+	now         func() time.Time
+	held        bool
+	closed      bool
+	turns       int
+	playing     bool
 	// play is the current announcement's context; TurnStarted cancels it so a
 	// reply never waits behind unprompted speech.
 	play       context.Context
@@ -121,6 +161,9 @@ func New(speaker Speaker, logger *slog.Logger, opts ...Option) *Queue {
 	for _, opt := range opts {
 		opt(q)
 	}
+	if q.now == nil {
+		q.now = time.Now
+	}
 	if speaker != nil {
 		// A speaker implies sound playback; WithPlayback covers the nil case.
 		q.audio = true
@@ -131,6 +174,29 @@ func New(speaker Speaker, logger *slog.Logger, opts ...Option) *Queue {
 	}
 	go q.run()
 	return q
+}
+
+// recordLineLocked adds a line to the bounded ring, evicting oldest when full.
+// The caller holds q.mu.
+func (q *Queue) recordLineLocked(line *Line) {
+	q.ring = append(q.ring, line)
+	if len(q.ring) > RingSize {
+		q.ring = append([]*Line(nil), q.ring[len(q.ring)-RingSize:]...)
+	}
+}
+
+// Recent returns a copy of the announcements in the ring, oldest first.
+func (q *Queue) Recent() []Line {
+	if q == nil {
+		return nil
+	}
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	res := make([]Line, len(q.ring))
+	for i, l := range q.ring {
+		res[i] = *l
+	}
+	return res
 }
 
 // Enqueue adds one announcement and returns false when it cannot be queued: a
@@ -148,7 +214,18 @@ func (q *Queue) Enqueue(text string) bool {
 		q.mu.Unlock()
 		return false
 	}
-	q.items = append(q.items, item{text: text})
+	state := StateQueued
+	if q.held {
+		state = StateHeld
+	}
+	line := &Line{
+		Text:       text,
+		EnqueuedAt: q.now(),
+		Kind:       KindGeneric,
+		State:      state,
+	}
+	q.recordLineLocked(line)
+	q.items = append(q.items, item{text: text, kind: KindGeneric, line: line})
 	q.mu.Unlock()
 	q.notify()
 	q.notifyChange()
@@ -179,16 +256,28 @@ func (q *Queue) EnqueuePlay(play func(context.Context) error) bool {
 // pending Confirmation and a ringing alert still do. It is never collapsed
 // into the held-text summary, so an alert cannot become part of a morning
 // digest and an audio preview is still a sound rather than a narration.
-func (q *Queue) EnqueueAlert(play func(context.Context) error) bool {
+func (q *Queue) EnqueueAlert(text string, play func(context.Context) error) bool {
 	if q == nil || play == nil {
 		return false
 	}
+	text = strings.TrimSpace(text)
 	q.mu.Lock()
 	if q.closed || !q.audio {
 		q.mu.Unlock()
 		return false
 	}
-	q.items = append(q.items, item{play: play, urgent: true})
+	it := item{text: text, play: play, urgent: true, kind: KindReminder}
+	if text != "" {
+		line := &Line{
+			Text:       text,
+			EnqueuedAt: q.now(),
+			Kind:       KindReminder,
+			State:      StateQueued,
+		}
+		q.recordLineLocked(line)
+		it.line = line
+	}
+	q.items = append(q.items, it)
 	q.mu.Unlock()
 	q.notify()
 	q.notifyChange()
@@ -204,6 +293,9 @@ func (q *Queue) TurnStarted() {
 	q.mu.Lock()
 	q.turns++
 	cancelPlay := q.cancelPlay
+	if cancelPlay != nil && q.currentLine != nil {
+		q.currentLine.State = StateInterrupted
+	}
 	q.mu.Unlock()
 	if cancelPlay != nil {
 		cancelPlay()
@@ -231,6 +323,11 @@ func (q *Queue) Hold() {
 	}
 	q.mu.Lock()
 	q.held = true
+	for _, it := range q.items {
+		if !it.urgent && it.line != nil && it.line.State == StateQueued {
+			it.line.State = StateHeld
+		}
+	}
 	q.mu.Unlock()
 	q.notifyChange()
 }
@@ -248,6 +345,12 @@ func (q *Queue) Release() {
 	q.held = false
 	if wasHeld && q.summarize {
 		q.collapseTextLocked()
+	} else if wasHeld {
+		for _, it := range q.items {
+			if it.line != nil && it.line.State == StateHeld {
+				it.line.State = StateQueued
+			}
+		}
 	}
 	q.mu.Unlock()
 	q.notify()
@@ -259,21 +362,56 @@ func (q *Queue) Release() {
 // preview is still a sound, not a spoken description of one.
 func (q *Queue) collapseTextLocked() {
 	lines := make([]string, 0, len(q.items))
+	heldLines := make(map[*Line]bool)
 	for _, queued := range q.items {
 		if queued.play == nil && queued.text != "" {
 			lines = append(lines, queued.text)
+			if queued.line != nil {
+				heldLines[queued.line] = true
+			}
 		}
 	}
 	if len(lines) == 0 {
 		return
 	}
 	summary := summarizeLines(lines)
+	summaryLine := &Line{
+		Text:       summary,
+		EnqueuedAt: q.now(),
+		Kind:       KindSummary,
+		State:      StateQueued,
+	}
+
+	newRing := make([]*Line, 0, len(q.ring))
+	placedRing := false
+	for _, l := range q.ring {
+		if heldLines[l] {
+			if !placedRing {
+				newRing = append(newRing, summaryLine)
+				placedRing = true
+			}
+			continue
+		}
+		newRing = append(newRing, l)
+	}
+	if !placedRing {
+		newRing = append(newRing, summaryLine)
+	}
+	if len(newRing) > RingSize {
+		newRing = append([]*Line(nil), newRing[len(newRing)-RingSize:]...)
+	}
+	q.ring = newRing
+
 	collapsed := make([]item, 0, len(q.items))
 	placed := false
 	for _, queued := range q.items {
 		if queued.play == nil {
 			if !placed {
-				collapsed = append(collapsed, item{text: summary})
+				collapsed = append(collapsed, item{
+					text: summary,
+					kind: KindSummary,
+					line: summaryLine,
+				})
 				placed = true
 			}
 			continue
@@ -466,6 +604,7 @@ func (q *Queue) next() (item, bool) {
 	q.items[len(q.items)-1] = item{}
 	q.items = q.items[:len(q.items)-1]
 	q.playing = true
+	q.currentLine = next.line
 	q.play, q.cancelPlay = context.WithCancel(q.ctx)
 	q.mu.Unlock()
 	q.notifyChange()
@@ -487,12 +626,22 @@ func (q *Queue) playItem(next item) {
 		err = q.speaker.SayText(ctx, next.text)
 	}
 
+	interrupted := ctx.Err() != nil
+
 	q.mu.Lock()
 	if q.cancelPlay != nil {
 		q.cancelPlay()
 	}
 	q.play, q.cancelPlay = nil, nil
 	q.playing = false
+	if next.line != nil {
+		if interrupted {
+			next.line.State = StateInterrupted
+		} else if err == nil {
+			next.line.State = StateSpoken
+		}
+	}
+	q.currentLine = nil
 	q.mu.Unlock()
 	q.notifyChange()
 

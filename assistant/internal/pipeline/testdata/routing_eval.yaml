@@ -909,6 +909,33 @@ positives:
     - start a new conversation
     - let's forget the conversation
     - forget what I just said
+  assistant.announcements:
+    # Read back recent unprompted speech spoken while away.
+    - what did you say while I was out
+    - read me the announcements
+    - any announcements
+    - did you say anything while I was out
+    - what did you say while I was gone
+    - did you say anything while I was gone
+    - read the announcements
+    - read out the announcements
+    - read my announcements
+    - read out my announcements
+    - tell me the announcements
+    - are there any announcements
+    - were there any announcements
+    - what were the announcements while I was out
+    - what announcements were made while I was out
+    - did you announce anything while I was out
+    - did you announce anything while I was away
+    - what did you announce while I was away
+    - did I miss any announcements
+    - what announcements did I miss
+    - what did you say when I was out
+    - did you say anything when I was out
+    - check for announcements
+    - read back the announcements
+    - read back what you said while I was out
   system.status:
     # Health and availability questions about the Assistant itself, not the
     # weather, an alarm or a phone.
@@ -2069,6 +2096,12 @@ negatives:
   - what is the conversion rate from pounds to dollars
   - tell me the current value of bitcoin
   - how much would 20 cost in euros
+  # Announcement-making requests: asking to speak/broadcast an announcement, not
+  # read back past announcements; these must not route to assistant.announcements.
+  - make an announcement
+  - make an announcement that dinner is ready
+  - announce that the meeting is starting
+  - can you make an announcement
 
 # Compound requests ask for more than one thing. They are kept separate so
 # the evaluation can report compound handling on its own.

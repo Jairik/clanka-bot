@@ -478,6 +478,11 @@ control_phrases:
   "what was my question": assistant.heard
   "read back what I said": assistant.heard
   "what did you think I said": assistant.heard
+  # Named-timer extensions sit too close to "set a pasta timer …" for the
+  # semantic margin, so they route exactly (#237).
+  "+5 minutes on the pasta timer": timer.extend
+  "give the egg timer ten more minutes": timer.extend
+  "add five minutes to the timer": timer.extend
   "what time is it": time.now
   "what's the time": time.now
   "what is the time": time.now

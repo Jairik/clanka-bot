@@ -79,6 +79,7 @@ var routingEvalTools = []string{
 	timer.CancelName,
 	timer.RemainingName,
 	timer.ListName,
+	timer.ExtendName,
 	alarm.SetName,
 	alarm.ListName,
 	alarm.CancelName,

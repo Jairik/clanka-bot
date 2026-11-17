@@ -67,9 +67,10 @@ func (m *Module) Configure(section *yaml.Node) error {
 	return nil
 }
 
-// Register adds timer.set, timer.cancel, timer.remaining and timer.list. The
-// persisted Timers are recovered by Start, not here, so the first recovered
-// Ring already sees the effective settings, Cues, Zone and Ring seams.
+// Register adds timer.set, timer.cancel, timer.remaining, timer.list and
+// timer.extend. The persisted Timers are recovered by Start, not here, so the
+// first recovered Ring already sees the effective settings, Cues, Zone and
+// Ring seams.
 func (m *Module) Register(r *tool.Registry, deps tool.Deps) error {
 	var say func(ctx context.Context, text string) error
 	if deps.Speaker != nil {

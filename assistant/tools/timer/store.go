@@ -153,10 +153,12 @@ func (m *Manager) schedule(saved Timer, delay time.Duration) {
 		m.mu.Unlock()
 		return
 	}
-	m.entries[id] = &entry{
+	e := &entry{
 		timer: saved,
-		stop:  time.AfterFunc(delay, func() { m.runFire(id) }),
+		gen:   1,
 	}
+	e.stop = time.AfterFunc(delay, func() { m.runFire(id, 1) })
+	m.entries[id] = e
 	m.mu.Unlock()
 }
 
@@ -269,6 +271,22 @@ func (m *Manager) insert(ctx context.Context, label string, duration time.Durati
 		return "", fmt.Errorf("timer: saved timer id: %w", err)
 	}
 	return strconv.FormatInt(id, 10), nil
+}
+
+// updateFiresAt updates the fires_at timestamp of one persisted Timer.
+func (m *Manager) updateFiresAt(ctx context.Context, id string, firesAt time.Time) error {
+	result, err := m.db.ExecContext(ctx, `UPDATE timers SET fires_at = ? WHERE id = ?`, firesAt.UnixMilli(), id)
+	if err != nil {
+		return fmt.Errorf("timer: update fires_at for %s: %w", id, err)
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("timer: update fires_at rows affected for %s: %w", id, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("timer: timer %s not found for update", id)
+	}
+	return nil
 }
 
 // deleteRows removes persisted Timers. A missing row is not an error: a fired

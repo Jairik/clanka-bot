@@ -8,5 +8,6 @@ func (*Module) ConformanceSamples() map[string]any {
 		CancelName:    CancelOut{Cancelled: 1},
 		RemainingName: RemainingOut{Timer: Timer{ID: "1", Label: "pasta", DurationSeconds: 600, RemainingSeconds: 420}},
 		ListName:      ListOut{Timers: []Timer{{ID: "1", DurationSeconds: 300, RemainingSeconds: 120}}},
+		ExtendName:    Timer{ID: "1", Label: "pasta", DurationSeconds: 600, RemainingSeconds: 900},
 	}
 }

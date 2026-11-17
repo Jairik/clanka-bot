@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -33,6 +34,7 @@ const (
 	CancelName    = "timer.cancel"
 	RemainingName = "timer.remaining"
 	ListName      = "timer.list"
+	ExtendName    = "timer.extend"
 )
 
 // AlertText is spoken when a timer fires. It reuses the reply Speaker.
@@ -79,6 +81,7 @@ type Timer struct {
 type entry struct {
 	timer Timer
 	stop  *time.Timer
+	gen   int
 }
 
 // Manager owns the running timers and fires their alert. A Manager without a
@@ -324,10 +327,13 @@ func (m *Manager) Start(label string, d time.Duration, audio ...string) (Timer, 
 		timer.ID = strconv.Itoa(m.seq)
 	}
 
-	m.entries[timer.ID] = &entry{
+	timerID := timer.ID
+	e := &entry{
 		timer: timer,
-		stop:  time.AfterFunc(d, func() { m.runFire(timer.ID) }),
+		gen:   1,
 	}
+	e.stop = time.AfterFunc(d, func() { m.runFire(timerID, 1) })
+	m.entries[timerID] = e
 	m.logger.Info("timer set", "timer_id", timer.ID, "duration_s", timer.DurationSeconds, "label", timer.Label)
 	return timer, nil
 }
@@ -335,26 +341,31 @@ func (m *Manager) Start(label string, d time.Duration, audio ...string) (Timer, 
 // runFire registers one callback with Close's wait group. It is the only path
 // from an AfterFunc into fire, so a shutdown can wait for the final history
 // write before the database closes.
-func (m *Manager) runFire(id string) {
+func (m *Manager) runFire(id string, gen int) {
 	m.mu.Lock()
 	if m.closed {
+		m.mu.Unlock()
+		return
+	}
+	e, ok := m.entries[id]
+	if !ok || e.gen != gen {
 		m.mu.Unlock()
 		return
 	}
 	m.wg.Add(1)
 	m.mu.Unlock()
 	defer m.wg.Done()
-	m.fire(id)
+	m.fire(id, gen)
 }
 
 // fire removes the timer, atomically replaces its pending row with an open
 // alert-history row, then Rings it. The delete happens in the same transaction
 // as the history insert, so a crash can never fire the same Timer twice and
 // still leaves a record that it fired.
-func (m *Manager) fire(id string) {
+func (m *Manager) fire(id string, gen int) {
 	m.mu.Lock()
 	e, ok := m.entries[id]
-	if !ok || m.closed {
+	if !ok || m.closed || e.gen != gen {
 		m.mu.Unlock()
 		return
 	}
@@ -706,6 +717,110 @@ func remainingAt(timer Timer, now time.Time) Timer {
 	return timer
 }
 
+// Extend adds delta to a running timer's fires_at time, identified by id or
+// label (or the soonest timer when neither is given).
+func (m *Manager) Extend(id, label string, delta time.Duration) (Timer, error) {
+	if delta <= 0 {
+		return Timer{}, &tool.ToolError{Say: "How much time should I add to the timer?"}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.closed {
+		return Timer{}, errors.New("timer manager is closed")
+	}
+	now := m.now()
+	cleaned := cleanLabel(label)
+
+	var targetID string
+	var targetEntry *entry
+
+	if id != "" {
+		if _, ok := m.ringing[id]; ok || m.active[id] != nil {
+			lbl := m.activeLabels[id]
+			if lbl != "" {
+				return Timer{}, &tool.ToolError{Say: "The " + lbl + " timer is already ringing."}
+			}
+			return Timer{}, &tool.ToolError{Say: "That timer is already ringing."}
+		}
+		e, ok := m.entries[id]
+		if !ok {
+			return Timer{}, &tool.ToolError{Say: "That timer was not found."}
+		}
+		if cleaned != "" && e.timer.Label != cleaned {
+			return Timer{}, &tool.ToolError{Say: "There is no " + cleaned + " timer."}
+		}
+		targetID = id
+		targetEntry = e
+	} else {
+		var bestTimer Timer
+		var bestID string
+		isRinging := false
+		found := false
+
+		consider := func(timer Timer, candID string, ringing bool) {
+			if found && !timer.FiresAt.Before(bestTimer.FiresAt) {
+				return
+			}
+			bestTimer = timer
+			bestID = candID
+			isRinging = ringing
+			found = true
+		}
+
+		for eid, e := range m.entries {
+			if cleaned != "" && e.timer.Label != cleaned {
+				continue
+			}
+			consider(remainingAt(e.timer, now), eid, false)
+		}
+		for rid, timer := range m.ringing {
+			if cleaned != "" && timer.Label != cleaned {
+				continue
+			}
+			consider(timer, rid, true)
+		}
+
+		if !found {
+			if cleaned != "" {
+				return Timer{}, &tool.ToolError{Say: "There is no " + cleaned + " timer."}
+			}
+			return Timer{}, &tool.ToolError{Say: "No timers are running."}
+		}
+
+		if isRinging {
+			if bestTimer.Label != "" {
+				return Timer{}, &tool.ToolError{Say: "The " + bestTimer.Label + " timer is already ringing."}
+			}
+			return Timer{}, &tool.ToolError{Say: "That timer is already ringing."}
+		}
+
+		targetID = bestID
+		targetEntry = m.entries[bestID]
+	}
+
+	newFiresAt := targetEntry.timer.FiresAt.Add(delta)
+	if m.db != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), storeTimeout)
+		defer cancel()
+		if err := m.updateFiresAt(ctx, targetID, newFiresAt); err != nil {
+			return Timer{}, err
+		}
+	}
+
+	targetEntry.stop.Stop()
+	targetEntry.gen++
+	gen := targetEntry.gen
+	newDelay := newFiresAt.Sub(now)
+	if newDelay < 0 {
+		newDelay = 0
+	}
+	targetEntry.stop = time.AfterFunc(newDelay, func() { m.runFire(targetID, gen) })
+	targetEntry.timer.FiresAt = newFiresAt
+
+	m.logger.Info("timer extended", "timer_id", targetID, "delta_s", int(delta/time.Second), "fires_at", newFiresAt)
+	return remainingAt(targetEntry.timer, now), nil
+}
+
 // Cancel stops one timer by id, or every timer when id is empty. It returns
 // how many were cancelled; a persistence failure is logged because this
 // signature has no error. New callers use CancelTimers.
@@ -875,6 +990,17 @@ type ListIn struct{}
 type ListOut struct {
 	Timers []Timer `json:"timers"`
 }
+
+// ExtendIn asks to add time to a running timer.
+type ExtendIn struct {
+	ID              string `json:"id,omitempty"`
+	Label           string `json:"label,omitempty"`
+	ExtendSeconds   int    `json:"extend_seconds,omitempty"`
+	DurationSeconds int    `json:"duration_seconds,omitempty"`
+}
+
+// ExtendOut is the timer that was extended.
+type ExtendOut = Timer
 
 // NewSet builds timer.set.
 func NewSet(m *Manager) tool.Tool[SetIn, SetOut] {
@@ -1065,6 +1191,61 @@ func NewList(m *Manager) tool.Tool[ListIn, ListOut] {
 	}
 }
 
+var extendFillerWords = regexp.MustCompile(`\b(?:more|longer|extra|another)\b`)
+
+// cleanExtendDurationText removes comparative words that sit between numbers and units.
+func cleanExtendDurationText(text string) string {
+	return extendFillerWords.ReplaceAllString(strings.ToLower(text), " ")
+}
+
+// extractExtend pulls the duration delta and optional label from an utterance.
+func extractExtend(text string) (ExtendIn, bool) {
+	cleaned := cleanExtendDurationText(text)
+	d, ok := parse.Duration(cleaned, time.Minute)
+	if !ok || d <= 0 {
+		return ExtendIn{}, false
+	}
+	return ExtendIn{
+		ExtendSeconds: int(d.Round(time.Second) / time.Second),
+		Label:         labelForTimer(text),
+	}, true
+}
+
+// NewExtend builds timer.extend.
+func NewExtend(m *Manager) tool.Tool[ExtendIn, ExtendOut] {
+	return tool.Tool[ExtendIn, ExtendOut]{
+		Name:        ExtendName,
+		Description: "Add time to a running timer, optionally named by label or id.",
+		Permission:  tool.PermissionAct,
+		LocalOnly:   tool.LocalOnlyYes,
+		Handler: func(_ context.Context, in ExtendIn) (ExtendOut, error) {
+			delta := in.ExtendSeconds
+			if delta <= 0 {
+				delta = in.DurationSeconds
+			}
+			if delta <= 0 {
+				return ExtendOut{}, &tool.ToolError{Say: "How much time should I add to the timer?"}
+			}
+			return m.Extend(in.ID, in.Label, time.Duration(delta)*time.Second)
+		},
+		Speak: func(out ExtendOut) string {
+			left := parse.HumanDuration(time.Duration(out.RemainingSeconds) * time.Second)
+			if out.Label != "" {
+				return capitalize(out.Label) + " timer now has " + left + " left."
+			}
+			return "Timer now has " + left + " left."
+		},
+		Examples: []string{
+			"+5 minutes on the pasta timer",
+			"give the egg timer ten more minutes",
+			"+10 minutes on the timer",
+		},
+		Extract: func(text string) (ExtendIn, bool) {
+			return extractExtend(text)
+		},
+	}
+}
+
 // Register adds every timer Tool.
 func Register(r *tool.Registry, m *Manager) error {
 	if err := tool.Add(r, NewSet(m)); err != nil {
@@ -1076,5 +1257,8 @@ func Register(r *tool.Registry, m *Manager) error {
 	if err := tool.Add(r, NewRemaining(m)); err != nil {
 		return err
 	}
-	return tool.Add(r, NewList(m))
+	if err := tool.Add(r, NewList(m)); err != nil {
+		return err
+	}
+	return tool.Add(r, NewExtend(m))
 }

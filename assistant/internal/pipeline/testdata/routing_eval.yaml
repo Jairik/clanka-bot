@@ -508,6 +508,30 @@ positives:
     - when is the egg timer done
     - how long until the pasta timer goes off
     - how long does the tea timer have left
+  timer.extend:
+    # Extending a running countdown timer by adding time to it.
+    - add five minutes to the timer
+    - add 5 minutes to the timer
+    - +5 minutes on the pasta timer
+    - give the egg timer ten more minutes
+    - add ten minutes to the pasta timer
+    - put five more minutes on the timer
+    - extend the timer by ten minutes
+    - extend the pasta timer by five minutes
+    - add 15 minutes to my timer
+    - give me five more minutes on the timer
+    - extend my timer by 5 minutes
+    - add ten more minutes to the timer
+    - +10 minutes on the timer
+    - add two minutes to the timer
+    - put ten more minutes on the pasta timer
+    - extend the timer for five minutes
+    - give the pasta timer another five minutes
+    - add an extra five minutes to the timer
+    - add 30 minutes to the timer
+    - give the timer five more minutes
+    - extend the timer by an hour
+    - add five minutes to the pasta timer
   reminder.set:
     # A message is required: "remind me in ten minutes" alone stays a timer
     # request, while these all name what to say.
@@ -2307,6 +2331,12 @@ negatives:
   - does the Monster light bar support Apple HomeKit
   - where can I buy a replacement monitor light
   - how much power does the light bar use
+  # Timer-extension non-requests that must remain on the Agent path:
+  - how do I extend a timer
+  - how do timers work
+  - extend my warranty
+  - can I add more time to my parking meter
+  - extend the deadline
 
 # Compound requests ask for more than one thing. They are kept separate so
 # the evaluation can report compound handling on its own.

@@ -223,7 +223,7 @@ func TestCancelToolSpeaks(t *testing.T) {
 
 func TestTimerToolsAreFastPathEligible(t *testing.T) {
 	reg := newRegistry(t, newManager(nil))
-	for _, name := range []string{timer.SetName, timer.CancelName, timer.RemainingName, timer.ListName} {
+	for _, name := range []string{timer.SetName, timer.CancelName, timer.RemainingName, timer.ListName, timer.ExtendName} {
 		info, ok := reg.Info(name)
 		if !ok {
 			t.Fatalf("%s not registered", name)
@@ -241,12 +241,14 @@ func TestTimerToolsAreFastPathEligible(t *testing.T) {
 // name something private, so the list never reaches the Agent path.
 func TestListIsLocalOnly(t *testing.T) {
 	reg := newRegistry(t, newManager(nil))
-	info, ok := reg.Info(timer.ListName)
-	if !ok {
-		t.Fatal("timer.list not registered")
-	}
-	if !info.LocalOnly {
-		t.Fatal("timer.list is not LocalOnlyYes")
+	for _, name := range []string{timer.ListName, timer.RemainingName, timer.ExtendName} {
+		info, ok := reg.Info(name)
+		if !ok {
+			t.Fatalf("%s not registered", name)
+		}
+		if !info.LocalOnly {
+			t.Fatalf("%s is not LocalOnlyYes", name)
+		}
 	}
 	for _, name := range []string{timer.SetName, timer.CancelName} {
 		info, ok := reg.Info(name)

@@ -51,6 +51,8 @@ cmd="${1:-}"
 shift || true
 case "$cmd" in
 compose)
+	# Global flags before the subcommand (image-keys.py passes --profile).
+	while [[ "${1:-}" == --profile || "${1:-}" == --env-file ]]; do shift 2; done
 	sub="${1:-}"
 	shift || true
 	case "$sub" in
@@ -59,6 +61,7 @@ compose)
 		case "${1:-}" in
 		--services) cat "$dir/services" ;;
 		--images) cat "$dir/images" ;;
+		--format) cat "$dir/config.json" 2>/dev/null || echo '{"services":{}}' ;;
 		*) echo "services: {}" ;;
 		esac
 		;;
@@ -151,6 +154,13 @@ image)
 ps)
 	cat "$dir/running" 2>/dev/null || true
 	;;
+pull)
+	if [[ -f "$dir/pull-fails" ]]; then
+		echo "Error response from daemon: manifest unknown" >&2
+		exit 1
+	fi
+	echo "pulled"
+	;;
 system)
 	if [[ "${1:-}" == "df" ]]; then
 		echo "Images 1GB"
@@ -184,6 +194,8 @@ new_scenario() {
 	printf 'test-key\n' >"$SCENARIO/soloist/api-key"
 	chmod 600 "$SCENARIO/soloist/api-key"
 	echo healthy >"$SCENARIO/health/default"
+	# The fixture repo's assistant builds from ./assistant (see new_repo).
+	printf '{"services":{"assistant":{"build":{"context":"assistant","dockerfile":"Dockerfile"}}}}\n' >"$SCENARIO/config.json"
 	: >"$SCENARIO/calls"
 	: >"$SCENARIO/env"
 }
@@ -225,6 +237,9 @@ new_repo() {
 	cp "$MAKE_SRC" "$repo/Makefile" 2>/dev/null || true
 	cp "$REPO_ROOT/scripts/soloist-setup.sh" "$repo/scripts/soloist-setup.sh"
 	cp "$REPO_ROOT/scripts/prune-images.sh" "$repo/scripts/prune-images.sh"
+	cp "$REPO_ROOT/scripts/image-keys.py" "$repo/scripts/image-keys.py"
+	mkdir -p "$repo/assistant"
+	echo 'FROM scratch' >"$repo/assistant/Dockerfile"
 	chmod +x "$repo/scripts/deploy.sh" "$repo/scripts/soloist-setup.sh" "$repo/scripts/prune-images.sh"
 	cat >"$repo/docker-compose.yml" <<'YAML'
 services:
@@ -360,7 +375,7 @@ test_deploys_current_branch() {
 	assert_status 0 "clean deploy succeeds"
 	assert_out_contains "deploy reports healthy services" "healthy"
 	assert_out_contains "deploy pulls before building" "Already up to date"
-	assert_calls_contains "deploy builds the stack" "docker compose up -d --build --remove-orphans"
+	assert_calls_contains "deploy starts the stack from prepared images" "docker compose up -d --no-build --remove-orphans"
 	assert_env_contains "images are tagged with the short SHA" "GIT_SHA=$sha"
 	if [[ "$(git -C "$repo" rev-parse --abbrev-ref HEAD)" == "main" ]]; then pass; else fail "deploy leaves the tracked branch checked out"; fi
 }
@@ -408,7 +423,7 @@ test_provisions_the_receiver_before_compose_up() {
 	run_deploy "$repo"
 	assert_status 0 "deploy with a receiver succeeds"
 	assert_out_contains "deploy prepares the receiver" "using existing receiver binary"
-	assert_calls_contains "receiver setup runs before compose up" "docker compose up -d --build --remove-orphans"
+	assert_calls_contains "receiver setup runs before compose up" "docker compose up -d --no-build --remove-orphans"
 }
 
 test_deploy_without_spotify_key_skips_receiver() {
@@ -567,7 +582,8 @@ test_rollback_reuses_images_without_build() {
 	assert_status 0 "rollback succeeds"
 	assert_out_contains "rollback says it reuses images" "reusing"
 	assert_calls_contains "rollback brings the stack up without building" "docker compose up -d --no-build --remove-orphans"
-	assert_calls_not_contains "rollback never builds" "--build"
+	assert_calls_not_contains "rollback never builds" "compose build"
+	assert_calls_not_contains "rollback never pulls" "docker pull"
 	assert_env_contains "rollback tags with the rollback SHA" "GIT_SHA=$short"
 	if [[ "$(git -C "$repo" rev-parse HEAD)" == "$first" ]]; then pass; else fail "rollback checks out the requested commit"; fi
 }
@@ -671,7 +687,7 @@ test_deploys_pushed_feature_branch() {
 	new_scenario
 	run_deploy "$repo"
 	assert_status 0 "pushed feature branch deploys"
-	assert_calls_contains "feature branch builds the stack" "docker compose up -d --build --remove-orphans"
+	assert_calls_contains "feature branch deploys the stack" "docker compose up -d --no-build --remove-orphans"
 	assert_env_contains "feature branch tags its own SHA" "GIT_SHA=$sha"
 }
 
@@ -769,6 +785,56 @@ test_refuses_non_writable_exports() {
 	assert_out_contains "non-writable exports names the chown fix" "sudo chown -R $(id -u):$(id -g) exports"
 }
 
+test_deploy_uses_published_images() {
+	local repo sha
+	repo=$(new_repo)
+	sha=$(git -C "$repo" rev-parse --short HEAD)
+	new_scenario
+	run_deploy "$repo"
+	assert_status 0 "deploy with a published image succeeds"
+	assert_calls_contains "deploy pulls the image by its content key" "docker pull --quiet ghcr.io/jairik/clanka-bot/assistant:key-"
+	assert_calls_contains "the pulled image gets the deploy SHA tag" "clanka/assistant:$sha"
+	assert_calls_not_contains "a published image is never rebuilt" "compose build"
+	assert_calls_order "images are ready before compose up" "docker pull" "docker compose up"
+}
+
+test_deploy_builds_an_unpublished_image() {
+	local repo
+	repo=$(new_repo)
+	new_scenario
+	touch "$SCENARIO/pull-fails"
+	run_deploy "$repo"
+	assert_status 0 "a missing published image still deploys"
+	assert_out_contains "deploy says why it builds" "no published assistant image"
+	assert_calls_contains "deploy builds only the missing service" "docker compose build assistant"
+	assert_calls_order "the build happens before compose up" "docker compose build" "docker compose up"
+}
+
+test_deploy_without_registry_builds_everything() {
+	local repo
+	repo=$(new_repo)
+	new_scenario
+	DEPLOY_REGISTRY="" run_deploy "$repo"
+	assert_status 0 "registry-less deploy succeeds"
+	assert_calls_not_contains "no registry means no pull" "docker pull"
+	assert_calls_contains "every service builds on the host" "docker compose build assistant"
+}
+
+test_same_commit_and_args_give_the_same_key() {
+	local repo first second third
+	repo=$(new_repo)
+	new_scenario
+	first="$(cd "$repo" && STUB_DOCKER_DIR="$SCENARIO" PATH="$STUB_BIN:$PATH" python3 -I scripts/image-keys.py)"
+	echo unrelated >"$repo/tracked.txt"
+	git -C "$repo" commit -qam "outside the build context"
+	second="$(cd "$repo" && STUB_DOCKER_DIR="$SCENARIO" PATH="$STUB_BIN:$PATH" python3 -I scripts/image-keys.py)"
+	echo 'FROM busybox' >"$repo/assistant/Dockerfile"
+	git -C "$repo" commit -qam "inside the build context"
+	third="$(cd "$repo" && STUB_DOCKER_DIR="$SCENARIO" PATH="$STUB_BIN:$PATH" python3 -I scripts/image-keys.py)"
+	if [[ "$first" == assistant\ * && "$first" == "$second" ]]; then pass; else fail "a change outside the context keeps the key: '$first' vs '$second'"; fi
+	if [[ "$second" != "$third" ]]; then pass; else fail "a change inside the context must change the key"; fi
+}
+
 run_test() {
 	local name=$1
 	printf '== %s\n' "$name"
@@ -805,6 +871,10 @@ run_test test_prunes_old_images_after_health
 run_test test_prune_rmi_failure_does_not_fail_deploy
 run_test test_prune_script_failure_does_not_fail_deploy
 run_test test_does_not_prune_when_health_fails
+run_test test_deploy_uses_published_images
+run_test test_deploy_builds_an_unpublished_image
+run_test test_deploy_without_registry_builds_everything
+run_test test_same_commit_and_args_give_the_same_key
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

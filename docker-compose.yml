@@ -218,10 +218,14 @@ services:
     build:
       context: ./assistant
       dockerfile: web/Dockerfile.web
-      args:
-        WEB_VERSION: ${GIT_SHA:-dev}
+    # Only web/ goes into this image, so scripts/image-keys.py keys it on
+    # assistant/web alone and a Go-only change reuses the published artifact.
     image: clanka/dashboard-web:${GIT_SHA:-dev}
     restart: unless-stopped
+    environment:
+      # Set at start, not baked: the same image serves every commit whose web/
+      # is unchanged, and the header must still name the deployed commit.
+      DASHBOARD_UI_VERSION: ${GIT_SHA:-dev}
     expose:
       - "8080"
     healthcheck:

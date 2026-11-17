@@ -12,13 +12,21 @@ COPY web/ ./
 # Vite writes to ../internal/dashboard/ui/dist, which the Go build embeds.
 RUN mkdir -p ../internal/dashboard/ui && pnpm build
 
-FROM golang:1.25-alpine AS build
+# Pure Go (CGO off), so this stage cross-compiles on the build host instead of
+# running the compiler under emulation. The cache mounts keep the module and
+# build caches across local builds, so a one-file change does not recompile
+# every package (on the Pi a cold compile has taken close to half an hour).
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS build
+ARG TARGETOS
+ARG TARGETARCH
 WORKDIR /src
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY . .
 COPY --from=web /src/internal/dashboard/ui/dist ./internal/dashboard/ui/dist
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/assistant ./cmd/assistant
+RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -trimpath -ldflags="-s -w" -o /out/assistant ./cmd/assistant
 
 FROM alpine:3.22
 # pacat from pulseaudio-utils streams raw PCM to the configured Pulse sink.

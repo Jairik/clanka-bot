@@ -17,13 +17,13 @@ COPY web/ ./
 RUN mkdir -p ../internal/dashboard/ui && pnpm build
 
 FROM nginx:1.29-alpine
-ARG WEB_VERSION=dev
 # The build is the artifact: no Node, no package manager and no shell tooling
 # beyond what the static server needs.
 COPY --from=build /src/internal/dashboard/ui/dist /usr/share/nginx/html
-# A template, not a config: the image entrypoint fills in the build SHA so the
-# assistant can report the build that actually answered, even after a --no-deps
-# rollback of this service alone.
-ENV DASHBOARD_UI_VERSION=$WEB_VERSION
+# A template, not a config: the image entrypoint fills in DASHBOARD_UI_VERSION,
+# which Compose sets to the deployed SHA, so the assistant can report the build
+# that actually answered, even after a --no-deps rollback of this service alone.
+# It is not baked in, so one image can serve every commit with the same web/.
+ENV DASHBOARD_UI_VERSION=dev
 COPY web/nginx.conf /etc/nginx/templates/default.conf.template
 EXPOSE 8080

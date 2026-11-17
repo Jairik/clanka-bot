@@ -42,10 +42,12 @@ Each tick, in order:
    this commit" — the running stack stays as it is until a new commit lands.
    A missing or unreachable API is a warning, not a block: `HEAD` equality
    still prevents redundant builds.
-6. Run `scripts/deploy.sh` unchanged: `git pull --ff-only`, build the
-   SHA-tagged images, `docker compose up -d --build --remove-orphans`, then the
+6. Run `scripts/deploy.sh` unchanged: `git pull --ff-only`, pull the images
+   CI published for the commit (building only any that are missing), tag them
+   with the SHA, `docker compose up -d --no-build --remove-orphans`, then the
    bounded health wait and the best-effort old-image prune. A prune warning
-   leaves the deployed stack green.
+   leaves the deployed stack green. The CI gate in step 5 includes the
+   **Pi images** workflow, so the images exist by the time this runs.
 7. Re-read `HEAD` and report `deployed <sha>` only when it is the commit the
    watcher asked for. A deploy that exits 0 but leaves `HEAD` elsewhere is an
    error that names both SHAs, so the journal never claims a build the host is
@@ -160,11 +162,12 @@ A one-off check without deploying:
 
 ## Build load
 
-Eight services carry a `build:` section, three of them Python model images, and
-`docker compose up -d --build` rebuilds all of them. On the Pi a full rebuild
-takes anywhere from three minutes with a warm layer cache to half an hour,
-while a busy `main` can take a commit every few minutes. Two things keep that
-from turning the box into a rebuild treadmill:
+Images are built by GitHub Actions, not on the Pi ([deploy.md](deploy.md#images-from-ci)),
+so a normal deploy is a pull. The Pi only builds a service itself when no
+image is published for its key: CI failed to publish it, the Pi's `.env` build
+args differ from `deploy/pi-images.env`, or the registry is unreachable. That
+fallback has the old cost (from three minutes with a warm layer cache to half an
+hour), so the guards below still matter:
 
 - `DEPLOY_WATCH_MIN_AGE` (the settle window) refuses to build a tip younger
   than 15 minutes, so a burst of merges coalesces into one deploy at the end of

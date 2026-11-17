@@ -664,7 +664,8 @@ export type SoundRow = {
   Added: string;
   Origin: string;
   AudioURL: string;
-  /** Empty for the built-in chime, which cannot be deleted. */
+  // Empty for the built-in chime, which cannot be deleted. The page hides
+  // the trash control when this is blank.
   DeleteAction: string;
 };
 

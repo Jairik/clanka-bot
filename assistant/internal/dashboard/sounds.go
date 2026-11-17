@@ -41,14 +41,15 @@ type soundsView struct {
 	HasRing    bool
 }
 
-// soundRowView is one library entry with both preview routes. DeleteAction
-// is empty for the built-in chime, which cannot be deleted.
+// soundRowView is one library entry with both preview routes.
 type soundRowView struct {
-	Name         string
-	Duration     string
-	Added        string
-	Origin       string
-	AudioURL     string
+	Name     string
+	Duration string
+	Added    string
+	Origin   string
+	AudioURL string
+	// Empty for the built-in chime, which cannot be deleted. The page hides
+	// the trash control when this is blank.
 	DeleteAction string
 }
 

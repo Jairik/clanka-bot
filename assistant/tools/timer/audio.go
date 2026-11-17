@@ -2,9 +2,12 @@ package timer
 
 import (
 	"context"
-	"fmt"
+	"errors"
 	"strings"
 )
+
+// ErrNotPending is returned when a timer is no longer running or pending.
+var ErrNotPending = errors.New("timer is no longer pending")
 
 // SetAudio changes only a pending timer, atomically with its durable row.
 func (m *Manager) SetAudio(ctx context.Context, id, audio string) error {
@@ -12,7 +15,7 @@ func (m *Manager) SetAudio(ctx context.Context, id, audio string) error {
 	defer m.mu.Unlock()
 	e := m.entries[id]
 	if e == nil {
-		return fmt.Errorf("timer is no longer pending")
+		return ErrNotPending
 	}
 	audio = strings.TrimSpace(audio)
 	if m.db != nil {

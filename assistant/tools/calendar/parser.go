@@ -34,9 +34,27 @@ func parseICS(r io.Reader, loc *time.Location, windowStart, windowEnd time.Time)
 		return nil, fmt.Errorf("failed to decode iCalendar: %w", err)
 	}
 
+	// Detached instances suppress their original occurrence even when cancelled or moved outside the window.
+	overrides := make(map[string][]time.Time)
+	for _, child := range cal.Children {
+		if child.Name != ical.CompEvent {
+			continue
+		}
+		uid, _ := child.Props.Text("UID")
+		if prop := child.Props.Get("RECURRENCE-ID"); uid != "" && prop != nil {
+			if original, err := parseEventTime(prop, loc); err == nil {
+				overrides[uid] = append(overrides[uid], original)
+			}
+		}
+	}
+
 	var events []EventInstance
 	for _, child := range cal.Children {
 		if child.Name != ical.CompEvent {
+			continue
+		}
+		// Cancelled detached instances have already suppressed their master occurrence.
+		if status := child.Props.Get("STATUS"); status != nil && strings.EqualFold(status.Value, "CANCELLED") {
 			continue
 		}
 		summary, _ := child.Props.Text(ical.PropSummary)
@@ -84,6 +102,10 @@ func parseICS(r io.Reader, loc *time.Location, windowStart, windowEnd time.Time)
 					set.RRule(rule)
 					for _, ex := range parseExDates(child.Props, loc) {
 						set.ExDate(ex)
+					}
+					uid, _ := child.Props.Text("UID")
+					for _, original := range overrides[uid] {
+						set.ExDate(original)
 					}
 					// Search 1 day before windowStart to catch events spanning midnight into windowStart.
 					expandStart := windowStart.AddDate(0, 0, -1)

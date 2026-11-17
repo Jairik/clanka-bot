@@ -39,6 +39,10 @@ type Client struct {
 
 	mu           sync.Mutex
 	cachedEvents []EventInstance
+	cacheURL     string
+	cacheZone    string
+	cacheStart   time.Time
+	cacheEnd     time.Time
 	cachedAt     time.Time
 	lastError    error
 	errorClass   string
@@ -87,12 +91,23 @@ func (c *Client) Fetch(ctx context.Context, rawURL string, loc *time.Location, w
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	// Never reuse private events or stale fallback across a feed, zone, or window change.
+	rawURL = strings.TrimSpace(rawURL)
+	if loc == nil {
+		loc = time.UTC
+	}
+	if c.cacheURL != rawURL || c.cacheZone != loc.String() || !c.cacheStart.Equal(windowStart) || !c.cacheEnd.Equal(windowEnd) {
+		c.cachedEvents = nil
+		c.cachedAt = time.Time{}
+		c.cacheURL, c.cacheZone = rawURL, loc.String()
+		c.cacheStart, c.cacheEnd = windowStart, windowEnd
+	}
+
 	now := c.clock()
 	if c.cachedEvents != nil && now.Sub(c.cachedAt) < cacheTTL {
 		return c.filterEvents(c.cachedEvents, windowStart, windowEnd), nil
 	}
 
-	rawURL = strings.TrimSpace(rawURL)
 	if rawURL == "" {
 		c.errorClass = "not-configured"
 		c.lastError = errors.New("CALENDAR_ICS_URL is not configured")
@@ -180,6 +195,10 @@ func (c *Client) Fetch(ctx context.Context, rawURL string, loc *time.Location, w
 		return nil, c.lastError
 	}
 
+	// A successful empty calendar is cached too.
+	if events == nil {
+		events = []EventInstance{}
+	}
 	c.cachedEvents = events
 	c.cachedAt = now
 	c.lastError = nil

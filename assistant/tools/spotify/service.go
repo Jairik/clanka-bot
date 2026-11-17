@@ -305,16 +305,22 @@ func (s *Service) WatchCompletion(ctx context.Context) {
 	}()
 
 	wasPlaying := false
+	retrying := false
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-s.wake:
+			// Commands cannot shorten the server's rate-limit suspension.
+			if retrying {
+				continue
+			}
 			// A spoken command resets the interval to 2 seconds immediately.
 			interval = watchActiveInterval
 			stop()
 			ch, stop = tickerFn(interval)
 		case <-ch:
+			retrying = false
 			select {
 			case <-s.wake:
 				// Drain any concurrent wake signal and reset interval.
@@ -346,6 +352,7 @@ func (s *Service) WatchCompletion(ctx context.Context) {
 			if retry <= 0 {
 				retry = watchIdleInterval
 			}
+			retrying = true
 			interval = retry
 			stop()
 			ch, stop = tickerFn(interval)

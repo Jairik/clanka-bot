@@ -1,10 +1,11 @@
 // Drives the recorder worklet processor with render quanta (128 samples each).
-// Verifies batching into 1024-sample blocks (8 quanta) and flushing on disconnect.
+// Verifies batching into 1024-sample blocks (8 quanta) and flushing on request.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 class FakeAudioWorkletProcessor {
   port = {
     postMessage: vi.fn(),
+    onmessage: (_event: { data: { type: string } }) => {},
   };
 }
 
@@ -21,10 +22,12 @@ function quantum(fill = 0.5): Float32Array {
 describe("Recorder AudioWorkletProcessor", () => {
   let recorder: InstanceType<typeof Recorder>;
   let postMessage: ReturnType<typeof vi.fn>;
+  let port: FakeAudioWorkletProcessor["port"];
 
   beforeEach(() => {
     recorder = new Recorder();
-    postMessage = (recorder as unknown as { port: { postMessage: ReturnType<typeof vi.fn> } }).port.postMessage;
+    port = (recorder as unknown as FakeAudioWorkletProcessor).port;
+    postMessage = port.postMessage;
     postMessage.mockClear();
   });
 
@@ -64,17 +67,19 @@ describe("Recorder AudioWorkletProcessor", () => {
     expect(firstBlock[0]).toBeCloseTo(1.0);
   });
 
-  it("flushes a partial block when the node is disconnected", () => {
+  it("flushes a partial block before acknowledging stop", () => {
     // Drive with 3 quanta (3 * 128 = 384 samples).
     for (let i = 0; i < 3; i++) {
       recorder.process([[quantum(0.5)]]);
     }
     expect(postMessage).not.toHaveBeenCalled();
 
-    // Disconnect simulated by process with empty channel / inputs.
-    const active = recorder.process([]);
-    expect(active).toBe(false);
-    expect(postMessage).toHaveBeenCalledOnce();
+    // A gap in processing must not stop the node before it receives the flush.
+    expect(recorder.process([])).toBe(true);
+    port.onmessage({ data: { type: "flush" } });
+    expect(recorder.process([])).toBe(false);
+    expect(postMessage).toHaveBeenCalledTimes(2);
+    expect(postMessage.mock.calls[1][0]).toEqual({ type: "flushed" });
 
     const partial = postMessage.mock.calls[0][0] as Float32Array;
     expect(partial).toBeInstanceOf(Float32Array);
@@ -88,9 +93,9 @@ describe("Recorder AudioWorkletProcessor", () => {
     expect(postMessage).not.toHaveBeenCalled();
   });
 
-  it("does not flush an empty buffer if disconnected before any audio arrives", () => {
-    const active = recorder.process([]);
-    expect(active).toBe(true);
-    expect(postMessage).not.toHaveBeenCalled();
+  it("acknowledges stop even before any audio arrives", () => {
+    port.onmessage({ data: { type: "flush" } });
+    expect(postMessage).toHaveBeenCalledExactlyOnceWith({ type: "flushed" });
+    expect(recorder.process([[quantum()]])).toBe(false);
   });
 });

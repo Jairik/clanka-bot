@@ -663,6 +663,15 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 	record.reason = decision.Reason
 	record.embedErr = decision.embedErr
 
+	// Smoke may inspect any route, but only the clock read may execute.
+	if isSmoke && (decision.Tool != "time.now" || (decision.routeKind != routeKindControlPhrase && decision.routeKind != routeKindSemantic)) {
+		markRouting()
+		reply.Path = decision.Path
+		reply.Tool = decision.Tool
+		reply.Text = "Unexpected route skipped for smoke."
+		return reply
+	}
+
 	switch decision.routeKind {
 	case routeKindConfirmation:
 		markRouting()

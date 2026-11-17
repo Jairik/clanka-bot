@@ -14,6 +14,7 @@
 package activity
 
 import (
+	"context"
 	"sort"
 	"strings"
 	"sync"
@@ -36,9 +37,9 @@ const (
 	maxResultRunes     = 2000
 )
 
-// stageOrder is the display order for measured stages. Unknown stages follow
+// StageOrder is the display order for measured stages. Unknown stages follow
 // in name order, so a future stage still appears without a page change.
-var stageOrder = []latency.Stage{
+var StageOrder = []latency.Stage{
 	latency.StageEndpointing,
 	latency.StageSTTFinalize,
 	latency.StageRouting,
@@ -46,6 +47,8 @@ var stageOrder = []latency.Stage{
 	latency.StageAgentFirstToken,
 	latency.StageTTSFirstAudio,
 }
+
+var stageOrder = StageOrder
 
 // checkpointOrder is the display order for turn-relative checkpoints.
 var checkpointOrder = []string{latency.CheckpointFirstChunk}
@@ -337,6 +340,65 @@ func calls(details []latency.ToolCallDetail) []Call {
 	}
 	return out
 }
+
+// TimingsToMSMap converts a slice of Timing entries to a map keyed with the _ms suffix.
+func TimingsToMSMap(timings []Timing) map[string]int64 {
+	if len(timings) == 0 {
+		return nil
+	}
+	m := make(map[string]int64, len(timings))
+	for _, t := range timings {
+		name := t.Name
+		if !strings.HasSuffix(name, "_ms") {
+			name += "_ms"
+		}
+		m[name] = t.MS
+	}
+	return m
+}
+
+// Latency returns the percentile summary for requests within the window. If a
+// durable history is attached, it reads from the database; otherwise, it
+// summarizes the in-memory ring.
+func (s *Store) Latency(ctx context.Context, window time.Duration) (latency.Summary, error) {
+	if s == nil {
+		return latency.Summary{}, nil
+	}
+	if s.history != nil {
+		return s.history.Latency(ctx, window)
+	}
+	s.mu.Lock()
+	entries := make([]Entry, len(s.entries))
+	copy(entries, s.entries)
+	s.mu.Unlock()
+
+	var cutoff time.Time
+	if window > 0 {
+		cutoff = s.now().Add(-window)
+	}
+	var records []latency.Record
+	// Scan newest entries first up to the bound.
+	for i := len(entries) - 1; i >= 0 && len(records) < defaultLatencyLimit; i-- {
+		e := entries[i]
+		if window > 0 && e.At.Before(cutoff) {
+			continue
+		}
+		rec := latency.Record{
+			Time:        e.At,
+			Path:        e.Path,
+			Outcome:     e.Outcome,
+			Stages:      TimingsToMSMap(e.Stages),
+			Checkpoints: TimingsToMSMap(e.Checkpoints),
+		}
+		if e.ResponseMS != nil {
+			ms := float64(*e.ResponseMS)
+			rec.ResponseMS = &ms
+		}
+		records = append(records, rec)
+	}
+	return latency.Summarize(records), nil
+}
+
 
 // truncate bounds one display field on a rune boundary, so invalid UTF-8
 // cannot reach the template. A clipped value says so instead of looking whole.

@@ -230,6 +230,40 @@ export type IntegrationVerify = {
   reason: string;
 };
 
+export type LatencyPath = {
+  path: string;
+  label: string;
+  attempts: number;
+  response_count: number;
+  outcomes: Record<string, number>;
+  response: LatencyStat;
+  stages: Record<string, LatencyStat>;
+  stage_list: LatencyStage[] | null;
+  first_chunk: LatencyStat;
+  agent_token: LatencyStat;
+};
+
+export type LatencyStage = {
+  name: string;
+  label: string;
+  n: number;
+  p50: number;
+  p95: number;
+};
+
+export type LatencyStat = {
+  n: number;
+  p50: number;
+  p95: number;
+};
+
+export type LatencyView = {
+  window: string;
+  records: number;
+  paths: LatencyPath[] | null;
+  notice: string;
+};
+
 export type LightsDevice = {
   address: string;
   name: string;

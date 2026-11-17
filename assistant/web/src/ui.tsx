@@ -68,19 +68,26 @@ export function Dot({ tone = "neutral", pulse }: { tone?: Tone; pulse?: boolean 
 
 /** The collapsible building block used everywhere: a header that summarizes its body. */
 export function Section({
-  title, summary, right, tone, defaultOpen, children, className, flush,
+  title, summary, right, tone, defaultOpen, isExpanded, onExpandedChange, children, className, flush,
 }: {
   title: ReactNode;
   summary?: ReactNode;
   right?: ReactNode;
   tone?: Tone;
   defaultOpen?: boolean;
+  isExpanded?: boolean;
+  onExpandedChange?: (isOpen: boolean) => void;
   children: ReactNode;
   className?: string;
   flush?: boolean;
 }) {
   return (
-    <Disclosure defaultExpanded={defaultOpen} className={cn("group/sec rounded-xl border bg-surface", className)}>
+    <Disclosure
+      defaultExpanded={defaultOpen}
+      isExpanded={isExpanded}
+      onExpandedChange={onExpandedChange}
+      className={cn("group/sec rounded-xl border bg-surface", className)}
+    >
       <Disclosure.Heading level={2}>
         <Disclosure.Trigger className="flex min-h-12 w-full items-center gap-2.5 rounded-xl px-3.5 py-2.5 text-left hover:bg-surface-secondary">
           <ChevronRight className="size-4 shrink-0 text-muted transition-transform group-data-[expanded=true]/sec:rotate-90" />

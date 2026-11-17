@@ -1,6 +1,7 @@
 package activity
 
 import (
+	"context"
 	"strings"
 	"sync"
 	"testing"
@@ -138,5 +139,31 @@ func TestNilStoreIsHarmless(t *testing.T) {
 	}
 	if _, ok := store.Get("req"); ok {
 		t.Fatal("nil store returned an entry")
+	}
+}
+
+// TestStoreLatency asserts that an in-memory Store summarizes latency records when no history is attached.
+func TestStoreLatency(t *testing.T) {
+	ctx := context.Background()
+	store := New(10)
+	store.Observe(completed("req-1"))
+	store.Observe(completed("req-2"))
+
+	summary, err := store.Latency(ctx, 24*time.Hour)
+	if err != nil {
+		t.Fatalf("store.Latency: %v", err)
+	}
+	if summary.Records != 2 {
+		t.Fatalf("got %d records, want 2", summary.Records)
+	}
+	if len(summary.Paths) != 1 {
+		t.Fatalf("got %d paths, want 1", len(summary.Paths))
+	}
+	path := summary.Paths[0]
+	if path.Response.N != 2 {
+		t.Fatalf("Response.N = %d, want 2", path.Response.N)
+	}
+	if path.FirstChunk.N != 2 {
+		t.Fatalf("FirstChunk.N = %d, want 2", path.FirstChunk.N)
 	}
 }

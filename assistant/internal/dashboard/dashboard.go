@@ -452,6 +452,7 @@ func New(opts Options) (*Handler, error) {
 	// attachment headers and writes one bounded, redacted JSON document.
 	h.Handle("GET /api/ui/diagnostics", h.diagnostics)
 	h.Handle("GET /api/ui/activity", h.activityPage)
+	h.Handle("GET /api/ui/latency", h.latencyPage)
 	// The focus and announcement state, also pushed as an SSE delta on change.
 	h.Handle("GET /api/ui/focus", h.focusHandler)
 	// One read-only live stream for the whole app. Every write still uses its

@@ -45,6 +45,8 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/tools/github"
 	lighttools "github.com/Jairik/clanka-bot/assistant/tools/lights"
 	listtools "github.com/Jairik/clanka-bot/assistant/tools/list"
+	monstercore "github.com/Jairik/clanka-bot/assistant/internal/monster"
+	monstertools "github.com/Jairik/clanka-bot/assistant/tools/monster"
 	notetools "github.com/Jairik/clanka-bot/assistant/tools/note"
 	notifytools "github.com/Jairik/clanka-bot/assistant/tools/notify"
 	personatools "github.com/Jairik/clanka-bot/assistant/tools/persona"
@@ -64,6 +66,7 @@ import (
 // routingEvalTools is the complete Fast path surface this corpus must cover.
 var routingEvalTools = []string{
 	"lights.power", "lights.brightness", "lights.color", "lights.mode", "lights.list",
+	"monster.power", "monster.brightness", "monster.color", "monster.white", "monster.scene",
 	clock.Name,
 	clock.DateName,
 	clock.CityName,
@@ -798,6 +801,29 @@ func evalRegistry(t *testing.T) (*tool.Registry, *timer.Manager, *alarm.Manager,
 		t.Fatal(err)
 	}
 	lm.Service.Run = func(context.Context, ...string) ([]byte, error) { return nil, nil }
+	mm := monstertools.NewModule()
+	mm.Service = monstercore.NewService(monstercore.Options{
+		API: &evalMonsterAPI{
+			devices: []monstercore.Device{{DSN: "DSN1", Name: "Duo+"}},
+			props: map[string]map[string]any{
+				"DSN1": {
+					"mode":         "color",
+					"brightness":   50,
+					"color_bright": 50,
+					"dyn02":        `{"n":"Sunset"}`,
+					"st00":         `{"n":"Reading"}`,
+					"st01":         `{"n":"Relax"}`,
+					"st02":         `{"n":"Gaming"}`,
+					"st03":         `{"n":"Party"}`,
+					"st04":         `{"n":"Movie"}`,
+				},
+			},
+		},
+		Credentials: func() (string, string, bool) { return "eval@example.com", "secret", true },
+	})
+	if err := mm.Register(reg, tool.Deps{}); err != nil {
+		t.Fatalf("register monster: %v", err)
+	}
 	if err := calendar.NewModule().Register(reg, tool.Deps{Clock: func() time.Time { return fixed }}); err != nil {
 		t.Fatalf("register calendar: %v", err)
 	}
@@ -840,6 +866,27 @@ func webModuleWithFakeWiki(baseURL string) *web.Module {
 		panic(err)
 	}
 	return mod
+}
+
+// evalMonsterAPI provides in-memory devices and properties for the Monster routing corpus.
+type evalMonsterAPI struct {
+	devices []monstercore.Device
+	props   map[string]map[string]any
+}
+
+func (e *evalMonsterAPI) Devices(context.Context, string, string) ([]monstercore.Device, error) {
+	return e.devices, nil
+}
+
+func (e *evalMonsterAPI) Properties(_ context.Context, _, _, dsn string) (map[string]any, error) {
+	if e.props != nil {
+		return e.props[dsn], nil
+	}
+	return nil, nil
+}
+
+func (e *evalMonsterAPI) Set(context.Context, string, string, string, string, any) error {
+	return nil
 }
 
 // evalSpotifyPlayer is a successful in-memory Player for the routing corpus.

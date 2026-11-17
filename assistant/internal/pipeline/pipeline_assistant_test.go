@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/agent"
+	"github.com/Jairik/clanka-bot/assistant/internal/announce"
 	"github.com/Jairik/clanka-bot/assistant/internal/lastreply"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
@@ -579,5 +580,34 @@ func TestCancelledRepeatStoresNoRateOrReply(t *testing.T) {
 	got, ok := store.Last()
 	if !ok || got.Text != "original answer" || got.SpeechRate != 0 {
 		t.Fatalf("store after cancelled repeat = %+v/%v, want the unchanged original", got, ok)
+	}
+}
+
+// TestRepeatKeepsSayThatAgainAgainstAnnouncements proves that assistant.repeat
+// retains "say that again" when assistant.announcements is registered, and does
+// not misroute to announcements.
+func TestRepeatKeepsSayThatAgainAgainstAnnouncements(t *testing.T) {
+	fixed := time.Date(2026, 11, 11, 15, 4, 0, 0, time.UTC)
+	reg := tool.NewRegistry(time.Second)
+	if err := clock.Register(reg, func() time.Time { return fixed }); err != nil {
+		t.Fatalf("register clock: %v", err)
+	}
+	store := lastreply.New()
+	store.Record(lastreply.Reply{Text: "It's 3:04 PM.", Tool: clock.Name})
+	queue := announce.New(nil, slog.Default())
+	if err := assistant.NewModule().Register(reg, tool.Deps{LastReply: store, Announcements: queue}); err != nil {
+		t.Fatalf("register assistant: %v", err)
+	}
+	p, _ := newComposedPipeline(t, reg, map[string]string{
+		"say that again":                   assistant.RepeatName,
+		"what did you say while I was out": assistant.AnnouncementsName,
+	}, pipeline.WithLastReply(store))
+
+	reply := p.Handle(context.Background(), request(), "say that again")
+	if reply.Tool != assistant.RepeatName {
+		t.Fatalf("reply.Tool = %q, want %q (not announcements)", reply.Tool, assistant.RepeatName)
+	}
+	if reply.Text != "It's 3:04 PM." {
+		t.Fatalf("reply.Text = %q, want previous clock reply", reply.Text)
 	}
 }

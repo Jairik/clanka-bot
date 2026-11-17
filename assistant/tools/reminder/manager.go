@@ -479,7 +479,7 @@ func (m *Manager) fire(id string) {
 		defer stop()
 		return m.speakAlert(ctx, eventID, r)
 	}
-	if !queue.EnqueueAlert(play) {
+	if !queue.EnqueueAlert(r.Message, play) {
 		release()
 		m.finishEvent(eventID, alertstore.StateMissed, "unavailable")
 		m.logger.Warn("reminder dropped: the Announcement queue is closed", "reminder_id", r.ID)

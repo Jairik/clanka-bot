@@ -13,9 +13,10 @@ import (
 
 // Canonical Tool names.
 const (
-	RepeatName = "assistant.repeat"
-	HelpName   = "assistant.help"
-	ForgetName = "assistant.forget"
+	RepeatName        = "assistant.repeat"
+	HelpName          = "assistant.help"
+	ForgetName        = "assistant.forget"
+	AnnouncementsName = "assistant.announcements"
 )
 
 // Module is the assistant Tool domain. It has no settings; the previous reply
@@ -28,11 +29,11 @@ func NewModule() *Module { return &Module{} }
 // Name is the module name and config section suffix.
 func (*Module) Name() string { return "assistant" }
 
-// Register adds assistant.repeat, assistant.help and assistant.forget. The
-// help handler closes over the registry and reads effective metadata on every
-// call, so a stored disable or a newly registered Tool applies without
-// re-registration. The forget handler closes over the shared history seam that
-// main binds before this module registers.
+// Register adds assistant.repeat, assistant.help, assistant.forget and
+// assistant.announcements. The help handler closes over the registry and reads
+// effective metadata on every call, so a stored disable or a newly registered
+// Tool applies without re-registration. The forget handler closes over the
+// shared history seam that main binds before this module registers.
 func (*Module) Register(r *tool.Registry, deps tool.Deps) error {
 	// The repeat's speed step falls back to the live voice.rate when the last
 	// reply carried no per-utterance override. Voices is nil in conformance and
@@ -45,6 +46,9 @@ func (*Module) Register(r *tool.Registry, deps tool.Deps) error {
 		return err
 	}
 	if err := tool.Add(r, NewForget(deps.History)); err != nil {
+		return err
+	}
+	if err := tool.Add(r, NewAnnouncements(deps.Announcements)); err != nil {
 		return err
 	}
 	return tool.Add(r, NewHelp(r))

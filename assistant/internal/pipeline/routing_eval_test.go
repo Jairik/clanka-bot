@@ -99,6 +99,7 @@ var routingEvalTools = []string{
 	assistant.RepeatName,
 	assistant.HelpName,
 	assistant.ForgetName,
+	assistant.AnnouncementsName,
 	system.Name,
 	system.DiagnoseName,
 	notifytools.Name,

@@ -65,9 +65,9 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/wording"
 	"github.com/Jairik/clanka-bot/assistant/internal/wyoming"
 	"github.com/Jairik/clanka-bot/assistant/tools"
+	"github.com/Jairik/clanka-bot/assistant/tools/alarm"
 	"github.com/Jairik/clanka-bot/assistant/tools/github"
 	"github.com/Jairik/clanka-bot/assistant/tools/monster"
-	"github.com/Jairik/clanka-bot/assistant/tools/alarm"
 	personatools "github.com/Jairik/clanka-bot/assistant/tools/persona"
 	spotifytools "github.com/Jairik/clanka-bot/assistant/tools/spotify"
 	"github.com/Jairik/clanka-bot/assistant/tools/timer"
@@ -661,6 +661,7 @@ func run() error {
 	// The Hermes page's per-account grants are ordinary live settings, so they
 	// appear on Settings too and a reset revokes access.
 	defs = append(defs, integrations.Definitions()...)
+	defs = append(defs, speech.PronunciationDefinition(baseCfg.Speech.Pronunciation))
 	settingsSvc, err = settings.New(ctx, st, defs...)
 	if err != nil {
 		return fmt.Errorf("settings: %w", err)
@@ -773,6 +774,9 @@ func run() error {
 			voice, rate := currentSpeechVoice(voiceSvc)
 			return speech.VoiceSettings{Voice: voice, Rate: rate}
 		})
+		speechSpeaker.BindPronunciation(func() *speech.Pronouncer {
+			return speech.NewPronouncer(settingsSvc.Strings(speech.PronunciationKey))
+		})
 	}
 
 	// Timer and Alarm installed the Notify missed hook before Start's
@@ -816,19 +820,21 @@ func run() error {
 	var synthFiller wording.FillerSynth
 	if ttsClient != nil {
 		voice, rate := currentSpeechVoice(voiceSvc)
-		filler = loadAgentFiller(logger, ttsClient, voice, rate, settingsSvc.String(wording.FillerKey), cfg.TTS.Timeout.Duration())
+		pronouncer := speech.NewPronouncer(settingsSvc.Strings(speech.PronunciationKey))
+		filler = loadAgentFiller(logger, ttsClient, voice, rate, pronouncer.Replace(settingsSvc.String(wording.FillerKey)), cfg.TTS.Timeout.Duration())
 		synthFiller = func(ctx context.Context, text string) (*speech.Filler, error) {
 			ctx, cancel := context.WithTimeout(ctx, cfg.TTS.Timeout.Duration())
 			defer cancel()
 			voice, rate := currentSpeechVoice(voiceSvc)
-			return speech.SynthesizeFiller(ctx, ttsClient, voice, text, wyoming.WithRate(rate))
+			pron := speech.NewPronouncer(settingsSvc.Strings(speech.PronunciationKey))
+			return speech.SynthesizeFiller(ctx, ttsClient, voice, pron.Replace(text), wyoming.WithRate(rate))
 		}
 	}
 	// The wording worker keeps the single settings observer. The extra keys and
 	// signature make a voice/rate change re-synthesize the cached Filler, so
 	// the spoken cue never keeps the old voice forever.
 	wordingMgr, err := wording.NewManager(settingsSvc, wordingSetup, filler, synthFiller, logger,
-		wording.WithFillerKeys(voicelib.KeyName, voicelib.KeyRate),
+		wording.WithFillerKeys(voicelib.KeyName, voicelib.KeyRate, speech.PronunciationKey),
 		wording.WithFillerSignature(func() string {
 			ref, rate, ok := voiceSvc.ActiveSpeech()
 			if !ok {
@@ -1393,13 +1399,13 @@ func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingD
 	)
 
 	deps := voice.Deps{
-		Source:     audio.NewPulseSource(cfg.Capture.Binary, cfg.Capture.Source, captureFormat),
-		Wake:       voice.NewWyomingWake(wakeClient, detectModels, wireFormat, thresholds),
-		STT:        voice.NewWyomingSTT(sttClient, wyoming.TranscribeOptions{Name: cfg.STT.Model, Language: cfg.STT.Language}, wireFormat),
-		Player:     audio.NewPCMPlayer(sink),
-		Responder:  voice.NewPipelineResponder(session, tool.DevicePi),
-		Speaker:    busySpeaker,
-		WakeWords:  names,
+		Source:    audio.NewPulseSource(cfg.Capture.Binary, cfg.Capture.Source, captureFormat),
+		Wake:      voice.NewWyomingWake(wakeClient, detectModels, wireFormat, thresholds),
+		STT:       voice.NewWyomingSTT(sttClient, wyoming.TranscribeOptions{Name: cfg.STT.Model, Language: cfg.STT.Language}, wireFormat),
+		Player:    audio.NewPCMPlayer(sink),
+		Responder: voice.NewPipelineResponder(session, tool.DevicePi),
+		Speaker:   busySpeaker,
+		WakeWords: names,
 		// The same live source the wake service reads per Open: the loop
 		// compares its signature while a stream is healthy.
 		Thresholds: thresholds,

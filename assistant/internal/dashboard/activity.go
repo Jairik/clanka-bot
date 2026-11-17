@@ -36,6 +36,11 @@ type TypedResponder interface {
 	Ask(ctx context.Context, req tool.Request, transcript string) (pipeline.Reply, error)
 }
 
+// activityHistoryReader is the read seam for durable activity queries.
+type activityHistoryReader interface {
+	QueryPage(ctx context.Context, q activity.Query) (activity.Page, error)
+}
+
 // activityView is the Activity page's data model. Values are precomputed so the
 // template holds no lookups.
 type activityView struct {
@@ -151,16 +156,16 @@ func (h *Handler) activityAsk(w http.ResponseWriter, r *http.Request) {
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxTypedFormBytes)
 	if err := r.ParseForm(); err != nil {
-		h.activityFail(w, r, http.StatusBadRequest, "Could not read the form.", "")
+		h.activityFail(r.Context(), w, http.StatusBadRequest, "Could not read the form.", "")
 		return
 	}
 	text := strings.TrimSpace(r.FormValue("text"))
 	switch {
 	case text == "":
-		h.activityFail(w, r, http.StatusBadRequest, "Type a request first.", "")
+		h.activityFail(r.Context(), w, http.StatusBadRequest, "Type a request first.", "")
 		return
 	case utf8.RuneCountInString(text) > maxTypedTextRunes:
-		h.activityFail(w, r, http.StatusBadRequest,
+		h.activityFail(r.Context(), w, http.StatusBadRequest,
 			fmt.Sprintf("Keep the request to %d characters or fewer.", maxTypedTextRunes), text)
 		return
 	}
@@ -225,26 +230,26 @@ func (h *Handler) runAsk(w http.ResponseWriter, r *http.Request, text string, so
 			"request_id", requestID,
 			"error", err.Error(),
 		)
-		h.activityFail(w, r, http.StatusInternalServerError, "That request could not be completed.", text)
+		h.activityFail(r.Context(), w, http.StatusInternalServerError, "That request could not be completed.", text)
 		return
 	}
 	// The pipeline always returns text, including a helpful placeholder or an
 	// Unavailable message; the view reads it straight from the Activity store.
 
-	h.writeJSON(w, http.StatusOK, h.buildActivityView(requestID, "", "", ""))
+	h.writeJSON(w, http.StatusOK, h.buildActivityView(r.Context(), requestID, "", "", ""))
 }
 
 // activityFail answers with the Activity view, the error and the draft to
 // restore, under the real status code.
-func (h *Handler) activityFail(w http.ResponseWriter, r *http.Request, status int, message, draft string) {
-	view := h.buildActivityView("", message, "", draft)
+func (h *Handler) activityFail(ctx context.Context, w http.ResponseWriter, status int, message, draft string) {
+	view := h.buildActivityView(ctx, "", message, "", draft)
 	h.writeJSON(w, status, view)
 }
 
 // buildActivityView reads one bounded snapshot. justID highlights the reply
 // that the POST just produced; it is only a lookup key, never user text.
-func (h *Handler) buildActivityView(justID, errorText, notice, draft string) activityView {
-	return h.buildActivityViewFor(context.Background(), activityQuery{
+func (h *Handler) buildActivityView(ctx context.Context, justID, errorText, notice, draft string) activityView {
+	return h.buildActivityViewFor(ctx, activityQuery{
 		Filter: "all",
 		Limit:  activityDisplayLimit,
 	}, justID, errorText, notice, draft)
@@ -291,12 +296,23 @@ func (h *Handler) buildActivityViewFor(ctx context.Context, q activityQuery, jus
 	return view
 }
 
+// activityHistory returns the configured history reader, falling back to the activity store.
+func (h *Handler) activityHistory() activityHistoryReader {
+	if h.activityHistoryOverride != nil {
+		return h.activityHistoryOverride
+	}
+	if h.activity == nil {
+		return nil
+	}
+	return h.activity.History()
+}
+
 // activityEntries returns one page newest first and the cursor below it. A
 // missing history falls back to the ring, filtered by the same rules; a
 // history read error is logged and also falls back, so the page never goes
 // blank because of the durable layer.
 func (h *Handler) activityEntries(ctx context.Context, q activityQuery) ([]activity.Entry, string, activity.SearchWindow) {
-	history := h.activity.History()
+	history := h.activityHistory()
 	if history == nil {
 		return h.ringEntries(q), "", activity.SearchWindowNone
 	}

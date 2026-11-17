@@ -293,6 +293,10 @@ type Handler struct {
 	uiPin string
 	// fixtures, when set, serves canned page views instead of computing them.
 	fixtures fs.FS
+	// notesDepsOverride, when non-nil, overrides manager lookups for testing.
+	notesDepsOverride func() notesDeps
+	// activityHistoryOverride, when non-nil, overrides history queries for testing.
+	activityHistoryOverride activityHistoryReader
 	mux      *http.ServeMux
 	// routes records every registration made through Handle and Mutating at New
 	// time, so a test can prove the same-origin guard wraps every

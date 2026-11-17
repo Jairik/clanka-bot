@@ -96,7 +96,9 @@ class SoloistStatusTest(unittest.TestCase):
         self.assertEqual(fields["state"], "paired")
         self.assertEqual(fields["session"], "active")
         self.assertEqual(fields["device"], "Clanka")
-        self.assertEqual(fields["expires_days"], "89")
+        # Whole days only. A line stamped at this second reports 89 until the
+        # clock ticks, then 88, because the script drops the partial day.
+        self.assertIn(fields["expires_days"], {"88", "89"})
         self.assertTrue(fields["updated"])
         # The status file never carries an account id, token or track name.
         for forbidden in ("user", "token", "track", "radiohead"):

@@ -428,8 +428,8 @@ export type Request = {
   TotalTokens: number;
   CachedTokens: number;
   AgentSteps: number;
-  // Conversation is "mode" or "cue" when this turn used the longer budget;
-  // ConversationLabel is its plain-words form, empty for the default budget.
+  // ConversationLabel is how this turn used the longer budget, in plain
+  // words; empty for a default-budget turn.
   Conversation: string;
   ConversationLabel: string;
 };

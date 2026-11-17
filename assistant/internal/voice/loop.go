@@ -41,6 +41,16 @@ type WakeService interface {
 	Open(ctx context.Context) (WakeStream, error)
 }
 
+// Thresholds is the live per-model threshold source: the map a detect stream
+// sends and a cheap signature that changes exactly when an effective value
+// does. The loop compares the signature while a stream is open and reopens the
+// stream when it changes, so an edit applies to the next detection instead of
+// the next turn.
+type Thresholds interface {
+	Map() map[string]float64
+	Signature() string
+}
+
 // WakeStream accepts mic audio and reports at most one detection. Detections is
 // closed when the stream ends; Err then carries the reason, if any.
 type WakeStream interface {
@@ -126,6 +136,11 @@ type Deps struct {
 	// it is never the configured path. A name that also has a WakeCommands
 	// entry is dispatched as a command, not a wake word.
 	WakeWords []string
+	// Thresholds, when set, is the live per-model threshold source. Its
+	// signature is checked as frames arrive; a change closes the open stream
+	// without firing and the loop reopens it with the new map. Nil keeps a
+	// direct WakeService fixture unchanged.
+	Thresholds Thresholds
 	// WakeCommands handles non-wake detections such as #81's volume_up. A name
 	// in this map is dispatched and the loop keeps listening; it never starts
 	// an STT turn. A command model must also be requested from the service, so
@@ -328,14 +343,24 @@ func (l *Loop) listen(ctx context.Context) error {
 // itself cannot interrupt the reply.
 func (l *Loop) waitForWake(ctx context.Context) (string, bool, error) {
 	for {
+		// Read the signature before opening, so the map the service receives
+		// and the value compared against it describe the same edit.
+		var signature string
+		if l.deps.Thresholds != nil {
+			signature = l.deps.Thresholds.Signature()
+		}
 		name, fired, err := func() (string, bool, error) {
 			wake, err := l.deps.Wake.Open(ctx)
 			if err != nil {
 				return "", false, err
 			}
 			defer wake.Close()
-			return l.readWake(ctx, wake)
+			return l.readWake(ctx, wake, signature)
 		}()
+		if errors.Is(err, errThresholdsChanged) {
+			l.deps.Logger.Info("voice: wake thresholds changed; reopening detect stream")
+			continue
+		}
 		if err != nil {
 			return "", false, err
 		}
@@ -360,14 +385,24 @@ func (l *Loop) waitForWake(ctx context.Context) (string, bool, error) {
 	}
 }
 
-// readWake feeds one open detect stream until it fires or ends.
-func (l *Loop) readWake(ctx context.Context, wake WakeStream) (string, bool, error) {
+// errThresholdsChanged ends one detect stream without firing so waitForWake
+// reopens it with the map the Settings page now reports. It is not a failure:
+// the loop keeps listening.
+var errThresholdsChanged = errors.New("voice: wake thresholds changed")
+
+// readWake feeds one open detect stream until it fires or ends. signature is
+// the value read before Open; a frame that arrives after the effective
+// thresholds moved ends the stream instead of feeding a stale model.
+func (l *Loop) readWake(ctx context.Context, wake WakeStream, signature string) (string, bool, error) {
 	detections := wake.Detections()
 	for {
 		select {
 		case <-ctx.Done():
 			return "", false, ctx.Err()
 		case fr := <-l.frames:
+			if l.deps.Thresholds != nil && l.deps.Thresholds.Signature() != signature {
+				return "", false, errThresholdsChanged
+			}
 			if err := wake.Write(fr.pcm); err != nil {
 				return "", false, err
 			}

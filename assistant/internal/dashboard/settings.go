@@ -50,8 +50,8 @@ type settingsView struct {
 	Voice           string
 	CanPreview      bool
 	PreviewMaxRunes int
-	// Wakeword is read-only: the allowlist and thresholds are connection
-	// settings read once at startup.
+	// Wakeword is the Wake word section: the model list and address read-only,
+	// with one live threshold form per configured model.
 	Wakeword wakewordSettingsView
 }
 
@@ -412,6 +412,12 @@ func (h *Handler) buildSettingsView(flash, errorText string, edit *editState) se
 		setting := newSettingView(value, edit)
 		if strings.HasPrefix(value.Key, "quiet.") {
 			view.Quiet = append(view.Quiet, setting)
+			continue
+		}
+		// The Wake word section owns wakeword.threshold.<model> forms; the
+		// address stays read-only there rather than a second row here.
+		if strings.HasPrefix(value.Key, "wakeword.") {
+			view.Wakeword.takeThreshold(value.Key, setting)
 			continue
 		}
 		if value.Kind == settings.RestartRequired {

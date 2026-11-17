@@ -61,6 +61,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/voicelib"
 	"github.com/Jairik/clanka-bot/assistant/internal/voicesample"
 	"github.com/Jairik/clanka-bot/assistant/internal/wakesample"
+	"github.com/Jairik/clanka-bot/assistant/internal/wakethreshold"
 	"github.com/Jairik/clanka-bot/assistant/internal/wording"
 	"github.com/Jairik/clanka-bot/assistant/internal/wyoming"
 	"github.com/Jairik/clanka-bot/assistant/tools"
@@ -598,6 +599,11 @@ func run() error {
 	}
 	defs := append(connections.Definitions(config.Default(), baseCfg), wordingSetup.Definitions...)
 	defs = append(defs, toolDefs...)
+	// One live threshold per configured wake model (the wake allowlist plus
+	// the configured command models). The environment/config.yaml map is the
+	// config layer, so Reset returns to it; the model allowlist itself stays
+	// restart-required.
+	defs = append(defs, wakethreshold.Definitions(baseCfg.Wakeword)...)
 	defs = append(defs, tz.Definition(baseCfg.Timezone))
 	defs = append(defs, namematch.Definition(baseCfg.NameMatch.Threshold))
 	// Sound role assignments are live settings too, so the Dashboard write and
@@ -1080,7 +1086,10 @@ func run() error {
 				"thresholds", cfg.Wakeword.ModelThresholds(),
 			)
 		}
-		loop, err := newVoiceLoop(cfg, session, p, sink, announcements, wakeCue, voiceObserver, voiceStats, musicDucker, wakeCommands, func() bool { return focusRegistry.Held(focus.Ring) }, busySpeaker, logger)
+		// Resolve thresholds from the one live settings service, so a
+		// Dashboard save reaches the next detect stream without a restart.
+		wakeThresholds := wakethreshold.NewSource(settingsSvc, cfg.Wakeword)
+		loop, err := newVoiceLoop(cfg, session, p, sink, announcements, wakeCue, voiceObserver, voiceStats, musicDucker, wakeCommands, wakeThresholds, func() bool { return focusRegistry.Held(focus.Ring) }, busySpeaker, logger)
 		if loop != nil {
 			// With music holding Focus, require a wake word instead of trusting unverified AEC.
 			loop.BindFollowUp(func() time.Duration {
@@ -1336,7 +1345,7 @@ func run() error {
 // STT, the live wake Cue, and the shared reply Session. The pipeline is the
 // Barge-in seam that drops a waiting Confirmation, and the Announcement queue
 // stops unprompted speech as soon as a wake word starts a turn.
-func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingDropper, sink audio.Sink, announcements *announce.Queue, wakeCue func() ([]byte, audio.Format, bool), observer latency.Observer, stats *voice.Stats, ducker voice.Ducker, wakeCommands map[string]voice.WakeCommand, ringActive func() bool, busySpeaker voice.Speaker, logger *slog.Logger) (*voice.Loop, error) {
+func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingDropper, sink audio.Sink, announcements *announce.Queue, wakeCue func() ([]byte, audio.Format, bool), observer latency.Observer, stats *voice.Stats, ducker voice.Ducker, wakeCommands map[string]voice.WakeCommand, thresholds voice.Thresholds, ringActive func() bool, busySpeaker voice.Speaker, logger *slog.Logger) (*voice.Loop, error) {
 	captureFormat := audio.Format{Rate: cfg.Capture.Rate, Width: cfg.Capture.Width, Channels: cfg.Capture.Channels}
 	frameBytes := cfg.Capture.Rate * cfg.Capture.Width * cfg.Capture.Channels * cfg.Capture.FrameMS / 1000
 	if frameBytes <= 0 {
@@ -1381,12 +1390,15 @@ func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingD
 
 	deps := voice.Deps{
 		Source:     audio.NewPulseSource(cfg.Capture.Binary, cfg.Capture.Source, captureFormat),
-		Wake:       voice.NewWyomingWake(wakeClient, detectModels, wireFormat, cfg.Wakeword.ModelThresholds()),
+		Wake:       voice.NewWyomingWake(wakeClient, detectModels, wireFormat, thresholds),
 		STT:        voice.NewWyomingSTT(sttClient, wyoming.TranscribeOptions{Name: cfg.STT.Model, Language: cfg.STT.Language}, wireFormat),
 		Player:     audio.NewPCMPlayer(sink),
 		Responder:  voice.NewPipelineResponder(session, tool.DevicePi),
 		Speaker:    busySpeaker,
 		WakeWords:  names,
+		// The same live source the wake service reads per Open: the loop
+		// compares its signature while a stream is healthy.
+		Thresholds: thresholds,
 		Dropper:    pending,
 		WakeCue:    wakeCue,
 		Observer:   observer,

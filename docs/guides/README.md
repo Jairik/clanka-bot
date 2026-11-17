@@ -410,6 +410,18 @@ cached, so it plays the moment a request is routed to the Agent path; an empty
 Filler is a startup error. The same cached phrase covers a slow Fast path Tool:
 if nothing has been said 1.5 seconds after you stop talking, it plays once. A
 request never plays it twice, and it never talks over an answer.
+
+When the speech is not a clear request or question addressed to the Assistant —
+background conversation, a garbled transcription, a fragment — the model replies
+with exactly `<ignore>`. The reply session holds back the start of the stream
+until that token is ruled out, so it never reaches TTS. The turn then plays the
+soft `sounds.ignore` Cue ("chime" by default, `none` for silence) and is recorded
+as `ignored`. It speaks no reply, adds nothing to the shared history and leaves
+the Last reply alone, so a misheard fragment cannot steer a later turn. When a
+request *is* addressed to the Assistant but cannot be understood, the model says
+the live `agent.clarify_message` line ("Didn't catch that." by default). A Persona
+is appended after both rules, so a personality prompt cannot replace them.
+
 All three published ports are bound to the host loopback only. The debug and
 Dashboard listeners bind all interfaces inside the container (see
 `docker-compose.yml`), so the host port mapping and their source-address checks
@@ -1199,6 +1211,7 @@ There is no general hot-reload framework.
 | `agent.request_prefixes` | Prefixes that go straight to the Agent path. A change applies to the next request. |
 | `agent.filler` | The phrase played while the Agent path waits. A change re-synthesizes the cached audio in the background; the old audio plays until the new clip is ready, and at most one Filler still plays per request. |
 | `agent.unavailable_message` | The phrase spoken when the model is unreachable. A change applies to the next failure. |
+| `agent.clarify_message` | The line the prompt tells the model to use when a request is addressed to the Assistant but unclear. A change applies to the next request. |
 | `agent.model` | The model name sent to the configured provider. A change applies to the next turn (the model is resolved per request); there is no automatic failover. |
 | `wakeword.threshold.<model>` | Detection threshold for one configured wake model (0 < t ≤ 1). A change reopens the idle detect stream with the new map, so it applies to the next detection. Reset returns to `WAKEWORD_THRESHOLDS` or `config.yaml`. The model list and address stay `restart_required`. |
 | `http.addr`, `debug.addr`, `dashboard.addr`, `tts.addr`, `wakeword.addr`, `stt.addr`, `embed.url`, `capture.source`, `playback.sink` | Connection-level settings, reported as `restart_required`. A stored override is applied on the next process start. |
@@ -1325,11 +1338,12 @@ Non-secret settings live in [`assistant/config.yaml`](../../assistant/config.yam
 #### Sound library and Cue roles
 
 A **Cue** is a non-speech sound with a fixed role: `wake`, `timer_ring`,
-`alarm_ring`, `reminder` (before the Reminder is spoken) and `error` (before the
-Unavailable message). The built-in `chime` is synthesised in Go and ships in the
-image. Any `.wav` file dropped into `data/sounds/` is indexed at startup with
-its name, duration and first-added date, using pure-Go decoding (ADR-0001, no
-ffmpeg).
+`alarm_ring`, `reminder` (before the Reminder is spoken), `error` (before the
+Unavailable message) and `ignore` (a soft acknowledgement of a turn that was not
+addressed to the Assistant). The built-in `chime` is synthesised in Go and ships
+in the image. Any `.wav` file dropped into `data/sounds/` is indexed at startup
+with its name, duration and first-added date, using pure-Go decoding (ADR-0001,
+no ffmpeg).
 
 The Dashboard **Sounds** page (`/sounds`) uploads `.wav` or `.mp3` files up to
 10 MB. The assistant decodes them in Go (MP3 via `hajimehoshi/go-mp3` v0.3.4,
@@ -1367,8 +1381,8 @@ curl -s -X DELETE localhost:8081/api/settings/sounds.error
 
 No role has a length limit, and a sound always plays whole. Audio captured
 while the wake Cue plays is treated as echo and is not sent to speech recognition, so a long wake sound can clip the
-start of a request; keep it short. The wake, error and reminder Cues are wired,
-and a Timer or Alarm Ring loops `sounds.timer_ring` or `sounds.alarm_ring` through the
+start of a request; keep it short. The wake, error, reminder and ignore Cues are
+wired, and a Timer or Alarm Ring loops `sounds.timer_ring` or `sounds.alarm_ring` through the
 Ring engine: it waits for the current reply sentence, ducks music, speaks the
 label and stops on "stop" or "snooze". A `none` or missing Ring sound falls
 back to the old single spoken line. A Reminder plays `sounds.reminder` once

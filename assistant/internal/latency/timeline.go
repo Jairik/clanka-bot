@@ -82,6 +82,10 @@ const (
 	// OutcomeCancelled means the request context was cancelled, as Barge-in
 	// does, before reply audio.
 	OutcomeCancelled Outcome = "cancelled"
+	// OutcomeIgnored means the Agent decided the speech was not addressed to
+	// the Assistant. Nothing was spoken beyond an optional soft Cue, so the turn
+	// carries no response latency and is never a success (#498).
+	OutcomeIgnored Outcome = "ignored"
 )
 
 // timelineStage is one stage's accumulated duration.

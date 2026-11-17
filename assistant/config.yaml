@@ -418,6 +418,9 @@ sounds:
   alarm_ring: chime
   reminder: chime
   error: chime
+  # Soft acknowledgement when the Agent decides the speech was not addressed to
+  # the Assistant. Set to none for a fully silent ignored turn.
+  ignore: chime
 
 # Public-IP geolocation. Only city, region and timezone are kept; the fields
 # parameter stops the service sending coordinates at all.
@@ -584,6 +587,9 @@ agent:
   filler: "One moment."
   # Config layer of the live `agent.unavailable_message` setting.
   unavailable_message: "Sorry, I can't answer that right now."
+  # Config layer of the live `agent.clarify_message` setting: the line the model
+  # is told to use when a request is addressed to it but cannot be understood.
+  clarify_message: "Didn't catch that."
   # Typed prefixes that skip the Fast path entirely. Config layer of the live
   # `agent.request_prefixes` setting; a stored override applies next request.
   request_prefixes:

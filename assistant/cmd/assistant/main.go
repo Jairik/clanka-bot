@@ -248,6 +248,7 @@ func run() error {
 		AlarmRing: baseCfg.Sounds.AlarmRing,
 		Reminder:  baseCfg.Sounds.Reminder,
 		Error:     baseCfg.Sounds.Error,
+		Ignore:    baseCfg.Sounds.Ignore,
 	}
 
 	// Startup recovery needs the live Ring behaviour and Quiet volume before
@@ -620,6 +621,7 @@ func run() error {
 		RequestPrefixes:    baseCfg.Agent.RequestPrefixes,
 		Filler:             baseCfg.Agent.Filler,
 		UnavailableMessage: baseCfg.Agent.UnavailableMessage,
+		ClarifyMessage:     baseCfg.Agent.ClarifyMessage,
 	})
 	if err != nil {
 		return err
@@ -912,8 +914,17 @@ func run() error {
 		ModelFunc:        func() string { return settingsSvc.String(agent.ModelKey) },
 		Headers:          provider.Headers,
 		Routing:          provider.Routing,
-		SystemPrompt:     cfg.Agent.SystemPrompt,
-		SystemPromptFunc: func() string { return locSvc.SystemPrompt(cfg.Agent.SystemPrompt) },
+		SystemPrompt: cfg.Agent.SystemPrompt,
+		// The place line is appended to the base prompt. With no configured
+		// prompt the default is the base, so the brevity and ignore rules still
+		// reach the model when a place is known.
+		SystemPromptFunc: func() string {
+			base := cfg.Agent.SystemPrompt
+			if strings.TrimSpace(base) == "" {
+				base = agent.DefaultSystemPrompt
+			}
+			return locSvc.SystemPrompt(base)
+		},
 		// The personality prompt is read once per turn and added only to the
 		// labelled system part by the one prompt builder (ADR-0002).
 		PersonaFunc: func() agent.Persona {
@@ -924,6 +935,9 @@ func run() error {
 		// The live wording is read per failure, so a Dashboard change applies
 		// to the next model failure without rebuilding the Agent path.
 		UnavailableMessageFunc: wordingMgr.UnavailableMessage,
+		// The Clarify line is live wording read while the system part is built.
+		ClarifyMessage:     baseCfg.Agent.ClarifyMessage,
+		ClarifyMessageFunc: wordingMgr.ClarifyMessage,
 		FirstTokenTimeout:      cfg.Agent.FirstTokenTimeout.Duration(),
 		RequestTimeout:         cfg.Agent.RequestTimeout.Duration(),
 		MaxSteps:               cfg.Agent.MaxSteps,

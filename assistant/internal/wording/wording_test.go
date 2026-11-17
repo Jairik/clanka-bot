@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/agent"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 	"github.com/Jairik/clanka-bot/assistant/internal/speech"
@@ -223,6 +224,29 @@ func TestRoutingDropsAPhraseClaimedByTwoTools(t *testing.T) {
 	}
 	if _, ok := words.ControlPhrases["what time is it"]; ok {
 		t.Fatal("replaced phrase still routes")
+	}
+}
+
+func TestClarifyMessageDefaultsAndAppliesOnTheNextRead(t *testing.T) {
+	f := newFixture(t, nil, nil)
+	ctx := context.Background()
+	if got := f.manager.ClarifyMessage(); got != agent.DefaultClarifyMessage {
+		t.Fatalf("initial = %q, want the code default", got)
+	}
+	if _, ok := definitionsByKey(f.setup.Definitions)[wording.ClarifyKey]; !ok {
+		t.Fatal("Build defines no Clarify setting")
+	}
+	if _, err := f.settings.Set(ctx, wording.ClarifyKey, "Say that again."); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if got := f.manager.ClarifyMessage(); got != "Say that again." {
+		t.Fatalf("after Set = %q", got)
+	}
+	if _, err := f.settings.Reset(ctx, wording.ClarifyKey); err != nil {
+		t.Fatalf("Reset: %v", err)
+	}
+	if got := f.manager.ClarifyMessage(); got != agent.DefaultClarifyMessage {
+		t.Fatalf("after Reset = %q", got)
 	}
 }
 

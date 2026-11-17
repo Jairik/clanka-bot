@@ -94,6 +94,10 @@ type Reply struct {
 	// TextNotStreamed marks an Agent fallback line that no delta carried, so
 	// the reply session must speak it even after a streamed preamble.
 	TextNotStreamed bool
+	// Ignored marks a turn the model decided was not addressed to the
+	// Assistant. Text is empty, and the reply session speaks no words: it may
+	// play the ignore Cue. The turn is not the Last reply.
+	Ignored bool
 	// SpeechRate is a per-utterance TTS multiplier for this reply. Zero means
 	// "use the live voice.rate setting"; a non-zero value (set by a Tool whose
 	// result implements speechRater, e.g. a faster/slower repeat) applies to
@@ -870,6 +874,7 @@ func (p *Pipeline) callAgent(ctx context.Context, req tool.Request, transcript s
 	reply.Pending = result.Pending
 	reply.Unavailable = result.Unavailable
 	reply.TextNotStreamed = result.TextNotStreamed
+	reply.Ignored = result.Ignored
 	// The single provider retry, when it happened, is visible on the request
 	// line so a slow turn can be explained without reading the debug log.
 	latency.SetAttr(ctx, "agent_retries", result.Retries)
@@ -1008,13 +1013,14 @@ func (p *Pipeline) recordTurn(ctx context.Context, transcript, spoken string, ca
 // the pipeline logs the routing-only line itself.
 func (p *Pipeline) finish(ctx context.Context, started time.Time, req tool.Request, transcript string, reply Reply, record routeLog) {
 	// Keep the last completed reply for follow-ups. A cancelled turn (Barge-in
-	// or shutdown) and a blank answer must not replace the last thing the user
-	// actually heard; an error or Unavailable reply was spoken, so it counts.
+	// or shutdown), an ignored turn and a blank answer must not replace the last
+	// thing the user actually heard; an error or Unavailable reply was spoken,
+	// so it counts.
 	var isSmoke bool
 	if tl := latency.FromContext(ctx); tl != nil && tl.Source() == latency.SourceSmoke {
 		isSmoke = true
 	}
-	if p.lastReply != nil && ctx.Err() == nil && strings.TrimSpace(reply.Text) != "" && !isSmoke {
+	if p.lastReply != nil && ctx.Err() == nil && !reply.Ignored && strings.TrimSpace(reply.Text) != "" && !isSmoke {
 		var source string
 		if tl := latency.FromContext(ctx); tl != nil {
 			source = string(tl.Source())

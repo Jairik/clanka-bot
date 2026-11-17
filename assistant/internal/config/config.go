@@ -181,6 +181,7 @@ type Agent struct {
 	SystemPrompt       string              `yaml:"system_prompt"`
 	Filler             string              `yaml:"filler"`
 	UnavailableMessage string              `yaml:"unavailable_message"`
+	ClarifyMessage     string              `yaml:"clarify_message"`
 	RequestPrefixes    []string            `yaml:"request_prefixes"`
 	History            AgentHistory        `yaml:"history"`
 	FirstTokenTimeout  Duration            `yaml:"first_token_timeout"`
@@ -451,6 +452,7 @@ type Sounds struct {
 	AlarmRing string `yaml:"alarm_ring"`
 	Reminder  string `yaml:"reminder"`
 	Error     string `yaml:"error"`
+	Ignore    string `yaml:"ignore"`
 }
 
 // Duration is a YAML-friendly time.Duration written as "2s" or "750ms".

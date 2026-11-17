@@ -245,6 +245,13 @@ func TestResultVariantsSpeakOnceAndLogTheirOutcome(t *testing.T) {
 			wantOutcome: "ok",
 		},
 		{
+			name:        "ignored turn",
+			stream:      []string{"<", "igno", "re>"},
+			result:      agent.Result{Ignored: true},
+			wantPhrases: nil,
+			wantOutcome: "ignored",
+		},
+		{
 			name:           "first token timeout",
 			stream:         []string{preamble},
 			result:         agent.Result{Text: agent.FirstTokenTimeoutMessage, TimedOut: true, TextNotStreamed: true},

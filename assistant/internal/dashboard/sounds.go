@@ -577,6 +577,8 @@ func soundRoleLabel(role sound.Role) string {
 		return "Reminder"
 	case sound.RoleError:
 		return "Error"
+	case sound.RoleIgnore:
+		return "Ignore"
 	default:
 		return string(role)
 	}

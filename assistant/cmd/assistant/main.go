@@ -1209,9 +1209,12 @@ func run() error {
 				}
 			})
 			// A standalone "stop" and the stop command model end the session,
-			// so the next wake word starts with a fresh history. Conversation
-			// mode (#499) will also be turned off here.
-			loop.BindSessionEnd(conversationHistory.Reset)
+			// so the next wake word starts with a fresh history and without
+			// conversation mode (#499).
+			loop.BindSessionEnd(func() {
+				conversationHistory.Reset()
+				conversationState.End()
+			})
 			// With music holding Focus, require a wake word instead of trusting unverified AEC.
 			loop.BindFollowUp(func() time.Duration {
 				if focusRegistry.Held(focus.Music) {

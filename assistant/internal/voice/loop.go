@@ -157,9 +157,9 @@ type Deps struct {
 	// Dropper is optional: when set, a Barge-in also drops a waiting
 	// Confirmation so a stale yes cannot run later.
 	Dropper PendingDropper
-	// SessionEnd is optional: it clears the shared Agent history when the
-	// session ends, and later turns conversation mode off. endSession calls it
-	// for a standalone "stop" (#501) and the stop command model (#503).
+	// SessionEnd is optional: it clears the shared Agent history and turns
+	// conversation mode off when the session ends. endSession calls it for a
+	// standalone "stop" (#501) and the stop command model (#503).
 	SessionEnd func()
 	// Announcer is optional: when set, a wake word stops unprompted speech
 	// before capture starts.
@@ -876,8 +876,8 @@ func (l *Loop) watch(ctx context.Context) (WakeStream, <-chan Detection) {
 // endSession suspends the session: in-flight work is cancelled, the follow-up
 // window closes, and the shared Agent history is cleared so the loop waits for
 // the next wake word. A standalone "stop" (#501), the stop command model (#503)
-// and, later, conversation mode all use it, so there is one way to end a
-// session. cancel may be nil when there is no live turn.
+// and conversation mode all use it, so there is one way to end a session.
+// cancel may be nil when there is no live turn.
 func (l *Loop) endSession(cancel context.CancelFunc) {
 	if cancel != nil {
 		cancel()

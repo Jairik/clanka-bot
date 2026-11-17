@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 )
 
@@ -16,10 +17,11 @@ var chainJoiner = regexp.MustCompile(`(?i)\s+(?:and then|and|then)\s+`)
 type chainStep struct {
 	text, name string
 	args       json.RawMessage
+	intent     focus.Intent
 }
 
 // chainPlan validates every leaf before any side effect; uncertain requests stay with the Agent.
-func (p *Pipeline) chainPlan(ctx context.Context, text string, phrases map[string]string) []chainStep {
+func (p *Pipeline) chainPlan(ctx context.Context, text string, phrases, intentPhrases map[string]string) []chainStep {
 	spans := chainJoiner.FindAllStringIndex(text, -1)
 	if len(spans) == 0 || len(spans) > 7 {
 		return nil
@@ -28,7 +30,11 @@ func (p *Pipeline) chainPlan(ctx context.Context, text string, phrases map[strin
 	start := 0
 	for _, span := range spans {
 		suffix := text[span[1]:]
-		_, control := phrases[NormalizePhrase(suffix)]
+		norm := NormalizePhrase(suffix)
+		_, control := phrases[norm]
+		if !control {
+			_, control = intentPhrases[norm]
+		}
 		if !control && (p.semantic == nil || !p.semantic.ClauseStartsCommand(suffix)) {
 			continue
 		}
@@ -41,7 +47,17 @@ func (p *Pipeline) chainPlan(ctx context.Context, text string, phrases map[strin
 	parts = append(parts, strings.TrimSpace(text[start:]))
 	steps := make([]chainStep, 0, len(parts))
 	for _, part := range parts {
-		step := chainStep{text: part, name: phrases[NormalizePhrase(part)]}
+		norm := NormalizePhrase(part)
+		if target, ok := intentPhrases[norm]; ok {
+			intent, valid := focus.ParseIntent(target)
+			if !valid {
+				return nil
+			}
+			// An intent step resolves directly through Focus rather than the Tool registry.
+			steps = append(steps, chainStep{text: part, intent: intent})
+			continue
+		}
+		step := chainStep{text: part, name: phrases[norm]}
 		if step.name != "" {
 			if info, ok := p.registry.Info(step.name); ok && info.HasExtract {
 				var valid bool
@@ -75,9 +91,24 @@ func (p *Pipeline) runChain(ctx context.Context, req tool.Request, steps []chain
 		if ctx.Err() != nil {
 			break
 		}
-		text, failure, pending, localOnly, _ := p.callTool(ctx, req, step.text, step.name, tool.PathFast, step.args)
-		reply.LocalOnly = reply.LocalOnly || localOnly
-		reply.Tool = step.name
+		var text string
+		var failure string
+		var pending *tool.PendingConfirmation
+		if step.intent != "" {
+			// An intent step dispatches through Focus rather than the Tool registry.
+			var handled bool
+			if p.focus != nil {
+				text, handled = p.focus.HandleIntent(ctx, step.intent)
+			}
+			if !handled {
+				failure = reasonNoFocus
+			}
+		} else {
+			var localOnly bool
+			text, failure, pending, localOnly, _ = p.callTool(ctx, req, step.text, step.name, tool.PathFast, step.args)
+			reply.LocalOnly = reply.LocalOnly || localOnly
+			reply.Tool = step.name
+		}
 		if failure != "" || pending != nil {
 			record.failure = failure
 			text = fmt.Sprintf("Step %d failed: %s Remaining steps cancelled.", i+1, text)

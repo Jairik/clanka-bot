@@ -416,18 +416,35 @@ func NewManager(svc *settings.Service, setup Setup, initial *speech.Filler, synt
 		opt(m)
 	}
 	if initial != nil {
-		m.fillerKey = m.keyFor(initial.Text)
+		text := initial.Text
+		if m.settings != nil {
+			if s := m.settings.String(FillerKey); s != "" {
+				text = s
+			}
+		}
+		m.fillerKey = m.keyFor(text)
 	}
 	return m, nil
 }
 
-// keyFor builds the cache key from the phrase and, when configured, the live
-// voice/rate signature. A voice change therefore invalidates the cached audio
-// even though the Filler text is unchanged.
+// keyFor builds the cache key from the phrase, any configured extra filler keys,
+// and, when configured, the live voice/rate signature. A voice or pronunciation
+// change therefore invalidates the cached audio even though the Filler text is
+// unchanged.
 func (m *Manager) keyFor(text string) string {
 	key := strings.TrimSpace(text)
 	if m.fillerSignature != nil {
 		key += "\x00" + m.fillerSignature()
+	}
+	if m.settings != nil && len(m.fillerKeys) > 0 {
+		for _, k := range m.fillerKeys {
+			if k == "voice.name" || k == "voice.rate" {
+				continue
+			}
+			if v, ok := m.settings.Get(k); ok {
+				key += fmt.Sprintf("\x00%s=%v", k, v.Value)
+			}
+		}
 	}
 	return key
 }

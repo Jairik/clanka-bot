@@ -121,6 +121,10 @@ type Config struct {
 	} `yaml:"name_match"`
 	Location Location `yaml:"location"`
 	Agent    Agent    `yaml:"agent"`
+	// Speech is the config layer for the live speech.pronunciation setting.
+	Speech struct {
+		Pronunciation []string `yaml:"pronunciation"`
+	} `yaml:"speech"`
 }
 
 // Dashboard is the Tailscale-only web UI listener. Owner empty keeps it off.

@@ -714,3 +714,50 @@ func TestFillerReSynthesizesWhenTheVoiceOrRateChanges(t *testing.T) {
 		t.Fatalf("synthesis calls = %d, want one per signature change", len(signatures))
 	}
 }
+
+// TestFillerReSynthesizesWhenPronunciationChanges proves that updating speech.pronunciation
+// invalidates and re-synthesizes the cached Filler in the background through the wording manager.
+func TestFillerReSynthesizesWhenPronunciationChanges(t *testing.T) {
+	var mu sync.Mutex
+	var synthesized []string
+
+	extra := []settings.Definition{
+		speech.PronunciationDefinition(nil),
+	}
+	var settSvc *settings.Service
+	synth := func(_ context.Context, text string) (*speech.Filler, error) {
+		pron := speech.NewPronouncer(settSvc.Strings(speech.PronunciationKey))
+		spoken := pron.Replace(text)
+		mu.Lock()
+		synthesized = append(synthesized, spoken)
+		mu.Unlock()
+		return &speech.Filler{Text: spoken, PCM: []byte(spoken)}, nil
+	}
+
+	initial := &speech.Filler{Text: "One moment.", PCM: []byte("One moment.")}
+	f := newFixtureWith(t, initial, synth, extra,
+		wording.WithFillerKeys("voice.name", "voice.rate", speech.PronunciationKey),
+	)
+	settSvc = f.settings
+	ctx := context.Background()
+	f.manager.Start(ctx, nil)
+
+	// Change pronunciation for a word in the filler phrase: moment -> second.
+	if _, err := f.settings.Set(ctx, speech.PronunciationKey, []string{"moment=second"}); err != nil {
+		t.Fatalf("Set pronunciation: %v", err)
+	}
+	if err := f.manager.Wait(ctx); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+
+	// The cached filler PCM should now reflect the replaced pronunciation.
+	if got := string(f.manager.Filler().PCM); got != "One second." {
+		t.Fatalf("filler after pronunciation change = %q, want %q", got, "One second.")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(synthesized) != 1 || synthesized[0] != "One second." {
+		t.Fatalf("synthesized phrases = %+v, want [\"One second.\"]", synthesized)
+	}
+}

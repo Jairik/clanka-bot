@@ -15,6 +15,7 @@ import (
 
 	"github.com/Jairik/clanka-bot/assistant/internal/latency"
 	"github.com/Jairik/clanka-bot/assistant/internal/phrase"
+	"github.com/Jairik/clanka-bot/assistant/internal/speech"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 )
 
@@ -66,6 +67,11 @@ type Settings struct {
 	// register so assistant.forget can hold the same instance the Agent path
 	// reads; a nil value keeps the original NewHistory construction.
 	History *History
+	// Limits are the static length and cost bounds. LimitsFunc, when set, is
+	// read once per turn and overrides them; that is the live-setting seam and
+	// the per-turn override point conversation mode uses.
+	Limits     Limits
+	LimitsFunc func() Limits
 }
 
 // PendingConfirm is a confirm Tool call the model asked for, armed in the
@@ -103,6 +109,9 @@ type Result struct {
 	// Cancelled is a Barge-in or shutdown, not a provider failure. The caller
 	// must not log it as unavailable or mark the request failed.
 	Cancelled bool
+	// Truncated marks a reply the spoken-length budget cut at a sentence
+	// boundary. Text is then the complete spoken answer, not a failure.
+	Truncated bool
 }
 
 // tokenUsage is the summed model usage for one request across its steps.
@@ -139,6 +148,8 @@ type Agent struct {
 	logger      *slog.Logger
 	maxSteps    int
 	unavailable func() string
+	limits      Limits
+	limitsFunc  func() Limits
 }
 
 // New builds the Agent path. History defaults mirror the prototype settings so
@@ -203,6 +214,8 @@ func New(settings Settings, registry *tool.Registry, logger *slog.Logger) (*Agen
 		logger:      logger,
 		maxSteps:    settings.MaxSteps,
 		unavailable: unavailable,
+		limits:      settings.Limits,
+		limitsFunc:  settings.LimitsFunc,
 	}, nil
 }
 
@@ -236,6 +249,10 @@ func (a *Agent) Run(ctx context.Context, req tool.Request, utterance string, onD
 	var recorded []ToolCall
 	var retries int
 	var usage tokenUsage
+	truncated := false
+	// Limits are read once per turn, so a live setting or a conversation-mode
+	// override applies to this request without rebuilding the Agent.
+	limits := resolveLimits(a.limits, a.limitsFunc)
 	for step := 0; step < a.maxSteps; step++ {
 		// stream returns an empty completion on every error, so the caller
 		// cannot tell from the result whether anything was already spoken.
@@ -243,13 +260,27 @@ func (a *Agent) Run(ctx context.Context, req tool.Request, utterance string, onD
 		// is safe only while this flag is false, because repeating content
 		// would speak the same sentence twice.
 		streamed := false
-		trackedDelta := func(text string) {
+		// Each model step gets its own budget. A preamble before a Tool call and
+		// the final answer are separate spoken turns; capping both keeps every
+		// streamed segment short without losing the answer after a Tool step.
+		budget := speech.NewBudget(speech.Limits{
+			MaxSentences: limits.SpokenMaxSentences,
+			MaxChars:     limits.SpokenMaxChars,
+		})
+		stepTruncated := false
+		trackedDelta := func(text string) bool {
 			streamed = true
-			if onDelta != nil {
-				onDelta(text)
+			chunk, reached := budget.Write(text)
+			if chunk != "" && onDelta != nil {
+				onDelta(chunk)
 			}
+			if reached {
+				stepTruncated = true
+				return false
+			}
+			return true
 		}
-		reply, err := a.provider.stream(ctx, messages, tools, trackedDelta)
+		reply, err := a.provider.stream(ctx, messages, tools, limits.MaxCompletionTokens, trackedDelta)
 		// One retry, only on the first step and only before any output: a
 		// later step already spoke a preamble, and no Tool has run yet because
 		// execute happens only after a successful stream. That makes a Tool
@@ -261,7 +292,7 @@ func (a *Agent) Run(ctx context.Context, req tool.Request, utterance string, onD
 			// wait leaves the error to failure() as a normal cancellation.
 			waitRetry(ctx)
 			streamed = false
-			reply, err = a.provider.stream(ctx, messages, tools, trackedDelta)
+			reply, err = a.provider.stream(ctx, messages, tools, limits.MaxCompletionTokens, trackedDelta)
 		}
 		if err != nil {
 			result := a.failure(ctx, req, err, streamed)
@@ -270,10 +301,19 @@ func (a *Agent) Run(ctx context.Context, req tool.Request, utterance string, onD
 			usage.apply(&result)
 			return result
 		}
+		// Speak any cleaned text the cleaner held for a decision that never
+		// came. A truncated stream has already spoken everything it will.
+		if rest := budget.Flush(); rest != "" && onDelta != nil {
+			onDelta(rest)
+		}
+		truncated = truncated || stepTruncated || reply.Truncated
 		usage = usage.add(reply)
 		usage.steps = step + 1
 		if len(reply.Calls) == 0 {
-			text := strings.TrimSpace(reply.Content)
+			// Text is the cleaned and budgeted spoken text, so history, the
+			// Last reply and Activity all keep exactly what was heard rather
+			// than the raw markdown the model emitted.
+			text := strings.TrimSpace(budget.Text())
 			// An empty answer is a fallback line no delta carried.
 			notStreamed := text == ""
 			if notStreamed {
@@ -284,9 +324,10 @@ func (a *Agent) Run(ctx context.Context, req tool.Request, utterance string, onD
 				"request_id", req.ID,
 				"steps", step+1,
 				"tools", callNames(recorded),
+				"truncated", truncated,
 				"duration_ms", time.Since(started).Milliseconds(),
 			)
-			result := Result{Text: text, Calls: recorded, TextNotStreamed: notStreamed, Retries: retries}
+			result := Result{Text: text, Calls: recorded, TextNotStreamed: notStreamed, Truncated: truncated, Retries: retries}
 			usage.apply(&result)
 			return result
 		}

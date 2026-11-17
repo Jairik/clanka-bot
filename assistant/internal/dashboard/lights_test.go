@@ -1,15 +1,19 @@
 package dashboard
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
 	core "github.com/Jairik/clanka-bot/assistant/internal/lights"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/tools/lights"
-	"net/http/httptest"
-	"strings"
-	"testing"
 )
 
 // lightModules supplies the registered module, as tools.Set does in production.
@@ -69,5 +73,41 @@ func TestLightsAPIWithoutModule(t *testing.T) {
 	h.lightsAPI(w, httptest.NewRequest("POST", "/api/ui/lights", strings.NewReader(`{"action":"scan"}`)))
 	if w.Code != 503 {
 		t.Fatalf("POST: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// TestLightsAPIErrorLogging verifies that failures log raw details and return
+// generic messages without leaking local or upstream detail.
+func TestLightsAPIErrorLogging(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, t.TempDir()+"/state.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	ss, err := settings.New(ctx, st, core.Definitions()...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := lights.NewModule()
+	if err := m.Register(tool.NewRegistry(0), tool.Deps{Settings: func() *settings.Service { return ss }}); err != nil {
+		t.Fatal(err)
+	}
+	logs := &bytes.Buffer{}
+	logger := slog.New(slog.NewTextHandler(logs, nil))
+	h := &Handler{settings: ss, toolModules: lightModules{m}, logger: logger}
+
+	w := httptest.NewRecorder()
+	// Applying power to an unknown device triggers the default action failure.
+	r := httptest.NewRequest("POST", "/api/ui/lights", strings.NewReader(`{"action":"power","device":"unknown","value":"on"}`))
+	h.lightsAPI(w, r)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("code = %d, want 400; body = %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "unknown") {
+		t.Fatalf("body leaked error detail: %s", w.Body.String())
+	}
+	if !strings.Contains(logs.String(), "lights apply failed") {
+		t.Fatalf("missing log: %s", logs.String())
 	}
 }

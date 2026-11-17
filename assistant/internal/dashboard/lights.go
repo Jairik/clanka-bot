@@ -71,7 +71,10 @@ func (h *Handler) lightsAPI(w http.ResponseWriter, r *http.Request) {
 	case "scan":
 		ds, err := s.Scan(r.Context())
 		if err != nil {
-			http.Error(w, err.Error(), 502)
+			if h.logger != nil {
+				h.logger.Error("lights scan failed", "error", err.Error())
+			}
+			http.Error(w, "Lights scan failed.", 502)
 			return
 		}
 		h.writeJSON(w, 200, ds)
@@ -82,7 +85,10 @@ func (h *Handler) lightsAPI(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if _, err := h.settings.SetJSON(r.Context(), "lights.enabled", json.RawMessage(in.Value)); err != nil {
-			http.Error(w, err.Error(), 400)
+			if h.logger != nil {
+				h.logger.Error("lights enable failed", "error", err.Error())
+			}
+			http.Error(w, "Could not save setting.", 400)
 			return
 		}
 	case "save":
@@ -93,12 +99,18 @@ func (h *Handler) lightsAPI(w http.ResponseWriter, r *http.Request) {
 		raw, _ := json.Marshal(in.Devices)
 		value, _ := json.Marshal(string(raw))
 		if _, err := h.settings.SetJSON(r.Context(), "lights.devices", value); err != nil {
-			http.Error(w, err.Error(), 400)
+			if h.logger != nil {
+				h.logger.Error("lights save devices failed", "error", err.Error())
+			}
+			http.Error(w, "Could not save devices.", 400)
 			return
 		}
 	default:
 		if _, err := s.Apply(r.Context(), in.Device, in.Action, in.Value); err != nil {
-			http.Error(w, err.Error(), 400)
+			if h.logger != nil {
+				h.logger.Error("lights apply failed", "error", err.Error())
+			}
+			http.Error(w, "Could not apply light setting.", 400)
 			return
 		}
 	}

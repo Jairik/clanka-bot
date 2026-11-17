@@ -1,6 +1,7 @@
 package dashboard_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -278,6 +279,7 @@ func newAlertsFixture(t *testing.T) *alertsFixture {
 		Zone:        zone,
 		ToolModules: f.modules,
 		Now:         clock.Now,
+		Logger:      logger,
 	})
 	return f
 }
@@ -1250,5 +1252,121 @@ func TestAlertsViewShowsRetentionSettingsAndUpdatesThem(t *testing.T) {
 	badRec := f.post("/alerts/values/unknown", url.Values{"value": {"1"}})
 	if badRec.Code != http.StatusNotFound {
 		t.Errorf("post unknown setting = %d, want 404", badRec.Code)
+	}
+}
+
+// trackingReader counts bytes read from an underlying reader.
+type trackingReader struct {
+	r    io.Reader
+	read int
+}
+
+// Read delegates reading and tracks total bytes read.
+func (tr *trackingReader) Read(p []byte) (int, error) {
+	n, err := tr.r.Read(p)
+	tr.read += n
+	return n, err
+}
+
+// TestAlertsFormsBoundTheRequestBody pins that alert write routes reject oversized
+// form bodies without reading the full body into memory.
+func TestAlertsFormsBoundTheRequestBody(t *testing.T) {
+	f := newAlertsFixture(t)
+	// Create an active timer to obtain a valid ID for testing the audio route.
+	rec := f.post("/alerts/create", url.Values{"kind": {"timer"}, "seconds": {"60"}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("setup timer: %d %s", rec.Code, rec.Body.String())
+	}
+	timers := f.timer.List()
+	if len(timers) != 1 {
+		t.Fatalf("expected 1 timer, got %d", len(timers))
+	}
+	timerID := timers[0].ID
+
+	// Twice the 1 MB limit so the reader must reject it early.
+	huge := url.Values{
+		"kind":    {"timer"},
+		"seconds": {"60"},
+		"audio":   {"ringtone"},
+		"pad":     {strings.Repeat("x", 2<<20)},
+	}.Encode()
+
+	for _, target := range []string{
+		"/alerts/create",
+		"/alerts/timer/" + timerID + "/audio",
+	} {
+		tr := &trackingReader{r: strings.NewReader(huge)}
+		req := httptest.NewRequest(http.MethodPost, target, tr)
+		req.Host = "127.0.0.1:8082"
+		req.RemoteAddr = "127.0.0.1:12345"
+		req.Header.Set("Tailscale-User-Login", owner)
+		req.Header.Set("Sec-Fetch-Site", "same-origin")
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		w := httptest.NewRecorder()
+		f.handler.ServeHTTP(w, req)
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("%s status = %d, want 400; body = %s", target, w.Code, w.Body.String())
+		}
+		// Confirm the handler aborted early without reading the full 2 MB payload.
+		if tr.read >= len(huge) {
+			t.Fatalf("%s read %d bytes; want < %d bytes without buffering full body", target, tr.read, len(huge))
+		}
+	}
+}
+
+// TestAlertsManagerInternalErrorLogsDetail asserts that an unexpected manager error
+// returns status 500 with a fixed sentence, keeping the raw error in the log.
+func TestAlertsManagerInternalErrorLogsDetail(t *testing.T) {
+	f := newAlertsFixture(t)
+	logs := &bytes.Buffer{}
+	logger := slog.New(slog.NewTextHandler(logs, nil))
+	f.handler = newHandler(t, dashboard.Options{
+		Settings:    f.settings,
+		Sounds:      f.sounds,
+		Zone:        f.zone,
+		ToolModules: f.modules,
+		Now:         f.clock.Now,
+		Logger:      logger,
+	})
+	// Closing the timer manager causes Start and SetAudio to fail with non-ToolError.
+	f.timer.Close()
+
+	rec := f.post("/alerts/create", url.Values{"kind": {"timer"}, "seconds": {"60"}})
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("create status = %d, want 500; body = %s", rec.Code, rec.Body.String())
+	}
+	const wantSentence = "Could not save that alert."
+	if got := strings.TrimSpace(rec.Body.String()); got != wantSentence {
+		t.Fatalf("create body = %q, want %q", got, wantSentence)
+	}
+	if strings.Contains(rec.Body.String(), "closed") {
+		t.Fatalf("response leaked error detail: %s", rec.Body.String())
+	}
+	if !strings.Contains(logs.String(), "manager is closed") {
+		t.Fatalf("log missing error detail: %s", logs.String())
+	}
+}
+
+// TestAlertsGoneAlertReturnsConflict asserts that modifying a gone or nonexistent
+// timer or alarm returns 409 conflict, not 500.
+func TestAlertsGoneAlertReturnsConflict(t *testing.T) {
+	f := newAlertsFixture(t)
+
+	// A nonexistent timer returns 409 Conflict with the fixed sentence.
+	rec := f.post("/alerts/timer/nonexistent/audio", url.Values{"audio": {"bell"}})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("gone timer status = %d, want 409; body = %s", rec.Code, rec.Body.String())
+	}
+	if got := strings.TrimSpace(rec.Body.String()); got != "That timer is no longer pending." {
+		t.Fatalf("gone timer body = %q", got)
+	}
+
+	// A nonexistent alarm returns 409 Conflict with the fixed sentence.
+	rec = f.post("/alerts/alarm/nonexistent/audio", url.Values{"audio": {"bell"}})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("gone alarm status = %d, want 409; body = %s", rec.Code, rec.Body.String())
+	}
+	if got := strings.TrimSpace(rec.Body.String()); got != "That alarm is no longer pending." {
+		t.Fatalf("gone alarm body = %q", got)
 	}
 }

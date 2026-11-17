@@ -2,7 +2,9 @@ package dashboard_test
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -262,4 +264,45 @@ func reflectEqual(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// phraseTrackingReader counts bytes read from an underlying reader.
+type phraseTrackingReader struct {
+	r    io.Reader
+	read int
+}
+
+// Read delegates reading and tracks total bytes read.
+func (tr *phraseTrackingReader) Read(p []byte) (int, error) {
+	n, err := tr.r.Read(p)
+	tr.read += n
+	return n, err
+}
+
+// TestVoiceSamplesAddPhraseBoundsRequestBody asserts that an oversized form is rejected
+// with 400 without reading the full body into memory.
+func TestVoiceSamplesAddPhraseBoundsRequestBody(t *testing.T) {
+	f := newVoiceSamplesFixture(t, wakesample.Options{})
+	// Twice the 1 MB limit so the reader must reject it early.
+	huge := url.Values{
+		"phrase":  {"hey clanka"},
+		"current": {"clanker"},
+		"pad":     {strings.Repeat("x", 2<<20)},
+	}.Encode()
+	tr := &phraseTrackingReader{r: strings.NewReader(huge)}
+	req := httptest.NewRequest(http.MethodPost, "/voice-samples/phrases", tr)
+	req.Host = "127.0.0.1:8082"
+	req.RemoteAddr = "127.0.0.1:12345"
+	req.Header.Set("Tailscale-User-Login", owner)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	req.Header.Set("Content-Type", formType)
+	rec := httptest.NewRecorder()
+	f.handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("oversized form status = %d, want 400; body = %s", rec.Code, rec.Body.String())
+	}
+	// Confirm the handler aborted early without reading the full 2 MB payload.
+	if tr.read >= len(huge) {
+		t.Fatalf("handler read %d bytes; want < %d bytes without buffering full body", tr.read, len(huge))
+	}
 }

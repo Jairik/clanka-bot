@@ -85,8 +85,11 @@ func TestMonsterAPIShowsTheAccountAndWrites(t *testing.T) {
 
 	w = httptest.NewRecorder()
 	h.monsterAPI(w, httptest.NewRequest("POST", "/api/ui/monster", strings.NewReader(`{"action":"dance","device":"DSN1"}`)))
-	if w.Code != 400 {
+	if w.Code != 400 || !strings.Contains(w.Body.String(), "Monster request failed.") {
 		t.Fatalf("bad action: %d %s", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "dance") {
+		t.Fatalf("bad action leaked detail: %s", w.Body.String())
 	}
 }
 

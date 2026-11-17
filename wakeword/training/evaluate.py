@@ -12,13 +12,14 @@ event per threshold crossing, with a 2 s refractory window (the compose
 
 import argparse
 import json
+import math
 import wave
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import numpy as np
-from openwakeword.utils import bulk_predict
 
-SWEEP = (0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.95, 0.98)
+SWEEP = (0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.85, 0.9, 0.91, 0.92, 0.93, 0.94, 0.95, 0.98, 0.985, 0.99, 0.995, 0.998, 0.999)
 # openWakeWord scores one frame per 1280 samples (80 ms) at 16 kHz.
 FRAME_SECONDS = 1280 / 16000
 REFRACTORY_SECONDS = 2.0
@@ -52,7 +53,7 @@ def phrase_breakdown(name, scores, phrases, threshold, target):
         bucket = groups[key]
         bucket[0].append(max(frames) if frames.size else 0.0)
         bucket[1].append(phrase)
-    print(f"  {name} breakdown at {threshold:.2f}:")
+    print(f"  {name} breakdown at {threshold}:")
     for label, (peaks, _) in groups.items():
         if peaks:
             rates = float((np.array(peaks) > threshold).mean())
@@ -74,20 +75,42 @@ def sample(files, limit):
     return [files[int(i * step)] for i in range(limit)]
 
 
-def frame_scores(files, model, ncpu):
+def pad_wav(source, destination, before, after):
+    # The evaluator and openWakeWord both expect 16 kHz mono PCM16.
+    with wave.open(str(source), "rb") as wav:
+        if (wav.getframerate(), wav.getnchannels(), wav.getsampwidth()) != (16000, 1, 2):
+            raise ValueError(f"{source}: expected 16 kHz mono PCM16 WAV")
+        samples = wav.readframes(wav.getnframes())
+    with wave.open(str(destination), "wb") as wav:
+        wav.setparams((1, 2, 16000, 0, "NONE", "not compressed"))
+        wav.writeframes(bytes(2 * round(before * 16000)) + samples + bytes(2 * round(after * 16000)))
+
+
+def frame_scores(files, model, ncpu, pad_before=0, pad_after=0):
     """Return {path: per-frame score array} for every WAV in ``files``.
 
     ``bulk_predict`` returns one dict per 80 ms frame (model name -> score).
     """
     if not files:
         return {}
+    from openwakeword.utils import bulk_predict
+
     ncpu = max(1, min(ncpu, len(files)))
-    preds = bulk_predict([str(f) for f in files], wakeword_models=[model], ncpu=ncpu)
+    with TemporaryDirectory(prefix="wakeword-eval-") as directory:
+        originals = {}
+        for i, source in enumerate(files):
+            path = str(source)
+            if pad_before or pad_after:
+                path = str(Path(directory) / f"{i}.wav")
+                pad_wav(source, path, pad_before, pad_after)
+            originals[path] = str(source)
+        # Disable openWakeWord's built-in symmetric padding for every set.
+        preds = bulk_predict(list(originals), wakeword_models=[model], ncpu=ncpu, padding=0)
     out = {}
     for path, per_frame in preds.items():
         values = [float(next(iter(frame.values()))) if isinstance(frame, dict) else float(frame)
                   for frame in per_frame]
-        out[path] = np.asarray(values, dtype=np.float64).ravel()
+        out[originals[path]] = np.asarray(values, dtype=np.float64).ravel()
     return out
 
 
@@ -104,7 +127,7 @@ def report_clips(name, scores, thresholds, expect_hit):
     kind = "recall" if expect_hit else "false-accept rate"
     print(f"{name}: n={peaks.size} peak mean={peaks.mean():.3f} p50={np.median(peaks):.3f} max={peaks.max():.3f}")
     for t in thresholds:
-        print(f"  {kind} at {t:.2f}: {float((peaks > t).mean()):.2%}")
+        print(f"  {kind} at {t}: {float((peaks > t).mean()):.2%}")
     return peaks
 
 
@@ -126,10 +149,17 @@ def report_events(name, scores, thresholds):
                     last = t_frame
                 t_frame += FRAME_SECONDS
         per_hour = events / hours
-        out[f"{t:.2f}"] = per_hour
-        print(f"  {name} false accepts per hour at {t:.2f}: {per_hour:.2f} "
+        out[str(t)] = per_hour
+        print(f"  {name} false accepts per hour at {t}: {per_hour:.2f} "
               f"({events} events in {hours * 60:.1f} min of audio)")
     return out
+
+
+def padding_seconds(value):
+    seconds = float(value)
+    if not math.isfinite(seconds) or seconds < 0:
+        raise argparse.ArgumentTypeError("padding must be finite and non-negative")
+    return seconds
 
 
 def main():
@@ -144,6 +174,8 @@ def main():
     p.add_argument("--background-max", type=int, default=400, help="score at most this many background files (evenly spaced)")
     p.add_argument("--real-positive", default="", help="owner's held-out real takes")
     p.add_argument("--real-negative", default="", help="owner's held-out real negative takes")
+    p.add_argument("--pad-before", type=padding_seconds, default=1.0, help="seconds of silence before each clip (default 1)")
+    p.add_argument("--pad-after", type=padding_seconds, default=2.0, help="seconds of silence after each clip (default 2)")
     p.add_argument("--threshold", type=float, default=0.5, help="the threshold the service runs at")
     p.add_argument("--target", default="clanker", help="the wake word, for the phrase breakdown")
     p.add_argument("--ncpu", type=int, default=8)
@@ -162,7 +194,7 @@ def main():
         ("real positives (held out)", "real_positive", args.real_positive, True),
         ("real negatives (held out)", "real_negative", args.real_negative, False),
     ):
-        scores = frame_scores(paths(directory), args.model, args.ncpu)
+        scores = frame_scores(paths(directory), args.model, args.ncpu, args.pad_before, args.pad_after)
         if scores:
             report_clips(name, scores, thresholds, expect)
             if not expect:
@@ -180,7 +212,7 @@ def main():
         peaks = np.array([max(f) if f else 0.0 for f in results[key].values()])
         return float((peaks > args.threshold).mean())
 
-    print(f"at the deployed threshold {args.threshold:.2f}:")
+    print(f"at the deployed threshold {args.threshold}:")
     for label, key, expect in (
         ("recall, training voices (unseen clips)", "positives", True),
         ("recall, voices held out of training", "voices", True),
@@ -195,7 +227,7 @@ def main():
             print(f"  {label}: {value:.2%}")
     events = results.get("background_events_per_hour", {})
     if events:
-        print(f"  background false accepts per hour: {events[f'{args.threshold:.2f}']:.2f}")
+        print(f"  background false accepts per hour: {events[str(args.threshold)]:.2f}")
 
     if results.get("near_misses"):
         worst = sorted(results["near_misses"].items(), key=lambda kv: -max(kv[1]) if kv[1] else 0)[:10]

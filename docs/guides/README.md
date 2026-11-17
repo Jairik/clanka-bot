@@ -556,7 +556,15 @@ generated from the enabled registry on every call: a disabled Tool and its
 description disappear from the next answer, and no feature list lives in code.
 `system.status` reads the same bounded service/module snapshot as the Dashboard
 Health page, so a timed-out or unreachable service is reported honestly rather
-than as healthy. `system.diagnose` answers the follow-up ("what's wrong?",
+than as healthy. It includes host-wide vitals (CPU temperature, load average,
+available memory, and uptime) and data-volume storage metrics (database and WAL
+sizes, Activity history row count and oldest entry, and free disk space) inside
+the container. The spoken answer adds exactly one short warning sentence only
+when a threshold is crossed: CPU temperature above 80 °C, available memory
+below 300 MB, or storage low (free space < 10% or < 500 MB) or full (< 2%);
+otherwise the existing summary remains untouched. The model-visible output gains
+structured `Host` and `Storage` fields for debugging and Agent inspection.
+`system.diagnose` answers the follow-up ("what's wrong?",
 "what failed?") by speaking up to three failing checks with a short reason each;
 it is Local-only because a detail can name an internal address or an upstream
 error, so that detail never enters the model's context.
@@ -1033,8 +1041,16 @@ microphone. The top bar has the Pi speaker's volume (click to mute, a slider in
 same form routes as before. Build it with `make web`; the Docker image does this
 itself. See `assistant/web/README.md` for the dev server.
 
-The **Health** page at `/health` reports the bounded Compose, wake word,
-location, Tool module and Spotify checks. Its **Download diagnostics** button
+The **Health** page at `/health` reports bounded Compose services, a dedicated
+**Pi (host) and data** section, wake word models, location, Tool modules and
+Spotify checks. The host and data section reports CPU temperature from
+`/sys/class/thermal/thermal_zone0/temp`, load averages from `/proc/loadavg`,
+available memory from `/proc/meminfo`, system uptime from `/proc/uptime`,
+`assistant.db` and `-wal` sizes, Activity row count and oldest entry timestamp,
+and data-volume free space via `statfs`. The vitals values are host-wide inside
+the container; missing files, short lines, or non-numeric values are reported
+as unavailable rather than healthy zeros. Free space below 10% or below 500 MB
+warns as low, and below 2% warns as full. Its **Download diagnostics** button
 fetches `GET /api/ui/diagnostics`, one support artifact (bounded to 1 MiB) that
 contains the health/status snapshot, process uptime, the UI artifact pin and
 reported version, the Dashboard API version, effective settings and Tool policy,

@@ -5,6 +5,7 @@ package dashboard
 
 import (
 	"context"
+	"database/sql"
 	"embed"
 	"encoding/json"
 	"fmt"
@@ -361,12 +362,20 @@ func New(opts Options) (*Handler, error) {
 	// checks directly.
 	healthStatus := opts.Status
 	if healthStatus == nil {
+		var db *sql.DB
+		var dbPath string
+		if opts.Store != nil {
+			db = opts.Store.DB()
+			dbPath = opts.Store.Path()
+		}
 		healthStatus = status.New(status.Options{
 			Timeout:  opts.HealthTimeout,
 			Services: opts.Services,
 			Modules:  opts.Modules,
 			Location: opts.Location,
 			Now:      now,
+			DB:       db,
+			DBPath:   dbPath,
 		})
 	}
 	// One wake model cache serves this handler's Health and Voice samples

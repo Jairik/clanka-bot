@@ -20,6 +20,8 @@ type healthView struct {
 	CheckedAt     string
 	HealthTimeout string
 	Services      []checkView
+	// Host reports Pi host vitals and data-volume storage rows.
+	Host []checkView
 	// Wakeword has one row per configured model and is probed from the same
 	// config the voice loop uses.
 	Wakeword []checkView
@@ -70,6 +72,7 @@ func (h *Handler) health(ctx context.Context) healthView {
 		CheckedAt:      report.CheckedAt.Format("2006-01-02 15:04:05 UTC"),
 		HealthTimeout:  report.Timeout.String(),
 		Services:       checkViews(report.Services),
+		Host:           checkViews(report.HostChecks),
 		Wakeword:       h.wakewordChecks(ctx),
 		FalseWakes:     h.falseWakeRows(),
 		Location:       checkViewOf(report.Location),
@@ -89,10 +92,14 @@ func checkViews(checks []tool.StatusCheck) []checkView {
 }
 
 func checkViewOf(check tool.StatusCheck) checkView {
+	lbl := check.Label
+	if lbl == "" {
+		lbl = status.Label(check.State)
+	}
 	return checkView{
 		Name:        check.Name,
 		Status:      string(check.State),
-		StatusLabel: status.Label(check.State),
+		StatusLabel: lbl,
 		Detail:      check.Detail,
 	}
 }

@@ -149,6 +149,8 @@ export type HealthView = {
   CheckedAt: string;
   HealthTimeout: string;
   Services: Check[] | null;
+  // Host reports Pi host vitals and data-volume storage rows.
+  Host: Check[] | null;
   // Wakeword has one row per configured model and is probed from the same
   // config the voice loop uses.
   Wakeword: Check[] | null;

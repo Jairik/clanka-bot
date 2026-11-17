@@ -357,6 +357,8 @@ func run() error {
 		Services: serviceChecks,
 		Modules:  toolSet,
 		Location: locSvc,
+		DB:       st.DB(),
+		DBPath:   st.Path(),
 	})
 
 	// One sink serves reply playback, the wake chime, timer alerts and the

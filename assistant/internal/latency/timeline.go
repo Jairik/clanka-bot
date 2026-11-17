@@ -28,6 +28,9 @@ const (
 	// by the STT service. Nothing is played back for it, so it also never
 	// reports response latency.
 	SourceDashboardMic Source = "dashboard_mic"
+	// SourceSmoke is the post-deploy smoke turn. It exercises routing and Tool
+	// execution without updating user-facing history or confirmations.
+	SourceSmoke Source = "smoke"
 )
 
 // Stage is one measured pipeline stage. Each value is a duration measured by

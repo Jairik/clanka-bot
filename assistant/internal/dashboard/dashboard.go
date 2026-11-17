@@ -484,6 +484,7 @@ func New(opts Options) (*Handler, error) {
 	// and same-origin.
 	h.Mutating("POST /activity/ask", h.activityAsk)
 	h.Mutating("POST /api/ui/ask/audio", h.activityAskAudio)
+	h.Mutating("POST /api/ui/smoke", h.smokeAPI)
 	// The top bar's speaker volume and mute.
 	// BLE routes share existing identity and same-origin mutation checks.
 	h.Handle("GET /api/ui/lights", h.page("lights", h.lightsAPI))

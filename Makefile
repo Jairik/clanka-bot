@@ -4,7 +4,7 @@ SHELL := /bin/bash
 GIT_SHA ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
 export GIT_SHA
 
-.PHONY: web web-dev web-image build up down logs doctor deploy rollback prune-images build-arm64 test tts-test stt-test check routing-eval latency-report new-tool wakeword-test soloist soloist-update spotify-up deploy-watch-install backup
+.PHONY: web web-dev web-image build up down logs doctor deploy rollback prune-images build-arm64 test tts-test stt-test check routing-eval latency-report new-tool wakeword-test soloist soloist-update spotify-up deploy-watch-install backup smoke
 
 build: ## Build every service image for this host.
 	docker compose build
@@ -68,6 +68,9 @@ backup: ## Download an authenticated SQLite backup of the assistant database.
 	echo "Wrote $$out ($$(wc -c < "$$out") bytes)"; \
 	ls -lh "$$out"
 
+smoke: ## Post-deploy smoke turn: prove the pipeline answers a typed request.
+	bash scripts/smoke.sh
+
 web: ## Build the Dashboard React app into the Go embed directory.
 	cd assistant && go run ./cmd/gentypes
 	cd assistant/web && pnpm install --frozen-lockfile && pnpm build
@@ -83,6 +86,7 @@ test: ## Run the assistant, deployment, auto-deploy, wakeword-CLI, STT, prototyp
 	cd assistant && go test ./...
 	bash scripts/tests/doctor_test.sh
 	bash scripts/tests/deploy_test.sh
+	bash scripts/tests/smoke_test.sh
 	bash scripts/tests/prune_images_test.sh
 	bash scripts/tests/deploy_watch_test.sh
 	bash scripts/tests/check_compose_test.sh

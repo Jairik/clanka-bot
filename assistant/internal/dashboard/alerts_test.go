@@ -673,12 +673,6 @@ func TestAlertsAlarmOverrideRejectsInvalidInputWithoutPartialWrite(t *testing.T)
 	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "between 0 and 60 minutes") {
 		t.Fatalf("over-cap ramp status = %d, body = %s", rec.Code, rec.Body.String())
 	}
-	// The sound cap is the existing sound.Service validation, applied by the
-	// same Manager.Update the voice Tool calls; the page does not duplicate it.
-	rec = f.post(target, url.Values{"sound": {"long"}})
-	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "longer than 1m0s") {
-		t.Fatalf("over-cap sound status = %d, body = %s", rec.Code, rec.Body.String())
-	}
 	if row := f.alarm.List(); row[0].Volume != nil || row[0].RampSeconds != nil || row[0].Sound != "" {
 		t.Fatalf("invalid submissions wrote a value: %+v", row[0])
 	}

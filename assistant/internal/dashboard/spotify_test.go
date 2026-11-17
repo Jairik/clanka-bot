@@ -155,14 +155,16 @@ func (f *spotifyTokenServer) stallRefresh(t *testing.T, rotate bool) (release fu
 	f.startedRefresh = make(chan struct{}, 1)
 	f.mu.Unlock()
 	var once sync.Once
-	release = func() { once.Do(func() {
-		f.mu.Lock()
-		ch := f.blockRefresh
-		f.mu.Unlock()
-		if ch != nil {
-			close(ch)
-		}
-	}) }
+	release = func() {
+		once.Do(func() {
+			f.mu.Lock()
+			ch := f.blockRefresh
+			f.mu.Unlock()
+			if ch != nil {
+				close(ch)
+			}
+		})
+	}
 	t.Cleanup(release)
 	return release, f.startedRefresh
 }

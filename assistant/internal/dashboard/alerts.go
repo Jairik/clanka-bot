@@ -12,7 +12,6 @@ import (
 
 	"github.com/Jairik/clanka-bot/assistant/internal/alertstore"
 	"github.com/Jairik/clanka-bot/assistant/internal/ring"
-	"github.com/Jairik/clanka-bot/assistant/internal/sound"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/tools/alarm"
 	"github.com/Jairik/clanka-bot/assistant/tools/reminder"
@@ -108,7 +107,6 @@ type alarmEditorView struct {
 	SoundKey        string
 	VolumeKey       string
 	RampKey         string
-	SoundCap        string
 	HasLibrary      bool
 	Sounds          []soundOption
 	Action          string
@@ -649,7 +647,6 @@ func (h *Handler) buildAlarmEditors(alarms []alarm.Alarm, edit *alertEditState) 
 			SoundKey:        ring.SoundKey(ring.Alarm),
 			VolumeKey:       ring.Key(ring.Alarm, "volume"),
 			RampKey:         ring.Key(ring.Alarm, "ramp"),
-			SoundCap:        displayDuration(sound.Cap(sound.RoleAlarmRing)),
 			HasLibrary:      h.sounds != nil,
 			Action:          "/alerts/alarms/" + url.PathEscape(item.ID),
 			ResetAction:     "/alerts/alarms/" + url.PathEscape(item.ID) + "/reset",

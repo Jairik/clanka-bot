@@ -13,8 +13,8 @@ import (
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/announce"
-	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/dashboard"
+	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 )
 
 func testLogger() *slog.Logger {

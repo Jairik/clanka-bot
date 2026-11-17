@@ -25,8 +25,7 @@ var reservedNames = []string{BuiltinChime, None}
 // The upload is bounded at 10 MB and streamed to a temporary file; the
 // canonical WAV is written beside the library as a hidden temp and renamed into
 // place only after decoding succeeds. A failed import leaves neither a library
-// file nor an index row. Role length caps are deliberately not checked here:
-// they apply when a sound is assigned.
+// file nor an index row.
 func (s *Service) Import(ctx context.Context, src io.Reader, filename string) (Sound, error) {
 	if s == nil || s.db == nil {
 		return Sound{}, errors.New("sound: library is not open")

@@ -131,9 +131,7 @@ func (s *Service) scanFiles() ([]Sound, error) {
 	return out, nil
 }
 
-// durationMillis rounds a duration up to the index's millisecond column. The
-// rounding is deliberate: a file just over a role cap must not slip through
-// assignment because truncation made it look shorter.
+// durationMillis rounds a duration up to the index's millisecond column.
 func durationMillis(d time.Duration) int64 {
 	if d <= 0 {
 		return 0

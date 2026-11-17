@@ -856,8 +856,7 @@ func updateMatch(in UpdateIn) (func(Alarm) bool, error) {
 
 // resolveSound names one library sound through the shared matcher. The second
 // result is true when the spoken name did not resolve and the kind default
-// must be used. A matched sound over the Alarm Ring cap is an error, not a
-// silent fallback, because the user asked for that specific sound.
+// must be used.
 func (m *Manager) resolveSound(ctx context.Context, spoken string) (string, bool, error) {
 	spoken = strings.TrimSpace(spoken)
 	if spoken == "" {
@@ -884,13 +883,8 @@ func (m *Manager) resolveSound(ctx context.Context, spoken string) (string, bool
 		return "", true, nil
 	}
 	if err := m.cues.Validate(sound.RoleAlarmRing, result.Name); err != nil {
-		// The shared validator also reports a disappeared file. Only a real cap
-		// breach is worth refusing; an unavailable entry falls back.
-		if entry, ok := m.cues.Find(result.Name); ok && entry.Duration > sound.Cap(sound.RoleAlarmRing) {
-			return "", false, &tool.ToolError{Say: fmt.Sprintf(
-				"I can't use the %s sound for an alarm; it is longer than %s.",
-				entry.Name, sound.Cap(sound.RoleAlarmRing))}
-		}
+		// The shared validator reports a disappeared file; fall back to the
+		// kind default.
 		m.logger.Warn("alarm sound unavailable; using the kind default",
 			"spoken", spoken, "sound", result.Name, "error", err)
 		return "", true, nil

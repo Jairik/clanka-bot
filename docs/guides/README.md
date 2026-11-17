@@ -1304,8 +1304,7 @@ The Dashboard **Sounds** page (`/sounds`) uploads `.wav` or `.mp3` files up to
 Apache-2.0, pinned in `go.mod`; no runtime ffmpeg), downmixes
 to mono, resamples to the speaker/capture format, normalises loudness and stores
 one canonical PCM16 WAV in `data/sounds/`. A failed or undecodable upload leaves
-no file or index row. Uploads are not length-capped: the role caps below apply
-when a sound is assigned, so one long recording can still serve a 60 s Ring.
+no file or index row. Neither uploads nor role assignments have a length limit.
 
 Each role is a live setting named `sounds.<role>`:
 `GET /api/settings` lists them and `PUT` changes one. A value is a library name
@@ -1321,6 +1320,12 @@ through the same Announcement queue as unprompted speech: it waits for the
 current reply, a pending Confirmation and a ringing alert, and a new turn
 cancels it so a reply is never cut.
 
+**Delete** (`POST /sounds/delete/<name>`, confirmed on the page) removes an
+uploaded or dropped sound's file and index row. The built-in `chime` cannot be
+deleted, and a sound a Cue role still uses is refused with the role named;
+reassign the role first. A per-Alarm override naming a deleted sound falls back
+to `sounds.alarm_ring`.
+
 ```sh
 # Assign a dropped file to the error Cue, then reset to config.yaml.
 curl -s -X PUT localhost:8081/api/settings/sounds.error \
@@ -1328,10 +1333,8 @@ curl -s -X PUT localhost:8081/api/settings/sounds.error \
 curl -s -X DELETE localhost:8081/api/settings/sounds.error
 ```
 
-Length caps are enforced when a sound is assigned and never trim the file:
-`wake` 0.5 s, `reminder`/`error` 3 s, Rings 60 s. A longer sound is rejected
-with the cap in the error. Audio captured while the wake Cue plays is treated as
-echo and is not sent to speech recognition, so a long wake sound can clip the
+No role has a length limit, and a sound always plays whole. Audio captured
+while the wake Cue plays is treated as echo and is not sent to speech recognition, so a long wake sound can clip the
 start of a request; keep it short. The wake, error and reminder Cues are wired,
 and a Timer or Alarm Ring loops `sounds.timer_ring` or `sounds.alarm_ring` through the
 Ring engine: it waits for the current reply sentence, ducks music, speaks the
@@ -1341,8 +1344,7 @@ through the urgent Announcement item, then speaks its message; `none` leaves
 only the message.
 
 A per-Alarm sound override is a library name too, resolved by the shared name
-matcher and checked against the same 60 s Ring cap when it is assigned. It is
-applied to that Alarm's Ring only; `sounds.alarm_ring` remains the fallback
+matcher. It is applied to that Alarm's Ring only; `sounds.alarm_ring` remains the fallback
 when an Alarm has no override or its stored sound is no longer in the library.
 
 ### Latency

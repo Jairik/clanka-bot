@@ -117,6 +117,7 @@ func TestDashboardWriteRoutesRejectCrossSiteBeforeHandler(t *testing.T) {
 		"/activity/ask",
 		"/api/ui/ask/audio",
 		"/sounds/upload",
+		"/sounds/delete/birds",
 		"/voices/active/alba",
 		"/personas",
 		"/notes",

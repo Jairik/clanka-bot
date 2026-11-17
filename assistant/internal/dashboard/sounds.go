@@ -48,6 +48,9 @@ type soundRowView struct {
 	Added    string
 	Origin   string
 	AudioURL string
+	// Empty for the built-in chime, which cannot be deleted. The page hides
+	// the trash control when this is blank.
+	DeleteAction string
 }
 
 // soundRoleView is one fixed Cue role and its effective assignment.
@@ -55,7 +58,6 @@ type soundRoleView struct {
 	Role        string
 	Label       string
 	Key         string
-	Cap         string
 	Display     string
 	Source      string
 	SourceLabel string
@@ -130,8 +132,7 @@ func (h *Handler) soundsUpload(w http.ResponseWriter, r *http.Request) {
 }
 
 // soundsRoleSave assigns one library sound to a fixed Cue role through the same
-// live setting the Cue reads. The role's definition validator enforces its
-// length cap, so a rejected assignment cannot trim or replace the file.
+// live setting the Cue reads.
 func (h *Handler) soundsRoleSave(w http.ResponseWriter, r *http.Request) {
 	if !h.soundsReady(w, r) {
 		return
@@ -283,6 +284,25 @@ func (h *Handler) soundsPreview(w http.ResponseWriter, r *http.Request) {
 	h.soundsSuccess(w, r, flashPlayed)
 }
 
+// soundsDelete removes one library sound. The built-in chime and a sound a
+// Cue role still uses are refused with the reason.
+func (h *Handler) soundsDelete(w http.ResponseWriter, r *http.Request) {
+	if !h.soundsReady(w, r) {
+		return
+	}
+	name := r.PathValue("name")
+	if err := h.sounds.Delete(r.Context(), name); err != nil {
+		if errors.Is(err, sound.ErrNotFound) {
+			h.soundsFail(w, r, http.StatusNotFound, "Unknown sound.", nil)
+			return
+		}
+		h.soundsFail(w, r, http.StatusConflict, strings.TrimPrefix(err.Error(), "sound: "), nil)
+		return
+	}
+	h.logger.Info("sound deleted", "name", name)
+	h.soundsSuccess(w, r, flashDeleted)
+}
+
 // soundsAudio serves the canonical WAV for a browser <audio> element. It is an
 // authenticated GET behind ServeHTTP, supports Range through ServeContent, and
 // only resolves indexed library names (never arbitrary volume paths).
@@ -377,12 +397,17 @@ func (h *Handler) buildSoundsView(flash, errorText string, edit *editState) soun
 		if !entry.AddedAt.IsZero() {
 			added = entry.AddedAt.Local().Format("2 Jan 2006")
 		}
+		deleteAction := ""
+		if !entry.Builtin {
+			deleteAction = "/sounds/delete/" + url.PathEscape(entry.Name)
+		}
 		view.Sounds = append(view.Sounds, soundRowView{
-			Name:     entry.Name,
-			Duration: displayDuration(entry.Duration),
-			Added:    added,
-			Origin:   origin,
-			AudioURL: "/sounds/audio/" + url.PathEscape(entry.Name),
+			Name:         entry.Name,
+			Duration:     displayDuration(entry.Duration),
+			Added:        added,
+			Origin:       origin,
+			AudioURL:     "/sounds/audio/" + url.PathEscape(entry.Name),
+			DeleteAction: deleteAction,
 		})
 	}
 
@@ -398,7 +423,6 @@ func (h *Handler) buildSoundsView(flash, errorText string, edit *editState) soun
 			Role:        string(role),
 			Label:       soundRoleLabel(role),
 			Key:         key,
-			Cap:         displayDuration(sound.Cap(role)),
 			Display:     displayValue(current),
 			Source:      string(value.Source),
 			SourceLabel: sourceLabel(value.Source),
@@ -580,6 +604,8 @@ func soundsFlashMessage(flash string) string {
 	switch flash {
 	case flashUploaded:
 		return "Uploaded. The sound is in the library and ready to assign."
+	case flashDeleted:
+		return "Deleted. The sound is no longer in the library."
 	case flashQueued:
 		return "Queued for the Pi speaker. It plays after the current reply and any pending Confirmation."
 	case flashPlayed:
@@ -597,6 +623,7 @@ func soundsFlashMessage(flash string) string {
 
 const (
 	flashUploaded = "uploaded"
+	flashDeleted  = "deleted"
 	flashQueued   = "queued"
 	flashPlayed   = "played"
 )

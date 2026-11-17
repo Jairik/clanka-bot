@@ -71,3 +71,31 @@ func TestDeferredLimit(t *testing.T) {
 		t.Fatal("accepted an action past the cap")
 	}
 }
+
+// TestDeferredTriggerEvaluationOrder pins the evaluation order, trigger prefixes,
+// and associated events for the package-level deferred regex slice so changes to
+// trigger syntax or deterministic evaluation order are caught.
+func TestDeferredTriggerEvaluationOrder(t *testing.T) {
+	want := []struct {
+		prefix string
+		event  string
+	}{
+		{prefix: "when the music stops", event: "music"},
+		{prefix: "after the timer", event: "timer"},
+		{prefix: "when the reply ends", event: "reply"},
+		{prefix: "after this reply", event: "reply"},
+	}
+	if len(deferredTriggers) != len(want) {
+		t.Fatalf("len(deferredTriggers) = %d, want %d", len(deferredTriggers), len(want))
+	}
+	for i, w := range want {
+		expectedPattern := `(?i)^` + w.prefix + `(?:,\s*|\s+)(.+)$`
+		if deferredTriggers[i].event != w.event {
+			t.Errorf("trigger %d event = %q, want %q", i, deferredTriggers[i].event, w.event)
+		}
+		if deferredTriggers[i].re.String() != expectedPattern {
+			t.Errorf("trigger %d pattern = %q, want %q", i, deferredTriggers[i].re.String(), expectedPattern)
+		}
+	}
+}
+

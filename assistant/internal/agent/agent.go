@@ -309,7 +309,11 @@ func (a *Agent) Run(ctx context.Context, req tool.Request, utterance string, onD
 		truncated = truncated || stepTruncated || reply.Truncated
 		usage = usage.add(reply)
 		usage.steps = step + 1
-		if len(reply.Calls) == 0 {
+		// A step the spoken budget cut may have been streaming Tool calls when
+		// the stream was cancelled. Their arguments are incomplete, so the turn
+		// ends with the text the user heard instead of reporting half-written
+		// calls as Tool errors and asking the model for another step.
+		if stepTruncated || reply.Truncated || len(reply.Calls) == 0 {
 			// Text is the cleaned and budgeted spoken text, so history, the
 			// Last reply and Activity all keep exactly what was heard rather
 			// than the raw markdown the model emitted.

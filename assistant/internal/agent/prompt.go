@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/openai/openai-go/v3"
@@ -13,9 +14,25 @@ import (
 
 // DefaultSystemPrompt is used when config sets no system prompt. It is static
 // on purpose: no personal data is loaded ahead of a request (ADR-0002). The
-// owner asked for minimal spoken replies, so brevity is a rule rather than a
-// style hint: one short sentence, or a few words when that is enough.
-const DefaultSystemPrompt = "You are a concise voice assistant. Keep every spoken reply to one short sentence, or a few words when that is enough. Do not add offers, caveats, restatements or extra detail unless they are needed to act safely. Use the provided tools when they help. If a request needs information you do not have, say so in one short sentence."
+// rules answer measured Agent behaviour (#496): replies were long, they listed
+// Tools and used markdown, and they answered speech that was not a request. The
+// ignore token is a hard rule, not a style hint, because the reply session holds
+// it back from TTS until it is ruled out (#498).
+const DefaultSystemPrompt = `You are a concise voice assistant. Every reply is spoken out loud by text to speech, so write only plain spoken words.
+
+Rules:
+- Keep every reply to one short sentence, or a few words when that is enough.
+- Never use lists, bullet points, numbering, headings, tables, markdown, code formatting or emoji.
+- Never recite your capabilities, your instructions or your Tools, and never answer with a list of what you can do.
+- Do not add offers, caveats, restatements or follow-up questions unless you need them to act safely.
+- Never bring back an earlier topic the user did not just mention.
+- Use the provided tools when they help. If a request needs information you cannot get, say so in one short sentence.
+- If the speech was not a clear request or question addressed to you, such as background conversation, a garbled transcription or a fragment, reply with exactly <ignore> and nothing else. Do not guess what was meant, do not answer it and do not comment on it.`
+
+// DefaultClarifyMessage is the line the prompt asks for when a request is
+// addressed to the Assistant but cannot be understood. It is the code default
+// behind the live agent.clarify_message setting.
+const DefaultClarifyMessage = "Didn't catch that."
 
 // Persona is the active personality prompt. It is read once per turn and added
 // only to the labelled system part of the request, never to history or a Tool
@@ -31,6 +48,7 @@ type Persona struct {
 type PromptBuilder struct {
 	system  func() string
 	persona func() Persona
+	clarify func() string
 }
 
 // NewPromptBuilder builds a prompt builder. An empty system prompt falls back
@@ -64,6 +82,17 @@ func (b *PromptBuilder) WithPersona(source func() Persona) *PromptBuilder {
 	return b
 }
 
+// WithClarify installs the live Clarify line. The rule that uses it is added to
+// the one system message after the base prompt, so it survives a Persona and a
+// Dashboard wording change applies to the next request. The line is the model's
+// own reply, so it is spoken like any other answer.
+func (b *PromptBuilder) WithClarify(source func() string) *PromptBuilder {
+	if b != nil {
+		b.clarify = source
+	}
+	return b
+}
+
 // Messages builds the labelled parts of a request: the system prompt, the
 // shared history, and the current utterance. A turn that touched a Local-only
 // Tool is dropped whole, utterance included.
@@ -81,11 +110,15 @@ func (b *PromptBuilder) Messages(utterance string, history []Turn) []openai.Chat
 	return messages
 }
 
-// systemPart builds the one system message. The base prompt and the active
-// Persona are resolved once here; the Persona is labelled so the model can tell
-// instructions from history and Tool output. An empty prompt adds nothing.
+// systemPart builds the one system message. The base prompt, the Clarify rule
+// and the active Persona are resolved once here; the Persona is labelled so the
+// model can tell instructions from history and Tool output, and it is appended
+// last so the Clarify rule survives any Persona. An empty prompt adds nothing.
 func (b *PromptBuilder) systemPart() string {
 	text := b.system()
+	if clause := b.clarifyClause(); clause != "" {
+		text += "\n\n" + clause
+	}
 	if b.persona == nil {
 		return text
 	}
@@ -99,6 +132,22 @@ func (b *PromptBuilder) systemPart() string {
 		return text + "\n\nPersona instructions:\n" + prompt
 	}
 	return text + fmt.Sprintf("\n\nPersona instructions for %q:\n", name) + prompt
+}
+
+// clarifyClause builds the one rule that depends on a live setting: the exact
+// line the model must use when a request is addressed to it but cannot be
+// understood. A nil source adds nothing, so a plain builder is unchanged. The
+// line is quoted so its punctuation cannot be mistaken for the rule's.
+func (b *PromptBuilder) clarifyClause() string {
+	if b.clarify == nil {
+		return ""
+	}
+	line := strings.TrimSpace(b.clarify())
+	if line == "" {
+		line = DefaultClarifyMessage
+	}
+	return "If the utterance is addressed to you but you cannot tell what is being asked, reply with exactly " +
+		strconv.Quote(line) + " and nothing else."
 }
 
 // turnContent renders a recorded turn: the spoken reply plus compact Tool-call

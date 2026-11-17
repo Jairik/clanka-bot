@@ -107,30 +107,94 @@ func TestControlPhraseIntentReachesTheCurrentHolder(t *testing.T) {
 	}
 }
 
-// TestControlPhraseIntentFallsThroughWithNothingInFocus is the other half of
-// the acceptance case: the same word still reaches the semantic Fast path.
-func TestControlPhraseIntentFallsThroughWithNothingInFocus(t *testing.T) {
-	p, controls := newFocusPipeline(t, map[string]string{"stop": "stop"}, &focus.Registry{})
-	result := p.Handle(context.Background(), request(), "stop")
+// TestStandaloneStopWithNothingInFocusSuspendsWithoutRouting is the other half
+// of the acceptance case: the bare word now ends the session instead of
+// reaching the semantic Fast path (#501). Matching tolerates STT punctuation
+// and case.
+func TestStandaloneStopWithNothingInFocusSuspendsWithoutRouting(t *testing.T) {
+	for _, transcript := range []string{"stop", "Stop.", "STOP!"} {
+		p, controls := newFocusPipeline(t, map[string]string{"stop": "stop"}, &focus.Registry{})
+		result := p.Handle(context.Background(), request(), transcript)
 
-	if result.Path != tool.PathFast || result.Tool != audiocontrol.StopName {
-		t.Fatalf("reply = %+v, want the semantic Fast path to audio.stop", result)
-	}
-	if controls.stopped != 1 {
-		t.Fatalf("audio.stop ran %d times, want one", controls.stopped)
+		if !result.Suspend {
+			t.Fatalf("%q: Suspend = false, want the session to end", transcript)
+		}
+		if result.Text != "" {
+			t.Fatalf("%q: Text = %q, want no spoken words", transcript, result.Text)
+		}
+		if result.Path != tool.PathFocusIntent {
+			t.Fatalf("%q: path = %q, want %q", transcript, result.Path, tool.PathFocusIntent)
+		}
+		if controls.stopped != 0 {
+			t.Fatalf("%q: audio.stop ran %d times, want no Tool", transcript, controls.stopped)
+		}
 	}
 }
 
-// TestControlPhraseIntentWithoutFocusWiringFallsThrough keeps the seam optional.
-func TestControlPhraseIntentWithoutFocusWiringFallsThrough(t *testing.T) {
+// TestStandaloneStopWithoutFocusWiringSuspends keeps the seam optional: with no
+// Focus registry at all there is nothing to hold the stop, so it still ends the
+// session rather than falling through.
+func TestStandaloneStopWithoutFocusWiringSuspends(t *testing.T) {
 	p, controls := newFocusPipeline(t, map[string]string{"stop": "stop"}, nil)
 	result := p.Handle(context.Background(), request(), "stop")
 
-	if result.Path != tool.PathFast || result.Tool != audiocontrol.StopName {
-		t.Fatalf("reply = %+v, want the semantic Fast path", result)
+	if !result.Suspend || result.Text != "" {
+		t.Fatalf("reply = %+v, want a silent suspend", result)
 	}
-	if controls.stopped != 1 {
-		t.Fatalf("audio.stop ran %d times, want one", controls.stopped)
+	if controls.stopped != 0 {
+		t.Fatalf("audio.stop ran %d times, want no Tool", controls.stopped)
+	}
+}
+
+// TestStandaloneStopWithMusicInFocusStopsMusicAndSuspends covers the other
+// acceptance case: the existing Focus intent still runs first, and the session
+// then ends as well.
+func TestStandaloneStopWithMusicInFocusStopsMusicAndSuspends(t *testing.T) {
+	var registry focus.Registry
+	music := &focusHolder{name: "Music", intents: []focus.Intent{focus.Stop}}
+	claim := registry.Claim(focus.Music, music)
+	defer claim.Release()
+
+	p, controls := newFocusPipeline(t, map[string]string{"stop": "stop"}, &registry)
+	result := p.Handle(context.Background(), request(), "stop")
+
+	if !result.Suspend {
+		t.Fatal("Suspend = false, want the session to end after music stops")
+	}
+	if result.Text != "Music stop." {
+		t.Fatalf("text = %q, want the holder's line", result.Text)
+	}
+	if got := music.seen(); len(got) != 1 || got[0] != focus.Stop {
+		t.Fatalf("holder saw %v, want one stop", got)
+	}
+	if controls.stopped != 0 {
+		t.Fatalf("audio.stop ran %d times, want the Focus holder only", controls.stopped)
+	}
+}
+
+// TestStopInsideALongerRequestKeepsItsRouting proves only the bare phrase
+// suspends: "stop the music in the kitchen" is still an ordinary request.
+func TestStopInsideALongerRequestKeepsItsRouting(t *testing.T) {
+	runner := newFakeRunner()
+	runner.result = agent.Result{Text: "Stopped the kitchen music."}
+	logger, _ := testLogger()
+	p, err := pipeline.New(tool.NewRegistry(time.Second), map[string]string{"stop": "stop"}, logger,
+		pipeline.WithAgent(runner, nil),
+		pipeline.WithFocus(&focus.Registry{}),
+	)
+	if err != nil {
+		t.Fatalf("pipeline.New: %v", err)
+	}
+
+	result := p.Handle(context.Background(), request(), "stop the music in the kitchen")
+	if result.Suspend {
+		t.Fatal("Suspend = true for a longer request, want ordinary routing")
+	}
+	if result.Path != tool.PathAgent {
+		t.Fatalf("path = %q, want the Agent path", result.Path)
+	}
+	if got := runner.calls(); len(got) != 1 {
+		t.Fatalf("agent calls = %v, want the longer request routed to it", got)
 	}
 }
 
@@ -204,10 +268,13 @@ func TestIntentAndToolPhrasesShareOneTable(t *testing.T) {
 		t.Fatalf("delta = %d, want +%d", controls.delta, audiocontrol.StepPercent)
 	}
 
-	// With nothing in Focus the intent phrase still falls through, not to a Tool.
+	// With nothing in Focus the intent phrase ends the session, not a Tool.
 	result = p.Handle(context.Background(), request(), "stop")
 	if result.Path == tool.PathControlPhrase {
 		t.Fatalf("stop reply = %+v, want no Tool Control phrase", result)
+	}
+	if !result.Suspend {
+		t.Fatalf("stop reply = %+v, want the session to end", result)
 	}
 }
 
@@ -242,9 +309,9 @@ func TestPendingConfirmationStillOutranksAFocusIntent(t *testing.T) {
 	}
 }
 
-// TestFocusIntentFallsToTheAgentWhenSemanticIsDisabled keeps the last step of
-// the order intact: no Focus, no semantic match, so the Agent path answers.
-func TestFocusIntentFallsToTheAgentWhenSemanticIsDisabled(t *testing.T) {
+// TestStandaloneStopSkipsTheAgentWhenSemanticIsDisabled is the #501 guarantee:
+// even as the final fallback, the Agent path never answers a bare "stop".
+func TestStandaloneStopSkipsTheAgentWhenSemanticIsDisabled(t *testing.T) {
 	reg := tool.NewRegistry(time.Second)
 	runner := newFakeRunner()
 	runner.result = agent.Result{Text: "agent answer"}
@@ -258,8 +325,11 @@ func TestFocusIntentFallsToTheAgentWhenSemanticIsDisabled(t *testing.T) {
 	}
 
 	result := p.Handle(context.Background(), request(), "stop")
-	if result.Path != tool.PathAgent || result.Text != "agent answer" {
-		t.Fatalf("reply = %+v, want the Agent path", result)
+	if !result.Suspend || result.Text != "" {
+		t.Fatalf("reply = %+v, want a silent suspend", result)
+	}
+	if got := runner.calls(); len(got) != 0 {
+		t.Fatalf("agent calls = %v, want none for a bare stop", got)
 	}
 }
 

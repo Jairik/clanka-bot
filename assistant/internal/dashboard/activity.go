@@ -517,6 +517,10 @@ func outcomeLabel(outcome string) string {
 		return "Failed"
 	case "cancelled":
 		return "Cancelled"
+	case "ignored":
+		return "Ignored"
+	case "suspended":
+		return "Suspended"
 	default:
 		if outcome == "" {
 			return "Unknown"

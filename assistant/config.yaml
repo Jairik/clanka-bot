@@ -354,6 +354,11 @@ wakeword:
   commands:
     enabled: false
     models: ["volume_up", "volume_down"]
+    # Optional wake-free model that cancels a reply and suspends the session,
+    # like a standalone "stop" (#503). Empty leaves today's behaviour. The name
+    # joins models above, so the service is asked for it while commands are
+    # enabled; its threshold comes from thresholds below or `threshold`.
+    stop: ""
     # Volume change per detection, percent (1..50), on the same Pulse sink
     # audio.volume_set uses.
     step: 10
@@ -418,6 +423,9 @@ sounds:
   alarm_ring: chime
   reminder: chime
   error: chime
+  # Soft acknowledgement when the Agent decides the speech was not addressed to
+  # the Assistant. Set to none for a fully silent ignored turn.
+  ignore: chime
 
 # Public-IP geolocation. Only city, region and timezone are kept; the fields
 # parameter stops the service sending coordinates at all.
@@ -470,8 +478,8 @@ notify:
 # request. A value names one Tool ("audio.stop") or one shared Focus intent from
 # the fixed list: stop, pause, resume, next, cancel, snooze. An intent goes to
 # whatever holds Focus, in the fixed order ringing Scheduled alert > current
-# reply > playing music; with nothing in Focus the utterance falls through to
-# the semantic Fast path.
+# reply > playing music. With nothing in Focus a bare "stop" ends the session;
+# every other intent falls through to the semantic Fast path.
 control_phrases:
   # "when's my next alert" sits too close to alarm.list for the semantic
   # margin, so it routes exactly to the merged answer (#305).
@@ -501,8 +509,8 @@ control_phrases:
   # Tool. Snooze on a Timer acts as stop; #53 gives an Alarm its real snooze.
   # "skip" and "pause" both use the next intent, so they advance the Spotify
   # track while music holds Focus. "next" does the same. Resume reaches music
-  # the same way (spotify.play claims it). With nothing in Focus these fall
-  # through to the semantic Fast path.
+  # the same way (spotify.play claims it). With nothing in Focus "stop" ends
+  # the session and the others fall through to the semantic Fast path.
   "stop": stop
   "skip": next
   "pause": next
@@ -584,6 +592,9 @@ agent:
   filler: "One moment."
   # Config layer of the live `agent.unavailable_message` setting.
   unavailable_message: "Sorry, I can't answer that right now."
+  # Config layer of the live `agent.clarify_message` setting: the line the model
+  # is told to use when a request is addressed to it but cannot be understood.
+  clarify_message: "Didn't catch that."
   # Typed prefixes that skip the Fast path entirely. Config layer of the live
   # `agent.request_prefixes` setting; a stored override applies next request.
   request_prefixes:

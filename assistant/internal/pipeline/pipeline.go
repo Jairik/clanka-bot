@@ -94,6 +94,15 @@ type Reply struct {
 	// TextNotStreamed marks an Agent fallback line that no delta carried, so
 	// the reply session must speak it even after a streamed preamble.
 	TextNotStreamed bool
+	// Ignored marks a turn the model decided was not addressed to the
+	// Assistant. Text is empty, and the reply session speaks no words: it may
+	// play the ignore Cue. The turn is not the Last reply.
+	Ignored bool
+	// Suspend marks a standalone "stop" that ends the session instead of
+	// answering. Text may be the Focus holder's line; an empty Text speaks
+	// nothing, and the reply session may play the same soft Cue as Ignored. The
+	// caller closes the follow-up window and clears the shared history (#501).
+	Suspend bool
 	// SpeechRate is a per-utterance TTS multiplier for this reply. Zero means
 	// "use the live voice.rate setting"; a non-zero value (set by a Tool whose
 	// result implements speechRater, e.g. a faster/slower repeat) applies to
@@ -172,8 +181,9 @@ func WithConfirmationResolver(resolver ConfirmationResolver) Option {
 }
 
 // WithFocus enables shared Control-phrase intents. A phrase mapped to an
-// intent is offered to whatever holds Focus; when nothing does, the utterance
-// falls through to the semantic Fast path like any other request.
+// intent is offered to whatever holds Focus; when nothing does, a bare "stop"
+// ends the session and every other intent falls through to the semantic Fast
+// path like any other request.
 func WithFocus(registry *focus.Registry) Option {
 	return func(p *Pipeline) { p.focus = registry }
 }
@@ -522,6 +532,18 @@ func (p *Pipeline) planRoute(ctx context.Context, transcript string) RoutingDeci
 					Decision:   "focus intent: " + string(intent) + " (owner: " + owner + ")",
 				}
 			}
+			// A bare "stop" still ends the session when nothing holds Focus.
+			// It must not reach the semantic router or the Agent path, so it
+			// keeps the Focus route and the execution below suspends (#501).
+			// Every other shared intent keeps its fall-through.
+			if intent == focus.Stop {
+				return RoutingDecision{
+					routeKind: routeKindFocusIntent,
+					Path:      tool.PathFocusIntent,
+					intent:    intent,
+					Decision:  "stop with nothing in focus",
+				}
+			}
 			recordReason = reasonNoFocus
 		}
 	}
@@ -750,6 +772,21 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 			record.reason = ""
 			reply.Path = tool.PathFocusIntent
 			reply.Text = text
+			// A standalone "stop" ends the session even when Focus handled it,
+			// so the next wake word starts with a fresh history (#501).
+			reply.Suspend = decision.intent == focus.Stop
+			return reply
+		}
+		// A bare "stop" with nothing in Focus must not reach the semantic
+		// router or the Agent path. Nothing is spoken; the optional soft Cue is
+		// the only sound, and the caller then ends the session (#501). Any other
+		// shared intent keeps its existing fall-through.
+		if decision.intent == focus.Stop {
+			markRouting()
+			record.reason = ""
+			reply.Path = tool.PathFocusIntent
+			reply.Text = ""
+			reply.Suspend = true
 			return reply
 		}
 		record.reason = reasonNoFocus
@@ -870,6 +907,7 @@ func (p *Pipeline) callAgent(ctx context.Context, req tool.Request, transcript s
 	reply.Pending = result.Pending
 	reply.Unavailable = result.Unavailable
 	reply.TextNotStreamed = result.TextNotStreamed
+	reply.Ignored = result.Ignored
 	// The single provider retry, when it happened, is visible on the request
 	// line so a slow turn can be explained without reading the debug log.
 	latency.SetAttr(ctx, "agent_retries", result.Retries)
@@ -1008,13 +1046,14 @@ func (p *Pipeline) recordTurn(ctx context.Context, transcript, spoken string, ca
 // the pipeline logs the routing-only line itself.
 func (p *Pipeline) finish(ctx context.Context, started time.Time, req tool.Request, transcript string, reply Reply, record routeLog) {
 	// Keep the last completed reply for follow-ups. A cancelled turn (Barge-in
-	// or shutdown) and a blank answer must not replace the last thing the user
-	// actually heard; an error or Unavailable reply was spoken, so it counts.
+	// or shutdown), an ignored turn and a blank answer must not replace the last
+	// thing the user actually heard; an error or Unavailable reply was spoken,
+	// so it counts.
 	var isSmoke bool
 	if tl := latency.FromContext(ctx); tl != nil && tl.Source() == latency.SourceSmoke {
 		isSmoke = true
 	}
-	if p.lastReply != nil && ctx.Err() == nil && strings.TrimSpace(reply.Text) != "" && !isSmoke {
+	if p.lastReply != nil && ctx.Err() == nil && !reply.Ignored && strings.TrimSpace(reply.Text) != "" && !isSmoke {
 		var source string
 		if tl := latency.FromContext(ctx); tl != nil {
 			source = string(tl.Source())

@@ -99,6 +99,29 @@ func TestAgentSystemPromptFollowsLocationRefresh(t *testing.T) {
 	}
 }
 
+// TestKnownPlaceKeepsTheDefaultRules pins the shipped wiring: the location
+// line is appended to the default prompt rather than replacing it, so the
+// brevity and ignore rules still reach the model.
+func TestKnownPlaceKeepsTheDefaultRules(t *testing.T) {
+	service := newLocationService(t, fakeGeolocation(t))
+	service.Refresh(context.Background())
+
+	fake := newFakeProvider(t, textReply("Hello."))
+	settings := testSettings(fake.start().URL)
+	settings.SystemPromptFunc = func() string {
+		return service.SystemPrompt(agent.DefaultSystemPrompt)
+	}
+	a := newTestAgent(t, settings, nil, nil)
+	a.Run(context.Background(), tool.Request{ID: "req-loc"}, "hello", nil)
+
+	system := systemMessageOf(t, fake.request(t, 0).Body)
+	for _, want := range []string{"one short sentence", agent.IgnoreToken, "London"} {
+		if !strings.Contains(system, want) {
+			t.Errorf("system part is missing %q: %s", want, system)
+		}
+	}
+}
+
 func TestAgentFallsBackToDefaultPromptWithoutPlace(t *testing.T) {
 	service := newLocationService(t, fakeGeolocation(t))
 	// No refresh: no last value and no config fallback.
@@ -109,7 +132,12 @@ func TestAgentFallsBackToDefaultPromptWithoutPlace(t *testing.T) {
 	a.Run(context.Background(), tool.Request{ID: "req-loc"}, "hello", nil)
 
 	raw := bodyString(t, fake.request(t, 0).Body)
-	if !strings.Contains(raw, agent.DefaultSystemPrompt) {
-		t.Errorf("request is missing the default system prompt: %s", raw)
+	if !strings.Contains(raw, "hello") {
+		t.Errorf("request is missing the utterance: %s", raw)
+	}
+	// Compare the decoded system message: the default prompt now spans lines
+	// and contains the ignore token, both of which JSON-escape in the raw body.
+	if system := systemMessageOf(t, fake.request(t, 0).Body); !strings.Contains(system, agent.DefaultSystemPrompt) {
+		t.Errorf("request is missing the default system prompt: %s", system)
 	}
 }

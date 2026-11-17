@@ -42,10 +42,14 @@ const (
 	RoleReminder Role = "reminder"
 	// RoleError plays before the Unavailable message.
 	RoleError Role = "error"
+	// RoleIgnore is the short soft Cue played when the Agent decided the speech
+	// was not addressed to the Assistant, so the turn is silent but acknowledged
+	// (#498). Assigning none turns it off.
+	RoleIgnore Role = "ignore"
 )
 
 // Roles is the fixed role order used by the settings list.
-var Roles = []Role{RoleWake, RoleTimerRing, RoleAlarmRing, RoleReminder, RoleError}
+var Roles = []Role{RoleWake, RoleTimerRing, RoleAlarmRing, RoleReminder, RoleError, RoleIgnore}
 
 const (
 	// BuiltinChime is the synthesised two-note chime that ships in the image.
@@ -71,13 +75,14 @@ func Valid(role Role) bool {
 	return false
 }
 
-// Config is the config.yaml layer for the five roles.
+// Config is the config.yaml layer for the fixed roles.
 type Config struct {
 	Wake      string
 	TimerRing string
 	AlarmRing string
 	Reminder  string
 	Error     string
+	Ignore    string
 }
 
 // value returns the config value for one role.
@@ -93,6 +98,8 @@ func (c Config) value(role Role) string {
 		return c.Reminder
 	case RoleError:
 		return c.Error
+	case RoleIgnore:
+		return c.Ignore
 	default:
 		return ""
 	}
@@ -243,6 +250,9 @@ func (s *Service) Definitions(cfg Config) []settings.Definition {
 			role)
 		if role == RoleWake {
 			description += " Audio captured while this Cue plays is treated as echo and is not sent to speech recognition, so keep it short."
+		}
+		if role == RoleIgnore {
+			description += " It plays when the Agent decides speech was not addressed to the Assistant; none makes that turn fully silent."
 		}
 		opts := []settings.Option{
 			settings.WithDescription(description),

@@ -410,6 +410,18 @@ cached, so it plays the moment a request is routed to the Agent path; an empty
 Filler is a startup error. The same cached phrase covers a slow Fast path Tool:
 if nothing has been said 1.5 seconds after you stop talking, it plays once. A
 request never plays it twice, and it never talks over an answer.
+
+When the speech is not a clear request or question addressed to the Assistant —
+background conversation, a garbled transcription, a fragment — the model replies
+with exactly `<ignore>`. The reply session holds back the start of the stream
+until that token is ruled out, so it never reaches TTS. The turn then plays the
+soft `sounds.ignore` Cue ("chime" by default, `none` for silence) and is recorded
+as `ignored`. It speaks no reply, adds nothing to the shared history and leaves
+the Last reply alone, so a misheard fragment cannot steer a later turn. When a
+request *is* addressed to the Assistant but cannot be understood, the model says
+the live `agent.clarify_message` line ("Didn't catch that." by default). A Persona
+is appended after both rules, so a personality prompt cannot replace them.
+
 All three published ports are bound to the host loopback only. The debug and
 Dashboard listeners bind all interfaces inside the container (see
 `docker-compose.yml`), so the host port mapping and their source-address checks
@@ -489,6 +501,15 @@ the sink's 100% ceiling, and an up step above that ceiling is a no-op rather
 than a clamp down. The feature stays off
 until models trained on this house's samples exist and the false-trigger
 measurement in `docs/spikes/wake-over-music.md` meets its target.
+
+A second, optional command model is `stop` (`wakeword.commands.stop`). A
+detection while a reply streams or plays cancels the reply, TTS and playback,
+drops a pending Confirmation, and suspends the session through the same
+end-session path as a standalone "stop": the follow-up window closes, the
+shared Agent history is cleared, and the loop waits for the wake word again. It
+never starts a new turn, unlike a wake-word Barge-in. The soft `sounds.ignore`
+Cue is the only sound, and `none` silences it. An empty `stop` keeps today's
+behaviour, and training the detector is a separate manual step.
 
 `wakeword` and `stt` do computation only and never mount Pulse (ADR-0001).
 Their Compose health checks are Wyoming `describe` calls, so startup waits for
@@ -678,8 +699,9 @@ The Control phrases `stop`, `pause`, `cancel`, `snooze`, `louder`, `quieter`
 and `mute` are matched exactly, so they answer without waiting on the embed
 service. `stop`, `pause`, `cancel` and `snooze` are shared Focus intents: they
 act on a ringing alert first, then the current reply, then playing music. With
-nothing in Focus they fall through to the semantic Fast path, so `cancel` still
-reaches `timer.cancel` and `louder` still steps the volume up. A volume phrase
+nothing in Focus a bare `stop` ends the session, while the others fall through
+to the semantic Fast path, so `cancel` still reaches `timer.cancel` and `louder`
+still steps the volume up. A volume phrase
 runs the Tool's extraction even though it matched exactly, so `quieter` steps
 down and `mute` sets the sink mute flag. `unmute` clears that flag and restores
 whatever level was playing; when the level was already 0 — an absolute "volume
@@ -1194,11 +1216,12 @@ There is no general hot-reload framework.
 | Key | Live effect |
 | --- | --- |
 | `tools.<name>.control_phrases` | The exact phrases that route to that Tool. A replacement applies to the next request. |
-| `focus.<intent>.phrases` | Exact phrases for one shared Focus intent (`stop`, `pause`, `resume`, `next`, `cancel`, `snooze`). They act on a ringing alert, the current reply or music; with nothing in Focus they fall through to the semantic Fast path. |
+| `focus.<intent>.phrases` | Exact phrases for one shared Focus intent (`stop`, `pause`, `resume`, `next`, `cancel`, `snooze`). They act on a ringing alert, the current reply or music; with nothing in Focus a bare `stop` ends the session and the others fall through to the semantic Fast path. |
 | `tools.<name>.examples` | Semantic Fast path Examples. A change re-embeds in the background; routing keeps the old vectors until the new ones are ready, a superseded rebuild is discarded, and a failed rebuild retries with bounded backoff (a startup failure recovers without a restart). |
 | `agent.request_prefixes` | Prefixes that go straight to the Agent path. A change applies to the next request. |
 | `agent.filler` | The phrase played while the Agent path waits. A change re-synthesizes the cached audio in the background; the old audio plays until the new clip is ready, and at most one Filler still plays per request. |
 | `agent.unavailable_message` | The phrase spoken when the model is unreachable. A change applies to the next failure. |
+| `agent.clarify_message` | The line the prompt tells the model to use when a request is addressed to the Assistant but unclear. A change applies to the next request. |
 | `agent.model` | The model name sent to the configured provider. A change applies to the next turn (the model is resolved per request); there is no automatic failover. |
 | `wakeword.threshold.<model>` | Detection threshold for one configured wake model (0 < t ≤ 1). A change reopens the idle detect stream with the new map, so it applies to the next detection. Reset returns to `WAKEWORD_THRESHOLDS` or `config.yaml`. The model list and address stay `restart_required`. |
 | `http.addr`, `debug.addr`, `dashboard.addr`, `tts.addr`, `wakeword.addr`, `stt.addr`, `embed.url`, `capture.source`, `playback.sink` | Connection-level settings, reported as `restart_required`. A stored override is applied on the next process start. |
@@ -1325,11 +1348,12 @@ Non-secret settings live in [`assistant/config.yaml`](../../assistant/config.yam
 #### Sound library and Cue roles
 
 A **Cue** is a non-speech sound with a fixed role: `wake`, `timer_ring`,
-`alarm_ring`, `reminder` (before the Reminder is spoken) and `error` (before the
-Unavailable message). The built-in `chime` is synthesised in Go and ships in the
-image. Any `.wav` file dropped into `data/sounds/` is indexed at startup with
-its name, duration and first-added date, using pure-Go decoding (ADR-0001, no
-ffmpeg).
+`alarm_ring`, `reminder` (before the Reminder is spoken), `error` (before the
+Unavailable message) and `ignore` (a soft acknowledgement of a turn that was not
+addressed to the Assistant). The built-in `chime` is synthesised in Go and ships
+in the image. Any `.wav` file dropped into `data/sounds/` is indexed at startup
+with its name, duration and first-added date, using pure-Go decoding (ADR-0001,
+no ffmpeg).
 
 The Dashboard **Sounds** page (`/sounds`) uploads `.wav` or `.mp3` files up to
 10 MB. The assistant decodes them in Go (MP3 via `hajimehoshi/go-mp3` v0.3.4,
@@ -1367,8 +1391,8 @@ curl -s -X DELETE localhost:8081/api/settings/sounds.error
 
 No role has a length limit, and a sound always plays whole. Audio captured
 while the wake Cue plays is treated as echo and is not sent to speech recognition, so a long wake sound can clip the
-start of a request; keep it short. The wake, error and reminder Cues are wired,
-and a Timer or Alarm Ring loops `sounds.timer_ring` or `sounds.alarm_ring` through the
+start of a request; keep it short. The wake, error, reminder and ignore Cues are
+wired, and a Timer or Alarm Ring loops `sounds.timer_ring` or `sounds.alarm_ring` through the
 Ring engine: it waits for the current reply sentence, ducks music, speaks the
 label and stops on "stop" or "snooze". A `none` or missing Ring sound falls
 back to the old single spoken line. A Reminder plays `sounds.reminder` once

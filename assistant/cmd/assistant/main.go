@@ -248,6 +248,7 @@ func run() error {
 		AlarmRing: baseCfg.Sounds.AlarmRing,
 		Reminder:  baseCfg.Sounds.Reminder,
 		Error:     baseCfg.Sounds.Error,
+		Ignore:    baseCfg.Sounds.Ignore,
 	}
 
 	// Startup recovery needs the live Ring behaviour and Quiet volume before
@@ -620,6 +621,7 @@ func run() error {
 		RequestPrefixes:    baseCfg.Agent.RequestPrefixes,
 		Filler:             baseCfg.Agent.Filler,
 		UnavailableMessage: baseCfg.Agent.UnavailableMessage,
+		ClarifyMessage:     baseCfg.Agent.ClarifyMessage,
 	})
 	if err != nil {
 		return err
@@ -912,8 +914,17 @@ func run() error {
 		ModelFunc:        func() string { return settingsSvc.String(agent.ModelKey) },
 		Headers:          provider.Headers,
 		Routing:          provider.Routing,
-		SystemPrompt:     cfg.Agent.SystemPrompt,
-		SystemPromptFunc: func() string { return locSvc.SystemPrompt(cfg.Agent.SystemPrompt) },
+		SystemPrompt: cfg.Agent.SystemPrompt,
+		// The place line is appended to the base prompt. With no configured
+		// prompt the default is the base, so the brevity and ignore rules still
+		// reach the model when a place is known.
+		SystemPromptFunc: func() string {
+			base := cfg.Agent.SystemPrompt
+			if strings.TrimSpace(base) == "" {
+				base = agent.DefaultSystemPrompt
+			}
+			return locSvc.SystemPrompt(base)
+		},
 		// The personality prompt is read once per turn and added only to the
 		// labelled system part by the one prompt builder (ADR-0002).
 		PersonaFunc: func() agent.Persona {
@@ -924,6 +935,9 @@ func run() error {
 		// The live wording is read per failure, so a Dashboard change applies
 		// to the next model failure without rebuilding the Agent path.
 		UnavailableMessageFunc: wordingMgr.UnavailableMessage,
+		// The Clarify line is live wording read while the system part is built.
+		ClarifyMessage:     baseCfg.Agent.ClarifyMessage,
+		ClarifyMessageFunc: wordingMgr.ClarifyMessage,
 		FirstTokenTimeout:      cfg.Agent.FirstTokenTimeout.Duration(),
 		RequestTimeout:         cfg.Agent.RequestTimeout.Duration(),
 		MaxSteps:               cfg.Agent.MaxSteps,
@@ -945,7 +959,8 @@ func run() error {
 		// Control phrases and Agent request prefixes are read per request.
 		pipeline.WithWording(wordingMgr),
 		// Shared Control phrases reach whatever holds Focus; with nothing in
-		// Focus they fall through to the semantic Fast path.
+		// Focus a bare "stop" ends the session and the others fall through to
+		// the semantic Fast path.
 		pipeline.WithFocus(focusRegistry),
 		// Keep the previous completed reply and its provenance so
 		// assistant.repeat and notify.phone can resolve it.
@@ -1088,6 +1103,9 @@ func run() error {
 		// Wake-free command models (#81): a detection runs the volume step and
 		// Cue with no STT and no routing. The handler reads Focus and the live
 		// music cap per detection, so a Dashboard change applies immediately.
+		// The optional stop model is not a volume command: the loop owns it
+		// (#503), so it is left out of the handler map below.
+		stopModel := cfg.Wakeword.StopCommand()
 		var wakeCommands map[string]voice.WakeCommand
 		if models := cfg.Wakeword.CommandModels(); len(models) > 0 {
 			handler, err := voicecmd.New(
@@ -1121,6 +1139,9 @@ func run() error {
 			}
 			wakeCommands = make(map[string]voice.WakeCommand, len(models))
 			for _, name := range models {
+				if name == stopModel {
+					continue
+				}
 				wakeCommands[name] = handler.Handle
 			}
 			logger.Info("wake-free commands enabled",
@@ -1139,6 +1160,24 @@ func run() error {
 				active, _ := voice.ListeningState(settingsSvc, time.Now())
 				return active
 			})
+			// The stop model ends the session while a reply plays (#503). The
+			// soft ignore Cue is the only sound, and `sounds.ignore: none`
+			// silences it, like an ignored turn. Play it on the loop goroutine:
+			// the loop then drains the frames captured while it played before
+			// reopening the detect stream, so the Cue cannot wake it again.
+			loop.BindStopCommand(stopModel, func(cueCtx context.Context) {
+				clip, ok := cues.Clip(sound.RoleIgnore)
+				if !ok {
+					return
+				}
+				if err := cues.PlayClip(cueCtx, quietSvc.Clip(clip)); err != nil {
+					logger.Warn("voice stop cue", "error", err.Error())
+				}
+			})
+			// A standalone "stop" and the stop command model end the session,
+			// so the next wake word starts with a fresh history. Conversation
+			// mode (#499) will also be turned off here.
+			loop.BindSessionEnd(conversationHistory.Reset)
 			// With music holding Focus, require a wake word instead of trusting unverified AEC.
 			loop.BindFollowUp(func() time.Duration {
 				if focusRegistry.Held(focus.Music) {

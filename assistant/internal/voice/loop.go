@@ -146,9 +146,21 @@ type Deps struct {
 	// an STT turn. A command model must also be requested from the service, so
 	// main adds these names to the detect allowlist.
 	WakeCommands map[string]WakeCommand
+	// StopCommand names the wake-free command model that suspends the session
+	// while a reply is in flight (#503). Empty disables it, so a detection
+	// behaves as it does today.
+	StopCommand string
+	// StopCue, when set, plays the optional soft Cue after a stop command. It
+	// runs on the loop context, so the reply that was cancelled cannot cut the
+	// sound off.
+	StopCue func(ctx context.Context)
 	// Dropper is optional: when set, a Barge-in also drops a waiting
 	// Confirmation so a stale yes cannot run later.
 	Dropper PendingDropper
+	// SessionEnd is optional: it clears the shared Agent history when the
+	// session ends, and later turns conversation mode off. endSession calls it
+	// for a standalone "stop" (#501) and the stop command model (#503).
+	SessionEnd func()
 	// Announcer is optional: when set, a wake word stops unprompted speech
 	// before capture starts.
 	Announcer Announcer
@@ -396,6 +408,14 @@ func (l *Loop) waitForWake(ctx context.Context) (string, bool, error) {
 		if sampling {
 			continue
 		}
+		// An idle stop command ends the session and keeps listening; it never
+		// opens STT or starts a turn (#503).
+		if l.isStopCommand(name) {
+			l.deps.Logger.Info("voice: stop command", "model", name)
+			l.endSession(nil)
+			l.playStopCue(ctx)
+			continue
+		}
 		if l.dispatchCommand(ctx, name) {
 			continue
 		}
@@ -444,6 +464,21 @@ func (l *Loop) readWake(ctx context.Context, wake WakeStream, signature string) 
 			}
 			return detection.Name, true, nil
 		}
+	}
+}
+
+// isStopCommand reports whether name is the configured wake-free stop model. An
+// empty StopCommand keeps the feature off, so the detection is handled exactly
+// as it is today.
+func (l *Loop) isStopCommand(name string) bool {
+	return l.deps.StopCommand != "" && name == l.deps.StopCommand
+}
+
+// playStopCue plays the optional soft Cue after a stop command, on the loop
+// context so the reply that was cancelled cannot cut it off.
+func (l *Loop) playStopCue(ctx context.Context) {
+	if l.deps.StopCue != nil {
+		l.deps.StopCue(ctx)
 	}
 }
 
@@ -722,6 +757,12 @@ func (l *Loop) session(ctx context.Context, wakeWord string) (bool, string, erro
 			<-done
 			return false, "", ctx.Err()
 		case err := <-done:
+			if errors.Is(err, ErrSessionSuspended) {
+				// A standalone "stop" ended the session: no follow-up window
+				// opens, and the next wake word starts a fresh history (#501).
+				l.endSession(cancel)
+				return false, "", nil
+			}
 			if err != nil && sessCtx.Err() == nil {
 				return false, "", err
 			}
@@ -760,6 +801,22 @@ func (l *Loop) session(ctx context.Context, wakeWord string) (bool, string, erro
 					watch, detections = nil, nil
 				}
 				continue
+			}
+			// A stop command ends the session instead of starting a new turn.
+			// Cancelling the reply is what a Barge-in's cancel does; the
+			// difference is that no fresh turn follows (#503).
+			if l.isStopCommand(detection.Name) {
+				detected := time.Now()
+				l.deps.Logger.Info("voice: stop command", "model", detection.Name)
+				cancel() // abandons the agent stream, TTS and playback
+				if err := <-done; err != nil && !errors.Is(err, context.Canceled) {
+					l.deps.Logger.Warn("voice: stop command reply", "error", err.Error())
+				}
+				l.dropPending()
+				l.endSession(cancel)
+				l.playStopCue(ctx)
+				l.deps.Logger.Info("voice: stop command ended the session", "stop_ms", time.Since(detected).Milliseconds())
+				return false, "", nil
 			}
 			// A command model (#81) acts without interrupting the reply. The
 			// stream is single-shot, so reopen it to keep watching.
@@ -816,13 +873,28 @@ func (l *Loop) watch(ctx context.Context) (WakeStream, <-chan Detection) {
 	return wake, wake.Detections()
 }
 
-// dropPending discards a waiting Confirmation after a Barge-in.
+// endSession suspends the session: in-flight work is cancelled, the follow-up
+// window closes, and the shared Agent history is cleared so the loop waits for
+// the next wake word. A standalone "stop" (#501), the stop command model (#503)
+// and, later, conversation mode all use it, so there is one way to end a
+// session. cancel may be nil when there is no live turn.
+func (l *Loop) endSession(cancel context.CancelFunc) {
+	if cancel != nil {
+		cancel()
+	}
+	l.followUntil = time.Time{}
+	if l.deps.SessionEnd != nil {
+		l.deps.SessionEnd()
+	}
+}
+
+// dropPending discards a waiting Confirmation after a Barge-in or a stop.
 func (l *Loop) dropPending() {
 	if l.deps.Dropper == nil {
 		return
 	}
 	if dropped, ok := l.deps.Dropper.DropPending(); ok {
-		l.deps.Logger.Info("voice: barge-in dropped confirmation", "tool", dropped.Tool)
+		l.deps.Logger.Info("voice: dropped confirmation", "tool", dropped.Tool)
 	}
 }
 
@@ -898,6 +970,17 @@ func (l *Loop) BindFollowUp(source func() time.Duration) { l.deps.FollowUp = sou
 
 // BindListening installs the live wake-word listening source before Run starts.
 func (l *Loop) BindListening(source func() bool) { l.deps.Listening = source }
+
+// BindSessionEnd installs the shared end-session action before Run starts. main
+// clears the history and, later, conversation mode will turn itself off here.
+func (l *Loop) BindSessionEnd(end func()) { l.deps.SessionEnd = end }
+
+// BindStopCommand installs the wake-free stop model and its optional Cue before
+// Run starts. An empty model leaves the feature off.
+func (l *Loop) BindStopCommand(model string, cue func(ctx context.Context)) {
+	l.deps.StopCommand = model
+	l.deps.StopCue = cue
+}
 
 // isListening reports whether wake detection is enabled. Nil source reports true.
 func (l *Loop) isListening() bool {

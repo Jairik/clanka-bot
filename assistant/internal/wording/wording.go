@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/agent"
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/phrase"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
@@ -36,6 +37,10 @@ const (
 	// UnavailableKey holds the phrase spoken when the Agent path cannot reach
 	// its model.
 	UnavailableKey = "agent.unavailable_message"
+	// ClarifyKey holds the line the model is told to use when a request is
+	// addressed to the Assistant but cannot be understood. It is read while the
+	// system part is built, so a change applies to the next request.
+	ClarifyKey = "agent.clarify_message"
 )
 
 // Code defaults. config.yaml is normally the config layer, but a definition
@@ -65,6 +70,9 @@ type Config struct {
 	RequestPrefixes    []string
 	Filler             string
 	UnavailableMessage string
+	// ClarifyMessage is optional: an empty value keeps the code default, so a
+	// caller that predates the setting still builds.
+	ClarifyMessage string
 }
 
 // Setup is the wording definition set plus the Tool names each live list
@@ -190,7 +198,8 @@ func Build(reg *tool.Registry, cfg Config) (Setup, error) {
 
 	// Shared Focus intents have no Tool, so each fixed intent gets its own live
 	// phrase list. The pipeline routes a phrase to whatever holds Focus; with
-	// nothing in Focus it falls through to the semantic Fast path.
+	// nothing in Focus a bare "stop" ends the session and the other intents
+	// fall through to the semantic Fast path.
 	for _, intent := range focus.Intents() {
 		options := []settings.Option{
 			settings.WithDescription("Exact phrases that act on whatever holds Focus for the " + string(intent) + " intent. They apply on the next request."),
@@ -220,8 +229,23 @@ func Build(reg *tool.Registry, cfg Config) (Setup, error) {
 			settings.WithDescription("Phrase spoken when the Agent path cannot reach its model. A change applies to the next failure."),
 			settings.WithValidator(requireNonBlank),
 		),
+		clarifyDefinition(cfg.ClarifyMessage),
 	)
 	return setup, nil
+}
+
+// clarifyDefinition builds the live Clarify line. The config layer is optional:
+// with no config value the code default (the same line the Agent falls back to)
+// is the value, so a setup that never sets the key is unchanged.
+func clarifyDefinition(fromConfig string) settings.Definition {
+	opts := []settings.Option{
+		settings.WithDescription("Line the model is told to use when a request is addressed to the Assistant but cannot be understood. A change applies to the next request."),
+		settings.WithValidator(requireNonBlank),
+	}
+	if text := strings.TrimSpace(fromConfig); text != "" {
+		opts = append(opts, settings.WithConfig(text))
+	}
+	return settings.String(ClarifyKey, agent.DefaultClarifyMessage, opts...)
 }
 
 // dedupePhrases sorts each group and drops phrases that normalize to one key,
@@ -813,6 +837,20 @@ func (m *Manager) UnavailableMessage() string {
 	text := strings.TrimSpace(m.settings.String(UnavailableKey))
 	if text == "" {
 		return DefaultUnavailableMessage
+	}
+	return text
+}
+
+// ClarifyMessage returns the line the prompt asks for when a request is
+// addressed to the Assistant but unclear. It is read while the system part is
+// built, so a change applies to the next request without a restart.
+func (m *Manager) ClarifyMessage() string {
+	if m == nil {
+		return agent.DefaultClarifyMessage
+	}
+	text := strings.TrimSpace(m.settings.String(ClarifyKey))
+	if text == "" {
+		return agent.DefaultClarifyMessage
 	}
 	return text
 }

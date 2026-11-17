@@ -2,12 +2,18 @@ package voice
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/latency"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 )
+
+// ErrSessionSuspended reports that the turn ended the session instead of
+// answering, as a standalone "stop" does (#501). The loop closes the follow-up
+// window and clears the shared history; this is not a failure to log.
+var ErrSessionSuspended = errors.New("voice: session suspended")
 
 // Request is one utterance handed from the loop to the responder: the
 // transcript, when the endpointer fired, and the wake model that started the
@@ -51,11 +57,17 @@ func (r *PipelineResponder) Respond(ctx context.Context, req Request) error {
 	if id == "" {
 		id = tool.NewRequestID()
 	}
-	_, err := r.session.AskFrom(ctx, tool.Request{
+	reply, err := r.session.AskFrom(ctx, tool.Request{
 		ID:       id,
 		Path:     tool.PathFallthrough,
 		Device:   r.device,
 		WakeWord: req.WakeWord,
 	}, req.Transcript, req.Ended)
-	return err
+	if err != nil {
+		return err
+	}
+	if reply.Suspend {
+		return ErrSessionSuspended
+	}
+	return nil
 }

@@ -63,3 +63,15 @@ func TestPipelineResponderReportsPlaybackFailure(t *testing.T) {
 		t.Fatal("Respond succeeded, want playback error")
 	}
 }
+
+// TestPipelineResponderReportsASuspend pins the seam #501 uses: a reply that
+// ended the session becomes ErrSessionSuspended, so the loop can close the
+// follow-up window instead of starting another turn.
+func TestPipelineResponderReportsASuspend(t *testing.T) {
+	session := &fakeAsker{reply: pipeline.Reply{Suspend: true}}
+	responder := voice.NewPipelineResponder(session, tool.DevicePi)
+	err := responder.Respond(context.Background(), voice.Request{Transcript: "stop"})
+	if !errors.Is(err, voice.ErrSessionSuspended) {
+		t.Fatalf("Respond error = %v, want ErrSessionSuspended", err)
+	}
+}

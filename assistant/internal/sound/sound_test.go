@@ -311,6 +311,24 @@ func TestEveryRoleAcceptsLongSounds(t *testing.T) {
 	}
 }
 
+// TestIgnoreCueDefaultsOnAndCanBeTurnedOff pins the soft Cue for an ignored turn
+// (#498): the shipped chime is assigned by default, and none silences the turn.
+func TestIgnoreCueDefaultsOnAndCanBeTurnedOff(t *testing.T) {
+	f := newFixture(t, sound.Config{})
+	if got := f.settings.String(sound.Key(sound.RoleIgnore)); got != sound.BuiltinChime {
+		t.Fatalf("sounds.ignore = %q, want the built-in chime", got)
+	}
+	if clip, ok := f.sounds.Clip(sound.RoleIgnore); !ok || len(clip.PCM) == 0 {
+		t.Fatalf("ignore Clip = %+v, %v, want the built-in chime", clip, ok)
+	}
+	if _, err := f.settings.Set(context.Background(), sound.Key(sound.RoleIgnore), sound.None); err != nil {
+		t.Fatalf("Set none: %v", err)
+	}
+	if clip, ok := f.sounds.Clip(sound.RoleIgnore); ok || len(clip.PCM) != 0 {
+		t.Fatalf("none Clip = %+v, %v", clip, ok)
+	}
+}
+
 func TestAssignmentNoneDisablesPlayback(t *testing.T) {
 	f := newFixture(t, sound.Config{})
 	if _, err := f.settings.Set(context.Background(), sound.Key(sound.RoleError), sound.None); err != nil {

@@ -1,0 +1,111 @@
+name: Pi images
+
+# Builds the arm64 images the Pi runs, so the Pi pulls them instead of
+# compiling on an SD card. Runs for main only: pull requests never publish.
+#
+# Each image is published as <registry>/<service>:key-<key>, where the key is a
+# hash of everything that goes into it (scripts/image-keys.py). A service whose
+# key is already published is skipped outright, so a commit that touches only
+# the assistant builds only the assistant, and a docs-only commit builds
+# nothing. The Pi computes the same keys from its checkout and pulls them.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      rebuild:
+        description: Rebuild every image, even ones already published (e.g. to pick up base image fixes)
+        type: boolean
+        default: false
+
+# Only the newest main matters: the Pi deploys the tip, so a superseded run is
+# cancelled. A cancelled run's images are simply built by the next one.
+concurrency:
+  group: pi-images
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  plan:
+    name: Plan image builds
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      build: ${{ steps.plan.outputs.build }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Find images that are not published yet
+        id: plan
+        env:
+          REBUILD: ${{ inputs.rebuild || false }}
+        run: |
+          registry="ghcr.io/${GITHUB_REPOSITORY,,}"
+          # deploy/pi-images.env carries the Pi's build args, so the keys
+          # match what the Pi computes from its own .env.
+          python3 -I scripts/image-keys.py --env-file deploy/pi-images.env --json >keys.json
+          todo='[]'
+          while read -r entry; do
+            svc="$(jq -r .service <<<"$entry")"
+            ref="$registry/$svc:key-$(jq -r .key <<<"$entry")"
+            if [[ "$REBUILD" != "true" ]] && docker buildx imagetools inspect "$ref" >/dev/null 2>&1; then
+              echo "skip  $svc: $ref is already published"
+              continue
+            fi
+            echo "build $svc: $ref"
+            item="$(jq -c --arg ref "$ref" \
+              '{service, context, file: (.context + "/" + .dockerfile), ref: $ref,
+                args: (.args | to_entries | map("\(.key)=\(.value)") | join("\n"))}' <<<"$entry")"
+            todo="$(jq -c --argjson item "$item" '. + [$item]' <<<"$todo")"
+          done < <(jq -c '.[]' keys.json)
+          echo "build=$todo" >>"$GITHUB_OUTPUT"
+          {
+            echo "### Pi images"
+            echo
+            echo "Building: $(jq -r 'if length == 0 then "nothing (every image is already published)" else map(.service) | join(", ") end' <<<"$todo")"
+          } >>"$GITHUB_STEP_SUMMARY"
+
+  build:
+    name: Build ${{ matrix.service }}
+    needs: plan
+    if: needs.plan.outputs.build != '[]'
+    # Native arm64, so the Python/ML images install their aarch64 wheels without
+    # QEMU, exactly as the Pi would.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.build) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
+          build-args: ${{ matrix.args }}
+          platforms: linux/arm64
+          push: true
+          tags: ${{ matrix.ref }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          # One plain image manifest, nothing for the Pi to pull but the image.
+          provenance: false
+          # Per-service layer cache: when a key does change, unchanged layers
+          # (the torch install, baked model weights) are reused, not rebuilt.
+          cache-from: type=gha,scope=pi-${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=pi-${{ matrix.service }}

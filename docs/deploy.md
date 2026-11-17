@@ -1,8 +1,10 @@
 # Deploying the stack
 
-The same Compose stack runs on the dev box and on the Pi. There is no registry:
-the Pi tracks `main` and builds its own arm64 images (decided in
-[#13](https://github.com/Jairik/clanka-bot/issues/13)). You can deploy by
+The same Compose stack runs on the dev box and on the Pi. The Pi tracks `main`
+and pulls the arm64 images GitHub Actions builds for it (see
+[Images from CI](#images-from-ci)); it only builds an image itself when CI has
+not published one that matches its checkout. #13 originally had the Pi build
+everything, which took 3–30 minutes per commit on its SD card. You can deploy by
 running `scripts/deploy.sh` over SSH, or let the Pi do it when `main` moves and
 CI is green — see [auto-deploy.md](auto-deploy.md) for the timer, its CI gate
 and how to pause it. The checklist below is for provisioning a fresh host.
@@ -36,10 +38,12 @@ sudo bash scripts/install-deploy-watch.sh  # opt in to the auto-deploy timer (au
    its upstream says "Already up to date" without moving `HEAD`, so without
    this check the script would build an unpushed local commit. Push or reset
    first; a branch with no upstream is left to `git pull`'s own error.
-5. Runs `docker compose up -d --build --remove-orphans` with `GIT_SHA` set to
-   `git rev-parse --short HEAD`, so every image is tagged
-   `clanka/<service>:<sha>` and containers from a different service set are
-   removed.
+5. For every active service, pulls `ghcr.io/jairik/clanka-bot/<service>:key-<key>`
+   and tags it `clanka/<service>:<sha>` (`GIT_SHA` is `git rev-parse --short
+   HEAD`). A service with no published image for its key is built on the host
+   with `docker compose build <service>` instead, with a warning. Then it runs
+   `docker compose up -d --no-build --remove-orphans`, so containers from a
+   different service set are removed.
 6. Waits up to `DEPLOY_HEALTH_TIMEOUT` seconds (default 180) for every service
    in `docker-compose.yml` to be healthy. A transient `unhealthy` that the
    container entered within `DEPLOY_COLD_START_GRACE` seconds (default 150) of its
@@ -63,6 +67,40 @@ Soloist API key is present (`SOLOIST_API_KEY_FILE` set, or
 in the health wait. For a local Spotify setup without `deploy.sh`, use
 `make spotify-up`. `make up` runs the setup with `--optional`, so it skips the
 receiver cleanly when there is no key.
+
+### Images from CI
+
+`.github/workflows/images.yml` runs on every push to `main` (never on pull
+requests) and on demand. It publishes each image as
+`ghcr.io/jairik/clanka-bot/<service>:key-<key>`, where the key
+(`scripts/image-keys.py`) hashes everything that goes into the image: the
+committed files in its build context, its Dockerfile, its resolved build args
+and the platform. Only a change to those rebuilds it:
+
+- A service whose key is already published is skipped, so a commit touching
+  only `assistant/` builds the assistant and the Dashboard artifact (which share
+  that context), and a docs-only commit builds nothing.
+  `dashboard-web` is keyed on `assistant/web` alone, so a Go-only change
+  skips it too.
+- The services that do change build in parallel on native arm64 runners, with
+  a per-service layer cache, so the torch install and baked weights are reused
+  when only application code moved.
+- On the Pi, pulling an unchanged image transfers no layers.
+
+The build args come from `deploy/pi-images.env`, which must match the build
+args in the Pi's `.env` (`EMBED_MODEL`, `STT_MODELS`, `TTS_*`). If they
+differ, that service's key differs and the Pi builds it locally, which is
+correct but slow; update the file in the same change as the Pi's `.env`.
+
+A floating base image tag (`python:3.12-slim`) is not part of the key. Run
+the workflow by hand with **rebuild** checked to pick up base image fixes, or
+bump `KEY_VERSION` in `scripts/image-keys.py`.
+
+The packages must be readable by the Pi: make each `clanka-bot/<service>`
+package public under the repository's Packages settings, or run
+`docker login ghcr.io` on the Pi with a token that has `read:packages`.
+Without access the Pi falls back to building locally. `DEPLOY_REGISTRY=`
+(empty) turns the registry off entirely.
 
 **With a commit — rollback without rebuilding**
 

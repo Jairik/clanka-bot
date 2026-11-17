@@ -318,3 +318,103 @@ func TestHealthWithoutSecrets(t *testing.T) {
 		t.Fatalf("health = %v %v %q", configured, ok, detail)
 	}
 }
+
+// TestDevicesCachesTheCloudLookup proves Devices caches the device list for 60 seconds.
+func TestDevicesCachesTheCloudLookup(t *testing.T) {
+	api := &fakeAPI{devices: []Device{{DSN: "DSN1"}, {DSN: "DSN2"}}}
+	now := time.Unix(0, 0)
+	svc := NewService(Options{
+		API:         api,
+		Credentials: func() (string, string, bool) { return "owner@example.com", "secret", true },
+		Now:         func() time.Time { return now },
+	})
+	devs, err := svc.Devices(context.Background())
+	if err != nil || len(devs) != 2 {
+		t.Fatalf("devices = %v, err = %v", devs, err)
+	}
+	now = now.Add(30 * time.Second)
+	if _, err := svc.Devices(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := api.deviceCalls(); got != 1 {
+		t.Fatalf("device calls = %d, want the cached result", got)
+	}
+	now = now.Add(31 * time.Second)
+	if _, err := svc.Devices(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := api.deviceCalls(); got != 2 {
+		t.Fatalf("device calls = %d, want a refresh after the TTL", got)
+	}
+}
+
+// TestApplyReusesTheDeviceCacheWithoutSecondRoundTrip proves a name lookup
+// and command execution share the device-list cache without adding a second round trip.
+func TestApplyReusesTheDeviceCacheWithoutSecondRoundTrip(t *testing.T) {
+	api := &fakeAPI{devices: []Device{{DSN: "DSN1", Name: "Duo+"}}}
+	svc := configured(api)
+	// First lookup (e.g. name resolution)
+	devs, err := svc.Devices(context.Background())
+	if err != nil || len(devs) != 1 {
+		t.Fatalf("devices = %v, err = %v", devs, err)
+	}
+	if got := api.deviceCalls(); got != 1 {
+		t.Fatalf("device calls before apply = %d, want 1", got)
+	}
+	// Apply on the resolved DSN
+	if err := svc.Apply(context.Background(), devs[0].DSN, "power", "on"); err != nil {
+		t.Fatal(err)
+	}
+	if got := api.deviceCalls(); got != 1 {
+		t.Fatalf("device calls after apply = %d, want still 1 (no second round trip)", got)
+	}
+}
+
+// TestApplyWhiteWordNames proves warm, cool, and daylight words map to expected kelvin values.
+func TestApplyWhiteWordNames(t *testing.T) {
+	api := &fakeAPI{devices: []Device{{DSN: "DSN1"}}}
+	svc := configured(api)
+	cases := []struct {
+		word   string
+		wantCT int
+	}{
+		{"warm", kelvinToCT(2700)},
+		{"cool", kelvinToCT(4000)},
+		{"daylight", kelvinToCT(6500)},
+	}
+	for _, tc := range cases {
+		api.setCalls = nil
+		if err := svc.Apply(context.Background(), "DSN1", "white", tc.word); err != nil {
+			t.Fatalf("Apply(white, %q): %v", tc.word, err)
+		}
+		calls := api.calls()
+		if len(calls) != 2 || calls[0].name != "mode" || calls[0].value != "white" || calls[1].name != "color_temp" {
+			t.Fatalf("calls for %q = %+v", tc.word, calls)
+		}
+		if calls[1].value != tc.wantCT {
+			t.Fatalf("color_temp for %q = %v, want %d", tc.word, calls[1].value, tc.wantCT)
+		}
+	}
+}
+
+// TestEffectsReadsPopulatedSlots proves Effects parses and returns the device effect list.
+func TestEffectsReadsPopulatedSlots(t *testing.T) {
+	api := &fakeAPI{
+		devices: []Device{{DSN: "DSN1"}},
+		properties: map[string]map[string]any{
+			"DSN1": {
+				"dyn02": `{"n":"Sunset"}`,
+				"st00":  `{"n":"Reading"}`,
+			},
+		},
+	}
+	svc := configured(api)
+	effs, err := svc.Effects(context.Background(), "DSN1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(effs) != 2 {
+		t.Fatalf("effects = %+v, want 2", effs)
+	}
+}
+

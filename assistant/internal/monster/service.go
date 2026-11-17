@@ -25,17 +25,11 @@ type Options struct {
 	Now         func() time.Time
 }
 
-// Service is the Dashboard and Health view over one Monster account. It has no
-// background loop: the page reads on navigation and Health caches its one
-// lookup briefly.
-type Service struct {
-	api  API
-	cred Credentials
-	now  func() time.Time
+// healthTTL keeps the Dashboard's health poll from turning into a cloud poll.
+const healthTTL = 60 * time.Second
 
-	mu     sync.Mutex
-	health healthSnapshot
-}
+// devicesTTL caches the account device list so name resolution and command execution share one lookup.
+const devicesTTL = 60 * time.Second
 
 type healthSnapshot struct {
 	at     time.Time
@@ -44,8 +38,24 @@ type healthSnapshot struct {
 	detail string
 }
 
-// healthTTL keeps the Dashboard's health poll from turning into a cloud poll.
-const healthTTL = 60 * time.Second
+type devicesSnapshot struct {
+	at      time.Time
+	key     string
+	devices []Device
+}
+
+// Service is the Dashboard and Health view over one Monster account. It has no
+// background loop: the page reads on navigation and Health caches its one
+// lookup briefly.
+type Service struct {
+	api  API
+	cred Credentials
+	now  func() time.Time
+
+	mu      sync.Mutex
+	health  healthSnapshot
+	devices devicesSnapshot
+}
 
 // NewService builds the shared view. A nil Now uses the real clock.
 func NewService(opts Options) *Service {
@@ -132,6 +142,52 @@ func (s *Service) View(ctx context.Context) View {
 	return v
 }
 
+// Devices returns the cached account device list, refreshing if stale or missing.
+func (s *Service) Devices(ctx context.Context) ([]Device, error) {
+	if s == nil {
+		return nil, ErrNotConfigured
+	}
+	email, password, ok := s.credentials()
+	if !ok {
+		return nil, ErrNotConfigured
+	}
+	key := credentialKey(email, password)
+	s.mu.Lock()
+	cache := s.devices
+	s.mu.Unlock()
+	if cache.key == key && s.now().Sub(cache.at) < devicesTTL {
+		return append([]Device(nil), cache.devices...), nil
+	}
+	devices, err := s.api.Devices(ctx, email, password)
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	s.devices = devicesSnapshot{
+		at:      s.now(),
+		key:     key,
+		devices: append([]Device(nil), devices...),
+	}
+	s.mu.Unlock()
+	return append([]Device(nil), devices...), nil
+}
+
+// Effects reads the populated scene effect slots for the specified device.
+func (s *Service) Effects(ctx context.Context, dsn string) ([]Effect, error) {
+	if s == nil {
+		return nil, ErrNotConfigured
+	}
+	email, password, ok := s.credentials()
+	if !ok {
+		return nil, ErrNotConfigured
+	}
+	props, err := s.api.Properties(ctx, email, password, dsn)
+	if err != nil {
+		return nil, err
+	}
+	return effects(props), nil
+}
+
 // Apply resolves a saved cloud device by DSN, then writes one property group.
 // The DSN must be on the account: a page request can never reach an arbitrary
 // Ayla path.
@@ -140,7 +196,7 @@ func (s *Service) Apply(ctx context.Context, dsn, action, value string) error {
 	if !ok {
 		return ErrNotConfigured
 	}
-	devices, err := s.api.Devices(ctx, email, password)
+	devices, err := s.Devices(ctx)
 	if err != nil {
 		return err
 	}
@@ -192,9 +248,22 @@ func (s *Service) Apply(ctx context.Context, dsn, action, value string) error {
 		}
 		return s.api.Set(ctx, email, password, dsn, "color_select", rgb)
 	case "white":
-		kelvin, err := strconv.Atoi(value)
-		if err != nil || kelvin < 2000 || kelvin > 7000 {
-			return errors.New("white takes 2000 to 7000 kelvin")
+		var kelvin int
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "warm", "warm white", "warm_white":
+			kelvin = 2700
+		case "cool", "cool white", "cool_white":
+			kelvin = 4000
+		case "daylight":
+			kelvin = 6500
+		default:
+			clean := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(value)), "k")
+			clean = strings.TrimSpace(strings.TrimSuffix(clean, "kelvin"))
+			var err error
+			kelvin, err = strconv.Atoi(clean)
+			if err != nil || kelvin < 2000 || kelvin > 7000 {
+				return errors.New("white takes 2000 to 7000 kelvin")
+			}
 		}
 		if err := s.api.Set(ctx, email, password, dsn, "mode", "white"); err != nil {
 			return err

@@ -1290,6 +1290,7 @@ func run() error {
 			// the pipeline, registry and settings of the voice path.
 			Activity: activityStore,
 			Typed:    typedSession,
+			Explainer: p,
 			// The live Focus registry and Announcement queue feed the Dashboard's
 			// "what holds Focus / what is waiting" view and its SSE delta (#217).
 			Focus:         focusRegistry,

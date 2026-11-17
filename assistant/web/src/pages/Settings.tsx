@@ -11,6 +11,7 @@ import type { Setting, SettingTool, SettingsView } from "../types";
 import { Badge, Empty, Lede, Notice, Section, SourceBadge } from "../ui";
 import { useWordingPlayer, WordingPreview } from "../wording-preview";
 import { useVisiblePolling } from "../visibility";
+import { ExplainRoutingPanel } from "../explain-routing";
 
 export function SettingsPage() {
   const { data, error, set } = usePageData("settings");
@@ -69,6 +70,7 @@ export function SettingsPage() {
               Enable or disable a Tool, or tighten its Permission. A Permission can only move towards Confirm; Local-only is declared in code. Changes apply on the
               next request.
             </Lede>
+            <ExplainRoutingPanel />
             {data.Tools?.length ? (
               <ul className="divide-y divide-separator">
                 {data.Tools.map((t) => (

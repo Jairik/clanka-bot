@@ -14,6 +14,26 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Jairik/clanka-bot/assistant/internal/settings"
+)
+
+// CityKey, RegionKey, and TimezoneKey are the live settings keys for the
+// home-location override.
+const (
+	CityKey     = "location.city"
+	RegionKey   = "location.region"
+	TimezoneKey = "location.timezone"
+)
+
+// Source describes the origin of the effective location.
+type Source = string
+
+const (
+	SourceOverride Source = "set on the Dashboard"
+	SourceLookup   Source = "IP lookup"
+	SourceFallback Source = "config fallback"
+	SourceNone     Source = ""
 )
 
 // DefaultProviderURL is the free IP geolocation service. The fields parameter
@@ -66,6 +86,47 @@ type realClock struct{}
 func (realClock) Now() time.Time                         { return time.Now() }
 func (realClock) After(d time.Duration) <-chan time.Time { return time.After(d) }
 
+// SettingsReader reads live setting strings. *settings.Service satisfies it.
+type SettingsReader interface {
+	String(key string) string
+}
+
+// Definitions declares the live location override settings. An empty default
+// means "use lookup".
+func Definitions() []settings.Definition {
+	return []settings.Definition{
+		settings.String(CityKey, "",
+			settings.WithDescription("Home city override for weather and local answers. Empty uses IP lookup."),
+		),
+		settings.String(RegionKey, "",
+			settings.WithDescription("Home region/state override. Empty uses IP lookup."),
+		),
+		settings.String(TimezoneKey, "",
+			settings.WithDescription("Home timezone override (e.g. America/New_York). Empty uses IP lookup. Does not change the Alarm timezone."),
+			settings.WithValidator(validateTimezoneSetting),
+		),
+	}
+}
+
+// validateTimezoneSetting checks that a non-empty timezone is a known IANA zone.
+func validateTimezoneSetting(value any) error {
+	text, ok := value.(string)
+	if !ok {
+		return errors.New("location: timezone must be a string")
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return nil
+	}
+	if text == "Local" || strings.HasPrefix(text, "/") || strings.Contains(text, "..") {
+		return fmt.Errorf("%q is not an IANA timezone name", text)
+	}
+	if _, err := time.LoadLocation(text); err != nil {
+		return fmt.Errorf("%q is not a known IANA timezone: %w", text, err)
+	}
+	return nil
+}
+
 // Option configures a Service.
 type Option func(*Service)
 
@@ -79,6 +140,13 @@ func WithClock(clock Clock) Option {
 	}
 }
 
+// WithSettings attaches a live settings reader for location overrides.
+func WithSettings(reader SettingsReader) Option {
+	return func(s *Service) {
+		s.settings = reader
+	}
+}
+
 // Service holds the last successful lookup and the fallback chain.
 type Service struct {
 	provider Provider
@@ -88,6 +156,7 @@ type Service struct {
 	clock    Clock
 
 	mu          sync.Mutex
+	settings    SettingsReader
 	last        Location
 	succeeded   bool
 	attempted   bool
@@ -256,11 +325,45 @@ func shortDuration(d time.Duration) string {
 	return fmt.Sprintf("%dh", int(d.Hours()))
 }
 
-// Current returns the last successful lookup, then the config fallback, then
-// no location at all.
+// Bind attaches the shared settings service for live overrides.
+func (s *Service) Bind(reader SettingsReader) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.settings = reader
+}
+
+// override resolves the live settings override if City or Timezone is set.
+func (s *Service) override() (Location, bool) {
+	if s == nil {
+		return Location{}, false
+	}
+	s.mu.Lock()
+	reader := s.settings
+	s.mu.Unlock()
+	if reader == nil {
+		return Location{}, false
+	}
+	loc := Location{
+		City:     strings.TrimSpace(reader.String(CityKey)),
+		Region:   strings.TrimSpace(reader.String(RegionKey)),
+		Timezone: strings.TrimSpace(reader.String(TimezoneKey)),
+	}
+	// An override takes effect when either city or timezone has a value.
+	if loc.City != "" || loc.Timezone != "" {
+		return loc, true
+	}
+	return Location{}, false
+}
+
+// Current returns the override (when City or Timezone is set), then the last
+// successful lookup, then the config fallback, then no location at all.
 func (s *Service) Current() (Location, bool) {
 	if s == nil {
 		return Location{}, false
+	}
+	// The Dashboard override wins over both lookup and fallback.
+	if override, ok := s.override(); ok {
+		return override, true
 	}
 	s.mu.Lock()
 	last := s.last
@@ -272,6 +375,66 @@ func (s *Service) Current() (Location, bool) {
 		return s.fallback, true
 	}
 	return Location{}, false
+}
+
+// Source reports where the current location came from.
+func (s *Service) Source() Source {
+	if s == nil {
+		return SourceNone
+	}
+	if override, ok := s.override(); ok && override.Known() {
+		return SourceOverride
+	}
+	s.mu.Lock()
+	last := s.last
+	s.mu.Unlock()
+	if last.Known() {
+		return SourceLookup
+	}
+	if s.fallback.Known() {
+		return SourceFallback
+	}
+	return SourceNone
+}
+
+// Detail formats the current location and its source for status reporting.
+func (s *Service) Detail() string {
+	loc, ok := s.Current()
+	if !ok {
+		return "No place known."
+	}
+	return FormatPlace(loc, s.Source())
+}
+
+// FormatPlace renders a location with an optional source suffix.
+func FormatPlace(place Location, source Source) string {
+	city := strings.TrimSpace(place.City)
+	region := strings.TrimSpace(place.Region)
+	timezone := strings.TrimSpace(place.Timezone)
+
+	var name string
+	switch {
+	case city != "" && region != "":
+		name = city + ", " + region
+	case city != "":
+		name = city
+	case region != "":
+		name = region
+	}
+	if timezone != "" {
+		if name != "" {
+			name += " (" + timezone + ")"
+		} else {
+			name = timezone
+		}
+	}
+	if name == "" {
+		return "No place known."
+	}
+	if strings.TrimSpace(source) != "" {
+		name += " (" + strings.TrimSpace(source) + ")"
+	}
+	return name
 }
 
 // SystemPrompt appends the place line to base. With no location it returns base

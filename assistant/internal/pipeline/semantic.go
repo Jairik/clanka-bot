@@ -53,6 +53,7 @@ type SemanticRouter struct {
 	registry *tool.Registry
 	embedder Embedder
 	cfg      SemanticConfig
+	joiners  map[string]bool
 
 	// source, when set, supplies the effective Examples for each Tool. A nil
 	// source uses the code declarations.
@@ -109,7 +110,14 @@ type SemanticResult struct {
 
 // NewSemanticRouter builds an empty router; call Build before serving.
 func NewSemanticRouter(reg *tool.Registry, embedder Embedder, cfg SemanticConfig) *SemanticRouter {
-	return &SemanticRouter{registry: reg, embedder: embedder, cfg: cfg}
+	// Precompute the read-only joiner set once at construction to eliminate per-request allocations.
+	joiners := make(map[string]bool, len(cfg.Joiners))
+	for _, j := range cfg.Joiners {
+		if key := strings.ToLower(strings.TrimSpace(j)); key != "" {
+			joiners[key] = true
+		}
+	}
+	return &SemanticRouter{registry: reg, embedder: embedder, cfg: cfg, joiners: joiners}
 }
 
 // SetExamplesSource supplies the effective Examples for Build and later
@@ -219,6 +227,14 @@ func (r *SemanticRouter) Joiners() []string {
 		return nil
 	}
 	return append([]string(nil), r.cfg.Joiners...)
+}
+
+// JoinerSet returns the read-only map of configured clause joiners.
+func (r *SemanticRouter) JoinerSet() map[string]bool {
+	if r == nil {
+		return nil
+	}
+	return r.joiners
 }
 
 // ClauseStartsCommand reports whether text begins with a word that opens a
@@ -367,7 +383,7 @@ func (r *SemanticRouter) Match(ctx context.Context, transcript string) SemanticR
 		result.Reason = reasonBelowThreshold
 		return result
 	}
-	if len(scores) > 1 && scores[1].Score >= r.cfg.Threshold && hasJoiner(transcript, r.cfg.Joiners) {
+	if len(scores) > 1 && scores[1].Score >= r.cfg.Threshold && hasJoiner(transcript, r.joiners) {
 		result.Reason = reasonCompound
 		return result
 	}
@@ -470,16 +486,12 @@ func hasInputFields(schema json.RawMessage) bool {
 var wordRE = regexp.MustCompile(`[a-z']+`)
 
 // hasJoiner looks for a configured clause joiner as a whole word.
-func hasJoiner(text string, joiners []string) bool {
+func hasJoiner(text string, joiners map[string]bool) bool {
 	if len(joiners) == 0 {
 		return false
 	}
-	set := make(map[string]bool, len(joiners))
-	for _, j := range joiners {
-		set[strings.ToLower(strings.TrimSpace(j))] = true
-	}
 	for _, word := range wordRE.FindAllString(strings.ToLower(text), -1) {
-		if set[word] {
+		if joiners[word] {
 			return true
 		}
 	}

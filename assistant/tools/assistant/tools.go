@@ -2,12 +2,15 @@ package assistant
 
 import (
 	"context"
+	"fmt"
 	"math"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
 	"unicode"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/announce"
 	"github.com/Jairik/clanka-bot/assistant/internal/lastreply"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/internal/wyoming"
@@ -41,6 +44,18 @@ type RepeatOut struct {
 	LocalOnly bool      `json:"local_only,omitempty"`
 	At        time.Time `json:"at,omitempty"`
 	Rate      float64   `json:"rate,omitempty"`
+}
+
+// HeardIn has no fields: reading the transcript the Assistant acted on takes
+// no arguments.
+type HeardIn struct{}
+
+// HeardOut is the transcript the Assistant acted on with its provenance.
+type HeardOut struct {
+	Text      string    `json:"text"`
+	Utterance string    `json:"utterance"`
+	At        time.Time `json:"at,omitempty"`
+	Source    string    `json:"source,omitempty"`
 }
 
 // ForgetIn has no fields: "forget the conversation" clears whatever is stored,
@@ -88,6 +103,185 @@ func NewForget(history tool.HistoryResetter) tool.Tool[ForgetIn, ForgetOut] {
 			"clear the conversation history",
 		},
 	}
+}
+
+// AnnouncementQueue is the queue seam assistant.announcements reads.
+type AnnouncementQueue interface {
+	Recent() []announce.Line
+}
+
+// AnnouncementsIn has no fields: reading announcements takes no arguments.
+type AnnouncementsIn struct{}
+
+// AnnouncementsOut is the list of recent announcement lines and the one-line spoken form.
+type AnnouncementsOut struct {
+	Lines []announce.Line `json:"lines"`
+	Text  string          `json:"text"`
+}
+
+// NewAnnouncements builds assistant.announcements. It is Local-only and read-only,
+// reading lines from the in-memory queue ring.
+func NewAnnouncements(queue AnnouncementQueue, nowSource ...func() time.Time) tool.Tool[AnnouncementsIn, AnnouncementsOut] {
+	var nowFn func() time.Time
+	if len(nowSource) > 0 && nowSource[0] != nil {
+		nowFn = nowSource[0]
+	} else {
+		nowFn = time.Now
+	}
+	return tool.Tool[AnnouncementsIn, AnnouncementsOut]{
+		Name:        AnnouncementsName,
+		Description: "Read back recent announcements spoken while away.",
+		Permission:  tool.PermissionRead,
+		LocalOnly:   tool.LocalOnlyYes,
+		Handler: func(context.Context, AnnouncementsIn) (AnnouncementsOut, error) {
+			if queue == nil || (reflect.ValueOf(queue).Kind() == reflect.Pointer && reflect.ValueOf(queue).IsNil()) {
+				return AnnouncementsOut{}, &tool.ToolError{Say: "I can't check that right now."}
+			}
+			lines := queue.Recent()
+			text := formatAnnouncements(lines, nowFn())
+			return AnnouncementsOut{Lines: lines, Text: text}, nil
+		},
+		Speak: func(out AnnouncementsOut) string { return out.Text },
+		Examples: []string{
+			"what did you say while I was out",
+			"read me the announcements",
+			"any announcements",
+			"did you say anything while I was out",
+		},
+	}
+}
+
+// formatAnnouncements renders up to five announcements oldest-first with relative
+// time, appending "and N more" when there are more than five lines.
+func formatAnnouncements(lines []announce.Line, now time.Time) string {
+	if len(lines) == 0 {
+		return "Nothing."
+	}
+	maxLines := 5
+	count := len(lines)
+	if count > maxLines {
+		count = maxLines
+	}
+	rendered := make([]string, 0, count)
+	for i := 0; i < count; i++ {
+		line := lines[i]
+		rel := relativeTime(now, line.EnqueuedAt)
+		text := strings.TrimSpace(line.Text)
+		if text != "" && !strings.HasSuffix(text, ".") && !strings.HasSuffix(text, "!") && !strings.HasSuffix(text, "?") {
+			text += "."
+		}
+		rendered = append(rendered, rel+": "+text)
+	}
+	if len(lines) > maxLines {
+		remaining := len(lines) - maxLines
+		last := strings.TrimSuffix(rendered[maxLines-1], ".")
+		rendered[maxLines-1] = fmt.Sprintf("%s, and %d more.", last, remaining)
+	}
+	return strings.Join(rendered, " ")
+}
+
+// relativeTime renders a humanized relative time string for an enqueue instant.
+func relativeTime(now, at time.Time) string {
+	if at.IsZero() || at.After(now) {
+		return "Just now"
+	}
+	d := now.Sub(at)
+	if d < time.Minute {
+		return "Just now"
+	}
+	if d < time.Hour {
+		mins := int(d.Round(time.Minute) / time.Minute)
+		if mins <= 1 {
+			return "One minute ago"
+		}
+		return upperFirst(numberWord(mins)) + " minutes ago"
+	}
+	if d < 24*time.Hour {
+		hours := int(d.Round(time.Hour) / time.Hour)
+		if hours <= 1 {
+			return "One hour ago"
+		}
+		return upperFirst(numberWord(hours)) + " hours ago"
+	}
+	days := int(d.Round(24*time.Hour) / (24 * time.Hour))
+	if days <= 1 {
+		return "One day ago"
+	}
+	return upperFirst(numberWord(days)) + " days ago"
+}
+
+// numberWord returns the lowercase English word for small numbers, or the decimal string.
+func numberWord(n int) string {
+	if n < 0 {
+		return fmt.Sprintf("%d", n)
+	}
+	switch n {
+	case 1:
+		return "one"
+	case 2:
+		return "two"
+	case 3:
+		return "three"
+	case 4:
+		return "four"
+	case 5:
+		return "five"
+	case 6:
+		return "six"
+	case 7:
+		return "seven"
+	case 8:
+		return "eight"
+	case 9:
+		return "nine"
+	case 10:
+		return "ten"
+	case 11:
+		return "eleven"
+	case 12:
+		return "twelve"
+	case 13:
+		return "thirteen"
+	case 14:
+		return "fourteen"
+	case 15:
+		return "fifteen"
+	case 16:
+		return "sixteen"
+	case 17:
+		return "seventeen"
+	case 18:
+		return "eighteen"
+	case 19:
+		return "nineteen"
+	case 20:
+		return "twenty"
+	case 30:
+		return "thirty"
+	case 40:
+		return "forty"
+	case 50:
+		return "fifty"
+	}
+	if n > 20 && n < 60 {
+		tens := (n / 10) * 10
+		units := n % 10
+		if units == 0 {
+			return numberWord(tens)
+		}
+		return numberWord(tens) + "-" + numberWord(units)
+	}
+	return fmt.Sprintf("%d", n)
+}
+
+// upperFirst capitalizes the first character of text.
+func upperFirst(text string) string {
+	if text == "" {
+		return ""
+	}
+	runes := []rune(text)
+	runes[0] = unicode.ToUpper(runes[0])
+	return string(runes)
 }
 
 // SpeechRate implements the per-result rate hook the pipeline reads after a
@@ -246,6 +440,40 @@ func extractRepeatRate(text string) (RepeatIn, bool) {
 		return RepeatIn{Rate: RepeatFaster}, true
 	default:
 		return RepeatIn{}, true
+	}
+}
+
+// NewHeard builds assistant.heard. It reads the shared last-reply store at
+// call time; an empty store or blank transcript says "I haven't heard anything yet."
+// It is deliberately Local-only: a transcript can be private and must never
+// leave the Pi.
+func NewHeard(store *lastreply.Store) tool.Tool[HeardIn, HeardOut] {
+	return tool.Tool[HeardIn, HeardOut]{
+		Name:        HeardName,
+		Description: "Read back the transcript the Assistant acted on.",
+		Permission:  tool.PermissionRead,
+		LocalOnly:   tool.LocalOnlyYes,
+		Handler: func(_ context.Context, _ HeardIn) (HeardOut, error) {
+			if store == nil {
+				return HeardOut{}, &tool.ToolError{Say: "I haven't heard anything yet."}
+			}
+			reply, ok := store.Last()
+			if !ok || strings.TrimSpace(reply.Utterance) == "" {
+				return HeardOut{}, &tool.ToolError{Say: "I haven't heard anything yet."}
+			}
+			return HeardOut{
+				Text:      fmt.Sprintf("I heard: %q.", reply.Utterance),
+				Utterance: reply.Utterance,
+				At:        reply.At,
+				Source:    reply.Source,
+			}, nil
+		},
+		Speak: func(out HeardOut) string { return out.Text },
+		Examples: []string{
+			"did you catch that",
+			"what was my question",
+			"read back what I said",
+		},
 	}
 }
 

@@ -111,54 +111,84 @@ func (q *DeferredQueue) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // BindDeferred shares orchestration state with the Dashboard and completion dispatcher.
 func (p *Pipeline) BindDeferred(q *DeferredQueue) { p.deferred = q }
 
+// deferredTrigger holds a compiled deferred-action trigger pattern and its associated event.
+type deferredTrigger struct {
+	re    *regexp.Regexp
+	event string
+}
+
+// deferredTriggers defines the supported deferred trigger patterns in deterministic evaluation order.
+// Patterns are compiled once at package initialisation rather than per utterance.
+var deferredTriggers = []deferredTrigger{
+	{re: regexp.MustCompile(`(?i)^when the music stops(?:,\s*|\s+)(.+)$`), event: "music"},
+	{re: regexp.MustCompile(`(?i)^after the timer(?:,\s*|\s+)(.+)$`), event: "timer"},
+	{re: regexp.MustCompile(`(?i)^when the reply ends(?:,\s*|\s+)(.+)$`), event: "reply"},
+	{re: regexp.MustCompile(`(?i)^after this reply(?:,\s*|\s+)(.+)$`), event: "reply"},
+}
+
+// deferredPlan checks if text matches deferred syntax and plans its action without side effects.
+func (p *Pipeline) deferredPlan(ctx context.Context, text string, phrases, intentPhrases map[string]string) (event string, action string, cancel bool, fallback string, ok bool) {
+	if p.deferred == nil {
+		return "", "", false, "", false
+	}
+	normalized := NormalizePhrase(text)
+	if normalized == "cancel queued actions" || normalized == "cancel queued commands" {
+		return "", "", true, "", true
+	}
+	// Commas are optional because STT punctuation varies.
+	// Evaluate deferred triggers in a fixed order with precompiled patterns to avoid per-request regex compilation.
+	for _, trigger := range deferredTriggers {
+		match := trigger.re.FindStringSubmatch(strings.TrimSpace(text))
+		if len(match) != 2 {
+			continue
+		}
+		act := strings.TrimSpace(match[1])
+		// Validate a single safe leaf as well as chains; ambiguous deferred requests stay with the Agent.
+		var plan []chainStep
+		if strings.Contains(act, " and ") || strings.Contains(act, " then ") {
+			plan = p.chainPlan(ctx, act, phrases, intentPhrases)
+		} else {
+			name := phrases[NormalizePhrase(act)]
+			if name == "" && p.semantic != nil {
+				name = p.semantic.Match(ctx, act).Tool
+			}
+			if info, ok := p.registry.Info(name); ok && FastPathRoutable(info) {
+				plan = []chainStep{{text: act, name: name}}
+			}
+		}
+		if len(plan) == 0 {
+			return "", "", false, text, true
+		}
+		return trigger.event, act, false, "", true
+	}
+	return "", "", false, "", false
+}
+
 // deferredRequest recognises explicit orchestration syntax before semantic
 // routing. It returns the decision, and reports agentFallback when the action
 // is neither a safe leaf nor a chain: the caller then owns the Agent call, so
 // the model request happens after routing is marked and the request's real
 // streaming events reach the reply session.
-func (p *Pipeline) deferredRequest(ctx context.Context, req tool.Request, text string, phrases map[string]string) (Reply, bool, string) {
-	if p.deferred == nil {
+func (p *Pipeline) deferredRequest(ctx context.Context, req tool.Request, text string, phrases, intentPhrases map[string]string) (Reply, bool, string) {
+	event, action, cancel, fallback, ok := p.deferredPlan(ctx, text, phrases, intentPhrases)
+	if !ok {
 		return Reply{}, false, ""
 	}
 	reply := Reply{Path: tool.PathControlPhrase, RequestID: req.ID}
-	normalized := NormalizePhrase(text)
-	if normalized == "cancel queued actions" || normalized == "cancel queued commands" {
+	if cancel {
 		p.deferred.Cancel(0)
 		reply.Text = "Cancelled all queued actions."
 		return reply, true, ""
 	}
-	// Commas are optional because STT punctuation varies.
-	for prefix, event := range map[string]string{"when the music stops": "music", "after the timer": "timer", "when the reply ends": "reply", "after this reply": "reply"} {
-		pattern := regexp.MustCompile(`(?i)^` + prefix + `(?:,\s*|\s+)(.+)$`)
-		match := pattern.FindStringSubmatch(strings.TrimSpace(text))
-		if len(match) != 2 {
-			continue
-		}
-		action := strings.TrimSpace(match[1])
-		// Validate a single safe leaf as well as chains; ambiguous deferred requests stay with the Agent.
-		var plan []chainStep
-		if strings.Contains(action, " and ") || strings.Contains(action, " then ") {
-			plan = p.chainPlan(ctx, action, phrases)
-		} else {
-			name := phrases[NormalizePhrase(action)]
-			if name == "" && p.semantic != nil {
-				name = p.semantic.Match(ctx, action).Tool
-			}
-			if info, ok := p.registry.Info(name); ok && FastPathRoutable(info) {
-				plan = []chainStep{{text: action, name: name}}
-			}
-		}
-		if len(plan) == 0 {
-			return reply, true, text
-		}
-		if p.deferred.Add(event, action) {
-			reply.Text = "Queued for the end of " + event + ". Say cancel queued actions to cancel. It expires in one hour."
-		} else {
-			reply.Text = "The action queue is full. Cancel a queued action first."
-		}
-		return reply, true, ""
+	if fallback != "" {
+		return reply, true, fallback
 	}
-	return Reply{}, false, ""
+	if p.deferred.Add(event, action) {
+		reply.Text = "Queued for the end of " + event + ". Say cancel queued actions to cancel. It expires in one hour."
+	} else {
+		reply.Text = "The action queue is full. Cancel a queued action first."
+	}
+	return reply, true, ""
 }
 
 // Trigger marks matching requests ready while preserving their cancellation handles.

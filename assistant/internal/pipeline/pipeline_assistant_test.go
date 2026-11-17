@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/agent"
+	"github.com/Jairik/clanka-bot/assistant/internal/announce"
 	"github.com/Jairik/clanka-bot/assistant/internal/lastreply"
+	"github.com/Jairik/clanka-bot/assistant/internal/latency"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/tools/assistant"
@@ -579,5 +581,195 @@ func TestCancelledRepeatStoresNoRateOrReply(t *testing.T) {
 	got, ok := store.Last()
 	if !ok || got.Text != "original answer" || got.SpeechRate != 0 {
 		t.Fatalf("store after cancelled repeat = %+v/%v, want the unchanged original", got, ok)
+	}
+}
+
+// TestRepeatKeepsSayThatAgainAgainstAnnouncements proves that assistant.repeat
+// retains "say that again" when assistant.announcements is registered, and does
+// not misroute to announcements.
+func TestRepeatKeepsSayThatAgainAgainstAnnouncements(t *testing.T) {
+	fixed := time.Date(2026, 11, 11, 15, 4, 0, 0, time.UTC)
+	reg := tool.NewRegistry(time.Second)
+	if err := clock.Register(reg, func() time.Time { return fixed }); err != nil {
+		t.Fatalf("register clock: %v", err)
+	}
+	store := lastreply.New()
+	store.Record(lastreply.Reply{Text: "It's 3:04 PM.", Tool: clock.Name})
+	queue := announce.New(nil, slog.Default())
+	if err := assistant.NewModule().Register(reg, tool.Deps{LastReply: store, Announcements: queue}); err != nil {
+		t.Fatalf("register assistant: %v", err)
+	}
+	p, _ := newComposedPipeline(t, reg, map[string]string{
+		"say that again":                   assistant.RepeatName,
+		"what did you say while I was out": assistant.AnnouncementsName,
+	}, pipeline.WithLastReply(store))
+
+	reply := p.Handle(context.Background(), request(), "say that again")
+	if reply.Tool != assistant.RepeatName {
+		t.Fatalf("reply.Tool = %q, want %q (not announcements)", reply.Tool, assistant.RepeatName)
+	}
+	if reply.Text != "It's 3:04 PM." {
+		t.Fatalf("reply.Text = %q, want previous clock reply", reply.Text)
+	}
+}
+
+// TestHeardPipelineLifecycle exercises assistant.heard across pipeline turns:
+// no turn yet, a blank transcript, after a cancelled turn (last heard request is
+// unchanged), after a typed request (Source is dashboard), after a voice turn
+// (Source is voice), and a Confirmation turn.
+func TestHeardPipelineLifecycle(t *testing.T) {
+	fixed := time.Date(2026, 11, 11, 15, 4, 0, 0, time.UTC)
+	reg := tool.NewRegistry(time.Second)
+	if err := clock.Register(reg, func() time.Time { return fixed }); err != nil {
+		t.Fatalf("register clock: %v", err)
+	}
+	if err := tool.Add(reg, tool.Tool[struct{}, string]{
+		Name:        "test.confirm",
+		Description: "Confirm an action.",
+		Permission:  tool.PermissionConfirm,
+		LocalOnly:   tool.LocalOnlyNo,
+		Handler:     func(context.Context, struct{}) (string, error) { return "Confirmed action.", nil },
+		Speak:       func(out string) string { return out },
+	}); err != nil {
+		t.Fatalf("add confirm tool: %v", err)
+	}
+	store := lastreply.New()
+	if err := assistant.NewModule().Register(reg, tool.Deps{LastReply: store}); err != nil {
+		t.Fatalf("register assistant: %v", err)
+	}
+	logger := mustLogger(t)
+	p, err := pipeline.New(reg, map[string]string{
+		"what did you hear": assistant.HeardName,
+		"what time is it":   clock.Name,
+	}, logger,
+		pipeline.WithConfirmationResolver(pipeline.NewConfirmation(reg, logger)),
+		pipeline.WithLastReply(store),
+	)
+	if err != nil {
+		t.Fatalf("pipeline.New: %v", err)
+	}
+
+	// 1. No turn yet: "I haven't heard anything yet."
+	reply := p.Handle(context.Background(), request(), "what did you hear")
+	if reply.Text != "I haven't heard anything yet." {
+		t.Fatalf("reply with no turn = %q, want I haven't heard anything yet.", reply.Text)
+	}
+
+	// 2. Voice turn: Source is voice.
+	tlVoice := latency.New("req-voice", latency.SourceVoice)
+	ctxVoice := latency.WithContext(context.Background(), tlVoice)
+	reply = p.Handle(ctxVoice, request(), "what time is it")
+	if reply.Text != "It's 3:04 PM." {
+		t.Fatalf("clock reply = %q", reply.Text)
+	}
+	last, ok := store.Last()
+	if !ok || last.Utterance != "what time is it" || last.Source != "voice" {
+		t.Fatalf("store after voice turn = %+v/%v, want utterance and source voice", last, ok)
+	}
+	reply = p.Handle(context.Background(), request(), "what did you hear")
+	if reply.Text != `I heard: "what time is it".` || !reply.LocalOnly {
+		t.Fatalf("heard reply = %+v, want I heard: \"what time is it\". (LocalOnly)", reply)
+	}
+
+	// 3. A blank transcript: leaves empty utterance, fails with "I haven't heard anything yet."
+	store.Record(lastreply.Reply{Text: "Some text", Utterance: "   "})
+	reply = p.Handle(context.Background(), request(), "what did you hear")
+	if reply.Text != "I haven't heard anything yet." {
+		t.Fatalf("reply with blank utterance = %q, want I haven't heard anything yet.", reply.Text)
+	}
+
+	// Restore valid recorded utterance.
+	store.Record(lastreply.Reply{
+		Text:      "It's 3:04 PM.",
+		Tool:      clock.Name,
+		Utterance: "what time is it",
+		Source:    "voice",
+	})
+
+	// 4. After a cancelled turn: last heard request is unchanged.
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	p.Handle(cancelled, request(), "cancelled request")
+	reply = p.Handle(context.Background(), request(), "what did you hear")
+	if reply.Text != `I heard: "what time is it".` {
+		t.Fatalf("reply after cancel = %q, want previous heard request unchanged", reply.Text)
+	}
+
+	// 5. After a typed request: Source is dashboard.
+	tlDash := latency.New("req-dash", latency.SourceDashboard)
+	ctxDash := latency.WithContext(context.Background(), tlDash)
+	p.Handle(ctxDash, request(), "what time is it")
+	last, ok = store.Last()
+	if !ok || last.Utterance != "what time is it" || last.Source != "dashboard" {
+		t.Fatalf("store after dashboard turn = %+v/%v, want source dashboard", last, ok)
+	}
+	reply = p.Handle(context.Background(), request(), "what did you hear")
+	if reply.Text != `I heard: "what time is it".` {
+		t.Fatalf("heard reply = %q, want I heard: \"what time is it\".", reply.Text)
+	}
+
+	// 6. A Confirmation turn: settled confirmation records "yes".
+	if _, err := reg.Propose("test.confirm", json.RawMessage(`{}`)); err != nil {
+		t.Fatalf("Propose: %v", err)
+	}
+	reply = p.Handle(context.Background(), request(), "yes")
+	if reply.Text != "Confirmed action." {
+		t.Fatalf("confirmation reply = %q", reply.Text)
+	}
+	last, ok = store.Last()
+	if !ok || last.Utterance != "yes" {
+		t.Fatalf("store after confirmation = %+v/%v, want Utterance=yes", last, ok)
+	}
+	reply = p.Handle(context.Background(), request(), "what did you hear")
+	if reply.Text != `I heard: "yes".` {
+		t.Fatalf("heard reply after confirmation = %q, want I heard: \"yes\".", reply.Text)
+	}
+}
+
+// TestHeardTurnNeverEntersAgentPrompt checks that assistant.heard turns stay on
+// the Pi: because the Tool is Local-only, the turn is dropped from the Agent
+// prompt, and its utterance never leaks to the model.
+func TestHeardTurnNeverEntersAgentPrompt(t *testing.T) {
+	reg := tool.NewRegistry(time.Second)
+	fixed := time.Date(2026, 11, 11, 15, 4, 0, 0, time.UTC)
+	if err := clock.Register(reg, func() time.Time { return fixed }); err != nil {
+		t.Fatalf("register clock: %v", err)
+	}
+	store := lastreply.New()
+	if err := assistant.NewModule().Register(reg, tool.Deps{LastReply: store}); err != nil {
+		t.Fatalf("register assistant: %v", err)
+	}
+	runner := newFakeRunner()
+	p, _ := newComposedPipeline(t, reg, map[string]string{
+		"what time is it":   clock.Name,
+		"what did you hear": assistant.HeardName,
+	}, pipeline.WithAgent(runner, nil), pipeline.WithLastReply(store))
+
+	p.Handle(context.Background(), request(), "what time is it")
+	reply := p.Handle(context.Background(), request(), "what did you hear")
+	if !reply.LocalOnly || reply.Tool != assistant.HeardName {
+		t.Fatalf("heard reply = %+v, want LocalOnly assistant.heard", reply)
+	}
+
+	turns := runner.History().Recent()
+	if len(turns) != 2 {
+		t.Fatalf("history has %d turns, want 2", len(turns))
+	}
+	if len(turns[1].Calls) != 1 || !turns[1].Calls[0].LocalOnly || turns[1].Calls[0].Name != assistant.HeardName {
+		t.Fatalf("heard turn in history = %+v, want one Local-only call", turns[1])
+	}
+
+	// Build messages for a subsequent agent request. The prompt builder must drop
+	// the Local-only turn entirely.
+	messages := agent.NewPromptBuilder("").Messages("tell me more", turns)
+	encoded, err := json.Marshal(messages)
+	if err != nil {
+		t.Fatalf("marshal prompt: %v", err)
+	}
+	if strings.Contains(string(encoded), "what did you hear") {
+		t.Errorf("prompt contains heard utterance: %s", encoded)
+	}
+	if strings.Contains(string(encoded), "I heard:") {
+		t.Errorf("prompt contains heard reply: %s", encoded)
 	}
 }

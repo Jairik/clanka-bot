@@ -93,6 +93,7 @@ describe("shell health poll", () => {
         CheckedAt: "now",
         HealthTimeout: "3s",
         Services: [],
+        Host: [],
         Modules: [],
         Location: { Name: "pi", Status: "ok", StatusLabel: "OK", Detail: "" },
         Wakeword: [],

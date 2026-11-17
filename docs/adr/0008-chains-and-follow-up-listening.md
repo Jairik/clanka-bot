@@ -2,12 +2,13 @@
 
 The middleware plans conjunctions before running any Tool. Each clause must
 independently pass the existing semantic confidence, extraction and Permission
-checks (or match an exact Control phrase). Only command-leading suffixes are
-split: artist names, playlist names, durations and labels retain their `and`.
-Uncertain plans go intact to the Agent path. Explicit Agent prefixes and pending
-Confirmations keep their precedence. A chain stops on a Tool or playback error;
-each successful step drains its reply audio before the next Tool runs. Dashboard
-text chat executes the same ordered Tools without Pi audio.
+checks (or match an exact Control phrase). A chain step may be a Tool or a Focus
+intent. Only command-leading suffixes are split: artist names, playlist names,
+durations and labels retain their `and`. Uncertain plans go intact to the Agent
+path. Explicit Agent prefixes and pending Confirmations keep their precedence.
+A chain stops on a Tool or playback error; each successful step drains its reply
+audio before the next Tool runs. Dashboard text chat executes the same ordered
+Tools without Pi audio.
 
 `conversation.chains` defaults on. `conversation.follow_up_seconds` defaults to
 5, accepts 0–15, and 0 disables it. Conversation mode raises the same window to

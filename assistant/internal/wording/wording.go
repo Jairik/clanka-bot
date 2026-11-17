@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/agent"
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/phrase"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
@@ -36,6 +37,10 @@ const (
 	// UnavailableKey holds the phrase spoken when the Agent path cannot reach
 	// its model.
 	UnavailableKey = "agent.unavailable_message"
+	// ClarifyKey holds the line the model is told to use when a request is
+	// addressed to the Assistant but cannot be understood. It is read while the
+	// system part is built, so a change applies to the next request.
+	ClarifyKey = "agent.clarify_message"
 )
 
 // Code defaults. config.yaml is normally the config layer, but a definition
@@ -43,6 +48,7 @@ const (
 const (
 	DefaultFiller             = "One moment."
 	DefaultUnavailableMessage = "Sorry, I can't answer that right now."
+	DefaultBuildTimeout       = 30 * time.Second
 )
 
 // ControlPhrasesKey is one Tool's live Control phrase list.
@@ -64,6 +70,9 @@ type Config struct {
 	RequestPrefixes    []string
 	Filler             string
 	UnavailableMessage string
+	// ClarifyMessage is optional: an empty value keeps the code default, so a
+	// caller that predates the setting still builds.
+	ClarifyMessage string
 }
 
 // Setup is the wording definition set plus the Tool names each live list
@@ -189,7 +198,8 @@ func Build(reg *tool.Registry, cfg Config) (Setup, error) {
 
 	// Shared Focus intents have no Tool, so each fixed intent gets its own live
 	// phrase list. The pipeline routes a phrase to whatever holds Focus; with
-	// nothing in Focus it falls through to the semantic Fast path.
+	// nothing in Focus a bare "stop" ends the session and the other intents
+	// fall through to the semantic Fast path.
 	for _, intent := range focus.Intents() {
 		options := []settings.Option{
 			settings.WithDescription("Exact phrases that act on whatever holds Focus for the " + string(intent) + " intent. They apply on the next request."),
@@ -219,8 +229,23 @@ func Build(reg *tool.Registry, cfg Config) (Setup, error) {
 			settings.WithDescription("Phrase spoken when the Agent path cannot reach its model. A change applies to the next failure."),
 			settings.WithValidator(requireNonBlank),
 		),
+		clarifyDefinition(cfg.ClarifyMessage),
 	)
 	return setup, nil
+}
+
+// clarifyDefinition builds the live Clarify line. The config layer is optional:
+// with no config value the code default (the same line the Agent falls back to)
+// is the value, so a setup that never sets the key is unchanged.
+func clarifyDefinition(fromConfig string) settings.Definition {
+	opts := []settings.Option{
+		settings.WithDescription("Line the model is told to use when a request is addressed to the Assistant but cannot be understood. A change applies to the next request."),
+		settings.WithValidator(requireNonBlank),
+	}
+	if text := strings.TrimSpace(fromConfig); text != "" {
+		opts = append(opts, settings.WithConfig(text))
+	}
+	return settings.String(ClarifyKey, agent.DefaultClarifyMessage, opts...)
 }
 
 // dedupePhrases sorts each group and drops phrases that normalize to one key,
@@ -327,6 +352,18 @@ func WithRetryBackoff(initial, max time.Duration) Option {
 	}
 }
 
+// WithBuildTimeout bounds the time an Examples rebuild can spend in the
+// embedder before abandoning the attempt. A stuck embed service gives up its
+// turn so subsequent settings changes are not stalled, the previous vectors
+// stay live, and the rebuild retries on the backoff schedule.
+func WithBuildTimeout(d time.Duration) Option {
+	return func(m *Manager) {
+		if d > 0 {
+			m.buildTimeout = d
+		}
+	}
+}
+
 // ErrClosed reports a Manager that has been stopped.
 var ErrClosed = errors.New("wording: manager is closed")
 
@@ -356,6 +393,7 @@ type Manager struct {
 	// dead embed or TTS service cannot spin and a recovery needs no restart.
 	retryInitial time.Duration
 	retryMax     time.Duration
+	buildTimeout time.Duration
 
 	// builtMu guards the Examples snapshot the worker last installed and the
 	// last build state reported to the Health page. The accessor is in-memory;
@@ -408,6 +446,7 @@ func NewManager(svc *settings.Service, setup Setup, initial *speech.Filler, synt
 		filler:       initial,
 		retryInitial: 2 * time.Second,
 		retryMax:     2 * time.Minute,
+		buildTimeout: DefaultBuildTimeout,
 		wake:         make(chan struct{}, 1),
 		barrier:      make(chan chan struct{}),
 		done:         make(chan struct{}),
@@ -416,18 +455,35 @@ func NewManager(svc *settings.Service, setup Setup, initial *speech.Filler, synt
 		opt(m)
 	}
 	if initial != nil {
-		m.fillerKey = m.keyFor(initial.Text)
+		text := initial.Text
+		if m.settings != nil {
+			if s := m.settings.String(FillerKey); s != "" {
+				text = s
+			}
+		}
+		m.fillerKey = m.keyFor(text)
 	}
 	return m, nil
 }
 
-// keyFor builds the cache key from the phrase and, when configured, the live
-// voice/rate signature. A voice change therefore invalidates the cached audio
-// even though the Filler text is unchanged.
+// keyFor builds the cache key from the phrase, any configured extra filler keys,
+// and, when configured, the live voice/rate signature. A voice or pronunciation
+// change therefore invalidates the cached audio even though the Filler text is
+// unchanged.
 func (m *Manager) keyFor(text string) string {
 	key := strings.TrimSpace(text)
 	if m.fillerSignature != nil {
 		key += "\x00" + m.fillerSignature()
+	}
+	if m.settings != nil && len(m.fillerKeys) > 0 {
+		for _, k := range m.fillerKeys {
+			if k == "voice.name" || k == "voice.rate" {
+				continue
+			}
+			if v, ok := m.settings.Get(k); ok {
+				key += fmt.Sprintf("\x00%s=%v", k, v.Value)
+			}
+		}
 	}
 	return key
 }
@@ -785,6 +841,20 @@ func (m *Manager) UnavailableMessage() string {
 	return text
 }
 
+// ClarifyMessage returns the line the prompt asks for when a request is
+// addressed to the Assistant but unclear. It is read while the system part is
+// built, so a change applies to the next request without a restart.
+func (m *Manager) ClarifyMessage() string {
+	if m == nil {
+		return agent.DefaultClarifyMessage
+	}
+	text := strings.TrimSpace(m.settings.String(ClarifyKey))
+	if text == "" {
+		return agent.DefaultClarifyMessage
+	}
+	return text
+}
+
 // Filler returns the cached Filler for this request. It never blocks on TTS;
 // a text change is picked up by the worker and the old audio keeps serving
 // until the replacement is ready.
@@ -819,7 +889,12 @@ func (m *Manager) syncExamples(ctx context.Context) bool {
 	if !eligibilityDirty && equalExamples(current, built) {
 		return false
 	}
-	set, err := m.router.BuildSet(ctx, current)
+	// Bound the rebuild to m.buildTimeout so a stuck embed service does not
+	// block later settings changes. On timeout, the existing vectors remain
+	// live and the worker starts a bounded retry.
+	buildCtx, cancel := context.WithTimeout(ctx, m.buildTimeout)
+	set, err := m.router.BuildSet(buildCtx, current)
+	cancel()
 	if err != nil {
 		m.logger.Warn("wording: examples rebuild failed, keeping old vectors", "error", err.Error())
 		// The flag stays set, so the bounded retry keeps trying until a rebuild
@@ -857,7 +932,9 @@ func (m *Manager) syncExamples(ctx context.Context) bool {
 // syncFiller re-synthesizes the cached audio when the effective Filler text
 // changed. A failed synthesis keeps the old audio; the worker retries the same
 // key on its bounded backoff, so a dead TTS service cannot spin and a transient
-// failure recovers without another wording change.
+// failure recovers without another wording change. The manager applies no
+// timeout of its own here: production's synthFiller already wraps TTS in
+// cfg.TTS.Timeout, and tests supply their own bounded fakes.
 func (m *Manager) syncFiller(ctx context.Context, retry bool) bool {
 	text := strings.TrimSpace(m.settings.String(FillerKey))
 	if text == "" || m.synth == nil {

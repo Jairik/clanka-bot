@@ -52,7 +52,12 @@ type Settings struct {
 	// PersonaFunc, when set, supplies the active personality prompt. It is read
 	// once per turn when the labelled system part is built; it never adds a
 	// second egress path (ADR-0002).
-	PersonaFunc        func() Persona
+	PersonaFunc func() Persona
+	// ClarifyMessage is the line a request addressed to the Assistant gets when
+	// it cannot be understood. ClarifyMessageFunc, when set, is read per request
+	// so the live agent.clarify_message setting applies to the next turn.
+	ClarifyMessage     string
+	ClarifyMessageFunc func() string
 	UnavailableMessage string
 	// UnavailableMessageFunc, when set, is read for each failure so a stored
 	// wording override applies without rebuilding the Agent path.
@@ -124,6 +129,10 @@ type Result struct {
 	// Conversation is the kind of longer budget this turn used: "mode", "cue"
 	// or empty for the default. It is display-only, carried into Activity.
 	Conversation string
+	// Ignored means the model decided the speech was not addressed to the
+	// Assistant and replied with IgnoreToken. Text is empty, the turn is not in
+	// history, and the caller speaks nothing but an optional soft Cue.
+	Ignored bool
 }
 
 // tokenUsage is the summed model usage for one request across its steps.
@@ -207,6 +216,20 @@ func New(settings Settings, registry *tool.Registry, logger *slog.Logger) (*Agen
 	if settings.PersonaFunc != nil {
 		prompt = prompt.WithPersona(settings.PersonaFunc)
 	}
+	// The Clarify line is live wording, read while the system part is built.
+	// The static value and then the code default keep the rule present even
+	// when a resolver returns nothing or config leaves the key empty.
+	prompt = prompt.WithClarify(func() string {
+		if settings.ClarifyMessageFunc != nil {
+			if text := strings.TrimSpace(settings.ClarifyMessageFunc()); text != "" {
+				return text
+			}
+		}
+		if text := strings.TrimSpace(settings.ClarifyMessage); text != "" {
+			return text
+		}
+		return DefaultClarifyMessage
+	})
 	// Resolve the Unavailable wording per failure. The static value stays the
 	// required fallback, so a resolver that returns nothing cannot silence the
 	// error path.
@@ -350,6 +373,27 @@ func (a *Agent) Run(ctx context.Context, req tool.Request, utterance string, onD
 			// Last reply and Activity all keep exactly what was heard rather
 			// than the raw markdown the model emitted.
 			text := strings.TrimSpace(budget.Text())
+			// The ignore signal is a decision about the turn, not an answer:
+			// nothing is spoken, and the utterance and reply stay out of
+			// history so a misheard fragment cannot steer later turns (#498).
+			// It only applies before any Tool ran: a turn that already acted
+			// must not be erased from history, and the token must still never
+			// reach TTS, so it counts as an empty answer instead.
+			if IsIgnoreReply(text) {
+				if len(recorded) > 0 {
+					text = ""
+				} else {
+					a.logger.Info("agent ignored",
+						"request_id", req.ID,
+						"steps", step+1,
+						"tools", callNames(recorded),
+						"duration_ms", time.Since(started).Milliseconds(),
+					)
+					result := Result{Ignored: true, Calls: recorded, Retries: retries, Conversation: kind}
+					usage.apply(&result)
+					return result
+				}
+			}
 			// An empty answer is a fallback line no delta carried.
 			notStreamed := text == ""
 			if notStreamed {

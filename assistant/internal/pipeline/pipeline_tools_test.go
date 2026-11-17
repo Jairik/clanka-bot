@@ -58,7 +58,7 @@ func (keywordEmbedder) Embed(_ context.Context, texts []string) ([][]float32, er
 	out := make([][]float32, len(texts))
 	for i, text := range texts {
 		lower := strings.ToLower(text)
-		v := make([]float32, 6)
+		v := make([]float32, 7)
 		switch {
 		case strings.Contains(lower, "cancel"):
 			v[0] = 1
@@ -71,8 +71,10 @@ func (keywordEmbedder) Embed(_ context.Context, texts []string) ([][]float32, er
 			v[3] = 1
 		case strings.Contains(lower, "timers"):
 			v[4] = 1
-		default:
+		case strings.Contains(lower, "+") || strings.Contains(lower, "extend") || strings.Contains(lower, "give") || strings.Contains(lower, "more"):
 			v[5] = 1
+		default:
+			v[6] = 1
 		}
 		out[i] = v
 	}

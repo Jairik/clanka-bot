@@ -4,7 +4,7 @@ import { AlarmClock, BellRing, ChevronDown, Hourglass, StickyNote, X } from "luc
 import { usePageData } from "../api";
 import { useDesktopNotifications } from "../desktop-notify";
 import { DeferredRows, useDeferredQueue } from "../queued-actions";
-import { Field, SelectField, TextField, useActions, type Actions } from "../forms";
+import { Field, SelectField, SettingRow, TextField, useActions, type Actions } from "../forms";
 import { PageFrame } from "../shell";
 import type { AlarmEditor, AlertsView } from "../types";
 import { Badge, Empty, Fold, Lede, Meta, Notice, Section, cn, foldOpen, Tip } from "../ui";
@@ -109,6 +109,21 @@ export function AlertsPage() {
               <Empty>No missed alerts in the recent history.</Empty>
             )}
           </Section>
+
+          {Boolean(data.Settings?.length) && (
+            <Section title="Retention" summary={`${data.Settings!.length} settings`} flush>
+              <Lede>
+                Retention deletes alert history older than the configured window and keeps at most the configured number of newest rows.
+              </Lede>
+              <ul className="divide-y divide-separator">
+                {data.Settings!.map((s) => (
+                  <li key={s.Key} id={s.Anchor} tabIndex={-1} className="px-3.5 py-3">
+                    <SettingRow s={s} actions={actions} />
+                  </li>
+                ))}
+              </ul>
+            </Section>
+          )}
         </div>
       )}
     </PageFrame>
@@ -168,7 +183,7 @@ function AlarmItem({ a, actions }: { a: AlarmEditor; actions: Actions<AlertsView
           }}
         >
           <div className="grid gap-4 sm:grid-cols-3">
-            <Field label="Sound" hint={<>Now {a.SoundEffective} · default {a.SoundDefault} · cap {a.SoundCap}</>}>
+            <Field label="Sound" hint={<>Now {a.SoundEffective} · default {a.SoundDefault}</>}>
               {a.HasLibrary ? (
                 <SelectField label="Sound" value={f.sound} onChange={(v) => setF((s) => ({ ...s, sound: v }))} options={(a.Sounds ?? []).map((o) => ({ value: o.Value, label: o.Label }))} className="sm:w-full" />
               ) : (

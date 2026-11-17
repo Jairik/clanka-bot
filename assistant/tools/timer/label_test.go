@@ -34,3 +34,28 @@ func TestCleanLabelCapsAscii(t *testing.T) {
 		t.Errorf("cleanLabel cap mismatch: %q", got)
 	}
 }
+
+// TestLabelForTimerExtend verifies that labelForTimer extracts labels accurately
+// for phrases extending or adding time to timers.
+func TestLabelForTimerExtend(t *testing.T) {
+	tests := []struct {
+		text string
+		want string
+	}{
+		{"+5 minutes on the pasta timer", "pasta"},
+		{"add five minutes to the timer", ""},
+		{"give the egg timer ten more minutes", "egg"},
+		{"give the timer five more minutes", ""},
+		{"add ten minutes to the pasta timer", "pasta"},
+		{"extend the pasta timer by 5 minutes", "pasta"},
+		{"extend the timer by ten minutes", ""},
+		{"put five more minutes on the timer", ""},
+		{"put five more minutes on the tea timer", "tea"},
+	}
+	for _, tc := range tests {
+		got := labelForTimer(tc.text)
+		if got != tc.want {
+			t.Errorf("labelForTimer(%q) = %q, want %q", tc.text, got, tc.want)
+		}
+	}
+}

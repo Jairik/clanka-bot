@@ -125,6 +125,11 @@ var defaults = map[string]string{
 	"lights.brightness":     "Done.",
 	"lights.color":          "Done.",
 	"lights.mode":           "Done.",
+	"monster.power":         "Done.",
+	"monster.brightness":    "Done.",
+	"monster.color":         "Done.",
+	"monster.white":         "Done.",
+	"monster.scene":         "Done.",
 }
 
 // Overridable reports whether the phrase book may replace this Tool's reply.

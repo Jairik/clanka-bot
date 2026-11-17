@@ -135,3 +135,124 @@ func TestStatusToolMetadata(t *testing.T) {
 		t.Errorf("metadata = %+v, want a spoken Tool with Examples", info)
 	}
 }
+
+// baseHealthyReport returns a baseline report where all services and location are healthy.
+func baseHealthyReport() tool.StatusReport {
+	return tool.StatusReport{
+		Services: []tool.StatusCheck{{Name: "embed", State: tool.StatusOK}},
+		Location: tool.StatusCheck{Name: "location", State: tool.StatusOK, Detail: "Bristol"},
+	}
+}
+
+func ptr[T any](v T) *T { return &v }
+
+// TestSummarizeVitalsNormalUnchanged verifies that normal host vitals and storage
+// leave the summary untouched as a single sentence.
+func TestSummarizeVitalsNormalUnchanged(t *testing.T) {
+	rep := baseHealthyReport()
+	rep.Host = &tool.HostStatus{
+		TemperatureC:         ptr(59.3),
+		Load:                 ptr([3]float64{0.70, 0.83, 0.76}),
+		MemoryAvailableBytes: ptr(uint64(5 * 1024 * 1024 * 1024)),
+		UptimeSeconds:        ptr(3600.0),
+	}
+	rep.Storage = &tool.StorageStatus{
+		State: "ok",
+	}
+
+	out := summarize(rep)
+	if out.Summary != "I'm OK. Everything I can check is responding." {
+		t.Errorf("Summary = %q, want unchanged one sentence", out.Summary)
+	}
+	if out.Host == nil || out.Host.TemperatureC == nil || *out.Host.TemperatureC != 59.3 {
+		t.Errorf("Out.Host = %+v", out.Host)
+	}
+	if out.Storage == nil || out.Storage.State != "ok" {
+		t.Errorf("Out.Storage = %+v", out.Storage)
+	}
+}
+
+// TestSummarizeHotWarning verifies that a hot CPU appends the warning sentence.
+func TestSummarizeHotWarning(t *testing.T) {
+	rep := baseHealthyReport()
+	rep.Host = &tool.HostStatus{
+		TemperatureC: ptr(82.5),
+	}
+
+	out := summarize(rep)
+	want := "I'm OK. Everything I can check is responding. The CPU is running hot."
+	if out.Summary != want {
+		t.Errorf("Summary = %q, want %q", out.Summary, want)
+	}
+}
+
+// TestSummarizeLowMemoryWarning verifies that low available memory appends the warning sentence.
+func TestSummarizeLowMemoryWarning(t *testing.T) {
+	rep := baseHealthyReport()
+	rep.Host = &tool.HostStatus{
+		MemoryAvailableBytes: ptr(uint64(200 * 1024 * 1024)),
+	}
+
+	out := summarize(rep)
+	want := "I'm OK. Everything I can check is responding. Available memory is low."
+	if out.Summary != want {
+		t.Errorf("Summary = %q, want %q", out.Summary, want)
+	}
+}
+
+// TestSummarizeBothVitalsCrossed verifies that both hot and low memory are joined in one sentence.
+func TestSummarizeBothVitalsCrossed(t *testing.T) {
+	rep := baseHealthyReport()
+	rep.Host = &tool.HostStatus{
+		TemperatureC:         ptr(85.0),
+		MemoryAvailableBytes: ptr(uint64(150 * 1024 * 1024)),
+	}
+
+	out := summarize(rep)
+	want := "I'm OK. Everything I can check is responding. The CPU is running hot and available memory is low."
+	if out.Summary != want {
+		t.Errorf("Summary = %q, want %q", out.Summary, want)
+	}
+}
+
+// TestSummarizeStorageLowWarning verifies storage low threshold warning.
+func TestSummarizeStorageLowWarning(t *testing.T) {
+	rep := baseHealthyReport()
+	rep.Storage = &tool.StorageStatus{
+		State: "low",
+	}
+
+	out := summarize(rep)
+	want := "I'm OK. Everything I can check is responding. Storage space is running low."
+	if out.Summary != want {
+		t.Errorf("Summary = %q, want %q", out.Summary, want)
+	}
+}
+
+// TestSummarizeStorageFullWarning verifies storage full threshold warning.
+func TestSummarizeStorageFullWarning(t *testing.T) {
+	rep := baseHealthyReport()
+	rep.Storage = &tool.StorageStatus{
+		State: "full",
+	}
+
+	out := summarize(rep)
+	want := "I'm OK. Everything I can check is responding. Storage space is full."
+	if out.Summary != want {
+		t.Errorf("Summary = %q, want %q", out.Summary, want)
+	}
+}
+
+// TestSummarizeAllUnavailableNoInventedWarning verifies that when host and storage
+// are unavailable, no warning is invented.
+func TestSummarizeAllUnavailableNoInventedWarning(t *testing.T) {
+	rep := baseHealthyReport()
+	rep.Host = &tool.HostStatus{}
+	rep.Storage = &tool.StorageStatus{State: "unavailable"}
+
+	out := summarize(rep)
+	want := "I'm OK. Everything I can check is responding."
+	if out.Summary != want {
+		t.Errorf("Summary = %q, want %q (no invented warning)", out.Summary, want)
+	}
+}

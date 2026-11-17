@@ -24,8 +24,14 @@ func Normalize(vec []float32) []float32 {
 }
 
 // Dot returns the inner product of a and b. For unit vectors this is the
-// cosine similarity.
+// cosine similarity. Mismatched vector lengths return 0 deliberately,
+// treating dimension mismatch as a no-match (below every similarity threshold)
+// rather than panicking or returning a partial dot product.
 func Dot(a, b []float32) float64 {
+	// Mismatched lengths return 0 as a deliberate no-match.
+	if len(a) != len(b) {
+		return 0
+	}
 	var sum float64
 	for i := range a {
 		sum += float64(a[i]) * float64(b[i])

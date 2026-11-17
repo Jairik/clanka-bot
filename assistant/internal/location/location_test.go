@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,6 +16,8 @@ import (
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
+	"github.com/Jairik/clanka-bot/assistant/internal/settings"
+	"github.com/Jairik/clanka-bot/assistant/internal/store"
 )
 
 // scriptedProvider returns its scripted results in order, then fails.
@@ -460,4 +463,202 @@ func TestWatchBackoffIsBounded(t *testing.T) {
 		}
 		clock.Advance(want)
 	}
+}
+
+// openTestSettings builds a settings service populated with location definitions.
+func openTestSettings(t *testing.T) (*settings.Service, context.Context) {
+	t.Helper()
+	ctx := context.Background()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "settings.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	svc, err := settings.New(ctx, st, location.Definitions()...)
+	if err != nil {
+		t.Fatalf("settings.New: %v", err)
+	}
+	return svc, ctx
+}
+
+// TestLocationOverrideWinsOverLookupAndClearingReturnsToLookup verifies that a
+// live settings override takes precedence over lookup, clearing the override
+// returns to lookup, and Health detail names the source.
+func TestLocationOverrideWinsOverLookupAndClearingReturnsToLookup(t *testing.T) {
+	provider := &scriptedProvider{locs: []location.Location{london}}
+	settingsSvc, ctx := openTestSettings(t)
+	service := location.NewService(provider, paris, 24*time.Hour, discardLogger(), location.WithSettings(settingsSvc))
+	service.Refresh(ctx)
+
+	// Before any override, the lookup result is effective.
+	if got, ok := service.Current(); !ok || got != london {
+		t.Fatalf("Current before override = %+v/%v, want London", got, ok)
+	}
+	if got := service.Source(); got != location.SourceLookup {
+		t.Fatalf("Source before override = %q, want %q", got, location.SourceLookup)
+	}
+	if got := service.Detail(); got != "London, England (Europe/London) (IP lookup)" {
+		t.Fatalf("Detail before override = %q", got)
+	}
+
+	// Setting city and region overrides the lookup place.
+	if _, err := settingsSvc.Set(ctx, location.CityKey, "Annapolis"); err != nil {
+		t.Fatalf("Set city: %v", err)
+	}
+	if _, err := settingsSvc.Set(ctx, location.RegionKey, "Maryland"); err != nil {
+		t.Fatalf("Set region: %v", err)
+	}
+
+	annapolis := location.Location{City: "Annapolis", Region: "Maryland"}
+	if got, ok := service.Current(); !ok || got != annapolis {
+		t.Fatalf("Current with override = %+v/%v, want Annapolis", got, ok)
+	}
+	if got := service.Source(); got != location.SourceOverride {
+		t.Fatalf("Source with override = %q, want %q", got, location.SourceOverride)
+	}
+	if got := service.Detail(); got != "Annapolis, Maryland (set on the Dashboard)" {
+		t.Fatalf("Detail with override = %q, want Annapolis, Maryland (set on the Dashboard)", got)
+	}
+
+	// Setting timezone keeps the override winning and details both place and source.
+	if _, err := settingsSvc.Set(ctx, location.TimezoneKey, "America/New_York"); err != nil {
+		t.Fatalf("Set timezone: %v", err)
+	}
+	annapolisWithTZ := location.Location{City: "Annapolis", Region: "Maryland", Timezone: "America/New_York"}
+	if got, ok := service.Current(); !ok || got != annapolisWithTZ {
+		t.Fatalf("Current with tz override = %+v/%v, want Annapolis with tz", got, ok)
+	}
+	if got := service.Detail(); got != "Annapolis, Maryland (America/New_York) (set on the Dashboard)" {
+		t.Fatalf("Detail with tz override = %q", got)
+	}
+
+	// Clearing the override by resetting the settings returns to the lookup.
+	if _, err := settingsSvc.Reset(ctx, location.CityKey); err != nil {
+		t.Fatalf("Reset city: %v", err)
+	}
+	if _, err := settingsSvc.Reset(ctx, location.RegionKey); err != nil {
+		t.Fatalf("Reset region: %v", err)
+	}
+	if _, err := settingsSvc.Reset(ctx, location.TimezoneKey); err != nil {
+		t.Fatalf("Reset timezone: %v", err)
+	}
+
+	if got, ok := service.Current(); !ok || got != london {
+		t.Fatalf("Current after clearing override = %+v/%v, want London", got, ok)
+	}
+	if got := service.Source(); got != location.SourceLookup {
+		t.Fatalf("Source after clearing override = %q, want %q", got, location.SourceLookup)
+	}
+	if got := service.Detail(); got != "London, England (Europe/London) (IP lookup)" {
+		t.Fatalf("Detail after clearing override = %q", got)
+	}
+}
+
+// TestLocationEmptyOverrideReturnsToLookupThenConfigFallback checks that an
+// empty override falls through to lookup, and when lookup has failed, to the
+// config fallback.
+func TestLocationEmptyOverrideReturnsToLookupThenConfigFallback(t *testing.T) {
+	settingsSvc, ctx := openTestSettings(t)
+
+	// Empty override with successful lookup: lookup wins.
+	provider := &scriptedProvider{locs: []location.Location{london}}
+	service := location.NewService(provider, paris, 24*time.Hour, discardLogger(), location.WithSettings(settingsSvc))
+	service.Refresh(ctx)
+
+	if got, ok := service.Current(); !ok || got != london {
+		t.Fatalf("Current = %+v/%v, want lookup London", got, ok)
+	}
+	if got := service.Source(); got != location.SourceLookup {
+		t.Fatalf("Source = %q, want %q", got, location.SourceLookup)
+	}
+
+	// Empty override with failed lookup: config fallback wins.
+	failedProvider := &scriptedProvider{errs: []error{errors.New("lookup down")}}
+	fallbackService := location.NewService(failedProvider, paris, 24*time.Hour, discardLogger(), location.WithSettings(settingsSvc))
+	fallbackService.Refresh(ctx)
+
+	if got, ok := fallbackService.Current(); !ok || got != paris {
+		t.Fatalf("Current = %+v/%v, want config fallback Paris", got, ok)
+	}
+	if got := fallbackService.Source(); got != location.SourceFallback {
+		t.Fatalf("Source = %q, want %q", got, location.SourceFallback)
+	}
+	if got := fallbackService.Detail(); got != "Paris, Ile-de-France (Europe/Paris) (config fallback)" {
+		t.Fatalf("Detail = %q", got)
+	}
+
+	// Empty override, failed lookup, and empty fallback: no location.
+	emptyService := location.NewService(failedProvider, location.Location{}, 24*time.Hour, discardLogger(), location.WithSettings(settingsSvc))
+	emptyService.Refresh(ctx)
+
+	if got, ok := emptyService.Current(); ok {
+		t.Fatalf("Current = %+v, want no location", got)
+	}
+	if got := emptyService.Source(); got != location.SourceNone {
+		t.Fatalf("Source = %q, want empty", got)
+	}
+	if got := emptyService.Detail(); got != "No place known." {
+		t.Fatalf("Detail = %q, want No place known.", got)
+	}
+}
+
+// TestLocationDefinitionsValidation tests the timezone validator on location definitions.
+func TestLocationDefinitionsValidation(t *testing.T) {
+	settingsSvc, ctx := openTestSettings(t)
+
+	// Valid IANA zones are accepted.
+	for _, valid := range []string{"America/New_York", "Europe/London", "UTC", ""} {
+		if _, err := settingsSvc.Set(ctx, location.TimezoneKey, valid); err != nil {
+			t.Errorf("Set timezone %q: unexpected error %v", valid, err)
+		}
+	}
+
+	// Invalid zones are rejected.
+	for _, invalid := range []string{"Invalid/Zone", "Local", "/etc/timezone", "../zone"} {
+		if _, err := settingsSvc.Set(ctx, location.TimezoneKey, invalid); err == nil {
+			t.Errorf("Set timezone %q: expected error, got nil", invalid)
+		}
+	}
+}
+
+// TestLocationConcurrentOverrideAndRead verifies thread safety under race detection.
+func TestLocationConcurrentOverrideAndRead(t *testing.T) {
+	settingsSvc, ctx := openTestSettings(t)
+	provider := &scriptedProvider{locs: []location.Location{london}}
+	service := location.NewService(provider, paris, 24*time.Hour, discardLogger(), location.WithSettings(settingsSvc))
+	service.Refresh(ctx)
+
+	var wg sync.WaitGroup
+	ctxCancel, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+	defer cancel()
+
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			for ctxCancel.Err() == nil {
+				if workerID%2 == 0 {
+					_, _ = settingsSvc.Set(ctx, location.CityKey, "Annapolis")
+					_, _ = settingsSvc.Set(ctx, location.RegionKey, "Maryland")
+				} else {
+					_, _ = settingsSvc.Reset(ctx, location.CityKey)
+					_, _ = settingsSvc.Reset(ctx, location.RegionKey)
+				}
+			}
+		}(i)
+	}
+
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for ctxCancel.Err() == nil {
+				_, _ = service.Current()
+				_ = service.Source()
+				_ = service.Detail()
+			}
+		}()
+	}
+
+	wg.Wait()
 }

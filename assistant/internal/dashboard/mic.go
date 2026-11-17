@@ -45,7 +45,7 @@ func (h *Handler) activityAskAudio(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !isPCM16k(r.Header.Get("Content-Type")) {
-		h.activityFail(w, r, http.StatusUnsupportedMediaType, "The recording must be 16 kHz mono 16-bit PCM.", "")
+		h.activityFail(r.Context(), w, http.StatusUnsupportedMediaType, "The recording must be 16 kHz mono 16-bit PCM.", "")
 		return
 	}
 	// One recording at a time, held through transcription and the answer, so
@@ -60,14 +60,14 @@ func (h *Handler) activityAskAudio(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var tooBig *http.MaxBytesError
 		if errors.As(err, &tooBig) {
-			h.activityFail(w, r, http.StatusRequestEntityTooLarge, "Keep a recording under 30 seconds.", "")
+			h.activityFail(r.Context(), w, http.StatusRequestEntityTooLarge, "Keep a recording under 30 seconds.", "")
 			return
 		}
-		h.activityFail(w, r, http.StatusBadRequest, "Could not read the recording.", "")
+		h.activityFail(r.Context(), w, http.StatusBadRequest, "Could not read the recording.", "")
 		return
 	}
 	if len(pcm) < micMinBytes || len(pcm)%2 != 0 {
-		h.activityFail(w, r, http.StatusBadRequest, "That recording was too short. Hold the mic and speak.", "")
+		h.activityFail(r.Context(), w, http.StatusBadRequest, "That recording was too short. Hold the mic and speak.", "")
 		return
 	}
 
@@ -85,15 +85,15 @@ func (h *Handler) activityAskAudio(w http.ResponseWriter, r *http.Request) {
 			// The model is held by another session (typically a voice turn); a
 			// retry in a moment will succeed. This is distinct from a real
 			// model failure, which keeps the generic unavailable line.
-			h.activityFail(w, r, http.StatusServiceUnavailable, "Speech recognition is busy. Try again in a moment.", "")
+			h.activityFail(r.Context(), w, http.StatusServiceUnavailable, "Speech recognition is busy. Try again in a moment.", "")
 			return
 		}
-		h.activityFail(w, r, http.StatusBadGateway, "Speech recognition is unavailable right now. Try typing instead.", "")
+		h.activityFail(r.Context(), w, http.StatusBadGateway, "Speech recognition is unavailable right now. Try typing instead.", "")
 		return
 	}
 	text = strings.TrimSpace(text)
 	if text == "" {
-		h.activityFail(w, r, http.StatusUnprocessableEntity, "I didn't catch any words in that recording.", "")
+		h.activityFail(r.Context(), w, http.StatusUnprocessableEntity, "I didn't catch any words in that recording.", "")
 		return
 	}
 	if len([]rune(text)) > maxTypedTextRunes {

@@ -39,14 +39,19 @@ type Config struct {
 	// MaxItems bounds one list so a runaway caller cannot grow a page or a
 	// spoken answer without limit.
 	MaxItems int `yaml:"max_items"`
+	// MaxItemText is the longest item text, in runes.
+	MaxItemText int `yaml:"max_item_text"`
 }
 
 // DefaultConfig is the shipped list configuration.
-func DefaultConfig() Config { return Config{MaxItems: 200} }
+func DefaultConfig() Config { return Config{MaxItems: 200, MaxItemText: 200} }
 
 func (c Config) validate() error {
 	if c.MaxItems < 1 || c.MaxItems > 1000 {
 		return errors.New("max_items must be from 1 to 1000")
+	}
+	if c.MaxItemText < 10 || c.MaxItemText > 1000 {
+		return errors.New("max_item_text must be from 10 to 1000 runes")
 	}
 	return nil
 }

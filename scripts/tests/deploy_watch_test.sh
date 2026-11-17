@@ -301,7 +301,7 @@ test_ci_green_deploys() {
 	assert_status 0 "green deploy succeeds"
 	assert_out_contains "green CI is reported" "CI is green for $short"
 	assert_curl_contains "CI gate queries the new commit" "commits/$NEW_SHA/check-runs"
-	assert_calls_contains "green deploy builds the stack" "docker compose up -d --build --remove-orphans"
+	assert_calls_contains "green deploy builds the stack" "docker compose up -d --no-build --remove-orphans"
 	assert_env_contains "images are tagged with the new SHA" "GIT_SHA=$short"
 	if [[ "$(git -C "$repo" rev-parse HEAD)" == "$NEW_SHA" ]]; then pass; else fail "deploy moves HEAD to origin/main"; fi
 }
@@ -351,7 +351,7 @@ test_ci_disabled_deploys() {
 	set_ci_red
 	DEPLOY_WATCH_CI=0 run_watch "$repo"
 	assert_status 0 "deploy with CI gating off succeeds"
-	assert_calls_contains "CI gating off still deploys" "docker compose up -d --build --remove-orphans"
+	assert_calls_contains "CI gating off still deploys" "docker compose up -d --no-build --remove-orphans"
 	assert_out_not_contains "CI gating off skips the gate" "CI is red"
 }
 
@@ -364,7 +364,7 @@ test_ci_unreachable_still_deploys() {
 	run_watch "$repo"
 	assert_status 0 "unreachable CI API is not fatal"
 	assert_out_contains "unreachable CI API warns" "CI status request failed"
-	assert_calls_contains "unreachable CI API still deploys" "docker compose up -d --build --remove-orphans"
+	assert_calls_contains "unreachable CI API still deploys" "docker compose up -d --no-build --remove-orphans"
 }
 
 test_ci_malformed_payload_still_deploys() {
@@ -376,7 +376,7 @@ test_ci_malformed_payload_still_deploys() {
 	run_watch "$repo"
 	assert_status 0 "malformed CI payload is not fatal"
 	assert_out_contains "malformed CI payload warns" "could not parse"
-	assert_calls_contains "malformed CI payload still deploys" "docker compose up -d --build --remove-orphans"
+	assert_calls_contains "malformed CI payload still deploys" "docker compose up -d --no-build --remove-orphans"
 }
 
 test_no_ci_checks_warns_and_deploys() {
@@ -388,7 +388,7 @@ test_no_ci_checks_warns_and_deploys() {
 	run_watch "$repo"
 	assert_status 0 "no CI checks still deploys"
 	assert_out_contains "no CI checks warns" "no CI checks reported"
-	assert_calls_contains "no CI checks deploys anyway" "docker compose up -d --build --remove-orphans"
+	assert_calls_contains "no CI checks deploys anyway" "docker compose up -d --no-build --remove-orphans"
 }
 
 test_dirty_tree_is_left_alone() {
@@ -504,7 +504,7 @@ test_detached_rollback_recovers_when_origin_moves() {
 	run_watch "$repo"
 	assert_status 0 "detached checkout recovers and deploys"
 	assert_out_contains "detached checkout is recovered" "detached HEAD; switching back to main"
-	assert_calls_contains "recovered checkout builds the stack" "docker compose up -d --build --remove-orphans"
+	assert_calls_contains "recovered checkout builds the stack" "docker compose up -d --no-build --remove-orphans"
 	assert_env_contains "recovered deploy tags the new SHA" "GIT_SHA=$short"
 	if [[ "$(git -C "$repo" rev-parse --abbrev-ref HEAD)" == "main" ]]; then pass; else fail "recovered checkout is on main"; fi
 	if [[ "$(git -C "$repo" rev-parse HEAD)" == "$NEW_SHA" ]]; then pass; else fail "recovered checkout reaches origin/main"; fi
@@ -554,7 +554,7 @@ test_force_deploys_when_current() {
 	sha="$(git -C "$repo" rev-parse --short HEAD)"
 	run_watch "$repo" --force
 	assert_status 0 "forced deploy succeeds"
-	assert_calls_contains "forced deploy rebuilds the stack" "docker compose up -d --build --remove-orphans"
+	assert_calls_contains "forced deploy rebuilds the stack" "docker compose up -d --no-build --remove-orphans"
 	assert_env_contains "forced deploy tags the current SHA" "GIT_SHA=$sha"
 	assert_out_contains "forced deploy names the SHA" "deploying $sha"
 }
@@ -581,7 +581,7 @@ test_settled_tip_deploys() {
 	run_watch "$repo"
 	assert_status 0 "settled tip deploys"
 	assert_out_contains "settled tip is deployed" "deploying $short"
-	assert_calls_contains "settled tip rebuilds the stack" "docker compose up -d --build --remove-orphans"
+	assert_calls_contains "settled tip rebuilds the stack" "docker compose up -d --no-build --remove-orphans"
 }
 
 test_settle_window_can_be_disabled() {
@@ -593,7 +593,7 @@ test_settle_window_can_be_disabled() {
 	WATCH_MIN_AGE=0
 	run_watch "$repo"
 	assert_status 0 "zero settle window deploys"
-	assert_calls_contains "zero settle window rebuilds the stack" "docker compose up -d --build --remove-orphans"
+	assert_calls_contains "zero settle window rebuilds the stack" "docker compose up -d --no-build --remove-orphans"
 	assert_env_contains "zero settle window tags the new SHA" "GIT_SHA=$short"
 }
 
@@ -605,7 +605,7 @@ test_force_ignores_settle_window() {
 	short="$(git -C "$repo" rev-parse --short "$NEW_SHA")"
 	run_watch "$repo" --force
 	assert_status 0 "forced young tip deploys"
-	assert_calls_contains "forced young tip rebuilds the stack" "docker compose up -d --build --remove-orphans"
+	assert_calls_contains "forced young tip rebuilds the stack" "docker compose up -d --no-build --remove-orphans"
 	assert_env_contains "forced young tip tags the new SHA" "GIT_SHA=$short"
 }
 

@@ -19,6 +19,7 @@ const (
 	SourceVoices    Source = "voices"
 	SourcePersonas  Source = "personas"
 	SourceFeeds     Source = "feeds"
+	SourceLights    Source = "lights"
 
 	sourceFallback Source = "other"
 )
@@ -73,7 +74,7 @@ func newCandidateCache() *candidateCache {
 // value shares the fallback so the entry bound cannot be bypassed.
 func (c *candidateCache) partition(source Source) Source {
 	switch source {
-	case SourcePlaylists, SourceListItems, SourceSounds, SourceVoices, SourcePersonas, SourceFeeds:
+	case SourcePlaylists, SourceListItems, SourceSounds, SourceVoices, SourcePersonas, SourceFeeds, SourceLights:
 		return source
 	default:
 		return sourceFallback

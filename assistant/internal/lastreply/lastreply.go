@@ -31,6 +31,11 @@ type Reply struct {
 	// such as "say that again slower" steps from this value, so two repeats in
 	// a row step twice; it never writes the setting itself.
 	SpeechRate float64
+	// Utterance is the verbatim transcript the Assistant acted on.
+	Utterance string
+	// Source is where the request entered (for example "voice", "dashboard",
+	// "dashboard_mic", "debug").
+	Source string
 	// At is when the reply was recorded.
 	At time.Time
 }

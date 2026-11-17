@@ -102,11 +102,21 @@ refreshed on the next request after expiry; failures say "Weather is
 unavailable right now." The complete voice turn still depends on STT/TTS
 latency and upstream availability.
 
-If the IP lookup fails, the last known place is used, then the optional
-`location.fallback` values in config, then no place at all. A failed lookup is
-retried on a 30 s to 15 min backoff until one succeeds, so a Pi that boots
-without network recovers on its own; a configured fallback never suppresses
-that retry.
+If the IP lookup is inaccurate (e.g. ISP hub city, Tailscale exit node,
+mobile hotspot), you can set home-location overrides on the Dashboard's
+**Settings** page via `location.city`, `location.region`, and
+`location.timezone`. When set (City or Timezone non-empty), the override takes
+precedence over both IP lookup and config fallback. Clearing them (empty
+override or Reset) returns to lookup. Note that this `location.timezone`
+override does not change the Alarm `timezone` setting; they stay separate. The
+**Health** page reports the active place along with its source (e.g.
+`Annapolis, Maryland (set on the Dashboard)`).
+
+If the IP lookup fails and no override is set, the last known place is used,
+then the optional `location.fallback` values in config, then no place at all.
+A failed lookup is retried on a 30 s to 15 min backoff until one succeeds, so
+a Pi that boots without network recovers on its own; a configured fallback
+never suppresses that retry.
 
 Anything the Fast path does not handle goes to the Agent path. Its OpenRouter
 key resolves from the write-only secrets store first, then the
@@ -400,6 +410,18 @@ cached, so it plays the moment a request is routed to the Agent path; an empty
 Filler is a startup error. The same cached phrase covers a slow Fast path Tool:
 if nothing has been said 1.5 seconds after you stop talking, it plays once. A
 request never plays it twice, and it never talks over an answer.
+
+When the speech is not a clear request or question addressed to the Assistant —
+background conversation, a garbled transcription, a fragment — the model replies
+with exactly `<ignore>`. The reply session holds back the start of the stream
+until that token is ruled out, so it never reaches TTS. The turn then plays the
+soft `sounds.ignore` Cue ("chime" by default, `none` for silence) and is recorded
+as `ignored`. It speaks no reply, adds nothing to the shared history and leaves
+the Last reply alone, so a misheard fragment cannot steer a later turn. When a
+request *is* addressed to the Assistant but cannot be understood, the model says
+the live `agent.clarify_message` line ("Didn't catch that." by default). A Persona
+is appended after both rules, so a personality prompt cannot replace them.
+
 All three published ports are bound to the host loopback only. The debug and
 Dashboard listeners bind all interfaces inside the container (see
 `docker-compose.yml`), so the host port mapping and their source-address checks
@@ -428,6 +450,8 @@ Say the wake word (**"clanker"**, the default), ask a question, and hear the ans
 
 **Morning briefing (#226)** — Say "good morning", "what's my day", "what does my day look like", "brief me", or "morning briefing" and the Assistant composes one spoken answer from the weather, your alarms, timers, reminders and to-do list, in that order, as a single TTS request. It is Local-only (the private sources stay on the Pi), so `notify.phone` never forwards it. A clause that would push the reply past 600 characters is dropped with "Ask me for the rest." The to-do list is the only list it reads.
 
+**Pausing wake-word listening (#239)** — Wake-word listening can be paused from the Dashboard's top bar toggle, either indefinitely or for a timed duration (15, 30, or 60 minutes). While paused, audio capture continues uninterrupted but captured frames are drained and discarded without opening a detection stream to `wakeword`, replies ignore barge-in detections, and follow-up listening windows do not open. The top bar displays a paused badge indicating the remaining time or indefinite pause. Only the Dashboard can resume listening (or let a timed pause expire); there is intentionally no spoken voice command to pause or resume wake-word detection.
+
 The webcam mic has no hardware echo cancellation, so the Assistant can in
 principle hear itself. The dev-box run, with its own reply looped back at full
 level, produced no false barge-in; if that changes in a louder room,
@@ -451,6 +475,15 @@ the complete per-model map on every detect stream, and the wrapper image patches
 the pinned upstream handler to apply it per model. The old single-value
 `WAKEWORD_MODEL` (and `wakeword.model`) is still accepted.
 
+Those values are only the config layer. Each configured model's threshold is
+also a live setting, `wakeword.threshold.<model>`: change it on the Dashboard's
+Settings page (Wake word section) or through the settings API and it applies to
+the next detection, with no restart and no wait for the next turn. The idle
+detect stream is reopened with the new map as soon as the value changes; a
+value you never touched never causes a reopen. Reset returns to
+`WAKEWORD_THRESHOLDS` (or `wakeword.thresholds` in `assistant/config.yaml`).
+The model list and the `wakeword` address remain restart-required.
+
 **Wake-free volume commands (#81)** are off by default. With
 `WAKEWORD_COMMANDS_ENABLED=true`, the Assistant also asks `wakeword` for the
 `volume_up` and `volume_down` models (baked from `wakeword/models/*.tflite`)
@@ -469,6 +502,15 @@ than a clamp down. The feature stays off
 until models trained on this house's samples exist and the false-trigger
 measurement in `docs/spikes/wake-over-music.md` meets its target.
 
+A second, optional command model is `stop` (`wakeword.commands.stop`). A
+detection while a reply streams or plays cancels the reply, TTS and playback,
+drops a pending Confirmation, and suspends the session through the same
+end-session path as a standalone "stop": the follow-up window closes, the
+shared Agent history is cleared, and the loop waits for the wake word again. It
+never starts a new turn, unlike a wake-word Barge-in. The soft `sounds.ignore`
+Cue is the only sound, and `none` silences it. An empty `stop` keeps today's
+behaviour, and training the detector is a separate manual step.
+
 `wakeword` and `stt` do computation only and never mount Pulse (ADR-0001).
 Their Compose health checks are Wyoming `describe` calls, so startup waits for
 the service, not for a model: openWakeWord loads a detector on the first
@@ -476,7 +518,8 @@ the service, not for a model: openWakeWord loads a detector on the first
 the upstream built-ins, so `WAKEWORD_MODELS` can name `okay_nabu` (or another
 upstream name) too; see `wakeword/training/README.md`
 for how it is trained and how to add the owner's own voice. The Dashboard's
-Settings page lists the configured models and thresholds, and its Health page
+Settings page lists the configured models and lets you edit each live threshold,
+and its Health page
 checks that the service advertises each one. Moonshine weights are downloaded anonymously from
 `download.moonshine.ai` at build time and baked in; the container starts
 offline. Rebuild `stt` after changing `STT_MODELS` or `STT_MODEL`. Set
@@ -546,7 +589,15 @@ generated from the enabled registry on every call: a disabled Tool and its
 description disappear from the next answer, and no feature list lives in code.
 `system.status` reads the same bounded service/module snapshot as the Dashboard
 Health page, so a timed-out or unreachable service is reported honestly rather
-than as healthy. `system.diagnose` answers the follow-up ("what's wrong?",
+than as healthy. It includes host-wide vitals (CPU temperature, load average,
+available memory, and uptime) and data-volume storage metrics (database and WAL
+sizes, Activity history row count and oldest entry, and free disk space) inside
+the container. The spoken answer adds exactly one short warning sentence only
+when a threshold is crossed: CPU temperature above 80 °C, available memory
+below 300 MB, or storage low (free space < 10% or < 500 MB) or full (< 2%);
+otherwise the existing summary remains untouched. The model-visible output gains
+structured `Host` and `Storage` fields for debugging and Agent inspection.
+`system.diagnose` answers the follow-up ("what's wrong?",
 "what failed?") by speaking up to three failing checks with a short reason each;
 it is Local-only because a detail can name an internal address or an upstream
 error, so that detail never enters the model's context.
@@ -648,8 +699,9 @@ The Control phrases `stop`, `pause`, `cancel`, `snooze`, `louder`, `quieter`
 and `mute` are matched exactly, so they answer without waiting on the embed
 service. `stop`, `pause`, `cancel` and `snooze` are shared Focus intents: they
 act on a ringing alert first, then the current reply, then playing music. With
-nothing in Focus they fall through to the semantic Fast path, so `cancel` still
-reaches `timer.cancel` and `louder` still steps the volume up. A volume phrase
+nothing in Focus a bare `stop` ends the session, while the others fall through
+to the semantic Fast path, so `cancel` still reaches `timer.cancel` and `louder`
+still steps the volume up. A volume phrase
 runs the Tool's extraction even though it matched exactly, so `quieter` steps
 down and `mute` sets the sink mute flag. `unmute` clears that flag and restores
 whatever level was playing; when the level was already 0 — an absolute "volume
@@ -1023,8 +1075,16 @@ microphone. The top bar has the Pi speaker's volume (click to mute, a slider in
 same form routes as before. Build it with `make web`; the Docker image does this
 itself. See `assistant/web/README.md` for the dev server.
 
-The **Health** page at `/health` reports the bounded Compose, wake word,
-location, Tool module and Spotify checks. Its **Download diagnostics** button
+The **Health** page at `/health` reports bounded Compose services, a dedicated
+**Pi (host) and data** section, wake word models, location, Tool modules and
+Spotify checks. The host and data section reports CPU temperature from
+`/sys/class/thermal/thermal_zone0/temp`, load averages from `/proc/loadavg`,
+available memory from `/proc/meminfo`, system uptime from `/proc/uptime`,
+`assistant.db` and `-wal` sizes, Activity row count and oldest entry timestamp,
+and data-volume free space via `statfs`. The vitals values are host-wide inside
+the container; missing files, short lines, or non-numeric values are reported
+as unavailable rather than healthy zeros. Free space below 10% or below 500 MB
+warns as low, and below 2% warns as full. Its **Download diagnostics** button
 fetches `GET /api/ui/diagnostics`, one support artifact (bounded to 1 MiB) that
 contains the health/status snapshot, process uptime, the UI artifact pin and
 reported version, the Dashboard API version, effective settings and Tool policy,
@@ -1072,6 +1132,10 @@ or no-ramp, and Default (or the reset button) clears the field back to
 same `alarm.Manager.Update` as `alarm.update`, so voice and Dashboard cannot
 disagree. It also shows the newest missed Alerts and Timers from the shared
 local history (no pending row is required), bounded to the recent window.
+Retention purges alert history older than `alerts.history_days` (default 90) and
+caps the table to `alerts.history_rows` (default 1000) newest rows once at startup,
+while always keeping the newest row per kind so the page never looks empty after a
+break. Both are live settings editable on the Scheduled alerts page.
 Every write needs the Dashboard identity plus a same-origin request.
 
 The **Notes** page at `/notes` owns the two fixed Lists (`shopping` and
@@ -1152,12 +1216,14 @@ There is no general hot-reload framework.
 | Key | Live effect |
 | --- | --- |
 | `tools.<name>.control_phrases` | The exact phrases that route to that Tool. A replacement applies to the next request. |
-| `focus.<intent>.phrases` | Exact phrases for one shared Focus intent (`stop`, `pause`, `resume`, `next`, `cancel`, `snooze`). They act on a ringing alert, the current reply or music; with nothing in Focus they fall through to the semantic Fast path. |
+| `focus.<intent>.phrases` | Exact phrases for one shared Focus intent (`stop`, `pause`, `resume`, `next`, `cancel`, `snooze`). They act on a ringing alert, the current reply or music; with nothing in Focus a bare `stop` ends the session and the others fall through to the semantic Fast path. |
 | `tools.<name>.examples` | Semantic Fast path Examples. A change re-embeds in the background; routing keeps the old vectors until the new ones are ready, a superseded rebuild is discarded, and a failed rebuild retries with bounded backoff (a startup failure recovers without a restart). |
 | `agent.request_prefixes` | Prefixes that go straight to the Agent path. A change applies to the next request. |
 | `agent.filler` | The phrase played while the Agent path waits. A change re-synthesizes the cached audio in the background; the old audio plays until the new clip is ready, and at most one Filler still plays per request. |
 | `agent.unavailable_message` | The phrase spoken when the model is unreachable. A change applies to the next failure. |
+| `agent.clarify_message` | The line the prompt tells the model to use when a request is addressed to the Assistant but unclear. A change applies to the next request. |
 | `agent.model` | The model name sent to the configured provider. A change applies to the next turn (the model is resolved per request); there is no automatic failover. |
+| `wakeword.threshold.<model>` | Detection threshold for one configured wake model (0 < t ≤ 1). A change reopens the idle detect stream with the new map, so it applies to the next detection. Reset returns to `WAKEWORD_THRESHOLDS` or `config.yaml`. The model list and address stay `restart_required`. |
 | `http.addr`, `debug.addr`, `dashboard.addr`, `tts.addr`, `wakeword.addr`, `stt.addr`, `embed.url`, `capture.source`, `playback.sink` | Connection-level settings, reported as `restart_required`. A stored override is applied on the next process start. |
 
 ```sh
@@ -1282,19 +1348,19 @@ Non-secret settings live in [`assistant/config.yaml`](../../assistant/config.yam
 #### Sound library and Cue roles
 
 A **Cue** is a non-speech sound with a fixed role: `wake`, `timer_ring`,
-`alarm_ring`, `reminder` (before the Reminder is spoken) and `error` (before the
-Unavailable message). The built-in `chime` is synthesised in Go and ships in the
-image. Any `.wav` file dropped into `data/sounds/` is indexed at startup with
-its name, duration and first-added date, using pure-Go decoding (ADR-0001, no
-ffmpeg).
+`alarm_ring`, `reminder` (before the Reminder is spoken), `error` (before the
+Unavailable message) and `ignore` (a soft acknowledgement of a turn that was not
+addressed to the Assistant). The built-in `chime` is synthesised in Go and ships
+in the image. Any `.wav` file dropped into `data/sounds/` is indexed at startup
+with its name, duration and first-added date, using pure-Go decoding (ADR-0001,
+no ffmpeg).
 
 The Dashboard **Sounds** page (`/sounds`) uploads `.wav` or `.mp3` files up to
 10 MB. The assistant decodes them in Go (MP3 via `hajimehoshi/go-mp3` v0.3.4,
 Apache-2.0, pinned in `go.mod`; no runtime ffmpeg), downmixes
 to mono, resamples to the speaker/capture format, normalises loudness and stores
 one canonical PCM16 WAV in `data/sounds/`. A failed or undecodable upload leaves
-no file or index row. Uploads are not length-capped: the role caps below apply
-when a sound is assigned, so one long recording can still serve a 60 s Ring.
+no file or index row. Neither uploads nor role assignments have a length limit.
 
 Each role is a live setting named `sounds.<role>`:
 `GET /api/settings` lists them and `PUT` changes one. A value is a library name
@@ -1310,6 +1376,12 @@ through the same Announcement queue as unprompted speech: it waits for the
 current reply, a pending Confirmation and a ringing alert, and a new turn
 cancels it so a reply is never cut.
 
+**Delete** (`POST /sounds/delete/<name>`, confirmed on the page) removes an
+uploaded or dropped sound's file and index row. The built-in `chime` cannot be
+deleted, and a sound a Cue role still uses is refused with the role named;
+reassign the role first. A per-Alarm override naming a deleted sound falls back
+to `sounds.alarm_ring`.
+
 ```sh
 # Assign a dropped file to the error Cue, then reset to config.yaml.
 curl -s -X PUT localhost:8081/api/settings/sounds.error \
@@ -1317,12 +1389,10 @@ curl -s -X PUT localhost:8081/api/settings/sounds.error \
 curl -s -X DELETE localhost:8081/api/settings/sounds.error
 ```
 
-Length caps are enforced when a sound is assigned and never trim the file:
-`wake` 0.5 s, `reminder`/`error` 3 s, Rings 60 s. A longer sound is rejected
-with the cap in the error. Audio captured while the wake Cue plays is treated as
-echo and is not sent to speech recognition, so a long wake sound can clip the
-start of a request; keep it short. The wake, error and reminder Cues are wired,
-and a Timer or Alarm Ring loops `sounds.timer_ring` or `sounds.alarm_ring` through the
+No role has a length limit, and a sound always plays whole. Audio captured
+while the wake Cue plays is treated as echo and is not sent to speech recognition, so a long wake sound can clip the
+start of a request; keep it short. The wake, error, reminder and ignore Cues are
+wired, and a Timer or Alarm Ring loops `sounds.timer_ring` or `sounds.alarm_ring` through the
 Ring engine: it waits for the current reply sentence, ducks music, speaks the
 label and stops on "stop" or "snooze". A `none` or missing Ring sound falls
 back to the old single spoken line. A Reminder plays `sounds.reminder` once
@@ -1330,8 +1400,7 @@ through the urgent Announcement item, then speaks its message; `none` leaves
 only the message.
 
 A per-Alarm sound override is a library name too, resolved by the shared name
-matcher and checked against the same 60 s Ring cap when it is assigned. It is
-applied to that Alarm's Ring only; `sounds.alarm_ring` remains the fallback
+matcher. It is applied to that Alarm's Ring only; `sounds.alarm_ring` remains the fallback
 when an Alarm has no override or its stored sound is no longer in the library.
 
 ### Latency

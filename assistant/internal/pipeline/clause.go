@@ -23,12 +23,8 @@ func (p *Pipeline) secondCommandClause(text string, phrases, intents map[string]
 	if p.semantic == nil {
 		return false
 	}
-	joiners := make(map[string]bool, len(p.semantic.Joiners()))
-	for _, joiner := range p.semantic.Joiners() {
-		if key := strings.ToLower(strings.TrimSpace(joiner)); key != "" {
-			joiners[key] = true
-		}
-	}
+	// Use the precomputed joiner set from SemanticRouter instead of rebuilding it per request.
+	joiners := p.semantic.JoinerSet()
 	if len(joiners) == 0 {
 		return false
 	}

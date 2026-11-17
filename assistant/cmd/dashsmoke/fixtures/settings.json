@@ -1,0 +1,48 @@
+{
+  "Owner": "smoke@example.com",
+  "Page": "settings",
+  "Flash": "",
+  "Error": "",
+  "HasSettings": true,
+  "Tools": [
+    {
+      "Name": "lights",
+      "Enabled": true,
+      "EnabledSource": "default",
+      "EnabledLabel": "on",
+      "EnabledLower": "on",
+      "EnabledOverride": false,
+      "Permission": "anyone",
+      "PermissionLabel": "Anyone",
+      "Declared": "anyone",
+      "DeclaredLabel": "Anyone",
+      "PermissionSource": "default",
+      "PermissionLabelSource": "default",
+      "PermissionLower": "anyone",
+      "PermissionOverride": false,
+      "LocalOnly": false,
+      "LocalOnlyLabel": "anywhere",
+      "Options": [
+        { "Value": "anyone", "Label": "Anyone", "Selected": true },
+        { "Value": "owner", "Label": "Owner only", "Selected": false }
+      ]
+    }
+  ],
+  "Ignored": [],
+  "Agent": [],
+  "ToolWording": [],
+  "Quiet": [],
+  "Live": [],
+  "Restart": [],
+  "Voice": "default",
+  "CanPreview": true,
+  "PreviewMaxRunes": 200,
+  "Wakeword": {
+    "Enabled": true,
+    "Addr": "127.0.0.1:10400",
+    "Models": [
+      { "Name": "hey_clanka", "Threshold": "0.5", "Command": false, "Enabled": true }
+    ],
+    "Note": "Wake word is enabled."
+  }
+}

@@ -96,6 +96,47 @@ func TestEmbedHonoursContextTimeout(t *testing.T) {
 	}
 }
 
+func TestEmbedSplitsABatchTheServiceWouldReject(t *testing.T) {
+	var sizes []int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Texts []string `json:"texts"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+			return
+		}
+		sizes = append(sizes, len(body.Texts))
+		// One distinct vector per text so order across batches is visible.
+		vectors := make([][]float32, len(body.Texts))
+		for i, text := range body.Texts {
+			vectors[i] = []float32{float32(len(text))}
+		}
+		json.NewEncoder(w).Encode(map[string]any{"vectors": vectors})
+	}))
+	defer srv.Close()
+
+	texts := make([]string, 300)
+	for i := range texts {
+		texts[i] = strings.Repeat("a", i%7+1)
+	}
+	vectors, err := embed.NewClient(srv.URL, "m").Embed(context.Background(), texts)
+	if err != nil {
+		t.Fatalf("Embed: %v", err)
+	}
+	if len(sizes) != 2 || sizes[0] != 256 || sizes[1] != 44 {
+		t.Fatalf("batch sizes = %v, want [256 44]", sizes)
+	}
+	if len(vectors) != len(texts) {
+		t.Fatalf("vectors = %d, want %d", len(vectors), len(texts))
+	}
+	for i, text := range texts {
+		if vectors[i][0] != float32(len(text)) {
+			t.Fatalf("vector %d = %v, want length of %q", i, vectors[i], text)
+		}
+	}
+}
+
 func TestEmbedWithNoTextsSkipsRequest(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Error("server was called for an empty batch")

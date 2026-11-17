@@ -11,6 +11,7 @@ export const session = (over: Partial<Session> = {}): Session => ({
   Typed: true,
   Mic: true,
   Volume: true,
+  Wakeword: false,
   Activity: true,
   CanSpeak: true,
   Speak: false,

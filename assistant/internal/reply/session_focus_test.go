@@ -133,9 +133,10 @@ func TestStopFromAConcurrentInputCancelsTheOriginalReplyNotTheStopRequest(t *tes
 	}
 }
 
-// TestStopWhileNothingHoldsFocusFallsThrough keeps the optional seam honest at
-// the session level: with no Focus holder the phrase is routed normally.
-func TestStopWhileNothingHoldsFocusFallsThrough(t *testing.T) {
+// TestStopWhileNothingHoldsFocusSuspends is the session half of #501: with no
+// Focus holder the bare word still ends the session, silently, instead of
+// reaching the Agent path.
+func TestStopWhileNothingHoldsFocusSuspends(t *testing.T) {
 	var registry focus.Registry
 	runner := newFakeAgent()
 	runner.result = agent.Result{Text: "There is nothing to stop."}
@@ -154,11 +155,14 @@ func TestStopWhileNothingHoldsFocusFallsThrough(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Ask: %v", err)
 	}
-	if result.Path != tool.PathAgent {
-		t.Fatalf("path = %q, want the normal Agent fall-through", result.Path)
+	if !result.Suspend {
+		t.Fatalf("reply = %+v, want the session to end", result)
 	}
-	if result.Text != "There is nothing to stop." {
-		t.Fatalf("reply = %q", result.Text)
+	if result.Path != tool.PathFocusIntent {
+		t.Fatalf("path = %q, want %q", result.Path, tool.PathFocusIntent)
+	}
+	if result.Text != "" {
+		t.Fatalf("reply = %q, want nothing spoken", result.Text)
 	}
 }
 

@@ -94,6 +94,15 @@ type Reply struct {
 	// TextNotStreamed marks an Agent fallback line that no delta carried, so
 	// the reply session must speak it even after a streamed preamble.
 	TextNotStreamed bool
+	// Ignored marks a turn the model decided was not addressed to the
+	// Assistant. Text is empty, and the reply session speaks no words: it may
+	// play the ignore Cue. The turn is not the Last reply.
+	Ignored bool
+	// Suspend marks a standalone "stop" that ends the session instead of
+	// answering. Text may be the Focus holder's line; an empty Text speaks
+	// nothing, and the reply session may play the same soft Cue as Ignored. The
+	// caller closes the follow-up window and clears the shared history (#501).
+	Suspend bool
 	// SpeechRate is a per-utterance TTS multiplier for this reply. Zero means
 	// "use the live voice.rate setting"; a non-zero value (set by a Tool whose
 	// result implements speechRater, e.g. a faster/slower repeat) applies to
@@ -172,8 +181,9 @@ func WithConfirmationResolver(resolver ConfirmationResolver) Option {
 }
 
 // WithFocus enables shared Control-phrase intents. A phrase mapped to an
-// intent is offered to whatever holds Focus; when nothing does, the utterance
-// falls through to the semantic Fast path like any other request.
+// intent is offered to whatever holds Focus; when nothing does, a bare "stop"
+// ends the session and every other intent falls through to the semantic Fast
+// path like any other request.
 func WithFocus(registry *focus.Registry) Option {
 	return func(p *Pipeline) { p.focus = registry }
 }
@@ -327,9 +337,14 @@ func (p *Pipeline) HandleEvents(ctx context.Context, req tool.Request, transcrip
 	}
 	record := routeLog{top: []ToolScore{}, extraction: "none", reason: reasonSemanticDisabled}
 
-	// Order matches #10. A pending Confirmation comes first.
+	// Order matches #10. A pending Confirmation comes first. Smoke turns never
+	// resolve or cancel an existing confirmation.
 	prefix := ""
-	if p.confirmation != nil {
+	var isSmoke bool
+	if tl := latency.FromContext(ctx); tl != nil && tl.Source() == latency.SourceSmoke {
+		isSmoke = true
+	}
+	if p.confirmation != nil && !isSmoke {
 		res := p.confirmation.Resolve(ctx, req, transcript)
 		if res.Handled {
 			// Settling the Confirmation is this request's routing decision.
@@ -352,7 +367,7 @@ func (p *Pipeline) HandleEvents(ctx context.Context, req tool.Request, transcrip
 					LocalOnly: res.Call.LocalOnly,
 					Result:    reply.Text,
 				})
-				p.recordTurn(transcript, reply.Text, []agent.ToolCall{*res.Call})
+				p.recordTurn(ctx, transcript, reply.Text, []agent.ToolCall{*res.Call})
 			}
 			record.reason = ""
 			p.finish(ctx, started, req, transcript, reply, record)
@@ -387,48 +402,356 @@ func (p *Pipeline) HandleEvents(ctx context.Context, req tool.Request, transcrip
 
 // route applies the post-Confirmation steps in the fixed order: Agent request
 // prefix, Control phrase, semantic Fast path, then the Agent path.
+// routeKind classifies the routing decision made by planRoute.
+type routeKind int
+
+const (
+	routeKindConfirmation routeKind = iota
+	routeKindPrefix
+	routeKindBriefing
+	routeKindControlPhrase
+	routeKindFocusIntent
+	routeKindDeferred
+	routeKindChain
+	routeKindSemantic
+	routeKindAgent
+	routeKindFallthrough
+)
+
+// RoutingDecision carries the side-effect-free routing decision and diagnostics.
+type RoutingDecision struct {
+	routeKind         routeKind
+	Path              tool.Path       `json:"path"`
+	Tool              string          `json:"tool,omitempty"`
+	Args              json.RawMessage `json:"args,omitempty"`
+	Top               []ToolScore     `json:"top"`
+	Margin            float64         `json:"margin"`
+	Extraction        string          `json:"extract"`
+	Reason            string          `json:"fallthrough_reason,omitempty"`
+	ChainSplit        bool            `json:"chain_split"`
+	FocusOwner        string          `json:"focus_owner,omitempty"`
+	Decision          string          `json:"decision,omitempty"`
+	prefixRest        string
+	intent            focus.Intent
+	deferredEvent     string
+	deferredAction    string
+	deferredCancel    bool
+	deferredFallback  string
+	chainSteps        []chainStep
+	embedErr          error
+}
+
+// focusOwner reports the name of the currently held Focus priority, or "" if none.
+func (p *Pipeline) focusOwner() string {
+	if p.focus == nil {
+		return ""
+	}
+	for _, prio := range []focus.Priority{focus.Ring, focus.Reply, focus.Music} {
+		if p.focus.Held(prio) {
+			return prio.String()
+		}
+	}
+	return ""
+}
+
+// wordingRouting returns the current snapshot of control phrases, intent phrases, and request prefixes.
+func (p *Pipeline) wordingRouting() (map[string]string, map[string]string, []string) {
+	phrases, intentPhrases, prefixes := p.phrases, p.intentPhrases, p.prefixes
+	if p.wording != nil {
+		words := p.wording.Routing()
+		phrases, intentPhrases, prefixes = words.ControlPhrases, words.IntentPhrases, words.RequestPrefixes
+	}
+	return phrases, intentPhrases, prefixes
+}
+
+// planRoute resolves the routing decision order without executing any side effects.
+func (p *Pipeline) planRoute(ctx context.Context, transcript string) RoutingDecision {
+	// A pending Confirmation is checked first: a clear yes settles it.
+	if p.confirmation != nil && p.registry != nil {
+		if pending, ok := p.registry.Pending(); ok && isClearYes(transcript) {
+			return RoutingDecision{
+				routeKind:  routeKindConfirmation,
+				Path:       tool.PathConfirmation,
+				Tool:       pending.Tool,
+				Args:       pending.Args,
+				FocusOwner: p.focusOwner(),
+				Decision:   "would settle a pending Confirmation for " + pending.Tool,
+			}
+		}
+	}
+
+	normalized := NormalizePhrase(transcript)
+
+	// Live wording is read once, from one snapshot, after the Confirmation
+	// stage and before either routing step that uses it.
+	phrases, intentPhrases, prefixes := p.wordingRouting()
+
+	// Agent request prefix goes straight to the Agent path.
+	if rest, ok := agent.MatchRequestPrefix(transcript, prefixes); ok {
+		return RoutingDecision{
+			routeKind:  routeKindPrefix,
+			Path:       tool.PathAgent,
+			prefixRest: rest,
+			FocusOwner: p.focusOwner(),
+			Decision:   "agent request prefix",
+		}
+	}
+
+	// Morning briefing: a fixed phrase composes several Tools into one spoken
+	// reply, before the deferred, chain and Agent stages can claim it.
+	if p.briefing != nil && p.briefing.Matches(normalized) {
+		return RoutingDecision{
+			routeKind:  routeKindBriefing,
+			Path:       tool.PathBriefing,
+			FocusOwner: p.focusOwner(),
+			Decision:   "morning briefing",
+		}
+	}
+
+	var recordReason string
+
+	// Control phrase: an exact phrase match for a registered tool.
+	if name, ok := phrases[normalized]; ok {
+		info, found := p.registry.Info(name)
+		if found && info.AgentOnly {
+			recordReason = reasonAgentOnlyTool
+		} else {
+			var args json.RawMessage
+			if found && info.HasExtract {
+				if extracted, extractedOK := p.registry.Extract(name, transcript); extractedOK {
+					args = extracted
+				}
+			}
+			return RoutingDecision{
+				routeKind:  routeKindControlPhrase,
+				Path:       tool.PathControlPhrase,
+				Tool:       name,
+				Args:       args,
+				FocusOwner: p.focusOwner(),
+				Decision:   "control phrase: " + name,
+			}
+		}
+	}
+
+	// Focus intent: an exact phrase mapped to a shared focus action.
+	if target, ok := intentPhrases[normalized]; ok {
+		intent, valid := focus.ParseIntent(target)
+		if valid {
+			owner := p.focusOwner()
+			if owner != "" {
+				return RoutingDecision{
+					routeKind:  routeKindFocusIntent,
+					Path:       tool.PathFocusIntent,
+					intent:     intent,
+					FocusOwner: owner,
+					Decision:   "focus intent: " + string(intent) + " (owner: " + owner + ")",
+				}
+			}
+			// A bare "stop" still ends the session when nothing holds Focus.
+			// It must not reach the semantic router or the Agent path, so it
+			// keeps the Focus route and the execution below suspends (#501).
+			// Every other shared intent keeps its fall-through.
+			if intent == focus.Stop {
+				return RoutingDecision{
+					routeKind: routeKindFocusIntent,
+					Path:      tool.PathFocusIntent,
+					intent:    intent,
+					Decision:  "stop with nothing in focus",
+				}
+			}
+			recordReason = reasonNoFocus
+		}
+	}
+
+	// Explicit deferred requests precede ordinary Tool routing.
+	if event, action, cancel, fallback, ok := p.deferredPlan(ctx, transcript, phrases, intentPhrases); ok {
+		if cancel {
+			return RoutingDecision{
+				routeKind:      routeKindDeferred,
+				Path:           tool.PathControlPhrase,
+				deferredCancel: true,
+				FocusOwner:     p.focusOwner(),
+				Decision:       "would cancel queued actions",
+			}
+		}
+		if fallback != "" {
+			return RoutingDecision{
+				routeKind:        routeKindDeferred,
+				Path:             tool.PathAgent,
+				deferredFallback: fallback,
+				FocusOwner:       p.focusOwner(),
+				Decision:         "agent fallback (ambiguous deferred)",
+			}
+		}
+		return RoutingDecision{
+			routeKind:      routeKindDeferred,
+			Path:           tool.PathControlPhrase,
+			deferredEvent:  event,
+			deferredAction: action,
+			FocusOwner:     p.focusOwner(),
+			Decision:       "would defer to " + event,
+		}
+	}
+
+	// Validate chain before semantic matching.
+	if p.chainEnabled != nil && p.chainEnabled() {
+		if steps := p.chainPlan(ctx, transcript, phrases, intentPhrases); len(steps) > 1 {
+			names := make([]string, 0, len(steps))
+			for _, s := range steps {
+				if s.name != "" {
+					names = append(names, s.name)
+				} else if s.intent != "" {
+					names = append(names, string(s.intent))
+				}
+			}
+			return RoutingDecision{
+				routeKind:  routeKindChain,
+				Path:       tool.PathFast,
+				Tool:       strings.Join(names, ","),
+				ChainSplit: true,
+				chainSteps: steps,
+				FocusOwner: p.focusOwner(),
+				Decision:   "chain split: " + strings.Join(names, " -> "),
+			}
+		}
+	}
+
+	// Semantic match, then extraction, then the Fast path.
+	var top []ToolScore
+	var margin float64
+	var extraction string
+	reason := recordReason
+	if reason == "" {
+		reason = reasonSemanticDisabled
+	}
+	var embedErr error
+
+	if p.semantic != nil {
+		match := p.semantic.Match(ctx, transcript)
+		top = match.Top
+		margin = match.Margin
+		extraction = match.Extraction
+		reason = match.Reason
+		embedErr = match.Err
+
+		if match.Tool != "" {
+			if p.secondCommandClause(transcript, phrases, intentPhrases) {
+				reason = reasonCompound
+			} else {
+				return RoutingDecision{
+					routeKind:  routeKindSemantic,
+					Path:       tool.PathFast,
+					Tool:       match.Tool,
+					Args:       match.Args,
+					Top:        top,
+					Margin:     margin,
+					Extraction: extraction,
+					Reason:     "",
+					FocusOwner: p.focusOwner(),
+					Decision:   "fast path: " + match.Tool,
+					embedErr:   embedErr,
+				}
+			}
+		}
+	}
+
+	// Agent fallback is the final step when no earlier route matches.
+	if reason == "" {
+		reason = reasonSemanticNoMatch
+	}
+	return RoutingDecision{
+		routeKind:  routeKindAgent,
+		Path:       tool.PathAgent,
+		Top:        top,
+		Margin:     margin,
+		Extraction: extraction,
+		Reason:     reason,
+		FocusOwner: p.focusOwner(),
+		Decision:   "agent fallback",
+		embedErr:   embedErr,
+	}
+}
+
+// Explain computes the pure, side-effect-free routing decision for transcript.
+func (p *Pipeline) Explain(ctx context.Context, transcript string) RoutingDecision {
+	// The plan is deliberately not executed: no tools are called, confirmations
+	// are not settled, actions are not queued, and chains are not run.
+	return p.planRoute(ctx, transcript)
+}
+
+// route executes the decision made by planRoute.
 func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript string, events Events, record *routeLog) Reply {
+	var isSmoke bool
+	if tl := latency.FromContext(ctx); tl != nil && tl.Source() == latency.SourceSmoke {
+		isSmoke = true
+	}
 	routingStarted := time.Now()
-	// Routing ends when the path is chosen. Marking is first-wins, so the
-	// fall-through branches reach it once and only once per request.
-	// routingWork accumulates spans already attributed to another stage, such
-	// as a Focus holder's action, so they are never counted as routing.
 	var routingWork time.Duration
 	markRouting := func() {
 		latency.SetStage(ctx, latency.StageRouting, time.Since(routingStarted)-routingWork)
 	}
 
 	reply := Reply{Path: tool.PathFallthrough, RequestID: req.ID, Text: PlaceholderReply}
-	normalized := NormalizePhrase(transcript)
 
-	// Live wording is read once, from one snapshot, after the Confirmation
-	// stage and before either routing step that uses it.
-	phrases, intentPhrases, prefixes := p.phrases, p.intentPhrases, p.prefixes
-	if p.wording != nil {
-		words := p.wording.Routing()
-		phrases, intentPhrases, prefixes = words.ControlPhrases, words.IntentPhrases, words.RequestPrefixes
-	}
+	decision := p.planRoute(ctx, transcript)
+	record.top = decision.Top
+	record.margin = decision.Margin
+	record.extraction = decision.Extraction
+	record.reason = decision.Reason
+	record.embedErr = decision.embedErr
 
-	// 2. Agent request prefix goes straight to the Agent path.
-	if rest, ok := agent.MatchRequestPrefix(transcript, prefixes); ok {
+	// Smoke may inspect any route, but only the clock read may execute.
+	if isSmoke && (decision.Tool != "time.now" || (decision.routeKind != routeKindControlPhrase && decision.routeKind != routeKindSemantic)) {
 		markRouting()
-		record.reason = ""
-		reply.Path = tool.PathAgent
-		// An empty request makes no model call, so no Agent path cue plays.
-		if rest == "" {
-			reply.Text = agent.EmptyRequestReply
-			p.recordTurn(transcript, reply.Text, nil)
-		} else {
-			p.callAgent(ctx, req, rest, events, &reply)
-		}
+		reply.Path = decision.Path
+		reply.Tool = decision.Tool
+		reply.Text = "Unexpected route skipped for smoke."
 		return reply
 	}
 
-	// Morning briefing: a fixed phrase composes several Tools into one spoken
-	// reply, before the deferred, chain and Agent stages can claim it. A
-	// briefing phrase that also looks compound is taken here, not by the chain
-	// planner.
-	if p.briefing != nil && p.briefing.Matches(normalized) {
+	switch decision.routeKind {
+	case routeKindConfirmation:
+		markRouting()
+		record.reason = ""
+		if p.confirmation != nil {
+			res := p.confirmation.Resolve(ctx, req, transcript)
+			if res.Handled {
+				reply = res.Reply
+				reply.RequestID = req.ID
+				if reply.Path == "" {
+					reply.Path = tool.PathConfirmation
+				}
+				if res.Call != nil && res.Call.LocalOnly {
+					reply.LocalOnly = true
+				}
+				if res.Call != nil {
+					latency.AddToolCall(ctx, latency.ToolCallDetail{
+						Name:      res.Call.Name,
+						LocalOnly: res.Call.LocalOnly,
+						Result:    reply.Text,
+					})
+					p.recordTurn(ctx, transcript, reply.Text, []agent.ToolCall{*res.Call})
+				}
+				return reply
+			}
+		}
+		return reply
+
+	case routeKindPrefix:
+		markRouting()
+		record.reason = ""
+		reply.Path = tool.PathAgent
+		if decision.prefixRest == "" {
+			reply.Text = agent.EmptyRequestReply
+			p.recordTurn(ctx, transcript, reply.Text, nil)
+		} else if isSmoke {
+			reply.Text = "Agent call skipped for smoke."
+		} else {
+			p.callAgent(ctx, req, decision.prefixRest, events, &reply)
+		}
+		return reply
+
+	case routeKindBriefing:
 		markRouting()
 		record.reason = ""
 		reply.Path = tool.PathBriefing
@@ -445,119 +768,131 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 		}
 		reply.LocalOnly = localOnly
 		reply.Text = result.Text
-		p.recordTurn(transcript, reply.Text, calls)
+		p.recordTurn(ctx, transcript, reply.Text, calls)
 		return reply
-	}
 
-	// Explicit deferred requests and cancellation precede ordinary Tool routing.
-	// Deferring is the routing decision; an action that has no safe leaf or
-	// chain falls back to the Agent path, and that model call is work, not
-	// routing, so it runs after the stage is marked and with the request's real
-	// streaming events.
-	deferredReply, handled, agentFallback := p.deferredRequest(ctx, req, transcript, phrases)
-	if handled {
+	case routeKindControlPhrase:
 		markRouting()
 		record.reason = ""
-		if agentFallback != "" {
-			p.callAgent(ctx, req, agentFallback, events, &deferredReply)
-		}
-		return deferredReply
-	}
+		reply.Path = tool.PathControlPhrase
+		reply.Tool = decision.Tool
+		reply.Text, record.failure, reply.Pending, reply.LocalOnly, reply.SpeechRate = p.callTool(ctx, req, transcript, decision.Tool, tool.PathControlPhrase, decision.Args)
+		return reply
 
-	// Validate the whole chain before executing any of its Tools.
-	if p.chainEnabled != nil && p.chainEnabled() {
-		if steps := p.chainPlan(ctx, transcript, phrases); len(steps) > 1 {
+	case routeKindFocusIntent:
+		text, intentHandled, intentTook := p.focusIntent(ctx, decision.intent)
+		routingWork += intentTook
+		if intentHandled {
 			markRouting()
 			record.reason = ""
-			return p.runChain(ctx, req, steps, events, record)
-		}
-	}
-
-	// 3. Control phrase is an exact match and must not wait on embeddings. A
-	// phrase may name one Tool, or a shared Focus intent that acts on whatever
-	// currently holds Focus. With nothing in Focus the intent falls through to
-	// the semantic Fast path below, exactly like an unmatched utterance.
-	if target, ok := intentPhrases[normalized]; ok {
-		intent, valid := focus.ParseIntent(target)
-		if valid {
-			// Offering the intent is not routing: a "stop" that pauses music or
-			// silences an alarm is an action the user waits for, so its time is
-			// tool_execute and is taken out of routing_ms.
-			text, intentHandled, intentTook := p.focusIntent(ctx, intent)
-			routingWork += intentTook
-			if intentHandled {
-				markRouting()
-				record.reason = ""
-				reply.Path = tool.PathFocusIntent
-				reply.Text = text
-				return reply
-			}
-			// Keep the honest reason unless the semantic router replaces it.
-			record.reason = reasonNoFocus
-		}
-	} else if name, ok := phrases[normalized]; ok {
-		// A live phrase table can name an AgentOnly Tool even though New
-		// rejects that shape for the code table. A Control phrase is a Fast-path
-		// route, so fall through to the semantic/Agent path instead of executing
-		// it; the same holds for any table a caller supplies.
-		info, found := p.registry.Info(name)
-		if found && info.AgentOnly {
-			record.reason = reasonAgentOnlyTool
-		} else {
-			markRouting()
-			record.reason = ""
-			reply.Path = tool.PathControlPhrase
-			reply.Tool = name
-			// A phrase such as "quieter" names the Tool exactly but still needs
-			// its direction extracted; without Extract the call has no arguments,
-			// which keeps "louder" as the one-step default it always was.
-			var args json.RawMessage
-			if found && info.HasExtract {
-				if extracted, extractedOK := p.registry.Extract(name, transcript); extractedOK {
-					args = extracted
-				}
-			}
-			reply.Text, record.failure, reply.Pending, reply.LocalOnly, reply.SpeechRate = p.callTool(ctx, req, transcript, name, tool.PathControlPhrase, args)
+			reply.Path = tool.PathFocusIntent
+			reply.Text = text
+			// A standalone "stop" ends the session even when Focus handled it,
+			// so the next wake word starts with a fresh history (#501).
+			reply.Suspend = decision.intent == focus.Stop
 			return reply
 		}
-	}
-
-	// 4. Semantic match, then extraction, then the Fast path.
-	if p.semantic != nil {
-		match := p.semantic.Match(ctx, transcript)
-		record.top = match.Top
-		record.margin = match.Margin
-		record.extraction = match.Extraction
-		record.reason = match.Reason
-		record.embedErr = match.Err
-		if match.Tool != "" {
-			// A Control phrase or a second command after a joiner is a compound
-			// request; executing only the semantic half would silently drop the
-			// other intent. The Agent path receives both clauses.
-			if p.secondCommandClause(transcript, phrases, intentPhrases) {
-				record.reason = reasonCompound
-			} else {
-				markRouting()
-				record.reason = ""
-				reply.Path = tool.PathFast
-				reply.Tool = match.Tool
-				reply.Text, record.failure, reply.Pending, reply.LocalOnly, reply.SpeechRate = p.callTool(ctx, req, transcript, match.Tool, tool.PathFast, match.Args)
-				return reply
+		// A bare "stop" with nothing in Focus must not reach the semantic
+		// router or the Agent path. Nothing is spoken; the optional soft Cue is
+		// the only sound, and the caller then ends the session (#501). Any other
+		// shared intent keeps its existing fall-through.
+		if decision.intent == focus.Stop {
+			markRouting()
+			record.reason = ""
+			reply.Path = tool.PathFocusIntent
+			reply.Text = ""
+			reply.Suspend = true
+			return reply
+		}
+		record.reason = reasonNoFocus
+		if p.semantic != nil {
+			match := p.semantic.Match(ctx, transcript)
+			record.top = match.Top
+			record.margin = match.Margin
+			record.extraction = match.Extraction
+			record.reason = match.Reason
+			record.embedErr = match.Err
+			if match.Tool != "" {
+				phrases, intentPhrases, _ := p.wordingRouting()
+				if p.secondCommandClause(transcript, phrases, intentPhrases) {
+					record.reason = reasonCompound
+				} else {
+					markRouting()
+					record.reason = ""
+					reply.Path = tool.PathFast
+					reply.Tool = match.Tool
+					reply.Text, record.failure, reply.Pending, reply.LocalOnly, reply.SpeechRate = p.callTool(ctx, req, transcript, match.Tool, tool.PathFast, match.Args)
+					return reply
+				}
 			}
 		}
-	}
-
-	// 5. Agent path, or the placeholder when no Agent runner is wired.
-	if p.agent != nil {
 		markRouting()
-		p.callAgent(ctx, req, transcript, events, &reply)
+		if p.agent != nil {
+			if isSmoke {
+				reply.Path = tool.PathAgent
+				reply.Text = "Agent call skipped for smoke."
+				return reply
+			}
+			p.callAgent(ctx, req, transcript, events, &reply)
+			return reply
+		}
+		return reply
+
+	case routeKindDeferred:
+		markRouting()
+		record.reason = ""
+		if decision.deferredCancel {
+			p.deferred.Cancel(0)
+			reply.Path = tool.PathControlPhrase
+			reply.Text = "Cancelled all queued actions."
+			return reply
+		}
+		if decision.deferredFallback != "" {
+			p.callAgent(ctx, req, decision.deferredFallback, events, &reply)
+			return reply
+		}
+		reply.Path = tool.PathControlPhrase
+		if p.deferred.Add(decision.deferredEvent, decision.deferredAction) {
+			reply.Text = "Queued for the end of " + decision.deferredEvent + ". Say cancel queued actions to cancel. It expires in one hour."
+		} else {
+			reply.Text = "The action queue is full. Cancel a queued action first."
+		}
+		return reply
+
+	case routeKindChain:
+		markRouting()
+		record.reason = ""
+		return p.runChain(ctx, req, decision.chainSteps, events, record)
+
+	case routeKindSemantic:
+		markRouting()
+		record.reason = ""
+		reply.Path = tool.PathFast
+		reply.Tool = decision.Tool
+		reply.Text, record.failure, reply.Pending, reply.LocalOnly, reply.SpeechRate = p.callTool(ctx, req, transcript, decision.Tool, tool.PathFast, decision.Args)
+		return reply
+
+	case routeKindAgent:
+		markRouting()
+		if isSmoke {
+			reply.Path = tool.PathAgent
+			reply.Text = "Agent call skipped for smoke."
+			return reply
+		}
+		if p.agent != nil {
+			p.callAgent(ctx, req, transcript, events, &reply)
+			return reply
+		}
+		return reply
+
+	case routeKindFallthrough:
+		markRouting()
+		return reply
+
+	default:
+		markRouting()
 		return reply
 	}
-	markRouting()
-	if record.reason == "" {
-		record.reason = reasonSemanticNoMatch
-	}
-	return reply
 }
 
 // focusIntent offers one shared intent to whatever holds Focus. It reports
@@ -590,6 +925,7 @@ func (p *Pipeline) callAgent(ctx context.Context, req tool.Request, transcript s
 	// The conversation kind is display-only, but Activity renders it per turn
 	// from the same completion as the route and the token counts.
 	latency.SetConversation(ctx, result.Conversation)
+	reply.Ignored = result.Ignored
 	// The single provider retry, when it happened, is visible on the request
 	// line so a slow turn can be explained without reading the debug log.
 	latency.SetAttr(ctx, "agent_retries", result.Retries)
@@ -653,17 +989,23 @@ func (p *Pipeline) callTool(ctx context.Context, req tool.Request, transcript, n
 		// "yes" runs it instead of the user hearing a generic failure.
 		var required *tool.ConfirmationRequiredError
 		if errors.As(err, &required) {
-			pending, proposeErr := p.registry.Propose(name, args)
-			if proposeErr == nil {
-				// The Tool did not run; still show which call is waiting.
-				latency.AddToolCall(ctx, latency.ToolCallDetail{
-					Name:      name,
-					LocalOnly: info.LocalOnly,
-					Result:    "Confirmation required.",
-				})
-				return pending.Summary, "", &pending, info.LocalOnly, 0
+			var isSmoke bool
+			if tl := latency.FromContext(ctx); tl != nil && tl.Source() == latency.SourceSmoke {
+				isSmoke = true
 			}
-			err = proposeErr
+			if !isSmoke {
+				pending, proposeErr := p.registry.Propose(name, args)
+				if proposeErr == nil {
+					// The Tool did not run; still show which call is waiting.
+					latency.AddToolCall(ctx, latency.ToolCallDetail{
+						Name:      name,
+						LocalOnly: info.LocalOnly,
+						Result:    "Confirmation required.",
+					})
+					return pending.Summary, "", &pending, info.LocalOnly, 0
+				}
+				err = proposeErr
+			}
 		}
 		message := tool.FailureMessage(err)
 		latency.AddToolCall(ctx, latency.ToolCallDetail{
@@ -693,25 +1035,28 @@ func (p *Pipeline) callTool(ctx context.Context, req tool.Request, transcript, n
 		LocalOnly: localOnly,
 		Result:    spoken,
 	})
-	p.recordToolTurn(transcript, spoken, name, result, localOnly)
+	p.recordToolTurn(ctx, transcript, spoken, name, result, localOnly)
 	return spoken, "", nil, localOnly, rateOf(result)
 }
 
 // recordToolTurn keeps a successful Fast path turn in the shared history,
 // including the compact Tool call and its result.
-func (p *Pipeline) recordToolTurn(transcript, spoken, name string, result any, localOnly bool) {
+func (p *Pipeline) recordToolTurn(ctx context.Context, transcript, spoken, name string, result any, localOnly bool) {
 	payload, err := json.Marshal(result)
 	if err != nil {
 		payload = nil
 	}
-	p.recordTurn(transcript, spoken, []agent.ToolCall{{
+	p.recordTurn(ctx, transcript, spoken, []agent.ToolCall{{
 		Name:      name,
 		Result:    payload,
 		LocalOnly: localOnly,
 	}})
 }
 
-func (p *Pipeline) recordTurn(transcript, spoken string, calls []agent.ToolCall) {
+func (p *Pipeline) recordTurn(ctx context.Context, transcript, spoken string, calls []agent.ToolCall) {
+	if tl := latency.FromContext(ctx); tl != nil && tl.Source() == latency.SourceSmoke {
+		return
+	}
 	if p.history == nil {
 		return
 	}
@@ -724,15 +1069,26 @@ func (p *Pipeline) recordTurn(transcript, spoken string, calls []agent.ToolCall)
 // the pipeline logs the routing-only line itself.
 func (p *Pipeline) finish(ctx context.Context, started time.Time, req tool.Request, transcript string, reply Reply, record routeLog) {
 	// Keep the last completed reply for follow-ups. A cancelled turn (Barge-in
-	// or shutdown) and a blank answer must not replace the last thing the user
-	// actually heard; an error or Unavailable reply was spoken, so it counts.
-	if p.lastReply != nil && ctx.Err() == nil && strings.TrimSpace(reply.Text) != "" {
+	// or shutdown), an ignored turn and a blank answer must not replace the last
+	// thing the user actually heard; an error or Unavailable reply was spoken,
+	// so it counts.
+	var isSmoke bool
+	if tl := latency.FromContext(ctx); tl != nil && tl.Source() == latency.SourceSmoke {
+		isSmoke = true
+	}
+	if p.lastReply != nil && ctx.Err() == nil && !reply.Ignored && strings.TrimSpace(reply.Text) != "" && !isSmoke {
+		var source string
+		if tl := latency.FromContext(ctx); tl != nil {
+			source = string(tl.Source())
+		}
 		p.lastReply.Record(lastreply.Reply{
 			Text:       reply.Text,
 			Tool:       reply.Tool,
 			Path:       string(reply.Path),
 			LocalOnly:  reply.LocalOnly,
 			SpeechRate: reply.SpeechRate,
+			Utterance:  transcript,
+			Source:     source,
 		})
 	}
 	// The reply text and its provenance are display-only: the timeline keeps

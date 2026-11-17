@@ -18,6 +18,7 @@ import (
 
 	"github.com/Jairik/clanka-bot/assistant/internal/activity"
 	"github.com/Jairik/clanka-bot/assistant/internal/agent"
+	"github.com/Jairik/clanka-bot/assistant/internal/alertstore"
 	"github.com/Jairik/clanka-bot/assistant/internal/announce"
 	"github.com/Jairik/clanka-bot/assistant/internal/api"
 	"github.com/Jairik/clanka-bot/assistant/internal/audio"
@@ -62,6 +63,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/voicelib"
 	"github.com/Jairik/clanka-bot/assistant/internal/voicesample"
 	"github.com/Jairik/clanka-bot/assistant/internal/wakesample"
+	"github.com/Jairik/clanka-bot/assistant/internal/wakethreshold"
 	"github.com/Jairik/clanka-bot/assistant/internal/wording"
 	"github.com/Jairik/clanka-bot/assistant/internal/wyoming"
 	"github.com/Jairik/clanka-bot/assistant/tools"
@@ -138,10 +140,13 @@ func run() error {
 	go func() {
 		// Enforce retention now and then hourly, so the file is bounded even
 		// without another request and the read path never prunes.
-		ticker := time.NewTicker(time.Hour)
-		defer ticker.Stop()
-		for {
-			result, err := activityHistory.Prune(ctx)
+		// At startup the process is not serving yet, so allow a larger catch-up
+		// budget (2s); on the hourly tick use the smaller 500ms budget, and
+		// continue from where the previous pass stopped.
+		prune := func(budget time.Duration) {
+			pruneCtx, cancel := context.WithTimeout(ctx, budget)
+			defer cancel()
+			result, err := activityHistory.Prune(pruneCtx)
 			if err != nil {
 				logger.Warn("activity history prune", "error", err.Error())
 			} else if result.Deleted > 0 || result.Trimmed > 0 {
@@ -151,10 +156,18 @@ func run() error {
 					"remaining", result.Remaining,
 				)
 			}
+		}
+
+		prune(2 * time.Second)
+
+		ticker := time.NewTicker(time.Hour)
+		defer ticker.Stop()
+		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				prune(500 * time.Millisecond)
 			}
 		}
 	}()
@@ -236,6 +249,7 @@ func run() error {
 		AlarmRing: baseCfg.Sounds.AlarmRing,
 		Reminder:  baseCfg.Sounds.Reminder,
 		Error:     baseCfg.Sounds.Error,
+		Ignore:    baseCfg.Sounds.Ignore,
 	}
 
 	// Startup recovery needs the live Ring behaviour and Quiet volume before
@@ -247,10 +261,30 @@ func run() error {
 	recoveryDefs := append(ring.Definitions(), quiet.Definitions(baseCfg.Quiet)...)
 	recoveryDefs = append(recoveryDefs, notify.Definitions(baseCfg.Notify)...)
 	recoveryDefs = append(recoveryDefs, tz.Definition(baseCfg.Timezone))
+	recoveryDefs = append(recoveryDefs, alertstore.Definitions()...)
 	recoverySettings, err := settings.New(ctx, st, recoveryDefs...)
 	if err != nil {
 		return fmt.Errorf("recovery settings: %w", err)
 	}
+
+	// Retention: purge old and excess alert events once at startup before
+	// the managers recover.
+	alertHistory := alertstore.New(st.DB())
+	pruneCtx, cancelPrune := context.WithTimeout(ctx, 2*time.Second)
+	pruneRes, err := alertHistory.Prune(pruneCtx, alertstore.PruneOptions{
+		MaxDays: recoverySettings.Int(alertstore.HistoryDaysKey),
+		MaxRows: recoverySettings.Int(alertstore.HistoryRowsKey),
+	})
+	cancelPrune()
+	if err != nil {
+		logger.Warn("alert history prune", "error", err.Error())
+	} else if pruneRes.Deleted > 0 {
+		logger.Info("alert history pruned",
+			"deleted", pruneRes.Deleted,
+			"remaining", pruneRes.Remaining,
+		)
+	}
+
 	zone.Bind(recoverySettings)
 	// Quiet hours is created before the Ring engine so recovery Rings already
 	// read the saved quiet.volume. Bind later swaps in the full service.
@@ -357,6 +391,8 @@ func run() error {
 		Services: serviceChecks,
 		Modules:  toolSet,
 		Location: locSvc,
+		DB:       st.DB(),
+		DBPath:   st.Path(),
 	})
 
 	// One sink serves reply playback, the wake chime, timer alerts and the
@@ -594,6 +630,7 @@ func run() error {
 		RequestPrefixes:    baseCfg.Agent.RequestPrefixes,
 		Filler:             baseCfg.Agent.Filler,
 		UnavailableMessage: baseCfg.Agent.UnavailableMessage,
+		ClarifyMessage:     baseCfg.Agent.ClarifyMessage,
 	})
 	if err != nil {
 		return err
@@ -607,6 +644,12 @@ func run() error {
 	}
 	defs := append(connections.Definitions(config.Default(), baseCfg), wordingSetup.Definitions...)
 	defs = append(defs, toolDefs...)
+	// One live threshold per configured wake model (the wake allowlist plus
+	// the configured command models). The environment/config.yaml map is the
+	// config layer, so Reset returns to it; the model allowlist itself stays
+	// restart-required.
+	defs = append(defs, wakethreshold.Definitions(baseCfg.Wakeword)...)
+	defs = append(defs, voice.ListeningDefinitions()...)
 	defs = append(defs, tz.Definition(baseCfg.Timezone))
 	defs = append(defs, namematch.Definition(baseCfg.NameMatch.Threshold))
 	// Sound role assignments are live settings too, so the Dashboard write and
@@ -615,12 +658,14 @@ func run() error {
 	// Ring behaviour is per kind: Timer and Alarm share the engine but keep
 	// independent live max_ring, volume, ramp, gap and speak_label settings.
 	defs = append(defs, ring.Definitions()...)
+	defs = append(defs, alertstore.Definitions()...)
 	// Quiet hours shares the one settings service with the Dashboard and voice
 	// Tools; the startup reader above is replaced by this full service.
 	defs = append(defs, quiet.Definitions(baseCfg.Quiet)...)
 	// music.max_volume is a live Spotify setting, unset (no cap) by default.
 	defs = append(defs, spotify.Definitions()...)
 	defs = append(defs, lights.Definitions()...)
+	defs = append(defs, location.Definitions()...)
 	// The live weather temperature unit appears on the Dashboard Settings page
 	// like lights.* and spotify.*; the weather Tool reads it per reply (#318).
 	defs = append(defs, weather.Definitions()...)
@@ -668,6 +713,7 @@ func run() error {
 	// The Hermes page's per-account grants are ordinary live settings, so they
 	// appear on Settings too and a reset revokes access.
 	defs = append(defs, integrations.Definitions()...)
+	defs = append(defs, speech.PronunciationDefinition(baseCfg.Speech.Pronunciation))
 	settingsSvc, err = settings.New(ctx, st, defs...)
 	if err != nil {
 		return fmt.Errorf("settings: %w", err)
@@ -676,6 +722,7 @@ func run() error {
 	// Bind after the service exists so the timezone is live overridable: the
 	// Dashboard's settings handler and any voice Tool write the same service.
 	zone.Bind(settingsSvc)
+	locSvc.Bind(settingsSvc)
 	// Quiet hours now reads and writes the one live service: a Dashboard edit
 	// or a voice Tool write is visible to the next Status read.
 	quietSvc.Bind(settingsSvc)
@@ -779,6 +826,9 @@ func run() error {
 			voice, rate := currentSpeechVoice(voiceSvc)
 			return speech.VoiceSettings{Voice: voice, Rate: rate}
 		})
+		speechSpeaker.BindPronunciation(func() *speech.Pronouncer {
+			return speech.NewPronouncer(settingsSvc.Strings(speech.PronunciationKey))
+		})
 	}
 
 	// Timer and Alarm installed the Notify missed hook before Start's
@@ -822,19 +872,21 @@ func run() error {
 	var synthFiller wording.FillerSynth
 	if ttsClient != nil {
 		voice, rate := currentSpeechVoice(voiceSvc)
-		filler = loadAgentFiller(logger, ttsClient, voice, rate, settingsSvc.String(wording.FillerKey), cfg.TTS.Timeout.Duration())
+		pronouncer := speech.NewPronouncer(settingsSvc.Strings(speech.PronunciationKey))
+		filler = loadAgentFiller(logger, ttsClient, voice, rate, pronouncer.Replace(settingsSvc.String(wording.FillerKey)), cfg.TTS.Timeout.Duration())
 		synthFiller = func(ctx context.Context, text string) (*speech.Filler, error) {
 			ctx, cancel := context.WithTimeout(ctx, cfg.TTS.Timeout.Duration())
 			defer cancel()
 			voice, rate := currentSpeechVoice(voiceSvc)
-			return speech.SynthesizeFiller(ctx, ttsClient, voice, text, wyoming.WithRate(rate))
+			pron := speech.NewPronouncer(settingsSvc.Strings(speech.PronunciationKey))
+			return speech.SynthesizeFiller(ctx, ttsClient, voice, pron.Replace(text), wyoming.WithRate(rate))
 		}
 	}
 	// The wording worker keeps the single settings observer. The extra keys and
 	// signature make a voice/rate change re-synthesize the cached Filler, so
 	// the spoken cue never keeps the old voice forever.
 	wordingMgr, err := wording.NewManager(settingsSvc, wordingSetup, filler, synthFiller, logger,
-		wording.WithFillerKeys(voicelib.KeyName, voicelib.KeyRate),
+		wording.WithFillerKeys(voicelib.KeyName, voicelib.KeyRate, speech.PronunciationKey),
 		wording.WithFillerSignature(func() string {
 			ref, rate, ok := voiceSvc.ActiveSpeech()
 			if !ok {
@@ -893,8 +945,17 @@ func run() error {
 		},
 		Headers:          provider.Headers,
 		Routing:          provider.Routing,
-		SystemPrompt:     cfg.Agent.SystemPrompt,
-		SystemPromptFunc: func() string { return locSvc.SystemPrompt(cfg.Agent.SystemPrompt) },
+		SystemPrompt: cfg.Agent.SystemPrompt,
+		// The place line is appended to the base prompt. With no configured
+		// prompt the default is the base, so the brevity and ignore rules still
+		// reach the model when a place is known.
+		SystemPromptFunc: func() string {
+			base := cfg.Agent.SystemPrompt
+			if strings.TrimSpace(base) == "" {
+				base = agent.DefaultSystemPrompt
+			}
+			return locSvc.SystemPrompt(base)
+		},
 		// The personality prompt is read once per turn and added only to the
 		// labelled system part by the one prompt builder (ADR-0002).
 		PersonaFunc: func() agent.Persona {
@@ -905,6 +966,9 @@ func run() error {
 		// The live wording is read per failure, so a Dashboard change applies
 		// to the next model failure without rebuilding the Agent path.
 		UnavailableMessageFunc: wordingMgr.UnavailableMessage,
+		// The Clarify line is live wording read while the system part is built.
+		ClarifyMessage:     baseCfg.Agent.ClarifyMessage,
+		ClarifyMessageFunc: wordingMgr.ClarifyMessage,
 		FirstTokenTimeout:      cfg.Agent.FirstTokenTimeout.Duration(),
 		RequestTimeout:         cfg.Agent.RequestTimeout.Duration(),
 		MaxSteps:               cfg.Agent.MaxSteps,
@@ -926,7 +990,8 @@ func run() error {
 		// Control phrases and Agent request prefixes are read per request.
 		pipeline.WithWording(wordingMgr),
 		// Shared Control phrases reach whatever holds Focus; with nothing in
-		// Focus they fall through to the semantic Fast path.
+		// Focus a bare "stop" ends the session and the others fall through to
+		// the semantic Fast path.
 		pipeline.WithFocus(focusRegistry),
 		// Keep the previous completed reply and its provenance so
 		// assistant.repeat and notify.phone can resolve it.
@@ -1072,6 +1137,9 @@ func run() error {
 		// Wake-free command models (#81): a detection runs the volume step and
 		// Cue with no STT and no routing. The handler reads Focus and the live
 		// music cap per detection, so a Dashboard change applies immediately.
+		// The optional stop model is not a volume command: the loop owns it
+		// (#503), so it is left out of the handler map below.
+		stopModel := cfg.Wakeword.StopCommand()
 		var wakeCommands map[string]voice.WakeCommand
 		if models := cfg.Wakeword.CommandModels(); len(models) > 0 {
 			handler, err := voicecmd.New(
@@ -1105,6 +1173,9 @@ func run() error {
 			}
 			wakeCommands = make(map[string]voice.WakeCommand, len(models))
 			for _, name := range models {
+				if name == stopModel {
+					continue
+				}
 				wakeCommands[name] = handler.Handle
 			}
 			logger.Info("wake-free commands enabled",
@@ -1114,8 +1185,33 @@ func run() error {
 				"thresholds", cfg.Wakeword.ModelThresholds(),
 			)
 		}
-		loop, err := newVoiceLoop(cfg, session, p, sink, announcements, wakeCue, voiceObserver, voiceStats, musicDucker, wakeCommands, func() bool { return focusRegistry.Held(focus.Ring) }, busySpeaker, logger)
+		// Resolve thresholds from the one live settings service, so a
+		// Dashboard save reaches the next detect stream without a restart.
+		wakeThresholds := wakethreshold.NewSource(settingsSvc, cfg.Wakeword)
+		loop, err := newVoiceLoop(cfg, session, p, sink, announcements, wakeCue, voiceObserver, voiceStats, musicDucker, wakeCommands, wakeThresholds, func() bool { return focusRegistry.Held(focus.Ring) }, busySpeaker, logger)
 		if loop != nil {
+			loop.BindListening(func() bool {
+				active, _ := voice.ListeningState(settingsSvc, time.Now())
+				return active
+			})
+			// The stop model ends the session while a reply plays (#503). The
+			// soft ignore Cue is the only sound, and `sounds.ignore: none`
+			// silences it, like an ignored turn. Play it on the loop goroutine:
+			// the loop then drains the frames captured while it played before
+			// reopening the detect stream, so the Cue cannot wake it again.
+			loop.BindStopCommand(stopModel, func(cueCtx context.Context) {
+				clip, ok := cues.Clip(sound.RoleIgnore)
+				if !ok {
+					return
+				}
+				if err := cues.PlayClip(cueCtx, quietSvc.Clip(clip)); err != nil {
+					logger.Warn("voice stop cue", "error", err.Error())
+				}
+			})
+			// A standalone "stop" and the stop command model end the session,
+			// so the next wake word starts with a fresh history. Conversation
+			// mode (#499) will also be turned off here.
+			loop.BindSessionEnd(conversationHistory.Reset)
 			// With music holding Focus, require a wake word instead of trusting unverified AEC.
 			loop.BindFollowUp(func() time.Duration {
 				if focusRegistry.Held(focus.Music) {
@@ -1273,6 +1369,7 @@ func run() error {
 			// the pipeline, registry and settings of the voice path.
 			Activity: activityStore,
 			Typed:    typedSession,
+			Explainer: p,
 			// The live Focus registry and Announcement queue feed the Dashboard's
 			// "what holds Focus / what is waiting" view and its SSE delta (#217).
 			Focus:         focusRegistry,
@@ -1376,7 +1473,7 @@ func run() error {
 // STT, the live wake Cue, and the shared reply Session. The pipeline is the
 // Barge-in seam that drops a waiting Confirmation, and the Announcement queue
 // stops unprompted speech as soon as a wake word starts a turn.
-func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingDropper, sink audio.Sink, announcements *announce.Queue, wakeCue func() ([]byte, audio.Format, bool), observer latency.Observer, stats *voice.Stats, ducker voice.Ducker, wakeCommands map[string]voice.WakeCommand, ringActive func() bool, busySpeaker voice.Speaker, logger *slog.Logger) (*voice.Loop, error) {
+func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingDropper, sink audio.Sink, announcements *announce.Queue, wakeCue func() ([]byte, audio.Format, bool), observer latency.Observer, stats *voice.Stats, ducker voice.Ducker, wakeCommands map[string]voice.WakeCommand, thresholds voice.Thresholds, ringActive func() bool, busySpeaker voice.Speaker, logger *slog.Logger) (*voice.Loop, error) {
 	captureFormat := audio.Format{Rate: cfg.Capture.Rate, Width: cfg.Capture.Width, Channels: cfg.Capture.Channels}
 	frameBytes := cfg.Capture.Rate * cfg.Capture.Width * cfg.Capture.Channels * cfg.Capture.FrameMS / 1000
 	if frameBytes <= 0 {
@@ -1420,13 +1517,16 @@ func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingD
 	)
 
 	deps := voice.Deps{
-		Source:     audio.NewPulseSource(cfg.Capture.Binary, cfg.Capture.Source, captureFormat),
-		Wake:       voice.NewWyomingWake(wakeClient, detectModels, wireFormat, cfg.Wakeword.ModelThresholds()),
-		STT:        voice.NewWyomingSTT(sttClient, wyoming.TranscribeOptions{Name: cfg.STT.Model, Language: cfg.STT.Language}, wireFormat),
-		Player:     audio.NewPCMPlayer(sink),
-		Responder:  voice.NewPipelineResponder(session, tool.DevicePi),
-		Speaker:    busySpeaker,
-		WakeWords:  names,
+		Source:    audio.NewPulseSource(cfg.Capture.Binary, cfg.Capture.Source, captureFormat),
+		Wake:      voice.NewWyomingWake(wakeClient, detectModels, wireFormat, thresholds),
+		STT:       voice.NewWyomingSTT(sttClient, wyoming.TranscribeOptions{Name: cfg.STT.Model, Language: cfg.STT.Language}, wireFormat),
+		Player:    audio.NewPCMPlayer(sink),
+		Responder: voice.NewPipelineResponder(session, tool.DevicePi),
+		Speaker:   busySpeaker,
+		WakeWords: names,
+		// The same live source the wake service reads per Open: the loop
+		// compares its signature while a stream is healthy.
+		Thresholds: thresholds,
 		Dropper:    pending,
 		WakeCue:    wakeCue,
 		Observer:   observer,

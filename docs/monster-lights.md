@@ -96,6 +96,36 @@ hardware.
 - The cloud reports state asynchronously. A write can take a second or two to
   appear on the next read; the page does not pretend the physical bar changed.
 
+## Voice control
+
+Voice control is exposed to both Fast and Agent paths through five Tools in `tools/monster`:
+
+| Tool | Permission | Values | Notes |
+| --- | --- | --- | --- |
+| `monster.power` | `act` | `on` / `off` | Turns the bar on or off. |
+| `monster.brightness` | `act` | `0`–`100` | Drives white or colour dimmer according to active mode. |
+| `monster.color` | `act` | `#RRGGBB` or color names | Writes `mode=color` then `color_select`. |
+| `monster.white` | `act` | `2000`–`7000` kelvin, or `warm`, `cool`, `daylight` | Writes `mode=white` then `color_temp`. |
+| `monster.scene` | `act` | scene name or slot ID | Resolves scene names through namematch over the device's own scenes. |
+
+All five Tools are `PermissionAct` and `LocalOnlyNo`. Spoken outputs are terse acknowledgements only (`"Done."`).
+
+### Device resolution
+
+Device resolution matches spoken device names case-insensitively and through `namematch` against the cloud device names on the account. To avoid adding an extra network round trip per voice command, `Service` caches the device list for 60 seconds. When exactly one device is configured on the account, the `device` parameter can be omitted.
+
+### Routing separation
+
+Routing distinguishes between BLE controllers (`lights.*`) and Monster light bars (`monster.*`):
+- BLE `lights.*` Examples and eval phrases use plural `"lights"` (e.g. `"turn the lights on"`, `"dim the lights to 20 percent"`).
+- Monster `monster.*` Examples and eval phrases use `"monitor light"`, `"light bar"`, or the device name (e.g. `"turn the monitor light on"`, `"set light bar level to 50 percent"`).
+
+This phrasing separation ensures that a generic `"turn the lights on"` stays with the BLE `lights.*` tools without ambiguity.
+
+### Follow-up: unified lighting facade
+
+A single `lights.*` facade across BLE controllers and Monster Wi-Fi devices is a separate follow-up. Today the surfaces remain distinct in both the Dashboard (`/lights` vs `/monster`) and voice routing (`lights.*` vs `monster.*`) to keep transports and failure models isolated.
+
 ## Verification
 
 ```sh

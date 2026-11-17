@@ -11,6 +11,7 @@ import type { Setting, SettingTool, SettingsView } from "../types";
 import { Badge, Empty, Lede, Notice, Section, SourceBadge } from "../ui";
 import { useWordingPlayer, WordingPreview } from "../wording-preview";
 import { useVisiblePolling } from "../visibility";
+import { ExplainRoutingPanel } from "../explain-routing";
 
 export function SettingsPage() {
   const { data, error, set } = usePageData("settings");
@@ -69,6 +70,7 @@ export function SettingsPage() {
               Enable or disable a Tool, or tighten its Permission. A Permission can only move towards Confirm; Local-only is declared in code. Changes apply on the
               next request.
             </Lede>
+            <ExplainRoutingPanel />
             {data.Tools?.length ? (
               <ul className="divide-y divide-separator">
                 {data.Tools.map((t) => (
@@ -86,15 +88,22 @@ export function SettingsPage() {
             flush
           >
             <Lede>{data.Wakeword.Note}</Lede>
+            {data.Wakeword.Enabled && (
+              <div className="flex items-center justify-between gap-3 px-3.5 py-2.5">
+                <span className="text-xs text-muted">Address</span>
+                <span className="font-mono text-xs">{data.Wakeword.Addr || "—"}</span>
+              </div>
+            )}
             {data.Wakeword.Models?.length ? (
               <ul className="divide-y divide-separator">
                 {data.Wakeword.Models.map((model) => (
-                  <li key={model.Name} className="flex items-center justify-between gap-3 px-3.5 py-3">
-                    <span className="flex flex-wrap items-center gap-2">
+                  <li key={model.Name} id={model.Setting?.Anchor} tabIndex={-1} className="px-3.5 py-3">
+                    <div className="flex flex-wrap items-center gap-2">
                       <span className="font-mono text-sm">{model.Name}</span>
                       {model.Command && <Badge tone={model.Enabled ? "neutral" : "warn"}>command{model.Enabled ? "" : " · off"}</Badge>}
-                    </span>
-                    <span className="text-xs text-muted">threshold {model.Threshold}</span>
+                      {!model.Setting && <span className="ml-auto text-xs text-muted">threshold {model.Threshold}</span>}
+                    </div>
+                    {model.Setting && <SettingRow s={model.Setting} actions={actions} />}
                   </li>
                 ))}
               </ul>

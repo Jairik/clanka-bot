@@ -42,10 +42,14 @@ const (
 	RoleReminder Role = "reminder"
 	// RoleError plays before the Unavailable message.
 	RoleError Role = "error"
+	// RoleIgnore is the short soft Cue played when the Agent decided the speech
+	// was not addressed to the Assistant, so the turn is silent but acknowledged
+	// (#498). Assigning none turns it off.
+	RoleIgnore Role = "ignore"
 )
 
 // Roles is the fixed role order used by the settings list.
-var Roles = []Role{RoleWake, RoleTimerRing, RoleAlarmRing, RoleReminder, RoleError}
+var Roles = []Role{RoleWake, RoleTimerRing, RoleAlarmRing, RoleReminder, RoleError, RoleIgnore}
 
 const (
 	// BuiltinChime is the synthesised two-note chime that ships in the image.
@@ -57,24 +61,6 @@ const (
 	// libraryDir is the sounds/ folder under the data volume.
 	libraryDir = "sounds"
 )
-
-// Cap returns the maximum sound length a role accepts when it is assigned.
-// The cap is checked on assignment and never trims a file.
-func Cap(role Role) time.Duration {
-	switch role {
-	case RoleWake:
-		// Audio captured while the wake Cue plays is treated as echo and is
-		// dropped, never sent to STT. A long cue therefore clips the start of
-		// the request, so keep it short (the built-in chime is 0.27 s).
-		return 500 * time.Millisecond
-	case RoleReminder, RoleError:
-		return 3 * time.Second
-	case RoleTimerRing, RoleAlarmRing:
-		return time.Minute
-	default:
-		return 0
-	}
-}
 
 // Key is the live setting that stores one role's assignment.
 func Key(role Role) string { return "sounds." + string(role) }
@@ -89,13 +75,14 @@ func Valid(role Role) bool {
 	return false
 }
 
-// Config is the config.yaml layer for the five roles.
+// Config is the config.yaml layer for the fixed roles.
 type Config struct {
 	Wake      string
 	TimerRing string
 	AlarmRing string
 	Reminder  string
 	Error     string
+	Ignore    string
 }
 
 // value returns the config value for one role.
@@ -111,6 +98,8 @@ func (c Config) value(role Role) string {
 		return c.Reminder
 	case RoleError:
 		return c.Error
+	case RoleIgnore:
+		return c.Ignore
 	default:
 		return ""
 	}
@@ -251,17 +240,19 @@ func (s *Service) Bind(svc *settings.Service, sink Sink) {
 
 // Definitions builds the five live role settings. A non-empty config value
 // becomes the config layer; empty leaves the built-in chime default. The
-// validator runs for config and every write, and rejects a sound over the
-// role's cap instead of trimming it.
+// validator runs for config and every write. No role has a length limit.
 func (s *Service) Definitions(cfg Config) []settings.Definition {
 	defs := make([]settings.Definition, 0, len(Roles))
 	for _, role := range Roles {
 		role := role
 		description := fmt.Sprintf(
-			"Sound played as the %s Cue: a library name, a path under the data volume, or none. Maximum %s.",
-			role, Cap(role))
+			"Sound played as the %s Cue: a library name, a path under the data volume, or none.",
+			role)
 		if role == RoleWake {
 			description += " Audio captured while this Cue plays is treated as echo and is not sent to speech recognition, so keep it short."
+		}
+		if role == RoleIgnore {
+			description += " It plays when the Agent decides speech was not addressed to the Assistant; none makes that turn fully silent."
 		}
 		opts := []settings.Option{
 			settings.WithDescription(description),
@@ -282,24 +273,13 @@ func (s *Service) Definitions(cfg Config) []settings.Definition {
 }
 
 // Validate checks one assignment: it must be a known sound, a confined volume
-// path or none, and its duration must fit the role's cap.
+// path or none. Any length is accepted.
 func (s *Service) Validate(role Role, value string) error {
 	if !Valid(role) {
 		return fmt.Errorf("sound: unknown Cue role %q", role)
 	}
-	entry, ok, err := s.Resolve(value)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return nil // explicit none
-	}
-	if entry.Duration > Cap(role) {
-		return fmt.Errorf(
-			"sound: %q is %s, over the %s cap for the %s Cue; choose a shorter sound",
-			entry.Name, roundDuration(entry.Duration), Cap(role), role)
-	}
-	return nil
+	_, _, err := s.Resolve(value)
+	return err
 }
 
 // Resolve turns one assignment value into a library entry. It accepts a
@@ -426,8 +406,7 @@ func (s *Service) Audio(name string) ([]byte, Sound, error) {
 }
 
 // PlayName plays one library sound once through the bound sink. It is the Pi
-// preview seam: the caller normally queues it, so it cannot cut a reply. No
-// role cap applies because a preview is not an assignment.
+// preview seam: the caller normally queues it, so it cannot cut a reply.
 func (s *Service) PlayName(ctx context.Context, name string) error {
 	entry, ok := s.Find(name)
 	if !ok {
@@ -447,8 +426,7 @@ func (s *Service) PlayName(ctx context.Context, name string) error {
 }
 
 // Clip resolves a role through the live setting and returns playback-ready
-// PCM. A none assignment, an unknown role, a missing file or an over-cap file
-// returns false; it never trims.
+// PCM. A none assignment, an unknown role or a missing file returns false.
 func (s *Service) Clip(role Role) (Clip, bool) {
 	if s == nil || !Valid(role) {
 		return Clip{}, false
@@ -464,9 +442,7 @@ func (s *Service) Clip(role Role) (Clip, bool) {
 
 // ClipName resolves one indexed library sound by name for a per-Alert Ring
 // override (#57). It deliberately accepts only a library name, never a path:
-// voice and Dashboard overrides store a name from the shared matcher. The same
-// role cap as a role assignment is applied, so a file replaced by a longer one
-// is refused rather than trimmed.
+// voice and Dashboard overrides store a name from the shared matcher.
 func (s *Service) ClipName(role Role, name string) (Clip, bool) {
 	if s == nil || !Valid(role) {
 		return Clip{}, false
@@ -478,11 +454,6 @@ func (s *Service) ClipName(role Role, name string) (Clip, bool) {
 	clip, err := s.load(entry)
 	if err != nil {
 		s.logger.Warn("per-alert sound unreadable", "role", string(role), "sound", entry.Name, "error", err.Error())
-		return Clip{}, false
-	}
-	if clip.Duration > Cap(role) {
-		s.logger.Warn("per-alert sound over cap",
-			"role", string(role), "sound", entry.Name, "duration", clip.Duration.String(), "cap", Cap(role).String())
 		return Clip{}, false
 	}
 	return clip, true
@@ -501,7 +472,7 @@ func (s *Service) DefaultClip(cfg Config, role Role) (Clip, bool) {
 	return s.clipFor(role, value)
 }
 
-// clipFor resolves one assignment and loads it under the role cap.
+// clipFor resolves one assignment and loads it.
 func (s *Service) clipFor(role Role, value string) (Clip, bool) {
 	entry, ok, err := s.Resolve(value)
 	if err != nil {
@@ -514,12 +485,6 @@ func (s *Service) clipFor(role Role, value string) (Clip, bool) {
 	clip, err := s.load(entry)
 	if err != nil {
 		s.logger.Warn("sound cue unreadable", "role", string(role), "sound", entry.Name, "error", err.Error())
-		return Clip{}, false
-	}
-	if clip.Duration > Cap(role) {
-		// The file changed after assignment. Refuse to play rather than trim.
-		s.logger.Warn("sound cue over cap",
-			"role", string(role), "sound", entry.Name, "duration", clip.Duration.String(), "cap", Cap(role).String())
 		return Clip{}, false
 	}
 	return clip, true
@@ -605,11 +570,6 @@ func pcmDuration(pcm []byte, format audio.Format) time.Duration {
 		return 0
 	}
 	return time.Duration(len(pcm)) * time.Second / time.Duration(byteRate)
-}
-
-// roundDuration renders a cap error in a stable, readable form.
-func roundDuration(d time.Duration) string {
-	return d.Round(10 * time.Millisecond).String()
 }
 
 // looksLikePath reports whether a value names a file rather than a library

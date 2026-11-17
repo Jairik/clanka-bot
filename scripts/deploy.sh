@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # Deploy the Compose stack on this host (the Pi, or a dev-box clone).
 #
-#   scripts/deploy.sh            pull the current branch, build SHA-tagged
-#                                images, start the stack and wait for health
+#   scripts/deploy.sh            pull the current branch, fetch the arm64
+#                                images CI published for it (building any that
+#                                are missing), tag them with the SHA, start the
+#                                stack and wait for health
 #   scripts/deploy.sh <commit>   check that commit out and reuse the images
 #                                already built for it (no rebuild)
 #
@@ -21,6 +23,9 @@ HEALTH_TIMEOUT="${DEPLOY_HEALTH_TIMEOUT:-180}"
 POLL_INTERVAL="${DEPLOY_POLL_INTERVAL:-2}"
 # A crash-loop (`exited`/`dead`) is a real failure and is never within grace.
 COLD_START_GRACE="${DEPLOY_COLD_START_GRACE:-150}"
+# Where .github/workflows/images.yml publishes <service>:key-<key>. Empty
+# builds every image on this host, as before CI published them.
+REGISTRY="${DEPLOY_REGISTRY-ghcr.io/jairik/clanka-bot}"
 
 log() { printf 'deploy: %s\n' "$*"; }
 warn() { printf 'deploy: warning: %s\n' "$*" >&2; }
@@ -33,11 +38,13 @@ usage() {
 	cat <<'EOF'
 Usage: scripts/deploy.sh [SHA]
 
-Without a SHA: pull the current branch with --ff-only, build images tagged
-clanka/<service>:<short SHA>, start the stack, wait for every health check and
-prune old SHA-tagged image sets (best effort; see scripts/prune-images.sh).
+Without a SHA: pull the current branch with --ff-only, pull the images CI
+published for this checkout (matched by content key, scripts/image-keys.py),
+tag them clanka/<service>:<short SHA>, build only the ones that are not
+published, start the stack, wait for every health check and prune old
+SHA-tagged image sets (best effort; see scripts/prune-images.sh).
 A branch with commits that are not on its upstream is refused: only pushed
-commits are built.
+commits are deployed.
 
 With a SHA: check that commit out, verify its images already exist locally and
 start the stack with --no-build. This is the rollback path. The prune also runs
@@ -53,6 +60,10 @@ Environment:
   DEPLOY_KEEP_IMAGES     newest image sets to keep (default 3)
   DEPLOY_PINNED_SHAS     comma-separated SHA prefixes the prune must keep
   DEPLOY_PRUNE_BUILD_CACHE  1 also prunes the build cache (off by default)
+  DEPLOY_REGISTRY        where CI publishes images
+                          (default ghcr.io/jairik/clanka-bot); empty builds
+                          every image on this host
+  DEPLOY_SMOKE           run smoke turn after health wait (default 1)
 EOF
 }
 
@@ -237,12 +248,78 @@ ensure_receiver() {
 		die "could not prepare the Soloist receiver"
 }
 
+# Make clanka/<service>:<sha> exist for every active service that builds an
+# image. Each one is pulled from the registry by its content key, so a commit
+# that did not touch a service reuses the image CI already published (and a
+# pull of an unchanged image moves no layers). A service whose key is not
+# published (CI still running, a Pi-only .env value, no network) is built here
+# instead; a missing registry is never a failed deploy.
+prepare_images() {
+	local sha=$1 keys_out svc key ref target
+	local -a active local_build=()
+	local -A key_of=()
+	mapfile -t active < <(docker compose config --services 2>/dev/null)
+	((${#active[@]} > 0)) || die "could not list the compose services"
+
+	if [[ -z "$REGISTRY" ]]; then
+		log "DEPLOY_REGISTRY is empty; building every image on this host"
+		local_build=("${active[@]}")
+	elif ! keys_out="$(python3 -I "$ROOT/scripts/image-keys.py" 2>&1)"; then
+		warn "could not compute image keys (${keys_out:-no output}); building every image on this host"
+		local_build=("${active[@]}")
+	else
+		while read -r svc key; do
+			[[ -n "$svc" ]] && key_of[$svc]=$key
+		done <<<"$keys_out"
+		for svc in "${active[@]}"; do
+			key="${key_of[$svc]:-}"
+			# No build section: Compose pulls the service's own image.
+			[[ -n "$key" ]] || continue
+			ref="$REGISTRY/$svc:key-$key"
+			target="clanka/$svc:$sha"
+			if docker pull --quiet "$ref" >/dev/null 2>&1 && docker tag "$ref" "$target"; then
+				# Drop the registry tag; the image stays under the SHA tag,
+				# which prune-images.sh manages.
+				docker image rm "$ref" >/dev/null 2>&1 || true
+				log "using published $svc image (key-$key)"
+			else
+				warn "no published $svc image for key-$key; building it on this host"
+				local_build+=("$svc")
+			fi
+		done
+	fi
+
+	if ((${#local_build[@]} > 0)); then
+		log "building ${local_build[*]}"
+		if ! docker compose build "${local_build[@]}"; then
+			die "docker compose build failed"
+		fi
+	fi
+}
+
 # Reclaim old SHA-tagged images after a healthy start. Best effort: a prune
 # problem must never turn a good deployment into a failed one.
 prune_old_images() {
 	local sha=$1
 	if ! GIT_SHA="$sha" bash "$ROOT/scripts/prune-images.sh"; then
 		warn "image pruning failed; the deployment is still healthy"
+	fi
+}
+
+# Post-deploy smoke turn: prove the stack answers through the shared pipeline.
+# DEPLOY_SMOKE=0 disables it; a missing script warns and skips.
+run_smoke() {
+	if [[ "${DEPLOY_SMOKE:-1}" == "0" ]]; then
+		return 0
+	fi
+	local smoke_script="$ROOT/scripts/smoke.sh"
+	if [[ ! -f "$smoke_script" ]]; then
+		warn "scripts/smoke.sh is missing; skipping smoke turn"
+		return 0
+	fi
+	log "running post-deploy smoke turn"
+	if ! bash "$smoke_script"; then
+		die "post-deploy smoke turn failed"
 	fi
 }
 
@@ -348,8 +425,9 @@ main() {
 			export COMPOSE_PROFILES=spotify
 			ensure_receiver
 		fi
-		log "building and starting clanka/<service>:$sha"
-		if ! docker compose up -d --build --remove-orphans; then
+		prepare_images "$sha"
+		log "starting clanka/<service>:$sha"
+		if ! docker compose up -d --no-build --remove-orphans; then
 			printf -- '--- docker compose ps ---\n' >&2
 			docker compose ps >&2 || true
 			die "docker compose up failed"
@@ -357,6 +435,7 @@ main() {
 	fi
 
 	wait_for_health
+	run_smoke
 	log "deployed $sha"
 	prune_old_images "$sha"
 }

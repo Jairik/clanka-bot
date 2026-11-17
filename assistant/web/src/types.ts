@@ -52,7 +52,6 @@ export type AlarmEditor = {
   SoundKey: string;
   VolumeKey: string;
   RampKey: string;
-  SoundCap: string;
   HasLibrary: boolean;
   Sounds: SoundOption[] | null;
   Action: string;
@@ -83,6 +82,8 @@ export type AlertsView = {
   // DesktopNotify is true when a due Reminder may show a browser
   // notification now: notify.reminders is on and Quiet hours allow it.
   DesktopNotify: boolean;
+  // Settings holds the live alert retention settings shown on the page.
+  Settings: Setting[] | null;
 };
 
 export type AnnounceSnapshot = {
@@ -150,6 +151,8 @@ export type HealthView = {
   CheckedAt: string;
   HealthTimeout: string;
   Services: Check[] | null;
+  // Host reports Pi host vitals and data-volume storage rows.
+  Host: Check[] | null;
   // Wakeword has one row per configured model and is probed from the same
   // config the voice loop uses.
   Wakeword: Check[] | null;
@@ -230,6 +233,40 @@ export type IntegrationVerify = {
   reason: string;
 };
 
+export type LatencyPath = {
+  path: string;
+  label: string;
+  attempts: number;
+  response_count: number;
+  outcomes: Record<string, number>;
+  response: LatencyStat;
+  stages: Record<string, LatencyStat>;
+  stage_list: LatencyStage[] | null;
+  first_chunk: LatencyStat;
+  agent_token: LatencyStat;
+};
+
+export type LatencyStage = {
+  name: string;
+  label: string;
+  n: number;
+  p50: number;
+  p95: number;
+};
+
+export type LatencyStat = {
+  n: number;
+  p50: number;
+  p95: number;
+};
+
+export type LatencyView = {
+  window: string;
+  records: number;
+  paths: LatencyPath[] | null;
+  notice: string;
+};
+
 export type LightsDevice = {
   address: string;
   name: string;
@@ -240,6 +277,13 @@ export type LightsView = {
   devices: LightsDevice[] | null;
   enabled: boolean;
   status: string;
+};
+
+export type Listening = {
+  Available: boolean;
+  Listening: boolean;
+  Until: string;
+  Error: string;
 };
 
 export type MissedAlert = {
@@ -428,8 +472,8 @@ export type Request = {
   TotalTokens: number;
   CachedTokens: number;
   AgentSteps: number;
-  // Conversation is "mode" or "cue" when this turn used the longer budget;
-  // ConversationLabel is its plain-words form, empty for the default budget.
+  // ConversationLabel is how this turn used the longer budget, in plain
+  // words; empty for a default-budget turn.
   Conversation: string;
   ConversationLabel: string;
 };
@@ -476,6 +520,24 @@ export type RoutesView = {
   Rows: RouteRow[] | null;
 };
 
+export type RoutingExplainView = {
+  path: string;
+  tool: string;
+  args: string;
+  top: RoutingScore[] | null;
+  margin: number;
+  extract: string;
+  fallthrough_reason: string;
+  chain_split: boolean;
+  focus_owner: string;
+  decision: string;
+};
+
+export type RoutingScore = {
+  tool: string;
+  score: number;
+};
+
 export type ScheduledAlert = {
   Audio: string;
   KindKey: string;
@@ -518,6 +580,7 @@ export type Session = {
   Typed: boolean;
   Mic: boolean;
   Volume: boolean;
+  Wakeword: boolean;
   Activity: boolean;
   CanSpeak: boolean;
   Speak: boolean;
@@ -606,8 +669,8 @@ export type SettingsView = {
   Voice: string;
   CanPreview: boolean;
   PreviewMaxRunes: number;
-  // Wakeword is read-only: the allowlist and thresholds are connection
-  // settings read once at startup.
+  // Wakeword is the Wake word section: the model list and address read-only,
+  // with one live threshold form per configured model.
   Wakeword: WakewordSettings;
 };
 
@@ -621,7 +684,6 @@ export type SoundRole = {
   Role: string;
   Label: string;
   Key: string;
-  Cap: string;
   Display: string;
   Source: string;
   SourceLabel: string;
@@ -636,6 +698,9 @@ export type SoundRow = {
   Added: string;
   Origin: string;
   AudioURL: string;
+  // Empty for the built-in chime, which cannot be deleted. The page hides
+  // the trash control when this is blank.
+  DeleteAction: string;
 };
 
 export type SoundsView = {
@@ -858,6 +923,10 @@ export type WakewordModel = {
   Threshold: string;
   Command: boolean;
   Enabled: boolean;
+  // Setting is the live threshold editor. It is nil when the Dashboard was
+  // built without the settings service, and the row then shows the
+  // configured value read-only.
+  Setting: Setting | null;
 };
 
 export type WakewordSettings = {

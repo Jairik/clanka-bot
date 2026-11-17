@@ -90,6 +90,14 @@ _Avoid_: Holding message, stall phrase
 A configurable phrase spoken when the Agent path can't reach its model, so the user knows the request wasn't handled. The Fast path keeps working.
 _Avoid_: Error message, brain-offline line
 
+**Ignored turn**:
+An Agent path turn whose speech was not a clear request or question addressed to the Assistant, such as background conversation, a garbled transcription or a fragment. The model replies with exactly `<ignore>`; the reply session holds back the start of the stream so the token is never spoken, plays the soft `sounds.ignore` Cue (default on, `none` for silence), records the Activity outcome as `ignored`, and keeps the turn out of the shared history and out of the Last reply so a misheard fragment cannot steer a later turn.
+_Avoid_: Non-request, filler turn, dismissed request
+
+**Clarify line**:
+The configurable sentence, `agent.clarify_message` ("Didn't catch that." by default), that the model says when a request is addressed to the Assistant but cannot be understood. The prompt names the current line, so a wording change applies to the next request.
+_Avoid_: Retry phrase, confusion message
+
 **Last reply**:
 The most recent completed Assistant answer kept in memory, with the Tool that produced it and whether that result was Local-only. Follow-ups ("say that again", "send that to my phone") read it; a cancelled or blank turn does not replace it. The recorded `LocalOnly` flag is the provenance of the *text* — which may be replayed from an earlier reply through a declared per-result hook — not of the Tool that produced the last call.
 _Avoid_: Previous output, last message, say-again buffer

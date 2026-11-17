@@ -16,10 +16,10 @@ import (
 // The duration itself is parsed by internal/parse; these only isolate words
 // that are not part of it.
 var (
-	labelBeforeTimer = regexp.MustCompile(`\b(?:set|start|make|create)(?:\s+(?:me|us))?(?:\s+(?:a|an|the|another))?\s+([a-z0-9][a-z0-9' -]*?)\s+timer\b`)
+	labelBeforeTimer = regexp.MustCompile(`\b(?:set|start|make|create|extend|give)(?:\s+(?:me|us))?(?:\s+(?:a|an|the|another))?\s+([a-z0-9][a-z0-9' -]*?)\s+timer\b`)
 	labelCalled      = regexp.MustCompile(`\b(?:called|named|labelled|labeled)\s+([a-z0-9][a-z0-9' -]*)`)
 	labelCancelTimer = regexp.MustCompile(`\b(?:cancel|stop|end|kill|clear|get rid of)\s+(?:the\s+|my\s+|our\s+)?([a-z0-9][a-z0-9' -]*?)\s+timer\b`)
-	labelOnTimer     = regexp.MustCompile(`\b(?:on|for|with)\s+(?:the\s+|my\s+|our\s+)?([a-z0-9][a-z0-9' -]*?)\s+timer\b`)
+	labelOnTimer     = regexp.MustCompile(`\b(?:on|for|with|to)\s+(?:the\s+|my\s+|our\s+)?([a-z0-9][a-z0-9' -]*?)\s+timer\b`)
 	timerWord        = regexp.MustCompile(`\btimer\b`)
 	labelTrim        = regexp.MustCompile(`^[^a-z0-9]+|[^a-z0-9]+$`)
 )
@@ -84,7 +84,7 @@ func labelForTimer(text string) string {
 func closestLabel(lower string) string {
 	for _, command := range []string{
 		"set ", "start ", "make ", "create ", "cancel ", "stop ", "end ",
-		"kill ", "clear ", "get rid of ",
+		"kill ", "clear ", "get rid of ", "extend ", "give ",
 	} {
 		if strings.Contains(lower, command) {
 			return ""

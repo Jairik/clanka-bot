@@ -42,3 +42,37 @@ func TestCosineAndNormalize(t *testing.T) {
 		t.Fatalf("Normalize(zero) = %v, want a zero copy", zero)
 	}
 }
+
+func TestDot(t *testing.T) {
+	a := []float32{1, 2, 3}
+	b := []float32{4, 5, 6}
+	want := float64(1*4 + 2*5 + 3*6)
+	if got := vector.Dot(a, b); got != want {
+		t.Fatalf("Dot(%v, %v) = %v, want %v", a, b, got, want)
+	}
+}
+
+func TestMismatchedLengths(t *testing.T) {
+	cases := []struct {
+		name string
+		a, b []float32
+	}{
+		{"shorter b", []float32{1, 2, 3}, []float32{1, 2}},
+		{"shorter a", []float32{1, 2}, []float32{1, 2, 3}},
+		{"empty a, non-empty b", []float32{}, []float32{1, 2}},
+		{"non-empty a, empty b", []float32{1, 2}, []float32{}},
+		{"nil a, non-empty b", nil, []float32{1, 2}},
+		{"non-empty a, nil b", []float32{1, 2}, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := vector.Dot(tc.a, tc.b); got != 0 {
+				t.Fatalf("Dot(%v, %v) = %v, want 0", tc.a, tc.b, got)
+			}
+			if got := vector.Cosine(tc.a, tc.b); got != 0 {
+				t.Fatalf("Cosine(%v, %v) = %v, want 0", tc.a, tc.b, got)
+			}
+		})
+	}
+}
+

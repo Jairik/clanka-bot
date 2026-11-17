@@ -293,7 +293,7 @@ func (h *Handler) voiceSamplesAddPhrase(w http.ResponseWriter, r *http.Request) 
 	if !h.voiceSamplesReady(w, r) {
 		return
 	}
-	if err := r.ParseForm(); err != nil {
+	if err := limitForm(w, r); err != nil {
 		h.voiceSamplesFail(w, r, http.StatusBadRequest, "Could not read the phrase.", "")
 		return
 	}

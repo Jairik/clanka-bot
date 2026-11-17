@@ -86,12 +86,21 @@ type Service struct {
 	scheduler     scheduler
 	now           func() time.Time
 	announce      *announce.Queue
+
+	wake      chan struct{}
+	newTicker func(d time.Duration) (<-chan time.Time, func())
 }
 
 // NewService builds the shared state. A nil registry means a shared phrase
 // cannot reach music, but the Tools still work.
 func NewService(player Player, registry *focus.Registry) *Service {
-	return &Service{player: player, focus: registry, now: time.Now, scheduler: afterFunc}
+	return &Service{
+		player:    player,
+		focus:     registry,
+		now:       time.Now,
+		scheduler: afterFunc,
+		wake:      make(chan struct{}, 1),
+	}
 }
 
 // WithLibrary adds the playlist and library seams for the #73 Tools: the
@@ -170,6 +179,17 @@ func (s *Service) dropFocus() {
 	claim.Release()
 }
 
+// wakeWatcher signals the completion watcher that a playback command occurred.
+func (s *Service) wakeWatcher() {
+	if s == nil || s.wake == nil {
+		return
+	}
+	select {
+	case s.wake <- struct{}{}:
+	default:
+	}
+}
+
 // holder is the focus.Holder for music. It is a distinct type so the Service's
 // own methods are not accidentally offered as Focus intents.
 type holder struct{ s *Service }
@@ -190,8 +210,14 @@ func (h holder) HandleIntent(ctx context.Context, intent focus.Intent) (string, 
 		err, text = h.s.player.Pause(ctx), "Paused."
 	case focus.Resume:
 		err, text = h.s.player.Resume(ctx), "Resuming."
+		if err == nil {
+			h.s.wakeWatcher()
+		}
 	case focus.Next:
 		err, text = h.s.player.Next(ctx), "Next track."
+		if err == nil {
+			h.s.wakeWatcher()
+		}
 	case focus.Stop:
 		err, text = h.s.player.Pause(ctx), "Stopped the music."
 		// Stop ends the music's claim however the pause went, so a failed
@@ -254,30 +280,102 @@ func toolError(err error) error {
 	return &tool.ToolError{Say: failureText(err)}
 }
 
+// watchActiveInterval is the polling interval while music is actively playing.
+const watchActiveInterval = 2 * time.Second
+
+// watchIdleInterval is the backed-off polling interval when music is paused or nothing is playing.
+const watchIdleInterval = 30 * time.Second
+
 // WatchCompletion detects natural playback endings without removing paused music's resume Focus.
 func (s *Service) WatchCompletion(ctx context.Context) {
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
+	tickerFn := s.newTicker
+	if tickerFn == nil {
+		tickerFn = func(d time.Duration) (<-chan time.Time, func()) {
+			t := time.NewTicker(d)
+			return t.C, t.Stop
+		}
+	}
+
+	interval := watchActiveInterval
+	ch, stop := tickerFn(interval)
+	defer func() {
+		if stop != nil {
+			stop()
+		}
+	}()
+
 	wasPlaying := false
+	retrying := false
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-			if s.focus == nil || !s.focus.Held(focus.Music) {
-				wasPlaying = false
+		case <-s.wake:
+			// Commands cannot shorten the server's rate-limit suspension.
+			if retrying {
 				continue
 			}
-			probeCtx, cancel := context.WithTimeout(ctx, time.Second)
-			state, err := s.player.NowPlaying(probeCtx)
-			cancel()
-			if err != nil && !errors.Is(err, spotify.ErrNothingPlaying) {
-				continue
+			// A spoken command resets the interval to 2 seconds immediately.
+			interval = watchActiveInterval
+			stop()
+			ch, stop = tickerFn(interval)
+		case <-ch:
+			retrying = false
+			select {
+			case <-s.wake:
+				// Drain any concurrent wake signal and reset interval.
+				interval = watchActiveInterval
+				stop()
+				ch, stop = tickerFn(interval)
+			default:
 			}
-			if wasPlaying && !state.Playing && s.focus.OnReleased != nil {
-				s.focus.OnReleased(focus.Music)
+		}
+
+		if s.focus == nil || !s.focus.Held(focus.Music) {
+			wasPlaying = false
+			if interval != watchIdleInterval {
+				interval = watchIdleInterval
+				stop()
+				ch, stop = tickerFn(interval)
 			}
-			wasPlaying = state.Playing
+			continue
+		}
+
+		probeCtx, cancel := context.WithTimeout(ctx, time.Second)
+		state, err := s.player.NowPlaying(probeCtx)
+		cancel()
+
+		var apiErr *spotify.APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusTooManyRequests {
+			// Rate limited: suspend probing for the Retry-After duration.
+			retry := apiErr.RetryAfter
+			if retry <= 0 {
+				retry = watchIdleInterval
+			}
+			retrying = true
+			interval = retry
+			stop()
+			ch, stop = tickerFn(interval)
+			continue
+		}
+
+		if err != nil && !errors.Is(err, spotify.ErrNothingPlaying) {
+			continue
+		}
+
+		if wasPlaying && !state.Playing && s.focus.OnReleased != nil {
+			s.focus.OnReleased(focus.Music)
+		}
+		wasPlaying = state.Playing
+
+		nextInterval := watchIdleInterval
+		if state.Playing {
+			nextInterval = watchActiveInterval
+		}
+		if nextInterval != interval {
+			interval = nextInterval
+			stop()
+			ch, stop = tickerFn(interval)
 		}
 	}
 }

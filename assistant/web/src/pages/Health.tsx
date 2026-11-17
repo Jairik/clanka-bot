@@ -6,7 +6,7 @@ import { PageFrame } from "../shell";
 import type { Check } from "../types";
 import { Dot, Empty, Notice, Section, cn, type Tone } from "../ui";
 
-const TONE: Record<string, Tone> = { ok: "ok", error: "bad", "timed-out": "bad", "not-configured": "neutral", "no-check": "neutral" };
+const TONE: Record<string, Tone> = { ok: "ok", error: "bad", "timed-out": "bad", "not-configured": "neutral", "no-check": "neutral", unavailable: "neutral" };
 const failing = (c: Check) => TONE[c.Status] === "bad";
 
 export function HealthPage() {
@@ -20,6 +20,7 @@ export function HealthPage() {
   const groups: [string, Check[], string?][] = data
     ? [
         ["Compose services", data.Services ?? []],
+        ["Pi (host) and data", data.Host ?? []],
         ["Semantic routing", data.Routing ? [data.Routing] : [], "The semantic Fast path is optional: a degraded index leaves Control phrases and the Agent path working. This is the in-memory build state, not a service probe."],
         ["Wake word", data.Wakeword ?? [], "The wake and wake-free command models the Assistant listens for, with the detection threshold it applies to each one."],
         ["Location", data.Location ? [data.Location] : []],
@@ -108,6 +109,7 @@ export function HealthPage() {
           const ok = checks.filter((c) => c.Status === "ok").length;
           const unchecked = checks.filter((c) => c.Status === "no-check").length;
           const unconfigured = checks.filter((c) => c.Status === "not-configured").length;
+          const unavailable = checks.filter((c) => c.Status === "unavailable").length;
           // Modules that declare no health check are neither ok nor failing.
           // Counting them in the denominator read "4/19 ok" next to the home
           // card's "12/12"; naming them is honest and matches that card, which
@@ -116,6 +118,7 @@ export function HealthPage() {
             bad ? `${bad} failing` : ok ? `${ok} ok` : "",
             unchecked ? `${unchecked} no check` : "",
             unconfigured ? `${unconfigured} not configured` : "",
+            unavailable ? `${unavailable} unavailable` : "",
           ].filter(Boolean);
           const summary = checks.length ? parts.join(" · ") : "none";
           return (

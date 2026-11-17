@@ -1,0 +1,51 @@
+{
+  "Owner": "smoke@example.com",
+  "Page": "notes",
+  "Flash": "",
+  "Error": "",
+  "HasStore": true,
+  "Lists": [
+    {
+      "Key": "shopping",
+      "Title": "Shopping list",
+      "Open": 1,
+      "Items": [
+        {
+          "ID": "i1",
+          "Text": "Milk",
+          "Done": false,
+          "ToggleAction": "/notes/shopping/i1/toggle",
+          "EditAction": "/notes/shopping/i1/edit",
+          "RemoveAction": "/notes/shopping/i1/remove"
+        }
+      ],
+      "AddAction": "/notes/shopping/add"
+    },
+    {
+      "Key": "todo",
+      "Title": "To-do list",
+      "Open": 0,
+      "Items": [
+        {
+          "ID": "i2",
+          "Text": "Call the plumber",
+          "Done": true,
+          "ToggleAction": "/notes/todo/i2/toggle",
+          "EditAction": "/notes/todo/i2/edit",
+          "RemoveAction": "/notes/todo/i2/remove"
+        }
+      ],
+      "AddAction": "/notes/todo/add"
+    }
+  ],
+  "Notes": [
+    {
+      "ID": "n1",
+      "Text": "Buy birthday candles",
+      "Updated": "2026-11-13 09:00",
+      "UpdatedISO": "2026-11-13T09:00:00Z",
+      "EditAction": "/notes/n1/edit",
+      "DeleteAction": "/notes/n1/delete"
+    }
+  ]
+}

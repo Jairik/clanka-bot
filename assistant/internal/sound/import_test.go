@@ -273,7 +273,7 @@ func TestFindAudioAndPlayNameUseLibraryNamesOnly(t *testing.T) {
 	}
 }
 
-func TestImportedSoundIsNotCappedUntilAssignment(t *testing.T) {
+func TestImportedLongSoundIsAssignableToEveryRole(t *testing.T) {
 	f := newFixture(t, sound.Config{})
 	source := stereoWAV(t, 16000, 1, 1500*time.Millisecond, 0.2)
 	entry, err := f.sounds.Import(context.Background(), bytes.NewReader(source), "long.wav")
@@ -283,17 +283,10 @@ func TestImportedSoundIsNotCappedUntilAssignment(t *testing.T) {
 	if entry.Duration < 1490*time.Millisecond {
 		t.Fatalf("duration = %s, want the full upload", entry.Duration)
 	}
-	if err := f.sounds.Validate(sound.RoleTimerRing, "long"); err != nil {
-		t.Fatalf("Timer Ring rejected a 1.5 s sound: %v", err)
-	}
-	err = f.sounds.Validate(sound.RoleWake, "long")
-	if err == nil || !strings.Contains(err.Error(), "cap") {
-		t.Fatalf("wake assignment error = %v, want a cap error", err)
-	}
-	// Rejection must not trim or rewrite the published file.
-	after, ok := f.sounds.Find("long")
-	if !ok || after.Duration != entry.Duration {
-		t.Fatalf("sound changed after rejected assignment: %+v", after)
+	for _, role := range sound.Roles {
+		if err := f.sounds.Validate(role, "long"); err != nil {
+			t.Fatalf("%s rejected a 1.5 s sound: %v", role, err)
+		}
 	}
 }
 

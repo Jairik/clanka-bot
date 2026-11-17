@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect } from "react";
 import { useLocation } from "./api";
 import { ChatProvider } from "./chat";
+import { PageBoundary } from "./error-boundary";
 import { LiveProvider } from "./events";
 import { Home } from "./pages/Home";
 import { pageLoaders, prefetchNear, type LazyPageId } from "./routes";
@@ -69,7 +70,11 @@ export function App() {
         <ChatProvider>
           <Shell>
             <Suspense fallback={<div className="p-8 text-sm text-muted">Loading…</div>}>
-              <View key={page?.id} />
+              {/* The shell must survive a broken page: show what failed and offer a reload. */}
+              {/* The page id key remounts PageBoundary on route navigation, resetting any render error. */}
+              <PageBoundary key={page?.id} page={page?.id ?? "?"} title={page?.title}>
+                <View key={page?.id} />
+              </PageBoundary>
             </Suspense>
           </Shell>
         </ChatProvider>

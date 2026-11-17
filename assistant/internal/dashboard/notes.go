@@ -64,10 +64,20 @@ type noteRowView struct {
 	DeleteAction string
 }
 
+// noteReader is the read seam for notes.
+type noteReader interface {
+	List(ctx context.Context) ([]notecore.Note, error)
+}
+
+// listReader is the read seam for lists.
+type listReader interface {
+	All(ctx context.Context) ([]listcore.List, error)
+}
+
 // notesDeps is the typed set of managers one Notes request uses.
 type notesDeps struct {
-	notes *notecore.Manager
-	lists *listcore.Manager
+	notes noteReader
+	lists listReader
 }
 
 // notesPage renders both fixed lists and the notes.
@@ -75,7 +85,7 @@ func (h *Handler) notesPage(w http.ResponseWriter, r *http.Request) {
 	if !allowGet(w, r) {
 		return
 	}
-	h.writeJSON(w, http.StatusOK, h.buildNotesView(notesFlashMessage(r.URL.Query().Get("flash")), ""))
+	h.writeJSON(w, http.StatusOK, h.buildNotesView(r.Context(), notesFlashMessage(r.URL.Query().Get("flash")), ""))
 }
 
 // noteCreate stores one note.
@@ -86,16 +96,16 @@ func (h *Handler) noteCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := limitForm(w, r); err != nil {
-		h.notesFail(w, http.StatusBadRequest, "Could not read the form.")
+		h.notesFail(r.Context(), w, http.StatusBadRequest, "Could not read the form.")
 		return
 	}
 	note, err := manager.Remember(r.Context(), r.FormValue("text"))
 	if err != nil {
-		h.notesWriteError(w, "create note", err)
+		h.notesWriteError(r.Context(), w, "create note", err)
 		return
 	}
 	h.logger.Info("note created from dashboard", "note_id", note.ID)
-	h.notesSuccess(w, flashNoteSaved)
+	h.notesSuccess(r.Context(), w, flashNoteSaved)
 }
 
 // noteUpdate replaces one note's text.
@@ -111,15 +121,15 @@ func (h *Handler) noteUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := limitForm(w, r); err != nil {
-		h.notesFail(w, http.StatusBadRequest, "Could not read the form.")
+		h.notesFail(r.Context(), w, http.StatusBadRequest, "Could not read the form.")
 		return
 	}
 	if _, err := manager.Update(r.Context(), id, r.FormValue("text")); err != nil {
-		h.notesWriteError(w, "update note", err)
+		h.notesWriteError(r.Context(), w, "update note", err)
 		return
 	}
 	h.logger.Info("note updated from dashboard", "note_id", id)
-	h.notesSuccess(w, flashNoteUpdated)
+	h.notesSuccess(r.Context(), w, flashNoteUpdated)
 }
 
 // noteDelete removes one note.
@@ -136,15 +146,15 @@ func (h *Handler) noteDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	deleted, err := manager.Delete(r.Context(), id)
 	if err != nil {
-		h.notesWriteError(w, "delete note", err)
+		h.notesWriteError(r.Context(), w, "delete note", err)
 		return
 	}
 	if deleted == 0 {
-		h.notesSuccess(w, flashNoteGone)
+		h.notesSuccess(r.Context(), w, flashNoteGone)
 		return
 	}
 	h.logger.Info("note deleted from dashboard", "note_id", id)
-	h.notesSuccess(w, flashNoteDeleted)
+	h.notesSuccess(r.Context(), w, flashNoteDeleted)
 }
 
 // listItemAdd stores one item on a fixed list.
@@ -160,20 +170,20 @@ func (h *Handler) listItemAdd(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := limitForm(w, r); err != nil {
-		h.notesFail(w, http.StatusBadRequest, "Could not read the form.")
+		h.notesFail(r.Context(), w, http.StatusBadRequest, "Could not read the form.")
 		return
 	}
 	item, added, err := manager.Add(r.Context(), key, r.FormValue("text"))
 	if err != nil {
-		h.notesWriteError(w, "add item", err)
+		h.notesWriteError(r.Context(), w, "add item", err)
 		return
 	}
 	if !added {
-		h.notesFail(w, http.StatusConflict, "That item is already on the list.")
+		h.notesFail(r.Context(), w, http.StatusConflict, "That item is already on the list.")
 		return
 	}
 	h.logger.Info("list item added from dashboard", "list", key, "item_id", item.ID)
-	h.notesSuccess(w, flashItemAdded)
+	h.notesSuccess(r.Context(), w, flashItemAdded)
 }
 
 // listItemToggle ticks or unticks one row.
@@ -195,7 +205,7 @@ func (h *Handler) listItemToggle(w http.ResponseWriter, r *http.Request) {
 	}
 	items, err := manager.Items(r.Context(), key)
 	if err != nil {
-		h.notesWriteError(w, "read list", err)
+		h.notesWriteError(r.Context(), w, "read list", err)
 		return
 	}
 	done := false
@@ -208,15 +218,15 @@ func (h *Handler) listItemToggle(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if !found {
-		h.notesSuccess(w, flashItemGone)
+		h.notesSuccess(r.Context(), w, flashItemGone)
 		return
 	}
 	if _, err := manager.SetDone(r.Context(), key, id, done); err != nil {
-		h.notesWriteError(w, "tick item", err)
+		h.notesWriteError(r.Context(), w, "tick item", err)
 		return
 	}
 	h.logger.Info("list item toggled from dashboard", "list", key, "item_id", id, "done", done)
-	h.notesSuccess(w, flashItemToggled)
+	h.notesSuccess(r.Context(), w, flashItemToggled)
 }
 
 // listItemUpdate replaces one row's text.
@@ -237,15 +247,15 @@ func (h *Handler) listItemUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := limitForm(w, r); err != nil {
-		h.notesFail(w, http.StatusBadRequest, "Could not read the form.")
+		h.notesFail(r.Context(), w, http.StatusBadRequest, "Could not read the form.")
 		return
 	}
 	if _, err := manager.UpdateItem(r.Context(), key, id, r.FormValue("text")); err != nil {
-		h.notesWriteError(w, "update item", err)
+		h.notesWriteError(r.Context(), w, "update item", err)
 		return
 	}
 	h.logger.Info("list item updated from dashboard", "list", key, "item_id", id)
-	h.notesSuccess(w, flashItemUpdated)
+	h.notesSuccess(r.Context(), w, flashItemUpdated)
 }
 
 // listItemRemove deletes one row.
@@ -267,53 +277,53 @@ func (h *Handler) listItemRemove(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := manager.RemoveByID(r.Context(), key, id); err != nil {
 		if errors.Is(err, listcore.ErrItemNotFound) {
-			h.notesSuccess(w, flashItemGone)
+			h.notesSuccess(r.Context(), w, flashItemGone)
 			return
 		}
-		h.notesWriteError(w, "remove item", err)
+		h.notesWriteError(r.Context(), w, "remove item", err)
 		return
 	}
 	h.logger.Info("list item removed from dashboard", "list", key, "item_id", id)
-	h.notesSuccess(w, flashItemRemoved)
+	h.notesSuccess(r.Context(), w, flashItemRemoved)
 }
 
 // notesSuccess answers with the refreshed view, so the app can replace the
 // page state from one response.
-func (h *Handler) notesSuccess(w http.ResponseWriter, flash string) {
-	h.writeJSON(w, http.StatusOK, h.buildNotesView(notesFlashMessage(flash), ""))
+func (h *Handler) notesSuccess(ctx context.Context, w http.ResponseWriter, flash string) {
+	h.writeJSON(w, http.StatusOK, h.buildNotesView(ctx, notesFlashMessage(flash), ""))
 }
 
 // notesFail answers with an error and the unchanged view.
-func (h *Handler) notesFail(w http.ResponseWriter, status int, message string) {
-	h.writeJSON(w, status, h.buildNotesView("", message))
+func (h *Handler) notesFail(ctx context.Context, w http.ResponseWriter, status int, message string) {
+	h.writeJSON(w, status, h.buildNotesView(ctx, "", message))
 }
 
 // notesWriteError maps a manager error to the page: a spoken validation error
 // is safe to show, a missing row is a 404 and anything else stays generic.
-func (h *Handler) notesWriteError(w http.ResponseWriter, operation string, err error) {
+func (h *Handler) notesWriteError(ctx context.Context, w http.ResponseWriter, operation string, err error) {
 	var spoken *notecore.Error
 	if errors.As(err, &spoken) {
-		h.notesFail(w, http.StatusBadRequest, spoken.Message)
+		h.notesFail(ctx, w, http.StatusBadRequest, spoken.Message)
 		return
 	}
 	var listError *listcore.Error
 	if errors.As(err, &listError) {
-		h.notesFail(w, http.StatusBadRequest, listError.Message)
+		h.notesFail(ctx, w, http.StatusBadRequest, listError.Message)
 		return
 	}
 	switch {
 	case errors.Is(err, notecore.ErrUnavailable), errors.Is(err, listcore.ErrUnavailable):
-		h.notesFail(w, http.StatusServiceUnavailable, "The note store is not available.")
+		h.notesFail(ctx, w, http.StatusServiceUnavailable, "The note store is not available.")
 	case errors.Is(err, listcore.ErrItemNotFound):
-		h.notesFail(w, http.StatusNotFound, "That list item was already gone.")
+		h.notesFail(ctx, w, http.StatusNotFound, "That list item was already gone.")
 	default:
 		h.logger.Error("notes write", "operation", operation, "error", err.Error())
-		h.notesFail(w, http.StatusInternalServerError, "Could not save that change.")
+		h.notesFail(ctx, w, http.StatusInternalServerError, "Could not save that change.")
 	}
 }
 
 // buildNotesView resolves the two managers and formats every row.
-func (h *Handler) buildNotesView(flash, errorText string) notesView {
+func (h *Handler) buildNotesView(ctx context.Context, flash, errorText string) notesView {
 	view := notesView{Owner: h.owner, Page: "notes", Flash: flash, Error: errorText}
 	deps := h.notesDeps()
 	if deps.lists == nil && deps.notes == nil {
@@ -322,7 +332,6 @@ func (h *Handler) buildNotesView(flash, errorText string) notesView {
 	view.HasStore = true
 	now := h.now()
 	loc := h.alertLocation()
-	ctx := context.Background()
 	if deps.lists != nil {
 		lists, err := deps.lists.All(ctx)
 		if err != nil {
@@ -371,7 +380,18 @@ func (h *Handler) buildNotesView(flash, errorText string) notesView {
 
 // notesDeps resolves the two managers once from the one module list.
 func (h *Handler) notesDeps() notesDeps {
-	return notesDeps{notes: h.noteManager(), lists: h.listManager()}
+	if h.notesDepsOverride != nil {
+		return h.notesDepsOverride()
+	}
+	var notes noteReader
+	if m := h.noteManager(); m != nil {
+		notes = m
+	}
+	var lists listReader
+	if m := h.listManager(); m != nil {
+		lists = m
+	}
+	return notesDeps{notes: notes, lists: lists}
 }
 
 // noteManager and listManager are the one module-list lookup behind notesDeps.

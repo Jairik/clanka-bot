@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/agent"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 	"github.com/Jairik/clanka-bot/assistant/internal/speech"
@@ -226,6 +227,29 @@ func TestRoutingDropsAPhraseClaimedByTwoTools(t *testing.T) {
 	}
 }
 
+func TestClarifyMessageDefaultsAndAppliesOnTheNextRead(t *testing.T) {
+	f := newFixture(t, nil, nil)
+	ctx := context.Background()
+	if got := f.manager.ClarifyMessage(); got != agent.DefaultClarifyMessage {
+		t.Fatalf("initial = %q, want the code default", got)
+	}
+	if _, ok := definitionsByKey(f.setup.Definitions)[wording.ClarifyKey]; !ok {
+		t.Fatal("Build defines no Clarify setting")
+	}
+	if _, err := f.settings.Set(ctx, wording.ClarifyKey, "Say that again."); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if got := f.manager.ClarifyMessage(); got != "Say that again." {
+		t.Fatalf("after Set = %q", got)
+	}
+	if _, err := f.settings.Reset(ctx, wording.ClarifyKey); err != nil {
+		t.Fatalf("Reset: %v", err)
+	}
+	if got := f.manager.ClarifyMessage(); got != agent.DefaultClarifyMessage {
+		t.Fatalf("after Reset = %q", got)
+	}
+}
+
 func TestUnavailableMessageAppliesOnTheNextRead(t *testing.T) {
 	f := newFixture(t, nil, nil)
 	ctx := context.Background()
@@ -250,10 +274,11 @@ func TestUnavailableMessageAppliesOnTheNextRead(t *testing.T) {
 // is live. Phrases containing "new" point one way, rain points the opposite
 // way, and everything else points at the old clock example.
 type fakeEmbedder struct {
-	mu       sync.Mutex
-	calls    int
-	nextGate chan struct{}
-	failErr  error
+	mu            sync.Mutex
+	calls         int
+	nextGate      chan struct{}
+	blockUntilCtx bool
+	failErr       error
 }
 
 func (f *fakeEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
@@ -261,8 +286,15 @@ func (f *fakeEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, 
 	f.calls++
 	gate := f.nextGate
 	f.nextGate = nil
+	block := f.blockUntilCtx
 	failErr := f.failErr
 	f.mu.Unlock()
+	if block {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	if gate != nil {
 		select {
 		case <-gate:
@@ -286,6 +318,13 @@ func (f *fakeEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, 
 		}
 	}
 	return vectors, nil
+}
+
+// setBlockUntilCtx sets whether Embed calls block until their context is done.
+func (f *fakeEmbedder) setBlockUntilCtx(block bool) {
+	f.mu.Lock()
+	f.blockUntilCtx = block
+	f.mu.Unlock()
 }
 
 // gateNext holds the next Embed call open until the returned channel closes.
@@ -321,9 +360,10 @@ func (f *fakeEmbedder) waitCalls(t *testing.T, want int) {
 	}
 }
 
-func newSemanticFixture(t *testing.T) (*fixture, *pipeline.SemanticRouter, *fakeEmbedder) {
+// newSemanticFixtureWith builds a semantic fixture configured with custom wording manager options.
+func newSemanticFixtureWith(t *testing.T, opts ...wording.Option) (*fixture, *pipeline.SemanticRouter, *fakeEmbedder) {
 	t.Helper()
-	f := newFixture(t, nil, nil)
+	f := newFixtureWith(t, nil, nil, nil, opts...)
 	embedder := &fakeEmbedder{}
 	router := pipeline.NewSemanticRouter(f.registry, embedder, pipeline.SemanticConfig{
 		Threshold: 0.7,
@@ -340,6 +380,11 @@ func newSemanticFixture(t *testing.T) (*fixture, *pipeline.SemanticRouter, *fake
 	f.manager.MarkExamplesBuilt(examples)
 	f.manager.Start(context.Background(), router)
 	return f, router, embedder
+}
+
+func newSemanticFixture(t *testing.T) (*fixture, *pipeline.SemanticRouter, *fakeEmbedder) {
+	t.Helper()
+	return newSemanticFixtureWith(t)
 }
 
 func TestExamplesRebuildKeepsOldVectorsUntilTheSwap(t *testing.T) {
@@ -712,5 +757,52 @@ func TestFillerReSynthesizesWhenTheVoiceOrRateChanges(t *testing.T) {
 	defer mu.Unlock()
 	if len(signatures) != 2 {
 		t.Fatalf("synthesis calls = %d, want one per signature change", len(signatures))
+	}
+}
+
+// TestFillerReSynthesizesWhenPronunciationChanges proves that updating speech.pronunciation
+// invalidates and re-synthesizes the cached Filler in the background through the wording manager.
+func TestFillerReSynthesizesWhenPronunciationChanges(t *testing.T) {
+	var mu sync.Mutex
+	var synthesized []string
+
+	extra := []settings.Definition{
+		speech.PronunciationDefinition(nil),
+	}
+	var settSvc *settings.Service
+	synth := func(_ context.Context, text string) (*speech.Filler, error) {
+		pron := speech.NewPronouncer(settSvc.Strings(speech.PronunciationKey))
+		spoken := pron.Replace(text)
+		mu.Lock()
+		synthesized = append(synthesized, spoken)
+		mu.Unlock()
+		return &speech.Filler{Text: spoken, PCM: []byte(spoken)}, nil
+	}
+
+	initial := &speech.Filler{Text: "One moment.", PCM: []byte("One moment.")}
+	f := newFixtureWith(t, initial, synth, extra,
+		wording.WithFillerKeys("voice.name", "voice.rate", speech.PronunciationKey),
+	)
+	settSvc = f.settings
+	ctx := context.Background()
+	f.manager.Start(ctx, nil)
+
+	// Change pronunciation for a word in the filler phrase: moment -> second.
+	if _, err := f.settings.Set(ctx, speech.PronunciationKey, []string{"moment=second"}); err != nil {
+		t.Fatalf("Set pronunciation: %v", err)
+	}
+	if err := f.manager.Wait(ctx); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+
+	// The cached filler PCM should now reflect the replaced pronunciation.
+	if got := string(f.manager.Filler().PCM); got != "One second." {
+		t.Fatalf("filler after pronunciation change = %q, want %q", got, "One second.")
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(synthesized) != 1 || synthesized[0] != "One second." {
+		t.Fatalf("synthesized phrases = %+v, want [\"One second.\"]", synthesized)
 	}
 }

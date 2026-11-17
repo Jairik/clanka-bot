@@ -276,7 +276,7 @@ func TestWyomingWakeDropsADetectionOutsideTheAllowlist(t *testing.T) {
 	addr := fakeWakeServer(t, "hey_jarvis")
 	wake := voice.NewWyomingWake(wyoming.NewClient(addr), []string{"clanker"},
 		wyoming.Format{Rate: 16000, Width: 2, Channels: 1},
-		map[string]float64{"clanker": 0.5})
+		staticThresholds{"clanker": 0.5})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()

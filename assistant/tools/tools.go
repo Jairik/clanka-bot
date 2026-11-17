@@ -12,6 +12,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/tools/assistant"
 	"github.com/Jairik/clanka-bot/assistant/tools/audiocontrol"
 	"github.com/Jairik/clanka-bot/assistant/tools/calc"
+	"github.com/Jairik/clanka-bot/assistant/tools/calendar"
 	"github.com/Jairik/clanka-bot/assistant/tools/clock"
 	"github.com/Jairik/clanka-bot/assistant/tools/conversation"
 	"github.com/Jairik/clanka-bot/assistant/tools/github"
@@ -76,6 +77,7 @@ func NewSet() *Set {
 			alerts.AlarmSource(alarmModule.Manager),
 			alerts.ReminderSource(reminderModule.Manager),
 		),
+		calendar.NewModule(),
 	}}
 }
 

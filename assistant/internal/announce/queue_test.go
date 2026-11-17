@@ -242,7 +242,7 @@ func TestUrgentAlertBypassesTheHold(t *testing.T) {
 
 	queue.Hold()
 	queue.Enqueue("A held announcement.")
-	queue.EnqueueAlert(func(context.Context) error {
+	queue.EnqueueAlert("check the oven", func(context.Context) error {
 		return speaker.SayText(context.Background(), "Your reminder: check the oven.")
 	})
 
@@ -264,7 +264,7 @@ func TestUrgentAlertWaitsForTheTurn(t *testing.T) {
 
 	queue.Hold()
 	queue.TurnStarted()
-	queue.EnqueueAlert(func(context.Context) error {
+	queue.EnqueueAlert("check the oven", func(context.Context) error {
 		return speaker.SayText(context.Background(), "Your reminder: check the oven.")
 	})
 	expectSilence(t, speaker)
@@ -283,7 +283,7 @@ func TestUrgentAlertWaitsForABlockedConfirmation(t *testing.T) {
 	t.Cleanup(queue.Close)
 
 	queue.Hold()
-	queue.EnqueueAlert(func(context.Context) error {
+	queue.EnqueueAlert("check the oven", func(context.Context) error {
 		return speaker.SayText(context.Background(), "Your reminder: check the oven.")
 	})
 	expectSilence(t, speaker)
@@ -302,7 +302,7 @@ func TestUrgentAlertIsNotCollapsedIntoTheHeldSummary(t *testing.T) {
 
 	queue.Hold()
 	queue.Enqueue("The bins go out tonight.")
-	queue.EnqueueAlert(func(context.Context) error {
+	queue.EnqueueAlert("check the oven", func(context.Context) error {
 		return speaker.SayText(context.Background(), "Your reminder: check the oven.")
 	})
 	queue.Enqueue("The wash is done.")

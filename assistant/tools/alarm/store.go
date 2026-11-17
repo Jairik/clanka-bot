@@ -47,6 +47,11 @@ func (m *Manager) AttachStore(st *store.Store, announcements *announce.Queue) er
 	m.history = alertstore.New(st.DB())
 	m.announcements = announcements
 	m.mu.Unlock()
+	if m.settings != nil {
+		if svc := m.settings(); svc != nil {
+			m.BindSettings(svc)
+		}
+	}
 	return m.recover()
 }
 

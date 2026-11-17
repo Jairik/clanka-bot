@@ -129,6 +129,146 @@ positives:
     - "can you change lights mode to strobe"
     - "can you lights rainbow mode"
     - "can you set lights mode to pulse"
+  lights.list:
+    - "what lights are saved"
+    - "list my saved lights"
+    - "which lights are saved"
+    - "show me the saved lights"
+    - "what saved lights do I have"
+    - "list the saved lights"
+    - "which lights do I have saved"
+    - "what lights do you have saved"
+    - "tell me which lights are saved"
+    - "read out my saved lights"
+    - "show me my saved lights"
+    - "what saved lights do you know about"
+    - "which light devices are saved"
+    - "list the light devices I saved"
+    - "what BLE lights are saved"
+    - "which BLE lights are configured"
+    - "what lights are configured"
+    - "do I have any saved lights"
+    - "tell me the lights I have saved"
+    - "what saved lights are there"
+    - "can you list my lights"
+    - "show me the lights I saved"
+    - "read me the saved lights"
+    - "which lights are set up"
+  monster.power:
+    - "turn the monitor light on"
+    - "turn off the light bar"
+    - "switch on the monitor light"
+    - "power off the light bar"
+    - "turn on Duo+"
+    - "power on the monitor light"
+    - "switch off the light bar"
+    - "please turn the monitor light on"
+    - "please turn off the light bar"
+    - "please switch on the monitor light"
+    - "please power off the light bar"
+    - "could you turn on the monitor light"
+    - "could you turn off the light bar"
+    - "could you switch on the light bar"
+    - "can you turn on the monitor light"
+    - "can you turn off the light bar"
+    - "monitor light on"
+    - "light bar off"
+    - "light bar on"
+    - "monitor light off"
+    - "turn off Duo+"
+    - "switch on Duo+"
+  monster.brightness:
+    - "set light bar level to 50 percent"
+    - "turn the monitor light brightness to 75"
+    - "light bar dimmer 40 percent"
+    - "set light bar level to 60 percent"
+    - "dim Duo+ to 30 percent"
+    - "monitor light dimmer 80 percent"
+    - "dim the light bar to 25 percent"
+    - "set monitor light level to 40 percent"
+    - "dim the monitor light to 10 percent"
+    - "set light bar level to 100 percent"
+    - "set monitor light level to 90 percent"
+    - "please set light bar level to 50 percent"
+    - "please dim the light bar to 20 percent"
+    - "please dim Duo+ to 30 percent"
+    - "could you set light bar level to 60 percent"
+    - "could you dim the monitor light to 30 percent"
+    - "can you set light bar level to 70 percent"
+    - "can you dim the light bar to 15 percent"
+    - "light bar dimmer 50 percent"
+    - "monitor light dimmer 60 percent"
+    - "set Duo+ level to 80 percent"
+    - "dim Duo+ to 50 percent"
+  monster.color:
+    - "make the monitor light red"
+    - "set light bar to blue"
+    - "monitor light color green"
+    - "make the light bar purple"
+    - "change Duo+ color to orange"
+    - "set monitor light color to #ff00ff"
+    - "set light bar color to yellow"
+    - "change monitor light color to cyan"
+    - "make the monitor light blue"
+    - "turn the light bar green"
+    - "set Duo+ color to red"
+    - "change light bar color to pink"
+    - "please set light bar to blue"
+    - "please make the monitor light red"
+    - "please set light bar color to purple"
+    - "could you make the monitor light red"
+    - "could you set light bar to blue"
+    - "can you make the monitor light green"
+    - "can you set light bar to purple"
+    - "monitor light color #00ff00"
+    - "light bar color #ff0000"
+    - "set Duo+ to blue"
+  monster.white:
+    - "set the monitor light to warm white"
+    - "change light bar to cool white"
+    - "set monitor light to daylight white"
+    - "set light bar white to 4000 kelvin"
+    - "set Duo+ to 2700 kelvin"
+    - "turn the monitor light to 5000 kelvin"
+    - "set light bar to warm white"
+    - "change monitor light to cool white"
+    - "set light bar to daylight white"
+    - "set monitor light white to 3000 kelvin"
+    - "set light bar to 6500 kelvin"
+    - "please set the monitor light to warm white"
+    - "please change light bar to cool white"
+    - "please set light bar to daylight white"
+    - "could you set the monitor light to warm white"
+    - "could you change light bar to cool white"
+    - "can you set light bar to warm white"
+    - "can you set monitor light to cool white"
+    - "set Duo+ to 4000 kelvin"
+    - "set Duo+ to daylight white"
+    - "set light bar white to 2700 kelvin"
+    - "change monitor light to 4000 kelvin"
+  monster.scene:
+    - "set monitor light to reading scene"
+    - "change light bar to party scene"
+    - "set the monitor light scene to relax"
+    - "switch light bar to dynamic scene"
+    - "set Duo+ scene to gaming"
+    - "change monitor light to movie scene"
+    - "set light bar scene to sunset"
+    - "switch monitor light to reading scene"
+    - "change light bar to movie scene"
+    - "set monitor light scene to gaming"
+    - "please set monitor light to reading scene"
+    - "please change light bar to party scene"
+    - "please switch light bar to dynamic scene"
+    - "could you set monitor light to reading scene"
+    - "could you change light bar to party scene"
+    - "can you set light bar scene to relax"
+    - "can you switch light bar to dynamic scene"
+    - "set light bar to reading scene"
+    - "change monitor light to relax scene"
+    - "set Duo+ scene to party"
+    - "switch Duo+ to movie scene"
+    - "set light bar scene to party"
   time.now:
     - what time is it
     - what's the time
@@ -368,6 +508,35 @@ positives:
     - when is the egg timer done
     - how long until the pasta timer goes off
     - how long does the tea timer have left
+  timer.extend:
+    # Extending a running countdown timer by adding time to it.
+    # These three stay off the "set a timer for N" wording so they clear
+    # the margin against timer.set.
+    - add five more minutes
+    - give it ten more minutes
+    - extend it by five minutes
+    - add five minutes to the timer
+    - add 5 minutes to the timer
+    - +5 minutes on the pasta timer
+    - give the egg timer ten more minutes
+    - add ten minutes to the pasta timer
+    - put five more minutes on the timer
+    - extend the timer by ten minutes
+    - extend the pasta timer by five minutes
+    - add 15 minutes to my timer
+    - give me five more minutes on the timer
+    - extend my timer by 5 minutes
+    - add ten more minutes to the timer
+    - +10 minutes on the timer
+    - add two minutes to the timer
+    - put ten more minutes on the pasta timer
+    - extend the timer for five minutes
+    - give the pasta timer another five minutes
+    - add an extra five minutes to the timer
+    - add 30 minutes to the timer
+    - give the timer five more minutes
+    - extend the timer by an hour
+    - add five minutes to the pasta timer
   reminder.set:
     # A message is required: "remind me in ten minutes" alone stays a timer
     # request, while these all name what to say.
@@ -827,6 +996,32 @@ positives:
     # Repeat at a modified rate (issue #306).
     - say that again slower
     - again but slower
+  assistant.heard:
+    # Read back the transcript the Assistant acted on (issue #224).
+    - what did you hear
+    - what did I just say
+    - did you catch that
+    - what was my question
+    - read back what I said
+    - what did you think I said
+    - what did you think that I said
+    - what did you hear me say
+    - what was my last question
+    - read back my question
+    - read back my last question
+    - read back what I just asked
+    - read back what I just said
+    - read back the question
+    - can you read back what I said
+    - please read back what I said
+    - tell me what you heard
+    - tell me what you heard me say
+    - did you hear my question
+    - what was it that I asked
+    - what did you think I asked
+    - what was the question I just asked
+    - what did I ask you
+    - what did I just ask
   assistant.help:
     # Generated from the enabled registry; the wording asks for capabilities,
     # not a specific Tool.
@@ -884,6 +1079,33 @@ positives:
     - start a new conversation
     - let's forget the conversation
     - forget what I just said
+  assistant.announcements:
+    # Read back recent unprompted speech spoken while away.
+    - what did you say while I was out
+    - read me the announcements
+    - any announcements
+    - did you say anything while I was out
+    - what did you say while I was gone
+    - did you say anything while I was gone
+    - read the announcements
+    - read out the announcements
+    - read my announcements
+    - read out my announcements
+    - tell me the announcements
+    - are there any announcements
+    - were there any announcements
+    - what were the announcements while I was out
+    - what announcements were made while I was out
+    - did you announce anything while I was out
+    - did you announce anything while I was away
+    - what did you announce while I was away
+    - did I miss any announcements
+    - what announcements did I miss
+    - what did you say when I was out
+    - did you say anything when I was out
+    - check for announcements
+    - read back the announcements
+    - read back what you said while I was out
   system.status:
     # Health and availability questions about the Assistant itself, not the
     # weather, an alarm or a phone.
@@ -1713,7 +1935,61 @@ positives:
     - "let's wrap up the conversation"
     - "wrap up this chat"
     - "finish our conversation"
+  calendar.today:
+    - "what's on my calendar today"
+    - "what is on my calendar today"
+    - "what do I have on my calendar today"
+    - "check my calendar today"
+    - "what events do I have on my calendar today"
+    - "tell me my calendar events today"
+    - "do I have any calendar events today"
+    - "what is on my calendar for today"
+    - "what's on my calendar for today"
+    - "show my calendar events today"
+    - "read my calendar today"
+    - "list my calendar events today"
+    - "check my calendar for today"
+    - "what are my calendar events today"
+    - "what meetings are on my calendar today"
+    - "what is on my calendar tomorrow"
+    - "what's on my calendar for tomorrow"
+    - "check my calendar tomorrow"
+    - "what do I have on my calendar tomorrow"
+    - "tell me my calendar events tomorrow"
+    - "what's on my calendar on Monday"
+    - "what's on my calendar on Friday"
+  calendar.next:
+    - "what is my next calendar event"
+    - "what's my next calendar event"
+    - "when is my next calendar event"
+    - "what's the next event on my calendar"
+    - "what is the next event on my calendar"
+    - "when is my next appointment on my calendar"
+    - "what is my next scheduled calendar event"
+    - "what's next on my calendar"
+    - "when is the next event on my calendar"
+    - "tell me the next event on my calendar"
+    - "check the next event on my calendar"
+    - "show the next event on my calendar"
+    - "what is the next meeting on my calendar"
+    - "when's the next event on my calendar"
+    - "when is my next meeting on my calendar"
+    - "what's my next meeting on my calendar"
+    - "what is the next appointment on my calendar"
+    - "find the next event on my calendar"
+    - "what is coming up next on my calendar"
+    - "what comes next on my calendar"
+    - "what's the upcoming event on my calendar"
+    - "tell me the upcoming event on my calendar"
 negatives:
+  - how do I share my Google Calendar
+  - sync my Outlook calendar with my phone
+  - export my calendar to a CSV file
+  - create a new calendar called Personal
+  - how do leap years work on the Gregorian calendar
+  - who invented the calendar
+  - how many days in the Mayan calendar
+  - what is an Aztec calendar stone
   - "what's my next alarm"
   - "when does my next alarm go off"
   - "which alarm is next"
@@ -1726,6 +2002,9 @@ negatives:
   - why are my lights flickering
   - explain Bluetooth light protocols
   - what does rainbow light mode mean
+  - what's the difference between BLE and Wi-Fi lights
+  - how much electricity do LED lights use
+  - tell me a joke about desk lamps
   - what's a good running playlist for a marathon
   - recommend a playlist for studying
   - create a new playlist called road trip
@@ -2092,11 +2371,34 @@ negatives:
   - leave a message
   - no more coffee
   - stop the printer
+  # Announcement-making requests: asking to speak/broadcast an announcement, not
+  # read back past announcements; these must not route to assistant.announcements.
+  - make an announcement
+  - make an announcement that dinner is ready
+  - announce that the meeting is starting
+  - can you make an announcement
+  # Monster light bar non-requests: questions about setup, hardware or open-ended
+  # assistance, which must remain on the Agent path rather than triggering a tool.
+  - how do I configure my Monster light bar
+  - why is my monitor light bar flickering
+  - what is the best monitor light bar for coding
+  - explain the difference between a light bar and desk lamp
+  - how do I pair the Duo+ light bar to Wi-Fi
+  - does the Monster light bar support Apple HomeKit
+  - where can I buy a replacement monitor light
+  - how much power does the light bar use
+  # Timer-extension non-requests that must remain on the Agent path:
+  - how do I extend a timer
+  - how do timers work
+  - extend my warranty
+  - can I add more time to my parking meter
+  - extend the deadline
 
 # Compound requests ask for more than one thing. They are kept separate so
 # the evaluation can report compound handling on its own.
 compounds:
   - turn the lights on and tell me the weather
+  - list my saved lights and turn them off
   - set a timer for 15 minutes and play Here Comes the Sun when it finishes
   - set an alarm for 7 and play my running playlist when it rings
   - what time is it and set a timer for five minutes

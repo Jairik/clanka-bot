@@ -71,6 +71,9 @@ type Speaker struct {
 	rate    float64
 	live    func() VoiceSettings
 
+	pronounceMu sync.RWMutex
+	pronounce   func() *Pronouncer
+
 	// ttsCache is a bounded LRU of fully synthesized PCM for short replies.
 	// cacheMu guards it and ttsFormat. A hit copies the PCM out from under the
 	// lock and never holds the slice (or the lock) while writing to the sink.
@@ -99,6 +102,31 @@ func (s *Speaker) BindVoice(source func() VoiceSettings) {
 	s.voiceMu.Lock()
 	s.live = source
 	s.voiceMu.Unlock()
+}
+
+// BindPronunciation installs the live pronunciation source. Every reply and
+// Filler reads it per synthesis, so a Dashboard or settings write applies
+// without recreating the Speaker.
+func (s *Speaker) BindPronunciation(source func() *Pronouncer) {
+	if s == nil {
+		return
+	}
+	s.pronounceMu.Lock()
+	s.pronounce = source
+	s.pronounceMu.Unlock()
+}
+
+func (s *Speaker) pronouncer() *Pronouncer {
+	if s == nil {
+		return nil
+	}
+	s.pronounceMu.RLock()
+	source := s.pronounce
+	s.pronounceMu.RUnlock()
+	if source == nil {
+		return nil
+	}
+	return source()
 }
 
 // synthesis reads the current voice and rate in one snapshot. A nil or empty
@@ -145,17 +173,24 @@ func (s *Speaker) Say(ctx context.Context, text string) (Result, error) {
 		rate = override
 	}
 
+	// Apply live pronunciation map immediately before synthesis and cache keying.
+	// The original text is preserved for logs, Activity and last-reply.
+	spoken := text
+	if p := s.pronouncer(); p != nil {
+		spoken = p.Replace(text)
+	}
+
 	// Short replies may be served from the cache. Longer replies bypass it
 	// entirely (neither looked up, teed, nor stored) to keep memory bounded on
 	// the Pi, so a long Agent answer never buffers its whole PCM in memory. A
 	// voice or rate change misses because both are part of the key; a
 	// Quiet-hours gain change does not, because the stored PCM is pre-gain.
-	cacheable := len([]rune(text)) <= ttsCacheMaxRunes
+	cacheable := len([]rune(spoken)) <= ttsCacheMaxRunes
 	if cacheable {
 		s.cacheMu.Lock()
 		keyFormat := s.ttsFormat
 		s.cacheMu.Unlock()
-		key := cacheKey(text, choice.Voice.Name, rate, keyFormat)
+		key := cacheKey(spoken, choice.Voice.Name, rate, keyFormat)
 		if pcm, format, ok := s.cacheLookup(key); ok {
 			return s.playCached(ctx, text, pcm, format, started)
 		}
@@ -163,7 +198,7 @@ func (s *Speaker) Say(ctx context.Context, text string) (Result, error) {
 
 	// Miss: synthesise and (only for cacheable replies) tee the chunks so a
 	// clean stream can be cached. Long replies skip the tee entirely.
-	stream, err := s.client.Synthesize(ctx, text, choice.Voice, wyoming.WithRate(rate))
+	stream, err := s.client.Synthesize(ctx, spoken, choice.Voice, wyoming.WithRate(rate))
 	if err != nil {
 		return Result{}, err
 	}
@@ -204,7 +239,7 @@ func (s *Speaker) Say(ctx context.Context, text string) (Result, error) {
 	// cancelled, so a Barge-in or a mid-stream failure never leaves a
 	// half-rendered entry.
 	if cacheable && playErr == nil && ctx.Err() == nil && tee.Len() > 0 {
-		s.cacheStore(cacheKey(text, choice.Voice.Name, rate, format), append([]byte(nil), tee.Bytes()...), format)
+		s.cacheStore(cacheKey(spoken, choice.Voice.Name, rate, format), append([]byte(nil), tee.Bytes()...), format)
 	}
 
 	return s.logAndReturn(ctx, "miss", text, result, format, started, playErr)

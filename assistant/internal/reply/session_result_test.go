@@ -10,6 +10,7 @@ import (
 
 	"github.com/Jairik/clanka-bot/assistant/internal/agent"
 	"github.com/Jairik/clanka-bot/assistant/internal/audio"
+	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/latency"
 	"github.com/Jairik/clanka-bot/assistant/internal/pipeline"
 	"github.com/Jairik/clanka-bot/assistant/internal/reply"
@@ -245,6 +246,13 @@ func TestResultVariantsSpeakOnceAndLogTheirOutcome(t *testing.T) {
 			wantOutcome: "ok",
 		},
 		{
+			name:        "ignored turn",
+			stream:      []string{"<", "igno", "re>"},
+			result:      agent.Result{Ignored: true},
+			wantPhrases: nil,
+			wantOutcome: "ignored",
+		},
+		{
 			name:           "first token timeout",
 			stream:         []string{preamble},
 			result:         agent.Result{Text: agent.FirstTokenTimeoutMessage, TimedOut: true, TextNotStreamed: true},
@@ -299,6 +307,40 @@ func TestResultVariantsSpeakOnceAndLogTheirOutcome(t *testing.T) {
 				t.Fatalf("agent_error = %v, want %q in %v", line["agent_error"], test.wantAgentError, line)
 			}
 		})
+	}
+}
+
+// TestSuspendedStopLogsItsOwnOutcome keeps a deliberate silent stop out of
+// "no audio": Activity must not read it as a missing reply (#501).
+func TestSuspendedStopLogsItsOwnOutcome(t *testing.T) {
+	timeline := latency.New("req-suspended", latency.SourceVoice)
+	ctx := latency.WithContext(context.Background(), timeline)
+	speaker := resultSpeaker{newFakeSpeaker()}
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	runner := &resultAgent{history: agent.NewHistory(10, time.Minute, nil)}
+	p, err := pipeline.New(tool.NewRegistry(time.Second), map[string]string{"stop": "stop"}, logger,
+		pipeline.WithAgent(runner, nil),
+		pipeline.WithFocus(&focus.Registry{}),
+	)
+	if err != nil {
+		t.Fatalf("pipeline.New: %v", err)
+	}
+	session := reply.New(p, speaker, nil, nil, reply.WithLogger(logger))
+
+	result, err := session.Ask(ctx, request(), "stop")
+	if err != nil {
+		t.Fatalf("Ask: %v", err)
+	}
+	if !result.Suspend {
+		t.Fatalf("reply = %+v, want the session to end", result)
+	}
+	if got := speaker.phrases(); len(got) != 0 {
+		t.Fatalf("spoken = %q, want complete silence", got)
+	}
+	line := oneRequestLine(t, &logs)
+	if line["outcome"] != "suspended" {
+		t.Fatalf("outcome = %v, want suspended in %v", line["outcome"], line)
 	}
 }
 

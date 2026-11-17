@@ -80,7 +80,15 @@ func (m *Module) Start(context.Context) error {
 	if m.manager == nil {
 		return nil
 	}
-	return m.manager.AttachStore(m.deps.Store, m.deps.Announcements)
+	if err := m.manager.AttachStore(m.deps.Store, m.deps.Announcements); err != nil {
+		return err
+	}
+	if m.deps.Settings != nil {
+		if svc := m.deps.Settings(); svc != nil {
+			m.manager.BindSettings(svc)
+		}
+	}
+	return nil
 }
 
 // Manager exposes the running Manager so main can install the missed hook and

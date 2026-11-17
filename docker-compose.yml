@@ -28,6 +28,8 @@ services:
     environment:
       EMBED_MODEL: ${EMBED_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
       EMBED_PORT: "8085"
+      # Pi benchmarks favor bounded threads so encode does not grab every core during routing.
+      OMP_NUM_THREADS: ${EMBED_THREADS:-2}
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8085/healthz')"]
       interval: 10s
@@ -218,10 +220,14 @@ services:
     build:
       context: ./assistant
       dockerfile: web/Dockerfile.web
-      args:
-        WEB_VERSION: ${GIT_SHA:-dev}
+    # Only web/ goes into this image, so scripts/image-keys.py keys it on
+    # assistant/web alone and a Go-only change reuses the published artifact.
     image: clanka/dashboard-web:${GIT_SHA:-dev}
     restart: unless-stopped
+    environment:
+      # Set at start, not baked: the same image serves every commit whose web/
+      # is unchanged, and the header must still name the deployed commit.
+      DASHBOARD_UI_VERSION: ${GIT_SHA:-dev}
     expose:
       - "8080"
     healthcheck:

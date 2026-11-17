@@ -14,6 +14,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/internal/toolpolicy"
 	"github.com/Jairik/clanka-bot/assistant/internal/voicesample"
+	"github.com/Jairik/clanka-bot/assistant/internal/wakethreshold"
 	"github.com/Jairik/clanka-bot/assistant/internal/wording"
 )
 
@@ -50,8 +51,8 @@ type settingsView struct {
 	Voice           string
 	CanPreview      bool
 	PreviewMaxRunes int
-	// Wakeword is read-only: the allowlist and thresholds are connection
-	// settings read once at startup.
+	// Wakeword is the Wake word section: the model list and address read-only,
+	// with one live threshold form per configured model.
 	Wakeword wakewordSettingsView
 }
 
@@ -414,6 +415,13 @@ func (h *Handler) buildSettingsView(flash, errorText string, edit *editState) se
 			view.Quiet = append(view.Quiet, setting)
 			continue
 		}
+		// The Wake word section owns wakeword.threshold.<model> forms; the
+		// address stays read-only there rather than a second row here.
+		// Other wakeword.* keys (listening, listening_until) stay ordinary live settings.
+		if strings.HasPrefix(value.Key, wakethreshold.Prefix) || value.Key == "wakeword.addr" {
+			view.Wakeword.takeThreshold(value.Key, setting)
+			continue
+		}
 		if value.Kind == settings.RestartRequired {
 			view.Restart = append(view.Restart, setting)
 		} else {
@@ -677,6 +685,11 @@ var settingLabels = map[string]string{
 	"embed.url":                 "Embedding URL",
 	"capture.source":            "Capture source",
 	"playback.sink":             "Playback sink",
+	"location.city":             "Location city",
+	"location.region":           "Location region",
+	"location.timezone":         "Location timezone",
+	"alerts.history_days":       "History days",
+	"alerts.history_rows":       "History rows",
 }
 
 func settingLabel(key string) string {

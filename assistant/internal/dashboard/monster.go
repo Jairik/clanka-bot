@@ -104,7 +104,10 @@ func (h *Handler) monsterAPI(w http.ResponseWriter, r *http.Request) {
 		case errors.Is(err, core.ErrNotFound), errors.Is(err, core.ErrUpstream), errors.Is(err, context.DeadlineExceeded):
 			http.Error(w, core.Friendly(err), http.StatusBadGateway)
 		default:
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			if h.logger != nil {
+				h.logger.Error("monster apply failed", "error", err.Error())
+			}
+			http.Error(w, "Monster request failed.", http.StatusBadRequest)
 		}
 		return
 	}

@@ -117,6 +117,7 @@ func TestDashboardWriteRoutesRejectCrossSiteBeforeHandler(t *testing.T) {
 		"/activity/ask",
 		"/api/ui/ask/audio",
 		"/sounds/upload",
+		"/sounds/delete/birds",
 		"/voices/active/alba",
 		"/personas",
 		"/notes",
@@ -124,6 +125,7 @@ func TestDashboardWriteRoutesRejectCrossSiteBeforeHandler(t *testing.T) {
 		"/api/ui/volume",
 		"/alerts/create",
 		"/hermes/integrations/spotify/verify",
+		"/api/ui/smoke",
 	}
 	for _, target := range writeURLs {
 		req := request(http.MethodPost, target, owner)

@@ -1,6 +1,6 @@
 # clanka-bot
 
-My lovely always-on voice assistant for stuff written in go. Kind of like a lobotomized jarvis.
+My lovely always-on voice assistant for stuff written in go. Kind of like a lobotomized jarvis. Idc if you fork but I would advise not to, this is extremely jank and fragile. I'm sure there are better open-source alternatives, I just wanted to make my own. 
 
 ## Quick start
 

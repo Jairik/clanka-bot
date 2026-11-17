@@ -7,9 +7,11 @@ package status
 
 import (
 	"context"
+	"database/sql"
 	"errors"
-	"strings"
+	"os"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/location"
@@ -59,6 +61,10 @@ type Options struct {
 	Modules  Modules
 	Location Location
 	Now      func() time.Time
+	DB       *sql.DB
+	DBPath   string
+	ReadFile func(path string) ([]byte, error)
+	Statfs   func(path string, buf *syscall.Statfs_t) error
 }
 
 // Source owns the shared checks and their overall deadline. One source is
@@ -70,6 +76,10 @@ type Source struct {
 	modules  Modules
 	location Location
 	now      func() time.Time
+	db       *sql.DB
+	dbPath   string
+	readFile func(path string) ([]byte, error)
+	statfs   func(path string, buf *syscall.Statfs_t) error
 
 	mu       sync.Mutex
 	last     tool.StatusReport
@@ -95,12 +105,24 @@ func New(opts Options) *Source {
 	if now == nil {
 		now = time.Now
 	}
+	readFile := opts.ReadFile
+	if readFile == nil {
+		readFile = os.ReadFile
+	}
+	statfs := opts.Statfs
+	if statfs == nil {
+		statfs = syscall.Statfs
+	}
 	return &Source{
 		timeout:  timeout,
 		services: opts.Services,
 		modules:  opts.Modules,
 		location: opts.Location,
 		now:      now,
+		db:       opts.DB,
+		dbPath:   opts.DBPath,
+		readFile: readFile,
+		statfs:   statfs,
 	}
 }
 
@@ -155,23 +177,30 @@ func (s *Source) snapshot(ctx context.Context) tool.StatusReport {
 	defer cancel()
 
 	var (
-		services []tool.StatusCheck
-		location tool.StatusCheck
-		modules  []tool.StatusCheck
-		wg       sync.WaitGroup
+		services   []tool.StatusCheck
+		location   tool.StatusCheck
+		modules    []tool.StatusCheck
+		host       *tool.HostStatus
+		storage    *tool.StorageStatus
+		hostChecks []tool.StatusCheck
+		wg         sync.WaitGroup
 	)
-	wg.Add(3)
+	wg.Add(4)
 	go func() { defer wg.Done(); services = s.checkServices(ctx) }()
 	go func() { defer wg.Done(); location = s.checkLocation(ctx) }()
 	go func() { defer wg.Done(); modules = s.checkModules(ctx) }()
+	go func() { defer wg.Done(); host, storage, hostChecks = s.checkHostAndStorage(ctx) }()
 	wg.Wait()
 
 	return tool.StatusReport{
-		CheckedAt: s.now().UTC(),
-		Timeout:   s.timeout,
-		Services:  services,
-		Location:  location,
-		Modules:   modules,
+		CheckedAt:  s.now().UTC(),
+		Timeout:    s.timeout,
+		Services:   services,
+		Location:   location,
+		Modules:    modules,
+		Host:       host,
+		Storage:    storage,
+		HostChecks: hostChecks,
 	}
 }
 
@@ -268,7 +297,11 @@ func (s *Source) checkLocation(ctx context.Context) tool.StatusCheck {
 	if !known {
 		return tool.StatusCheck{Name: "location", State: tool.StatusError, Detail: "No place known."}
 	}
-	return tool.StatusCheck{Name: "location", State: tool.StatusOK, Detail: formatPlace(place)}
+	var source location.Source
+	if src, ok := s.location.(interface{ Source() string }); ok {
+		source = src.Source()
+	}
+	return tool.StatusCheck{Name: "location", State: tool.StatusOK, Detail: location.FormatPlace(place, source)}
 }
 
 func (s *Source) checkModules(ctx context.Context) []tool.StatusCheck {
@@ -397,23 +430,6 @@ func Label(state tool.StatusState) string {
 	default:
 		return string(state)
 	}
-}
-
-func formatPlace(place location.Location) string {
-	name := strings.TrimSpace(place.City)
-	if region := strings.TrimSpace(place.Region); region != "" {
-		if name != "" {
-			name += ", "
-		}
-		name += region
-	}
-	if timezone := strings.TrimSpace(place.Timezone); timezone != "" {
-		name += " (" + timezone + ")"
-	}
-	if name == "" {
-		return "No place known."
-	}
-	return name
 }
 
 func formatDuration(d time.Duration) string {

@@ -14,6 +14,7 @@ const health = (routing: Check): HealthView => ({
   CheckedAt: "now",
   HealthTimeout: "3s",
   Services: [],
+  Host: [],
   Wakeword: [],
   Location: { Name: "pi", Status: "ok", StatusLabel: "OK", Detail: "" },
   Modules: [],

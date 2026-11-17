@@ -1,0 +1,33 @@
+{
+  "Owner": "smoke@example.com",
+  "Page": "routes",
+  "Flash": "",
+  "Error": "",
+  "HasRegistry": true,
+  "Prefixes": ["turn on", "set"],
+  "Filler": "Um,",
+  "Unavailable": "Sorry, that is not available right now.",
+  "Totals": {
+    "Tools": 1,
+    "FastPath": 1,
+    "AgentOnly": 0,
+    "LocalOnly": 0,
+    "Confirm": 0,
+    "Hermes": 0
+  },
+  "Rows": [
+    {
+      "Name": "lights",
+      "Description": "Turn a light on or off, or change its brightness.",
+      "Permission": "anyone",
+      "FastPath": true,
+      "AgentOnly": false,
+      "LocalOnly": false,
+      "Confirm": false,
+      "Enabled": true,
+      "Hermes": false,
+      "ControlPhrases": 2,
+      "Examples": 1
+    }
+  ]
+}

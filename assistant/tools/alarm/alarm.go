@@ -282,6 +282,8 @@ type Manager struct {
 	// that unwinds the cancelled Ring. It is a one-shot override: finishRing
 	// consumes it so the spoken delay, not the live default, sets the re-ring.
 	pendingSnooze map[string]time.Duration
+	lastZone      string
+	boundSettings *settings.Service
 }
 
 // NewManager builds an empty manager.
@@ -293,6 +295,10 @@ func NewManager(opts Options) *Manager {
 	logger := opts.Logger
 	if logger == nil {
 		logger = slog.Default()
+	}
+	lastZone := ""
+	if opts.Zone != nil {
+		lastZone = opts.Zone.Name()
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	manager := &Manager{
@@ -312,9 +318,15 @@ func NewManager(opts Options) *Manager {
 		active:        make(map[string]context.CancelFunc),
 		ringing:       make(map[string]Alarm),
 		pendingSnooze: make(map[string]time.Duration),
+		lastZone:      lastZone,
 	}
 	manager.fireTx = manager.beginFire
 	manager.advanceFire = manager.advanceFailedFire
+	if opts.Settings != nil {
+		if svc := opts.Settings(); svc != nil {
+			manager.BindSettings(svc)
+		}
+	}
 	return manager
 }
 
@@ -332,6 +344,106 @@ func (m *Manager) SetMissedHook(hook func(MissedAlert)) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.missed = hook
+}
+
+// BindSettings installs the timezone change observer on the shared settings
+// service. When the timezone setting changes, pending clock-time alarms are
+// recalculated in the new zone and their timers rescheduled.
+func (m *Manager) BindSettings(svc *settings.Service) {
+	if svc == nil {
+		return
+	}
+	m.mu.Lock()
+	if m.boundSettings == svc {
+		m.mu.Unlock()
+		return
+	}
+	m.boundSettings = svc
+	m.settings = func() *settings.Service { return svc }
+	if m.lastZone == "" && m.zone != nil {
+		m.lastZone = m.zone.Name()
+	}
+	m.mu.Unlock()
+
+	svc.AddObserver(func(keys []string) {
+		for _, key := range keys {
+			if key == tz.Key {
+				_ = m.RescheduleTimezone(context.Background())
+				break
+			}
+		}
+	})
+}
+
+// RescheduleTimezone recalculates pending clock-time alarms using the current
+// timezone and replaces their timers. A pending snooze is an absolute instant
+// and is left untouched.
+func (m *Manager) RescheduleTimezone(ctx context.Context) error {
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return nil
+	}
+	if m.zone != nil {
+		currentZone := m.zone.Name()
+		if m.lastZone != "" && currentZone == m.lastZone {
+			m.mu.Unlock()
+			return nil
+		}
+		m.lastZone = currentZone
+	}
+
+	now := m.now()
+	loc := m.location()
+
+	type update struct {
+		alarm Alarm
+		next  time.Time
+	}
+	var updates []update
+
+	for _, e := range m.entries {
+		if e.snoozed {
+			continue
+		}
+		var next time.Time
+		if e.alarm.Schedule == Once {
+			next = nextOnce(now, e.alarm.Hour, e.alarm.Minute, loc, false)
+		} else {
+			spec, _, err := normalizeSchedule(string(e.alarm.Schedule), e.alarm.Weekdays)
+			if err != nil {
+				continue
+			}
+			next = nextOccurrence(spec, e.alarm.Hour, e.alarm.Minute, loc, now)
+		}
+		if next.Equal(e.occurrence) {
+			continue
+		}
+		updates = append(updates, update{alarm: e.alarm, next: next})
+	}
+	m.mu.Unlock()
+
+	for _, u := range updates {
+		if m.db != nil {
+			if err := m.setNext(ctx, u.alarm.ID, u.next); err != nil {
+				m.logger.Warn("alarm: failed to update next_fires_at on timezone change",
+					"alarm_id", u.alarm.ID, "error", err)
+				continue
+			}
+		}
+		m.mu.Lock()
+		if !m.closed && !m.cancelled[u.alarm.ID] {
+			// Ensure the alarm was not snoozed while updating SQLite.
+			if cur := m.entries[u.alarm.ID]; cur != nil && !cur.snoozed {
+				u.alarm.NextFiresAt = u.next
+				m.scheduleLocked(u.alarm, u.next, false)
+				m.logger.Info("alarm rescheduled for timezone change",
+					"alarm_id", u.alarm.ID, "next_fires_at", u.next)
+			}
+		}
+		m.mu.Unlock()
+	}
+	return nil
 }
 
 // location reads the live timezone for this scheduling call. It is never
@@ -744,8 +856,7 @@ func updateMatch(in UpdateIn) (func(Alarm) bool, error) {
 
 // resolveSound names one library sound through the shared matcher. The second
 // result is true when the spoken name did not resolve and the kind default
-// must be used. A matched sound over the Alarm Ring cap is an error, not a
-// silent fallback, because the user asked for that specific sound.
+// must be used.
 func (m *Manager) resolveSound(ctx context.Context, spoken string) (string, bool, error) {
 	spoken = strings.TrimSpace(spoken)
 	if spoken == "" {
@@ -772,13 +883,8 @@ func (m *Manager) resolveSound(ctx context.Context, spoken string) (string, bool
 		return "", true, nil
 	}
 	if err := m.cues.Validate(sound.RoleAlarmRing, result.Name); err != nil {
-		// The shared validator also reports a disappeared file. Only a real cap
-		// breach is worth refusing; an unavailable entry falls back.
-		if entry, ok := m.cues.Find(result.Name); ok && entry.Duration > sound.Cap(sound.RoleAlarmRing) {
-			return "", false, &tool.ToolError{Say: fmt.Sprintf(
-				"I can't use the %s sound for an alarm; it is longer than %s.",
-				entry.Name, sound.Cap(sound.RoleAlarmRing))}
-		}
+		// The shared validator reports a disappeared file; fall back to the
+		// kind default.
 		m.logger.Warn("alarm sound unavailable; using the kind default",
 			"spoken", spoken, "sound", result.Name, "error", err)
 		return "", true, nil

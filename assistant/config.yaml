@@ -207,6 +207,11 @@ tools:
     # One "faster"/"slower" step as a multiplier fraction. voice.rate is clamped
     # to [0.5, 2.0] and rounded to two decimals.
     step: 0.1
+  # calendar:
+  #   # calendar.today and calendar.next default to LocalOnlyYes (Fast path only)
+  #   # because event titles are personal. Set allow_agent to true to allow the
+  #   # Agent path to call them and see calendar events.
+  #   allow_agent: false
 
 # Embed service (MiniLM). Model name is here so bge-small can be tried later.
 embed:

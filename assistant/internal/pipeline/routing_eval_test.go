@@ -40,6 +40,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/tools/assistant"
 	"github.com/Jairik/clanka-bot/assistant/tools/audiocontrol"
 	"github.com/Jairik/clanka-bot/assistant/tools/calc"
+	"github.com/Jairik/clanka-bot/assistant/tools/calendar"
 	"github.com/Jairik/clanka-bot/assistant/tools/clock"
 	"github.com/Jairik/clanka-bot/assistant/tools/github"
 	lighttools "github.com/Jairik/clanka-bot/assistant/tools/lights"
@@ -128,6 +129,8 @@ var routingEvalTools = []string{
 	listtools.ReadName,
 	listtools.RemoveName,
 	listtools.DoneName,
+	calendar.Name,
+	calendar.NextName,
 	web.HeadlinesName,
 	// wiki.summary is the one factual-lookup Fast path Tool. Its grammar
 	// Extract keeps open-ended "what is the capital of France" questions on the
@@ -795,6 +798,9 @@ func evalRegistry(t *testing.T) (*tool.Registry, *timer.Manager, *alarm.Manager,
 		t.Fatal(err)
 	}
 	lm.Service.Run = func(context.Context, ...string) ([]byte, error) { return nil, nil }
+	if err := calendar.NewModule().Register(reg, tool.Deps{Clock: func() time.Time { return fixed }}); err != nil {
+		t.Fatalf("register calendar: %v", err)
+	}
 	return reg, manager, alarmManager, reminderModule.Manager()
 }
 

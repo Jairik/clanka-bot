@@ -1749,7 +1749,61 @@ positives:
     - "what is an algorithm"
     - "what is a black hole"
     - "what is a red fox"
+  calendar.today:
+    - "what's on my calendar today"
+    - "what is on my calendar today"
+    - "what do I have on my calendar today"
+    - "check my calendar today"
+    - "what events do I have on my calendar today"
+    - "tell me my calendar events today"
+    - "do I have any calendar events today"
+    - "what is on my calendar for today"
+    - "what's on my calendar for today"
+    - "show my calendar events today"
+    - "read my calendar today"
+    - "list my calendar events today"
+    - "check my calendar for today"
+    - "what are my calendar events today"
+    - "what meetings are on my calendar today"
+    - "what is on my calendar tomorrow"
+    - "what's on my calendar for tomorrow"
+    - "check my calendar tomorrow"
+    - "what do I have on my calendar tomorrow"
+    - "tell me my calendar events tomorrow"
+    - "what's on my calendar on Monday"
+    - "what's on my calendar on Friday"
+  calendar.next:
+    - "what is my next calendar event"
+    - "what's my next calendar event"
+    - "when is my next calendar event"
+    - "what's the next event on my calendar"
+    - "what is the next event on my calendar"
+    - "when is my next appointment on my calendar"
+    - "what is my next scheduled calendar event"
+    - "what's next on my calendar"
+    - "when is the next event on my calendar"
+    - "tell me the next event on my calendar"
+    - "check the next event on my calendar"
+    - "show the next event on my calendar"
+    - "what is the next meeting on my calendar"
+    - "when's the next event on my calendar"
+    - "when is my next meeting on my calendar"
+    - "what's my next meeting on my calendar"
+    - "what is the next appointment on my calendar"
+    - "find the next event on my calendar"
+    - "what is coming up next on my calendar"
+    - "what comes next on my calendar"
+    - "what's the upcoming event on my calendar"
+    - "tell me the upcoming event on my calendar"
 negatives:
+  - how do I share my Google Calendar
+  - sync my Outlook calendar with my phone
+  - export my calendar to a CSV file
+  - create a new calendar called Personal
+  - how do leap years work on the Gregorian calendar
+  - who invented the calendar
+  - how many days in the Mayan calendar
+  - what is an Aztec calendar stone
   - "what's my next alarm"
   - "when does my next alarm go off"
   - "which alarm is next"

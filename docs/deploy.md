@@ -412,8 +412,10 @@ that Ring). Each Alarm exposes its sound, volume and ramp overrides: blank keeps
 the current value, `0` is an explicit value, and Default clears the field back
 to `sounds.alarm_ring` / `ring.alarm.*` as NULL. The same page shows the newest
 missed alerts from the shared local history, including a fired row with no
-pending schedule. Every write needs the Dashboard identity and a same-origin
-request; the forms work without JavaScript.
+pending schedule. Retention purges alert history older than `alerts.history_days`
+(default 90) and caps the table to `alerts.history_rows` (default 1000) newest
+rows once at startup, keeping the newest row per kind. Every write needs the
+Dashboard identity and a same-origin request; the forms work without JavaScript.
 
 Notifications use the public ntfy.sh by default (`notify.url`). The ntfy topic
 is generated once into that secrets table on first use, so it is never in

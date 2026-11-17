@@ -64,6 +64,8 @@ type alertsView struct {
 	// DesktopNotify is true when a due Reminder may show a browser
 	// notification now: notify.reminders is on and Quiet hours allow it.
 	DesktopNotify bool
+	// Settings holds the live alert retention settings shown on the page.
+	Settings []settingView
 }
 
 // scheduledAlertView is one active Timer, Alarm or Reminder row.
@@ -290,6 +292,56 @@ func (h *Handler) alertAlarmReset(w http.ResponseWriter, r *http.Request) {
 	h.alertsSuccess(w, r, flashAlertReset)
 }
 
+// alertValueSave writes one alert retention setting through SetJSON.
+func (h *Handler) alertValueSave(w http.ResponseWriter, r *http.Request) {
+	if h.settings == nil {
+		http.NotFound(w, r)
+		return
+	}
+	key := r.PathValue("key")
+	if key != alertstore.HistoryDaysKey && key != alertstore.HistoryRowsKey {
+		h.alertsFail(w, r, http.StatusNotFound, "Unknown alert setting.", nil)
+		return
+	}
+	value, ok := h.settings.Get(key)
+	if !ok {
+		h.alertsFail(w, r, http.StatusNotFound, "Unknown alert setting.", nil)
+		return
+	}
+	if err := limitForm(w, r); err != nil {
+		h.alertsFail(w, r, http.StatusBadRequest, "Could not read the form.", nil)
+		return
+	}
+	raw, _, err := settingFormValue(value, r.FormValue("value"))
+	if err != nil {
+		h.alertsFail(w, r, http.StatusBadRequest, err.Error(), nil)
+		return
+	}
+	if _, err := h.settings.SetJSON(r.Context(), key, raw); err != nil {
+		h.alertsFail(w, r, http.StatusBadRequest, err.Error(), nil)
+		return
+	}
+	h.alertsSuccess(w, r, flashSaved)
+}
+
+// alertValueReset restores one alert retention setting to its default.
+func (h *Handler) alertValueReset(w http.ResponseWriter, r *http.Request) {
+	if h.settings == nil {
+		http.NotFound(w, r)
+		return
+	}
+	key := r.PathValue("key")
+	if key != alertstore.HistoryDaysKey && key != alertstore.HistoryRowsKey {
+		h.alertsFail(w, r, http.StatusNotFound, "Unknown alert setting.", nil)
+		return
+	}
+	if _, err := h.settings.Reset(r.Context(), key); err != nil {
+		h.alertsFail(w, r, settingsErrorStatus(err), err.Error(), nil)
+		return
+	}
+	h.alertsSuccess(w, r, flashReset)
+}
+
 // parseAlarmOverrideForm turns the ordinary form into the typed UpdateIn.
 // Empty fields mean "keep", the default sound value means SoundReset, and a
 // numeric 0 is kept as an explicit 0. The returned edit state is the rejected
@@ -393,6 +445,10 @@ func alertsFlashMessage(flash string) string {
 		return "Reset. The Alarm uses sounds.alarm_ring and ring.alarm.* again."
 	case flashAlertUnchanged:
 		return "No changes."
+	case flashSaved:
+		return "Saved. The change applies on the next request."
+	case flashReset:
+		return "Reset. The config.yaml or code-default value applies again."
 	default:
 		return ""
 	}
@@ -577,6 +633,17 @@ func (h *Handler) buildAlertsView(flash, errorText string, edit *alertEditState)
 	}
 
 	view.Missed = h.buildMissedAlerts(events)
+	if h.settings != nil {
+		for _, key := range []string{alertstore.HistoryDaysKey, alertstore.HistoryRowsKey} {
+			if val, ok := h.settings.Get(key); ok {
+				setting := newSettingView(val, nil)
+				setting.SaveAction = "/alerts/values/" + val.Key
+				setting.ResetAction = "/alerts/values/" + val.Key + "/reset"
+				setting.Target = "#alerts-content"
+				view.Settings = append(view.Settings, setting)
+			}
+		}
+	}
 	return view
 }
 

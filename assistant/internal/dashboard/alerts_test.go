@@ -177,6 +177,7 @@ func newAlertsFixture(t *testing.T) *alertsFixture {
 	defs := cues.Definitions(sound.Config{})
 	defs = append(defs, ring.Definitions()...)
 	defs = append(defs, tz.Definition(""))
+	defs = append(defs, alertstore.Definitions()...)
 	svc, err := settings.New(ctx, st, defs...)
 	if err != nil {
 		t.Fatalf("settings.New: %v", err)
@@ -327,6 +328,10 @@ type alertsResp struct {
 		}
 	}
 	Missed []struct{ Kind, Label, EndedBy string }
+	Settings []struct {
+		Key, Value, Edit, FormKind, SaveAction, ResetAction string
+		Override                                            bool
+	}
 }
 
 // get reads the alerts JSON (default view or any ?flash= variant).
@@ -1193,5 +1198,57 @@ func TestAlertsDesktopNotifyFollowsTheServerGate(t *testing.T) {
 	getJSON(t, none, "/api/ui/alerts", &view)
 	if view.DesktopNotify {
 		t.Fatal("DesktopNotify = true with no gate")
+	}
+}
+
+// TestAlertsViewShowsRetentionSettingsAndUpdatesThem asserts that the Scheduled
+// alerts page exposes the retention settings and that saving/resetting them updates
+// the view.
+func TestAlertsViewShowsRetentionSettingsAndUpdatesThem(t *testing.T) {
+	f := newAlertsFixture(t)
+
+	// Read initial alerts view.
+	view, rec := f.get("/api/ui/alerts")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get /api/ui/alerts: %d", rec.Code)
+	}
+	if len(view.Settings) != 2 {
+		t.Fatalf("Settings count = %d, want 2", len(view.Settings))
+	}
+	daysSetting := view.Settings[0]
+	if daysSetting.Key != "alerts.history_days" || daysSetting.Value != "90" {
+		t.Errorf("days setting = %+v, want alerts.history_days 90", daysSetting)
+	}
+	rowsSetting := view.Settings[1]
+	if rowsSetting.Key != "alerts.history_rows" || rowsSetting.Value != "1000" {
+		t.Errorf("rows setting = %+v, want alerts.history_rows 1000", rowsSetting)
+	}
+
+	// Save an override to alerts.history_days.
+	saveRec := f.post(daysSetting.SaveAction, url.Values{"value": {"60"}})
+	if saveRec.Code != http.StatusOK {
+		t.Fatalf("post save: %d %s", saveRec.Code, saveRec.Body.String())
+	}
+	var updatedView alertsResp
+	getJSON(t, f.handler, "/api/ui/alerts", &updatedView)
+	if len(updatedView.Settings) != 2 || updatedView.Settings[0].Value != "60" || !updatedView.Settings[0].Override {
+		t.Errorf("updated settings = %+v, want 60 with override true", updatedView.Settings)
+	}
+
+	// Reset the override back to code default.
+	resetRec := f.post(daysSetting.ResetAction, nil)
+	if resetRec.Code != http.StatusOK {
+		t.Fatalf("post reset: %d %s", resetRec.Code, resetRec.Body.String())
+	}
+	var resetView alertsResp
+	getJSON(t, f.handler, "/api/ui/alerts", &resetView)
+	if len(resetView.Settings) != 2 || resetView.Settings[0].Value != "90" || resetView.Settings[0].Override {
+		t.Errorf("reset settings = %+v, want 90 with override false", resetView.Settings)
+	}
+
+	// Unknown setting returns 404.
+	badRec := f.post("/alerts/values/unknown", url.Values{"value": {"1"}})
+	if badRec.Code != http.StatusNotFound {
+		t.Errorf("post unknown setting = %d, want 404", badRec.Code)
 	}
 }

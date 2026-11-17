@@ -18,6 +18,7 @@ import (
 
 	"github.com/Jairik/clanka-bot/assistant/internal/activity"
 	"github.com/Jairik/clanka-bot/assistant/internal/agent"
+	"github.com/Jairik/clanka-bot/assistant/internal/alertstore"
 	"github.com/Jairik/clanka-bot/assistant/internal/announce"
 	"github.com/Jairik/clanka-bot/assistant/internal/api"
 	"github.com/Jairik/clanka-bot/assistant/internal/audio"
@@ -258,10 +259,30 @@ func run() error {
 	recoveryDefs := append(ring.Definitions(), quiet.Definitions(baseCfg.Quiet)...)
 	recoveryDefs = append(recoveryDefs, notify.Definitions(baseCfg.Notify)...)
 	recoveryDefs = append(recoveryDefs, tz.Definition(baseCfg.Timezone))
+	recoveryDefs = append(recoveryDefs, alertstore.Definitions()...)
 	recoverySettings, err := settings.New(ctx, st, recoveryDefs...)
 	if err != nil {
 		return fmt.Errorf("recovery settings: %w", err)
 	}
+
+	// Retention: purge old and excess alert events once at startup before
+	// the managers recover.
+	alertHistory := alertstore.New(st.DB())
+	pruneCtx, cancelPrune := context.WithTimeout(ctx, 2*time.Second)
+	pruneRes, err := alertHistory.Prune(pruneCtx, alertstore.PruneOptions{
+		MaxDays: recoverySettings.Int(alertstore.HistoryDaysKey),
+		MaxRows: recoverySettings.Int(alertstore.HistoryRowsKey),
+	})
+	cancelPrune()
+	if err != nil {
+		logger.Warn("alert history prune", "error", err.Error())
+	} else if pruneRes.Deleted > 0 {
+		logger.Info("alert history pruned",
+			"deleted", pruneRes.Deleted,
+			"remaining", pruneRes.Remaining,
+		)
+	}
+
 	zone.Bind(recoverySettings)
 	// Quiet hours is created before the Ring engine so recovery Rings already
 	// read the saved quiet.volume. Bind later swaps in the full service.
@@ -626,6 +647,7 @@ func run() error {
 	// Ring behaviour is per kind: Timer and Alarm share the engine but keep
 	// independent live max_ring, volume, ramp, gap and speak_label settings.
 	defs = append(defs, ring.Definitions()...)
+	defs = append(defs, alertstore.Definitions()...)
 	// Quiet hours shares the one settings service with the Dashboard and voice
 	// Tools; the startup reader above is replaced by this full service.
 	defs = append(defs, quiet.Definitions(baseCfg.Quiet)...)

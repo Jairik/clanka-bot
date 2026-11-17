@@ -82,6 +82,8 @@ export type AlertsView = {
   // DesktopNotify is true when a due Reminder may show a browser
   // notification now: notify.reminders is on and Quiet hours allow it.
   DesktopNotify: boolean;
+  // Settings holds the live alert retention settings shown on the page.
+  Settings: Setting[] | null;
 };
 
 export type AnnounceSnapshot = {

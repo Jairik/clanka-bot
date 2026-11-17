@@ -238,9 +238,10 @@ new_repo() {
 	cp "$REPO_ROOT/scripts/soloist-setup.sh" "$repo/scripts/soloist-setup.sh"
 	cp "$REPO_ROOT/scripts/prune-images.sh" "$repo/scripts/prune-images.sh"
 	cp "$REPO_ROOT/scripts/image-keys.py" "$repo/scripts/image-keys.py"
+	cp "$REPO_ROOT/scripts/smoke.sh" "$repo/scripts/smoke.sh"
 	mkdir -p "$repo/assistant"
 	echo 'FROM scratch' >"$repo/assistant/Dockerfile"
-	chmod +x "$repo/scripts/deploy.sh" "$repo/scripts/soloist-setup.sh" "$repo/scripts/prune-images.sh"
+	chmod +x "$repo/scripts/deploy.sh" "$repo/scripts/soloist-setup.sh" "$repo/scripts/prune-images.sh" "$repo/scripts/smoke.sh"
 	cat >"$repo/docker-compose.yml" <<'YAML'
 services:
   assistant:
@@ -835,6 +836,60 @@ test_same_commit_and_args_give_the_same_key() {
 	if [[ "$second" != "$third" ]]; then pass; else fail "a change inside the context must change the key"; fi
 }
 
+test_deploy_runs_smoke_turn() {
+	local repo
+	repo=$(new_repo)
+	new_scenario
+	cat >"$repo/scripts/smoke.sh" <<'EOF'
+#!/bin/sh
+echo "smoke: ok route=fast_path tool=time.now routing=10ms tool=2ms reply=test"
+exit 0
+EOF
+	chmod +x "$repo/scripts/smoke.sh"
+	git -C "$repo" commit -qam "smoke stub"
+	git -C "$repo" push -q origin main
+	run_deploy "$repo"
+	assert_status 0 "deploy with successful smoke succeeds"
+	assert_out_contains "smoke turn ran" "running post-deploy smoke turn"
+	assert_out_contains "smoke turn output printed" "smoke: ok route=fast_path"
+}
+
+test_deploy_smoke_failure_fails_deploy() {
+	local repo
+	repo=$(new_repo)
+	new_scenario
+	cat >"$repo/scripts/smoke.sh" <<'EOF'
+#!/bin/sh
+echo "smoke: error: pipeline fell through" >&2
+echo "smoke: response body: {\"route\":\"agent_path\"}" >&2
+exit 1
+EOF
+	chmod +x "$repo/scripts/smoke.sh"
+	git -C "$repo" commit -qam "failing smoke stub"
+	git -C "$repo" push -q origin main
+	run_deploy "$repo"
+	assert_nonzero "deploy with failed smoke fails"
+	assert_out_contains "smoke failure is reported" "post-deploy smoke turn failed"
+	assert_out_contains "response body is in log" "smoke: response body: {\"route\":\"agent_path\"}"
+}
+
+test_deploy_smoke_disabled_skips() {
+	local repo
+	repo=$(new_repo)
+	new_scenario
+	cat >"$repo/scripts/smoke.sh" <<'EOF'
+#!/bin/sh
+echo "should not be called" >&2
+exit 1
+EOF
+	chmod +x "$repo/scripts/smoke.sh"
+	git -C "$repo" commit -qam "broken smoke stub"
+	git -C "$repo" push -q origin main
+	DEPLOY_SMOKE=0 run_deploy "$repo"
+	assert_status 0 "deploy with DEPLOY_SMOKE=0 succeeds"
+	assert_out_not_contains "smoke turn did not run" "running post-deploy smoke turn"
+}
+
 run_test() {
 	local name=$1
 	printf '== %s\n' "$name"
@@ -875,6 +930,9 @@ run_test test_deploy_uses_published_images
 run_test test_deploy_builds_an_unpublished_image
 run_test test_deploy_without_registry_builds_everything
 run_test test_same_commit_and_args_give_the_same_key
+run_test test_deploy_runs_smoke_turn
+run_test test_deploy_smoke_failure_fails_deploy
+run_test test_deploy_smoke_disabled_skips
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

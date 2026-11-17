@@ -63,6 +63,7 @@ Environment:
   DEPLOY_REGISTRY        where CI publishes images
                           (default ghcr.io/jairik/clanka-bot); empty builds
                           every image on this host
+  DEPLOY_SMOKE           run smoke turn after health wait (default 1)
 EOF
 }
 
@@ -305,6 +306,23 @@ prune_old_images() {
 	fi
 }
 
+# Post-deploy smoke turn: prove the stack answers through the shared pipeline.
+# DEPLOY_SMOKE=0 disables it; a missing script warns and skips.
+run_smoke() {
+	if [[ "${DEPLOY_SMOKE:-1}" == "0" ]]; then
+		return 0
+	fi
+	local smoke_script="$ROOT/scripts/smoke.sh"
+	if [[ ! -f "$smoke_script" ]]; then
+		warn "scripts/smoke.sh is missing; skipping smoke turn"
+		return 0
+	fi
+	log "running post-deploy smoke turn"
+	if ! bash "$smoke_script"; then
+		die "post-deploy smoke turn failed"
+	fi
+}
+
 main() {
 	local requested="" arg sha image missing branch upstream
 	for arg in "$@"; do
@@ -417,6 +435,7 @@ main() {
 	fi
 
 	wait_for_health
+	run_smoke
 	log "deployed $sha"
 	prune_old_images "$sha"
 }

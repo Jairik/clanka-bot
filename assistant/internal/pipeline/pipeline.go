@@ -312,9 +312,14 @@ func (p *Pipeline) HandleEvents(ctx context.Context, req tool.Request, transcrip
 	started := time.Now()
 	record := routeLog{top: []ToolScore{}, extraction: "none", reason: reasonSemanticDisabled}
 
-	// Order matches #10. A pending Confirmation comes first.
+	// Order matches #10. A pending Confirmation comes first. Smoke turns never
+	// resolve or cancel an existing confirmation.
 	prefix := ""
-	if p.confirmation != nil {
+	var isSmoke bool
+	if tl := latency.FromContext(ctx); tl != nil && tl.Source() == latency.SourceSmoke {
+		isSmoke = true
+	}
+	if p.confirmation != nil && !isSmoke {
 		res := p.confirmation.Resolve(ctx, req, transcript)
 		if res.Handled {
 			// Settling the Confirmation is this request's routing decision.
@@ -337,7 +342,7 @@ func (p *Pipeline) HandleEvents(ctx context.Context, req tool.Request, transcrip
 					LocalOnly: res.Call.LocalOnly,
 					Result:    reply.Text,
 				})
-				p.recordTurn(transcript, reply.Text, []agent.ToolCall{*res.Call})
+				p.recordTurn(ctx, transcript, reply.Text, []agent.ToolCall{*res.Call})
 			}
 			record.reason = ""
 			p.finish(ctx, started, req, transcript, reply, record)
@@ -373,6 +378,10 @@ func (p *Pipeline) HandleEvents(ctx context.Context, req tool.Request, transcrip
 // route applies the post-Confirmation steps in the fixed order: Agent request
 // prefix, Control phrase, semantic Fast path, then the Agent path.
 func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript string, events Events, record *routeLog) Reply {
+	var isSmoke bool
+	if tl := latency.FromContext(ctx); tl != nil && tl.Source() == latency.SourceSmoke {
+		isSmoke = true
+	}
 	routingStarted := time.Now()
 	// Routing ends when the path is chosen. Marking is first-wins, so the
 	// fall-through branches reach it once and only once per request.
@@ -402,7 +411,9 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 		// An empty request makes no model call, so no Agent path cue plays.
 		if rest == "" {
 			reply.Text = agent.EmptyRequestReply
-			p.recordTurn(transcript, reply.Text, nil)
+			p.recordTurn(ctx, transcript, reply.Text, nil)
+		} else if isSmoke {
+			reply.Text = "Agent call skipped for smoke."
 		} else {
 			p.callAgent(ctx, req, rest, events, &reply)
 		}
@@ -430,7 +441,7 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 		}
 		reply.LocalOnly = localOnly
 		reply.Text = result.Text
-		p.recordTurn(transcript, reply.Text, calls)
+		p.recordTurn(ctx, transcript, reply.Text, calls)
 		return reply
 	}
 
@@ -535,6 +546,11 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 	// 5. Agent path, or the placeholder when no Agent runner is wired.
 	if p.agent != nil {
 		markRouting()
+		if isSmoke {
+			reply.Path = tool.PathAgent
+			reply.Text = "Agent call skipped for smoke."
+			return reply
+		}
 		p.callAgent(ctx, req, transcript, events, &reply)
 		return reply
 	}
@@ -630,17 +646,23 @@ func (p *Pipeline) callTool(ctx context.Context, req tool.Request, transcript, n
 		// "yes" runs it instead of the user hearing a generic failure.
 		var required *tool.ConfirmationRequiredError
 		if errors.As(err, &required) {
-			pending, proposeErr := p.registry.Propose(name, args)
-			if proposeErr == nil {
-				// The Tool did not run; still show which call is waiting.
-				latency.AddToolCall(ctx, latency.ToolCallDetail{
-					Name:      name,
-					LocalOnly: info.LocalOnly,
-					Result:    "Confirmation required.",
-				})
-				return pending.Summary, "", &pending, info.LocalOnly, 0
+			var isSmoke bool
+			if tl := latency.FromContext(ctx); tl != nil && tl.Source() == latency.SourceSmoke {
+				isSmoke = true
 			}
-			err = proposeErr
+			if !isSmoke {
+				pending, proposeErr := p.registry.Propose(name, args)
+				if proposeErr == nil {
+					// The Tool did not run; still show which call is waiting.
+					latency.AddToolCall(ctx, latency.ToolCallDetail{
+						Name:      name,
+						LocalOnly: info.LocalOnly,
+						Result:    "Confirmation required.",
+					})
+					return pending.Summary, "", &pending, info.LocalOnly, 0
+				}
+				err = proposeErr
+			}
 		}
 		message := tool.FailureMessage(err)
 		latency.AddToolCall(ctx, latency.ToolCallDetail{
@@ -670,25 +692,28 @@ func (p *Pipeline) callTool(ctx context.Context, req tool.Request, transcript, n
 		LocalOnly: localOnly,
 		Result:    spoken,
 	})
-	p.recordToolTurn(transcript, spoken, name, result, localOnly)
+	p.recordToolTurn(ctx, transcript, spoken, name, result, localOnly)
 	return spoken, "", nil, localOnly, rateOf(result)
 }
 
 // recordToolTurn keeps a successful Fast path turn in the shared history,
 // including the compact Tool call and its result.
-func (p *Pipeline) recordToolTurn(transcript, spoken, name string, result any, localOnly bool) {
+func (p *Pipeline) recordToolTurn(ctx context.Context, transcript, spoken, name string, result any, localOnly bool) {
 	payload, err := json.Marshal(result)
 	if err != nil {
 		payload = nil
 	}
-	p.recordTurn(transcript, spoken, []agent.ToolCall{{
+	p.recordTurn(ctx, transcript, spoken, []agent.ToolCall{{
 		Name:      name,
 		Result:    payload,
 		LocalOnly: localOnly,
 	}})
 }
 
-func (p *Pipeline) recordTurn(transcript, spoken string, calls []agent.ToolCall) {
+func (p *Pipeline) recordTurn(ctx context.Context, transcript, spoken string, calls []agent.ToolCall) {
+	if tl := latency.FromContext(ctx); tl != nil && tl.Source() == latency.SourceSmoke {
+		return
+	}
 	if p.history == nil {
 		return
 	}
@@ -703,7 +728,11 @@ func (p *Pipeline) finish(ctx context.Context, started time.Time, req tool.Reque
 	// Keep the last completed reply for follow-ups. A cancelled turn (Barge-in
 	// or shutdown) and a blank answer must not replace the last thing the user
 	// actually heard; an error or Unavailable reply was spoken, so it counts.
-	if p.lastReply != nil && ctx.Err() == nil && strings.TrimSpace(reply.Text) != "" {
+	var isSmoke bool
+	if tl := latency.FromContext(ctx); tl != nil && tl.Source() == latency.SourceSmoke {
+		isSmoke = true
+	}
+	if p.lastReply != nil && ctx.Err() == nil && strings.TrimSpace(reply.Text) != "" && !isSmoke {
 		var source string
 		if tl := latency.FromContext(ctx); tl != nil {
 			source = string(tl.Source())

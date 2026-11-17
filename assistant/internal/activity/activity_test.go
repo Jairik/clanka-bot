@@ -113,6 +113,24 @@ func TestObserveDropsEmptyWakeTurnsAndBoundsLongText(t *testing.T) {
 	}
 }
 
+// TestObserveDropsSmokeTurns proves smoke requests are never recorded as
+// user-visible activity.
+func TestObserveDropsSmokeTurns(t *testing.T) {
+	store := New(5)
+	store.Observe(latency.Completed{
+		ID:         "req-smoke",
+		Source:     latency.SourceSmoke,
+		Path:       "fast_path",
+		Tool:       "time.now",
+		Transcript: "what time is it",
+		Outcome:    latency.OutcomeNoAudio,
+		Detail:     &latency.Detail{Reply: "It's 3:04 PM."},
+	})
+	if store.Len() != 0 {
+		t.Fatalf("smoke turn was retained: %+v", store.Recent(0))
+	}
+}
+
 func TestStoreIsSafeForConcurrentObservers(t *testing.T) {
 	store := New(25)
 	var wg sync.WaitGroup

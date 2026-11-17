@@ -161,9 +161,13 @@ func (s *Store) History() *History {
 
 // Observe implements latency.Observer. It copies the completion into a plain,
 // bounded Entry and drops a wake detection that produced neither a transcript
-// nor a route, so empty microphone turns do not fill the page.
+// nor a route, so empty microphone turns do not fill the page. Smoke turns are
+// also dropped so automated checks do not appear as user activity.
 func (s *Store) Observe(completed latency.Completed) {
 	if s == nil {
+		return
+	}
+	if completed.Source == latency.SourceSmoke {
 		return
 	}
 	if strings.TrimSpace(completed.Transcript) == "" && strings.TrimSpace(completed.Path) == "" {

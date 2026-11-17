@@ -1240,7 +1240,7 @@ func NewExtend(m *Manager) tool.Tool[ExtendIn, ExtendOut] {
 		Examples: []string{
 			"add five more minutes",
 			"give it ten more minutes",
-			"make it five minutes longer",
+			"extend it by five minutes",
 		},
 		Extract: func(text string) (ExtendIn, bool) {
 			return extractExtend(text)

@@ -514,7 +514,7 @@ positives:
     # the margin against timer.set.
     - add five more minutes
     - give it ten more minutes
-    - make it five minutes longer
+    - extend it by five minutes
     - add five minutes to the timer
     - add 5 minutes to the timer
     - +5 minutes on the pasta timer

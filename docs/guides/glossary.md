@@ -269,7 +269,7 @@ The `voice.rate` multiplier that changes how fast the Assistant speaks: `1.0` is
 _Avoid_: Speed, tempo, speaking pace
 
 **Persona**:
-A named bundle of a voice, a personality prompt and the Filler and Unavailable wording. Selecting one applies the voice and wording through the live settings and lets the personality prompt enter only the single prompt builder's labelled system part; a later manual voice or wording change is reported as a difference rather than claimed as the bundle.
+A named bundle of a voice, a personality prompt and the Filler and Unavailable wording. It may also carry an optional Clarify line, optional cue words and optional Conversation start and end phrases; an empty field keeps the global value, and its trigger phrases add to the global Control phrases rather than replacing them. Selecting one applies the voice and wording through the live settings and lets the personality prompt enter only the single prompt builder's labelled system part; a later manual voice or wording change is reported as a difference rather than claimed as the bundle.
 _Avoid_: Character, mode, skin, profile
 
 **Spotify Connect pairing**:

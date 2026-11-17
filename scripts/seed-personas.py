@@ -60,6 +60,22 @@ def path_name(name: str) -> str:
     return urllib.parse.quote(name, safe="")
 
 
+def phrase_lines(value: Any) -> str:
+    """Render one optional phrase list as the Dashboard's one-per-line form."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if not isinstance(value, list):
+        raise ValueError("expected a list of phrases")
+    lines = []
+    for item in value:
+        text = str(item).strip()
+        if text:
+            lines.append(text)
+    return "\n".join(lines)
+
+
 def load_personas(path: str) -> list[dict[str, Any]]:
     with open(path, encoding="utf-8") as handle:
         data = json.load(handle)
@@ -73,6 +89,10 @@ def load_personas(path: str) -> list[dict[str, Any]]:
         phrases = persona.get("phrases")
         if not isinstance(phrases, dict) or not phrases:
             raise ValueError(f"persona {persona.get('name')!r} has no phrases")
+        for field in ("cue_words", "start_phrases", "end_phrases"):
+            value = persona.get(field)
+            if value is not None and not isinstance(value, (list, str)):
+                raise ValueError(f"persona {persona.get('name')!r} has an invalid {field}")
     return personas
 
 
@@ -113,6 +133,12 @@ def main() -> int:
             "personality": str(persona["personality"]),
             "filler": str(persona["filler"]),
             "unavailable": str(persona["unavailable"]),
+            # Optional fields: an empty value keeps the global wording or
+            # Control phrases. They are one phrase per line, like the form.
+            "clarify": str(persona.get("clarify", "")).strip(),
+            "cue_words": phrase_lines(persona.get("cue_words")),
+            "start_phrases": phrase_lines(persona.get("start_phrases")),
+            "end_phrases": phrase_lines(persona.get("end_phrases")),
         }
         if args.dry_run:
             print(f"would save persona {name} with {len(persona['phrases'])} phrases")

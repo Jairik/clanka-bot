@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/agent"
+	convcore "github.com/Jairik/clanka-bot/assistant/internal/conversation"
 	"github.com/Jairik/clanka-bot/assistant/internal/dashboard"
 	"github.com/Jairik/clanka-bot/assistant/internal/namematch"
 	quietcore "github.com/Jairik/clanka-bot/assistant/internal/quiet"
@@ -81,6 +82,7 @@ func newSettingsFixtureSeeded(t *testing.T, seed func(*sql.DB)) *settingsFixture
 		RequestPrefixes:    []string{"ask the agent"},
 		Filler:             "One moment.",
 		UnavailableMessage: "Sorry, I can't answer that right now.",
+		ClarifyMessage:     "Didn't catch that.",
 	})
 	if err != nil {
 		t.Fatalf("wording.Build: %v", err)
@@ -98,6 +100,8 @@ func newSettingsFixtureSeeded(t *testing.T, seed func(*sql.DB)) *settingsFixture
 		settings.String("timezone", "", settings.WithConfig("Europe/London")),
 		// A future sound setting must appear without a hardcoded page list.
 		settings.String("sounds.wake", "builtin/wake.wav", settings.WithConfig("builtin/wake.wav")),
+		// The ignore Cue on/off is an ordinary live sound role (#498/#500).
+		settings.String("sounds.ignore", "chime", settings.WithConfig("chime")),
 		// A numeric setting needs a decimal editor, not the no-editor fallback.
 		namematch.Definition(0.62),
 		settings.String("http.addr", "127.0.0.1:8080",
@@ -118,6 +122,9 @@ func newSettingsFixtureSeeded(t *testing.T, seed func(*sql.DB)) *settingsFixture
 	// Quiet hours is grouped into its own Dashboard panel, but it is the same
 	// live settings service as every other value.
 	defs = append(defs, quietcore.Definitions(quietcore.DefaultConfig())...)
+	// Conversation mode's cue words and windows are live settings, so the page
+	// exposes them through the same generic rows (#500).
+	defs = append(defs, convcore.Definitions()...)
 	svc, err := settings.New(ctx, st, defs...)
 	if err != nil {
 		t.Fatalf("settings.New: %v", err)
@@ -778,5 +785,18 @@ func TestSettingsQuietHoursPanelSavesTheSameOverride(t *testing.T) {
 	}
 	if got := f.settings.String(quietcore.StartKey); got != "21:15" {
 		t.Fatalf("quiet.start = %q, want the Dashboard value", got)
+	}
+}
+
+// TestSettingsExposesTheNewWordingSettings pins #500's Dashboard surface: the
+// Clarify line, the cue words and the ignore Cue all appear as ordinary rows.
+func TestSettingsExposesTheNewWordingSettings(t *testing.T) {
+	f := newSettingsFixture(t)
+	v, _ := f.view()
+	for _, key := range []string{wording.ClarifyKey, convcore.CueWordsKey, "sounds.ignore"} {
+		row := v.mustSetting(t, key)
+		if row.SaveAction != "/settings/values/"+key {
+			t.Errorf("%s save action = %q, want the generic editor", key, row.SaveAction)
+		}
 	}
 }

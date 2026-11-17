@@ -6,10 +6,14 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/agent"
+	"github.com/Jairik/clanka-bot/assistant/internal/conversation"
+	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/persona"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
@@ -102,6 +106,18 @@ func newFixture(t *testing.T, voices *fakeVoices) *fixture {
 		settings.String(voicelib.KeyName, "alba", settings.WithConfig("alba")),
 		settings.String(wording.FillerKey, wording.DefaultFiller, settings.WithConfig(wording.DefaultFiller)),
 		settings.String(wording.UnavailableKey, wording.DefaultUnavailableMessage, settings.WithConfig(wording.DefaultUnavailableMessage)),
+		settings.String(wording.ClarifyKey, agent.DefaultClarifyMessage, settings.WithConfig(agent.DefaultClarifyMessage)),
+		settings.Strings(conversation.CueWordsKey, conversation.DefaultCueWords, settings.WithConfig(conversation.DefaultCueWords)),
+		// A couple of global Control phrases let the shadow check see another
+		// Tool's list. The conversation defaults are the Persona's own owner.
+		settings.Strings(wording.ControlPhrasesKey(persona.ConversationStartTool), []string{"let's talk"},
+			settings.WithConfig([]string{"let's talk"})),
+		settings.Strings(wording.ControlPhrasesKey(persona.ConversationEndTool), []string{"that's all"},
+			settings.WithConfig([]string{"that's all"})),
+		settings.Strings(wording.ControlPhrasesKey("timer.set"), []string{"set a timer"},
+			settings.WithConfig([]string{"set a timer"})),
+		settings.Strings(wording.IntentPhrasesKey(focus.Stop), []string{"stop"},
+			settings.WithConfig([]string{"stop"})),
 	}
 	defs = append(defs, personas.Definitions()...)
 	svc, err := settings.New(ctx, st, defs...)
@@ -458,5 +474,275 @@ func TestTimestampsSurviveTheStore(t *testing.T) {
 	}
 	if !updated.UpdatedAt.After(p.CreatedAt) {
 		t.Fatalf("updated_at = %s, want after created_at %s", updated.UpdatedAt, p.CreatedAt)
+	}
+}
+
+func TestOptionalPersonaWordingAppliesAndRestoresGlobals(t *testing.T) {
+	f := newFixture(t, nil)
+	with := input("GLaDOS")
+	with.Clarify = "Say that again."
+	with.CueWords = []string{"explain", "walk me through"}
+	with.StartPhrases = []string{"let's fucking talk", "start the chat"}
+	with.EndPhrases = []string{"that's enough", "shut it down"}
+	if _, err := f.service.Create(f.ctx, with); err != nil {
+		t.Fatalf("Create with wording: %v", err)
+	}
+	plain := input("Alfred")
+	plain.Voice = "alba"
+	if _, err := f.service.Create(f.ctx, plain); err != nil {
+		t.Fatalf("Create plain: %v", err)
+	}
+
+	if _, err := f.service.Select(f.ctx, "GLaDOS"); err != nil {
+		t.Fatalf("Select GLaDOS: %v", err)
+	}
+	f.voices.active = "glados"
+	if got := f.settings.String(wording.ClarifyKey); got != "Say that again." {
+		t.Errorf("clarify after select = %q, want the Persona's line", got)
+	}
+	if got := f.settings.Strings(conversation.CueWordsKey); !slices.Equal(got, with.CueWords) {
+		t.Errorf("cue words after select = %v, want %v", got, with.CueWords)
+	}
+	phrases := f.service.TriggerPhrases()
+	if !slices.Equal(phrases[persona.ConversationStartTool], with.StartPhrases) {
+		t.Errorf("start phrases = %v, want %v", phrases[persona.ConversationStartTool], with.StartPhrases)
+	}
+	if !slices.Equal(phrases[persona.ConversationEndTool], with.EndPhrases) {
+		t.Errorf("end phrases = %v, want %v", phrases[persona.ConversationEndTool], with.EndPhrases)
+	}
+	current, ok := f.service.Current()
+	if !ok || !current.Exact || current.ClarifyDiffers || current.CueWordsDiffers {
+		t.Fatalf("Current after select = %+v, %v, want the exact bundle", current, ok)
+	}
+
+	// A Persona without the optional fields resets them to their global layer,
+	// so the previous Persona's wording does not linger.
+	if _, err := f.service.Select(f.ctx, "Alfred"); err != nil {
+		t.Fatalf("Select Alfred: %v", err)
+	}
+	f.voices.active = "alba"
+	if got := f.settings.String(wording.ClarifyKey); got != agent.DefaultClarifyMessage {
+		t.Errorf("clarify after switching = %q, want the global default", got)
+	}
+	if got := f.settings.Strings(conversation.CueWordsKey); !slices.Equal(got, conversation.DefaultCueWords) {
+		t.Errorf("cue words after switching = %v, want the global list", got)
+	}
+	if got := f.service.TriggerPhrases(); got != nil {
+		t.Errorf("trigger phrases after switching = %v, want none", got)
+	}
+}
+
+func TestOptionalPersonaWordingSurvivesReopen(t *testing.T) {
+	f := newFixture(t, nil)
+	in := input("GLaDOS")
+	in.Clarify = "Say that again."
+	in.CueWords = []string{"explain"}
+	in.StartPhrases = []string{"start the chat"}
+	in.EndPhrases = []string{"shut it down"}
+	if _, err := f.service.Create(f.ctx, in); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if err := f.st.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+	reopened, err := store.Open(f.ctx, f.path)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	service, err := persona.New(f.ctx, reopened, f.voices, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("persona.New after reopen: %v", err)
+	}
+	got, ok := service.Get("glados")
+	if !ok || got.Clarify != in.Clarify || !slices.Equal(got.CueWords, in.CueWords) ||
+		!slices.Equal(got.StartPhrases, in.StartPhrases) || !slices.Equal(got.EndPhrases, in.EndPhrases) {
+		t.Fatalf("persona after reopen = %+v, %v", got, ok)
+	}
+}
+
+func TestCurrentReportsOptionalWordingDrift(t *testing.T) {
+	f := newFixture(t, nil)
+	in := input("GLaDOS")
+	in.Clarify = "Say that again."
+	in.CueWords = []string{"explain"}
+	if _, err := f.service.Create(f.ctx, in); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := f.service.Select(f.ctx, "GLaDOS"); err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	f.voices.active = "glados"
+
+	if _, err := f.settings.Set(f.ctx, wording.ClarifyKey, "Different line."); err != nil {
+		t.Fatalf("override clarify: %v", err)
+	}
+	if _, err := f.settings.Set(f.ctx, conversation.CueWordsKey, []string{"why"}); err != nil {
+		t.Fatalf("override cue words: %v", err)
+	}
+	current, ok := f.service.Current()
+	if !ok || current.Exact || !current.ClarifyDiffers || !current.CueWordsDiffers {
+		t.Fatalf("Current after overrides = %+v, %v, want honest drift flags", current, ok)
+	}
+	if current.EffectiveClarify != "Different line." || !slices.Equal(current.EffectiveCueWords, []string{"why"}) {
+		t.Fatalf("Current effective wording = %q %v, want the live values", current.EffectiveClarify, current.EffectiveCueWords)
+	}
+}
+
+func TestPersonaTriggerPhrasesCannotShadowAnotherTool(t *testing.T) {
+	f := newFixture(t, nil)
+	cases := []struct {
+		name  string
+		input persona.Input
+	}{
+		{"other tool", func() persona.Input {
+			in := input("X")
+			in.StartPhrases = []string{"set a timer"}
+			return in
+		}()},
+		{"focus intent", func() persona.Input {
+			in := input("X")
+			in.StartPhrases = []string{"stop"}
+			return in
+		}()},
+		{"repeated", func() persona.Input {
+			in := input("X")
+			in.StartPhrases = []string{"start the chat", "start the chat"}
+			return in
+		}()},
+		{"start and end", func() persona.Input {
+			in := input("X")
+			in.StartPhrases = []string{"start the chat"}
+			in.EndPhrases = []string{"start the chat"}
+			return in
+		}()},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := f.service.Create(f.ctx, tc.input)
+			if !errors.Is(err, persona.ErrInvalidPersona) {
+				t.Fatalf("Create error = %v, want ErrInvalidPersona", err)
+			}
+			if message := persona.Message(err); message == "" {
+				t.Fatal("a refused trigger phrase has no user-safe message")
+			}
+		})
+	}
+
+	// The conversation Tools' own global phrases are fine to repeat: they add
+	// to the same owner rather than shadowing another Tool.
+	in := input("X")
+	in.StartPhrases = []string{"let's talk"}
+	in.EndPhrases = []string{"that's all"}
+	if _, err := f.service.Create(f.ctx, in); err != nil {
+		t.Fatalf("Create with the global conversation phrases: %v", err)
+	}
+}
+
+func TestUpdateRejectsAShadowingTriggerPhrase(t *testing.T) {
+	f := newFixture(t, nil)
+	in := input("GLaDOS")
+	in.StartPhrases = []string{"start the chat"}
+	if _, err := f.service.Create(f.ctx, in); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	in.StartPhrases = []string{"set a timer"}
+	if _, err := f.service.Update(f.ctx, "GLaDOS", in); !errors.Is(err, persona.ErrInvalidPersona) {
+		t.Fatalf("Update error = %v, want ErrInvalidPersona", err)
+	}
+	if got, _ := f.service.Get("GLaDOS"); !slices.Equal(got.StartPhrases, []string{"start the chat"}) {
+		t.Fatalf("stored phrases = %v, want the rejected edit to change nothing", got.StartPhrases)
+	}
+}
+
+// TestSelectSurvivesALaterGlobalPhraseEdit pins the split between save-time
+// validation and routing: a global phrase added after the Persona was saved
+// keeps its own route and does not make the Persona unselectable.
+func TestSelectSurvivesALaterGlobalPhraseEdit(t *testing.T) {
+	f := newFixture(t, nil)
+	in := input("GLaDOS")
+	in.StartPhrases = []string{"let's chat"}
+	if _, err := f.service.Create(f.ctx, in); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := f.settings.Set(f.ctx, wording.ControlPhrasesKey("timer.set"),
+		[]string{"set a timer", "let's chat"}); err != nil {
+		t.Fatalf("edit the global timer phrases: %v", err)
+	}
+	if _, err := f.service.Select(f.ctx, "GLaDOS"); err != nil {
+		t.Fatalf("Select after a global edit: %v", err)
+	}
+	if got := f.service.TriggerPhrases()[persona.ConversationStartTool]; !slices.Equal(got, []string{"let's chat"}) {
+		t.Fatalf("trigger phrases = %v, want the stored phrase", got)
+	}
+}
+
+func TestSelectKeepsAManualGlobalOverride(t *testing.T) {
+	f := newFixture(t, nil)
+	if _, err := f.settings.Set(f.ctx, wording.ClarifyKey, "Manual line."); err != nil {
+		t.Fatalf("override clarify: %v", err)
+	}
+	if _, err := f.settings.Set(f.ctx, conversation.CueWordsKey, []string{"why"}); err != nil {
+		t.Fatalf("override cue words: %v", err)
+	}
+	// No Persona is active and this one claims neither field, so selecting it
+	// keeps the owner's global overrides instead of deleting them.
+	if _, err := f.service.Create(f.ctx, input("GLaDOS")); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := f.service.Select(f.ctx, "GLaDOS"); err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	if got := f.settings.String(wording.ClarifyKey); got != "Manual line." {
+		t.Errorf("clarify = %q, want the manual global override kept", got)
+	}
+	if got := f.settings.Strings(conversation.CueWordsKey); !slices.Equal(got, []string{"why"}) {
+		t.Errorf("cue words = %v, want the manual global override kept", got)
+	}
+	// The override is still drift: selecting the Persona again would clear it.
+	current, ok := f.service.Current()
+	if !ok || current.Exact || !current.ClarifyDiffers || !current.CueWordsDiffers {
+		t.Fatalf("Current = %+v, %v, want honest drift for the unclaimed overrides", current, ok)
+	}
+}
+
+// TestEditingAnActivePersonaToClearAnOptionalFieldReportsDrift covers the
+// honesty gap: the stale override is still live, so Current must not claim the
+// exact bundle, and selecting the Persona again must clear it.
+func TestEditingAnActivePersonaToClearAnOptionalFieldReportsDrift(t *testing.T) {
+	f := newFixture(t, nil)
+	in := input("GLaDOS")
+	in.Clarify = "Say that again."
+	in.CueWords = []string{"explain"}
+	if _, err := f.service.Create(f.ctx, in); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := f.service.Select(f.ctx, "GLaDOS"); err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	f.voices.active = "glados"
+
+	cleared := input("GLaDOS")
+	if _, err := f.service.Update(f.ctx, "GLaDOS", cleared); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	current, ok := f.service.Current()
+	if !ok || current.Exact || !current.ClarifyDiffers || !current.CueWordsDiffers {
+		t.Fatalf("Current after clearing = %+v, %v, want drift while the overrides are live", current, ok)
+	}
+
+	// Selecting the same Persona again applies its now-empty fields.
+	if _, err := f.service.Select(f.ctx, "GLaDOS"); err != nil {
+		t.Fatalf("re-select: %v", err)
+	}
+	if got := f.settings.String(wording.ClarifyKey); got != agent.DefaultClarifyMessage {
+		t.Errorf("clarify after re-select = %q, want the global default", got)
+	}
+	if got := f.settings.Strings(conversation.CueWordsKey); !slices.Equal(got, conversation.DefaultCueWords) {
+		t.Errorf("cue words after re-select = %v, want the global list", got)
+	}
+	current, _ = f.service.Current()
+	if !current.Exact {
+		t.Fatalf("Current after re-select = %+v, want the exact bundle", current)
 	}
 }

@@ -8,10 +8,13 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/agent"
+	"github.com/Jairik/clanka-bot/assistant/internal/conversation"
 	"github.com/Jairik/clanka-bot/assistant/internal/namematch"
 	"github.com/Jairik/clanka-bot/assistant/internal/persona"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
@@ -60,6 +63,8 @@ func newFixture(t *testing.T, embedders ...namematch.Embedder) *fixture {
 		settings.String(voicelib.KeyName, "alba", settings.WithConfig("alba")),
 		settings.String(wording.FillerKey, wording.DefaultFiller, settings.WithConfig(wording.DefaultFiller)),
 		settings.String(wording.UnavailableKey, wording.DefaultUnavailableMessage, settings.WithConfig(wording.DefaultUnavailableMessage)),
+		settings.String(wording.ClarifyKey, agent.DefaultClarifyMessage, settings.WithConfig(agent.DefaultClarifyMessage)),
+		settings.Strings(conversation.CueWordsKey, conversation.DefaultCueWords, settings.WithConfig(conversation.DefaultCueWords)),
 	}
 	defs = append(defs, service.Definitions()...)
 	svc, err := settings.New(ctx, st, defs...)
@@ -368,6 +373,8 @@ func newStaleFixture(t *testing.T) *staleFixture {
 		settings.String(voicelib.KeyName, "alba", settings.WithConfig("alba")),
 		settings.String(wording.FillerKey, wording.DefaultFiller, settings.WithConfig(wording.DefaultFiller)),
 		settings.String(wording.UnavailableKey, wording.DefaultUnavailableMessage, settings.WithConfig(wording.DefaultUnavailableMessage)),
+		settings.String(wording.ClarifyKey, agent.DefaultClarifyMessage, settings.WithConfig(agent.DefaultClarifyMessage)),
+		settings.Strings(conversation.CueWordsKey, conversation.DefaultCueWords, settings.WithConfig(conversation.DefaultCueWords)),
 	}
 	defs = append(defs, service.Definitions()...)
 	svc, err := settings.New(ctx, st, defs...)
@@ -457,5 +464,48 @@ func TestPersonaSwitchFarMissKeepsTheNotFoundSentence(t *testing.T) {
 	var toolErr *tool.ToolError
 	if !errors.As(err, &toolErr) || !strings.Contains(toolErr.Say, "couldn't find a persona called nobody") || strings.Contains(toolErr.Say, "Did you mean") {
 		t.Fatalf("err = %v, want the plain not-found sentence", err)
+	}
+}
+
+func TestPersonaCurrentReportsOptionalWordingDrift(t *testing.T) {
+	f := newFixture(t)
+	if _, err := f.service.Create(f.ctx, persona.Input{
+		Name:        "GLaDOS",
+		Voice:       "alba",
+		Personality: "You are GLaDOS.",
+		Filler:      "Processing.",
+		Unavailable: "The chamber is offline.",
+		Clarify:     "Say that again.",
+		CueWords:    []string{"explain"},
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if _, err := f.execute(t, personatools.SwitchName, personatools.SwitchIn{Name: "GLaDOS"}); err != nil {
+		t.Fatalf("switch: %v", err)
+	}
+	result, err := f.execute(t, personatools.CurrentName, personatools.CurrentIn{})
+	if err != nil {
+		t.Fatalf("persona.current: %v", err)
+	}
+	current := result.(personatools.CurrentOut)
+	if current.Clarify != "Say that again." || !slices.Equal(current.CueWords, []string{"explain"}) ||
+		current.EffectiveClarify != "Say that again." || !slices.Equal(current.EffectiveCueWords, []string{"explain"}) ||
+		current.ClarifyDiffers || current.CueWordsDiffers || !current.Exact {
+		t.Fatalf("CurrentOut = %+v, want the exact optional bundle", current)
+	}
+
+	if _, err := f.settings.Set(f.ctx, wording.ClarifyKey, "Other line."); err != nil {
+		t.Fatalf("override clarify: %v", err)
+	}
+	result, err = f.execute(t, personatools.CurrentName, personatools.CurrentIn{})
+	if err != nil {
+		t.Fatalf("persona.current after override: %v", err)
+	}
+	current = result.(personatools.CurrentOut)
+	if current.Exact || !current.ClarifyDiffers {
+		t.Fatalf("CurrentOut after override = %+v, want a Clarify difference", current)
+	}
+	if text, _ := f.registry.Speak(personatools.CurrentName, current); !strings.Contains(text, "Clarify line is different") {
+		t.Fatalf("Speak = %q, want the Clarify difference named", text)
 	}
 }

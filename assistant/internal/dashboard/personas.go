@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/conversation"
 	"github.com/Jairik/clanka-bot/assistant/internal/persona"
 	"github.com/Jairik/clanka-bot/assistant/internal/wording"
 )
@@ -57,8 +58,15 @@ type personaFormView struct {
 	Personality string
 	Filler      string
 	Unavailable string
-	Submit      string
-	Voices      []personaVoiceOption
+	// Clarify, CueWords, StartPhrases and EndPhrases are optional: an empty
+	// field keeps the global wording or Control phrases. Lists are one phrase
+	// per line, as in every other wording form.
+	Clarify      string
+	CueWords     string
+	StartPhrases string
+	EndPhrases   string
+	Submit       string
+	Voices       []personaVoiceOption
 }
 
 // personaVoiceOption is one ready voice in a Persona form, plus the currently
@@ -200,6 +208,8 @@ func (h *Handler) buildPersonasView(flash, errorText string, create *personaForm
 			Voice:       h.personaDefaultVoice(),
 			Filler:      h.effectiveWording(wording.FillerKey),
 			Unavailable: h.effectiveWording(wording.UnavailableKey),
+			Clarify:     h.effectiveWording(wording.ClarifyKey),
+			CueWords:    h.effectiveList(conversation.CueWordsKey),
 		})
 	}
 
@@ -223,6 +233,12 @@ func (h *Handler) buildPersonasView(flash, errorText string, create *personaForm
 		if current.UnavailableDiffers {
 			active.Notes = append(active.Notes, "The Unavailable message has been changed since this persona was selected.")
 		}
+		if current.ClarifyDiffers {
+			active.Notes = append(active.Notes, "The Clarify line has been changed since this persona was selected.")
+		}
+		if current.CueWordsDiffers {
+			active.Notes = append(active.Notes, "The cue words have been changed since this persona was selected.")
+		}
 		if !current.Exact {
 			active.Notes = append(active.Notes, "Select the persona again to apply its stored voice and wording.")
 		}
@@ -243,7 +259,17 @@ func (h *Handler) buildPersonasView(flash, errorText string, create *personaForm
 		} else {
 			row.VoiceStatus = "missing"
 		}
-		in := persona.Input{Name: p.Name, Voice: p.Voice, Personality: p.Personality, Filler: p.Filler, Unavailable: p.Unavailable}
+		in := persona.Input{
+			Name:         p.Name,
+			Voice:        p.Voice,
+			Personality:  p.Personality,
+			Filler:       p.Filler,
+			Unavailable:  p.Unavailable,
+			Clarify:      p.Clarify,
+			CueWords:     p.CueWords,
+			StartPhrases: p.StartPhrases,
+			EndPhrases:   p.EndPhrases,
+		}
 		row.Edit = h.personaForm("/personas/"+url.PathEscape(p.Name), "Edit persona", p.Name, true, in)
 		if edit != nil && strings.EqualFold(editName, p.Name) {
 			row.Edit = *edit
@@ -256,16 +282,20 @@ func (h *Handler) buildPersonasView(flash, errorText string, create *personaForm
 // personaForm builds one form's values and ready-voice choices.
 func (h *Handler) personaForm(action, heading, name string, locked bool, in persona.Input) personaFormView {
 	form := personaFormView{
-		Action:      action,
-		Heading:     heading,
-		FormID:      personaFormID(name),
-		Name:        name,
-		NameLocked:  locked,
-		Voice:       in.Voice,
-		Personality: in.Personality,
-		Filler:      in.Filler,
-		Unavailable: in.Unavailable,
-		Voices:      h.personaVoiceOptions(in.Voice),
+		Action:       action,
+		Heading:      heading,
+		FormID:       personaFormID(name),
+		Name:         name,
+		NameLocked:   locked,
+		Voice:        in.Voice,
+		Personality:  in.Personality,
+		Filler:       in.Filler,
+		Unavailable:  in.Unavailable,
+		Clarify:      in.Clarify,
+		CueWords:     joinPhrases(in.CueWords),
+		StartPhrases: joinPhrases(in.StartPhrases),
+		EndPhrases:   joinPhrases(in.EndPhrases),
+		Voices:       h.personaVoiceOptions(in.Voice),
 	}
 	if locked {
 		form.Submit = "Save persona"
@@ -349,6 +379,14 @@ func (h *Handler) effectiveWording(key string) string {
 	return h.settings.String(key)
 }
 
+// effectiveList returns one live list for a new form's starting value.
+func (h *Handler) effectiveList(key string) []string {
+	if h.settings == nil {
+		return nil
+	}
+	return h.settings.Strings(key)
+}
+
 func (h *Handler) logPersonaError(action string, err error) {
 	var target *persona.Error
 	if errors.As(err, &target) {
@@ -358,16 +396,38 @@ func (h *Handler) logPersonaError(action string, err error) {
 	h.logger.Error("persona "+action+" failed", "error", err.Error())
 }
 
-// personaInput reads the five form fields. Voice and wording are plain text
-// because the template renders a select and textareas.
+// personaInput reads the bounded form fields. Voice and wording are plain text
+// because the template renders a select and textareas; the three optional lists
+// are one phrase per line.
 func personaInput(r *http.Request) persona.Input {
 	return persona.Input{
-		Name:        r.FormValue("name"),
-		Voice:       r.FormValue("voice"),
-		Personality: r.FormValue("personality"),
-		Filler:      r.FormValue("filler"),
-		Unavailable: r.FormValue("unavailable"),
+		Name:         r.FormValue("name"),
+		Voice:        r.FormValue("voice"),
+		Personality:  r.FormValue("personality"),
+		Filler:       r.FormValue("filler"),
+		Unavailable:  r.FormValue("unavailable"),
+		Clarify:      r.FormValue("clarify"),
+		CueWords:     formPhrases(r.FormValue("cue_words")),
+		StartPhrases: formPhrases(r.FormValue("start_phrases")),
+		EndPhrases:   formPhrases(r.FormValue("end_phrases")),
 	}
+}
+
+// formPhrases splits a one-per-line form value and drops blank lines, which
+// are formatting rather than phrases.
+func formPhrases(text string) []string {
+	lines := make([]string, 0, strings.Count(text, "\n")+1)
+	for _, line := range strings.Split(text, "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+// joinPhrases renders a stored list into the textarea's one-per-line form.
+func joinPhrases(list []string) string {
+	return strings.Join(list, "\n")
 }
 
 // personaErrorStatus maps a library rejection to an HTTP status and safe text.
@@ -399,11 +459,11 @@ func personaErrorStatus(err error) (int, string) {
 func personasFlashMessage(flash string) string {
 	switch flash {
 	case flashPersonaCreated:
-		return "Persona created. Select it to apply its voice, personality, Filler and Unavailable message."
+		return "Persona created. Select it to apply its voice, personality, Filler, Unavailable message, Clarify line and cue words."
 	case flashPersonaSaved:
 		return "Persona saved. The personality prompt applies on the next turn; select the persona again to apply a changed voice or wording."
 	case flashPersonaSelected:
-		return "Selected. The voice, personality, Filler and Unavailable message switch together from the next turn."
+		return "Selected. The voice, personality, wording and conversation phrases switch together from the next turn."
 	case flashPersonaCleared:
 		return "Active persona cleared. The current voice and wording stay as they are."
 	default:

@@ -338,6 +338,16 @@ var migrations = []migration{
 		// "mode", "cue" or empty. Display-only metadata, never text.
 		`ALTER TABLE activity ADD COLUMN conversation TEXT NOT NULL DEFAULT ''`,
 	}},
+	{version: 16, name: "persona_wording", statements: []string{
+		// Optional Persona wording. clarify is the line the model uses for an
+		// unclear request; cue_words, start_phrases and end_phrases are JSON
+		// string lists. An empty value keeps the global setting or Control
+		// phrase, so every existing row behaves exactly as before.
+		`ALTER TABLE personas ADD COLUMN clarify TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE personas ADD COLUMN cue_words TEXT NOT NULL DEFAULT '[]'`,
+		`ALTER TABLE personas ADD COLUMN start_phrases TEXT NOT NULL DEFAULT '[]'`,
+		`ALTER TABLE personas ADD COLUMN end_phrases TEXT NOT NULL DEFAULT '[]'`,
+	}},
 }
 
 // Open opens (creating if needed) the database at path, applies pending

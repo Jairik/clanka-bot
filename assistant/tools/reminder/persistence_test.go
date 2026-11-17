@@ -91,13 +91,15 @@ func TestRemindersAndEveryOtherTableShareOneDatabase(t *testing.T) {
 		5: "alert_events", 6: "voices", 7: "alarms", 8: "reminders",
 		// 9 is Personas (#65); 10 is Notes and Lists (#32); 11 is the durable
 		// Activity history (#96); 12 is per-alert completion audio; 13 is the
-		// Persona phrase book. The ledger stays contiguous.
+		// Persona phrase book; 16 is the optional Persona wording (#500). The
+		// ledger stays contiguous.
 		9:  "personas",
 		10: "notes_and_lists",
 		11: "activity_history", 12: "completion_audio",
 		13: "persona_phrases",
 		14: "activity_tokens",
 		15: "activity_conversation",
+		16: "persona_wording",
 	}
 	if len(applied) != len(want) {
 		t.Fatalf("fresh migrations = %v, want %v", applied, want)

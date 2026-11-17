@@ -377,6 +377,13 @@ export type PersonaForm = {
   Personality: string;
   Filler: string;
   Unavailable: string;
+  // Clarify, CueWords, StartPhrases and EndPhrases are optional: an empty
+  // field keeps the global wording or Control phrases. Lists are one phrase
+  // per line, as in every other wording form.
+  Clarify: string;
+  CueWords: string;
+  StartPhrases: string;
+  EndPhrases: string;
   Submit: string;
   Voices: PersonaVoiceOption[] | null;
 };

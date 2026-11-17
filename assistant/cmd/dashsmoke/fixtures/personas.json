@@ -21,6 +21,10 @@
     "Personality": "",
     "Filler": "",
     "Unavailable": "",
+    "Clarify": "",
+    "CueWords": "",
+    "StartPhrases": "",
+    "EndPhrases": "",
     "Submit": "Create",
     "Voices": [
       { "Name": "default", "Label": "Default", "Selected": true },
@@ -44,6 +48,10 @@
         "Personality": "",
         "Filler": "",
         "Unavailable": "",
+        "Clarify": "",
+        "CueWords": "",
+        "StartPhrases": "",
+        "EndPhrases": "",
         "Submit": "Save",
         "Voices": [
           { "Name": "default", "Label": "Default", "Selected": true }
@@ -66,6 +74,10 @@
         "Personality": "",
         "Filler": "",
         "Unavailable": "",
+        "Clarify": "",
+        "CueWords": "",
+        "StartPhrases": "",
+        "EndPhrases": "",
         "Submit": "Save",
         "Voices": [
           { "Name": "default", "Label": "Default", "Selected": false },

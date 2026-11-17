@@ -215,8 +215,9 @@ type Service struct {
 	overrides map[string]any
 	// ignored maps a stored key to the reason its validator rejected it. Rows
 	// are loaded once, then removed by a successful Set or Reset of the key.
-	ignored  map[string]string
-	observer Observer
+	ignored   map[string]string
+	observer  Observer
+	observers []Observer
 }
 
 // New validates the definitions, reads stored overrides and returns the
@@ -300,6 +301,18 @@ func New(ctx context.Context, st *store.Store, defs ...Definition) (*Service, er
 	return s, nil
 }
 
+// Fanout returns a single Observer that fans out notifications to all of its
+// registered observers in order.
+func Fanout(observers ...Observer) Observer {
+	return func(keys []string) {
+		for _, obs := range observers {
+			if obs != nil {
+				obs(keys)
+			}
+		}
+	}
+}
+
 // SetObserver installs the one change observer, or clears it with nil. The
 // observer is called after a successful write, never for a rejected value, so
 // a failed request cannot leak into live behaviour.
@@ -309,21 +322,41 @@ func (s *Service) SetObserver(observer Observer) {
 	s.mu.Unlock()
 }
 
-// notify calls the observer outside the lock. The caller has already updated
-// the snapshot, so the observer can read the new effective values.
+// AddObserver registers an observer that is called whenever settings change.
+// It complements SetObserver so multiple subsystems can watch settings without
+// overwriting each other.
+func (s *Service) AddObserver(observer Observer) {
+	if observer == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.observers = append(s.observers, observer)
+}
+
+// notify calls the observers outside the lock. The caller has already updated
+// the snapshot, so observers can read the new effective values.
 func (s *Service) notify(keys []string) {
 	if len(keys) == 0 {
 		return
 	}
 	s.mu.RLock()
-	observer := s.observer
+	single := s.observer
+	list := append([]Observer(nil), s.observers...)
 	s.mu.RUnlock()
-	if observer == nil {
+	if single == nil && len(list) == 0 {
 		return
 	}
 	sorted := append([]string(nil), keys...)
 	sort.Strings(sorted)
-	observer(sorted)
+	if single != nil {
+		single(sorted)
+	}
+	for _, obs := range list {
+		if obs != nil {
+			obs(sorted)
+		}
+	}
 }
 
 // Get returns one effective value.

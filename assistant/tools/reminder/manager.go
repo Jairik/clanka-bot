@@ -16,6 +16,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/announce"
 	"github.com/Jairik/clanka-bot/assistant/internal/parse"
 	"github.com/Jairik/clanka-bot/assistant/internal/quiet"
+	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 	"github.com/Jairik/clanka-bot/assistant/internal/sound"
 	"github.com/Jairik/clanka-bot/assistant/internal/tz"
 )
@@ -97,6 +98,9 @@ type Options struct {
 	// Notify pushes a due Reminder to the phone. Nil delivers nothing; a
 	// failure never blocks or repeats the spoken reminder.
 	Notify Notifier
+	// Settings resolves live settings overrides. Timezone changes reschedule
+	// pending clock-time reminders.
+	Settings func() *settings.Service
 }
 
 // Notifier is the one Notification seam the Manager needs. tool.Notifier
@@ -109,15 +113,19 @@ type Notifier interface {
 // implementation used by tests and the conformance suite; AttachStore adds
 // durability and the downtime rule.
 type Manager struct {
-	mu      sync.Mutex
-	now     func() time.Time
-	logger  *slog.Logger
-	zone    *tz.Service
-	speaker announce.Speaker
-	queue   *announce.Queue
-	cues    CuePlayer
-	quiet   QuietGate
-	notify  Notifier
+	mu            sync.Mutex
+	now           func() time.Time
+	logger        *slog.Logger
+	zone          *tz.Service
+	settings      func() *settings.Service
+	boundSettings *settings.Service
+	lastZone      string
+	lastLoc       *time.Location
+	speaker       announce.Speaker
+	queue         *announce.Queue
+	cues          CuePlayer
+	quiet         QuietGate
+	notify        Notifier
 
 	db      *sql.DB
 	history *alertstore.Store
@@ -153,10 +161,17 @@ func NewManager(opts Options) *Manager {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
-	return &Manager{
+	lastZone := ""
+	var lastLoc *time.Location
+	if opts.Zone != nil {
+		lastZone = opts.Zone.Name()
+		lastLoc = opts.Zone.Location()
+	}
+	manager := &Manager{
 		now:            opts.Now,
 		logger:         opts.Logger,
 		zone:           opts.Zone,
+		settings:       opts.Settings,
 		speaker:        opts.Speaker,
 		queue:          opts.Queue,
 		cues:           opts.Cues,
@@ -167,7 +182,124 @@ func NewManager(opts Options) *Manager {
 		activeMessages: make(map[string]string),
 		ringing:        make(map[string]Reminder),
 		cancelled:      make(map[string]bool),
+		lastZone:       lastZone,
+		lastLoc:        lastLoc,
 	}
+	if opts.Settings != nil {
+		if svc := opts.Settings(); svc != nil {
+			manager.BindSettings(svc)
+		}
+	}
+	return manager
+}
+
+// BindSettings installs the timezone change observer on the shared settings
+// service. When the timezone setting changes, pending clock-time reminders are
+// recalculated in the new zone and their timers rescheduled.
+func (m *Manager) BindSettings(svc *settings.Service) {
+	if svc == nil {
+		return
+	}
+	m.mu.Lock()
+	if m.boundSettings == svc {
+		m.mu.Unlock()
+		return
+	}
+	m.boundSettings = svc
+	m.settings = func() *settings.Service { return svc }
+	if m.lastZone == "" && m.zone != nil {
+		m.lastZone = m.zone.Name()
+		m.lastLoc = m.zone.Location()
+	}
+	m.mu.Unlock()
+
+	svc.AddObserver(func(keys []string) {
+		for _, key := range keys {
+			if key == tz.Key {
+				_ = m.RescheduleTimezone(context.Background())
+				break
+			}
+		}
+	})
+}
+
+// RescheduleTimezone recalculates pending clock-time reminders using the current
+// timezone and replaces their timers.
+func (m *Manager) RescheduleTimezone(ctx context.Context) error {
+	m.mu.Lock()
+	if m.closed {
+		m.mu.Unlock()
+		return nil
+	}
+	if m.zone != nil {
+		currentZone := m.zone.Name()
+		if m.lastZone != "" && currentZone == m.lastZone {
+			m.mu.Unlock()
+			return nil
+		}
+		m.lastZone = currentZone
+	}
+
+	loc := m.location()
+	oldLoc := m.lastLoc
+	if oldLoc == nil {
+		oldLoc = time.UTC
+	}
+	m.lastLoc = loc
+
+	type update struct {
+		id       string
+		newFires time.Time
+	}
+	var updates []update
+
+	for id, e := range m.entries {
+		if e.reminder.Kind != KindClock {
+			continue
+		}
+		oldLocal := e.reminder.FiresAt.In(oldLoc)
+		hour := oldLocal.Hour()
+		minute := oldLocal.Minute()
+		newFires := tz.ResolveWall(oldLocal.Year(), oldLocal.Month(), oldLocal.Day(), hour, minute, loc)
+		if newFires.Equal(e.reminder.FiresAt) {
+			continue
+		}
+		updates = append(updates, update{id: id, newFires: newFires})
+	}
+	m.mu.Unlock()
+
+	for _, u := range updates {
+		if m.db != nil {
+			if _, err := m.db.ExecContext(ctx,
+				`UPDATE reminders SET fires_at = ? WHERE id = ?`,
+				u.newFires.UnixMilli(), u.id); err != nil {
+				m.logger.Warn("reminder: failed to update fires_at on timezone change",
+					"reminder_id", u.id, "error", err)
+				continue
+			}
+		}
+		m.mu.Lock()
+		if !m.closed && !m.cancelled[u.id] {
+			if e := m.entries[u.id]; e != nil {
+				if e.stop != nil {
+					e.stop.Stop()
+				}
+				delay := u.newFires.Sub(m.now())
+				if delay < 0 {
+					delay = 0
+				}
+				e.reminder.FiresAt = u.newFires
+				e.reminder.RemainingSeconds = remainingSeconds(u.newFires, m.now())
+				e.reminder.When = whenText(e.reminder, m.now(), loc)
+				id := u.id
+				e.stop = time.AfterFunc(delay, func() { m.runFire(id) })
+				m.logger.Info("reminder rescheduled for timezone change",
+					"reminder_id", u.id, "fires_at", u.newFires)
+			}
+		}
+		m.mu.Unlock()
+	}
+	return nil
 }
 
 // location reads the effective timezone at scheduling time. A nil zone is UTC;

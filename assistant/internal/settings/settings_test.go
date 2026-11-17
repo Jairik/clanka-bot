@@ -516,3 +516,81 @@ func TestEmptyStringListStaysAnEmptyList(t *testing.T) {
 		t.Fatalf("JSON = %s, want an empty array", raw)
 	}
 }
+
+// TestObserverFanoutAndAddObserver tests that AddObserver fans out notifications
+// alongside SetObserver, and clearing SetObserver leaves AddObserver intact.
+func TestObserverFanoutAndAddObserver(t *testing.T) {
+	svc, _, _ := openSettings(t,
+		settings.String("key.a", "val_a"),
+		settings.String("key.b", "val_b"),
+	)
+	ctx := context.Background()
+
+	var mu sync.Mutex
+	var singleEvents []string
+	var fanoutEvents1 []string
+	var fanoutEvents2 []string
+
+	svc.SetObserver(func(keys []string) {
+		mu.Lock()
+		singleEvents = append(singleEvents, keys...)
+		mu.Unlock()
+	})
+	svc.AddObserver(func(keys []string) {
+		mu.Lock()
+		fanoutEvents1 = append(fanoutEvents1, keys...)
+		mu.Unlock()
+	})
+	svc.AddObserver(func(keys []string) {
+		mu.Lock()
+		fanoutEvents2 = append(fanoutEvents2, keys...)
+		mu.Unlock()
+	})
+
+	if _, err := svc.Set(ctx, "key.a", "new_a"); err != nil {
+		t.Fatalf("Set key.a: %v", err)
+	}
+
+	mu.Lock()
+	if !reflect.DeepEqual(singleEvents, []string{"key.a"}) {
+		t.Fatalf("singleEvents = %v, want [key.a]", singleEvents)
+	}
+	if !reflect.DeepEqual(fanoutEvents1, []string{"key.a"}) {
+		t.Fatalf("fanoutEvents1 = %v, want [key.a]", fanoutEvents1)
+	}
+	if !reflect.DeepEqual(fanoutEvents2, []string{"key.a"}) {
+		t.Fatalf("fanoutEvents2 = %v, want [key.a]", fanoutEvents2)
+	}
+	mu.Unlock()
+
+	// Clearing SetObserver does not affect AddObserver registrations.
+	svc.SetObserver(nil)
+
+	if _, err := svc.Set(ctx, "key.b", "new_b"); err != nil {
+		t.Fatalf("Set key.b: %v", err)
+	}
+
+	mu.Lock()
+	if !reflect.DeepEqual(singleEvents, []string{"key.a"}) {
+		t.Fatalf("singleEvents after clear = %v, want unchanged [key.a]", singleEvents)
+	}
+	if !reflect.DeepEqual(fanoutEvents1, []string{"key.a", "key.b"}) {
+		t.Fatalf("fanoutEvents1 = %v, want [key.a key.b]", fanoutEvents1)
+	}
+	if !reflect.DeepEqual(fanoutEvents2, []string{"key.a", "key.b"}) {
+		t.Fatalf("fanoutEvents2 = %v, want [key.a key.b]", fanoutEvents2)
+	}
+	mu.Unlock()
+
+	// Fanout helper calls each observer in order.
+	var combined []string
+	fn := settings.Fanout(
+		func(keys []string) { combined = append(combined, "first:"+strings.Join(keys, ",")) },
+		func(keys []string) { combined = append(combined, "second:"+strings.Join(keys, ",")) },
+	)
+	fn([]string{"x", "y"})
+	wantCombined := []string{"first:x,y", "second:x,y"}
+	if !reflect.DeepEqual(combined, wantCombined) {
+		t.Fatalf("Fanout = %v, want %v", combined, wantCombined)
+	}
+}

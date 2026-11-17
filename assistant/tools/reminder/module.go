@@ -31,14 +31,15 @@ func (m *Module) Manager() *Manager { return m.manager }
 // Cue, Quiet volume and timezone. The module reads no settings at Register.
 func (m *Module) Register(r *tool.Registry, deps tool.Deps) error {
 	manager := NewManager(Options{
-		Now:     deps.Clock,
-		Logger:  deps.Logger,
-		Zone:    deps.Zone,
-		Speaker: deps.Speaker,
-		Queue:   deps.Announcements,
-		Cues:    deps.Cues,
-		Quiet:   deps.Quiet,
-		Notify:  deps.Notify,
+		Now:      deps.Clock,
+		Logger:   deps.Logger,
+		Zone:     deps.Zone,
+		Settings: deps.Settings,
+		Speaker:  deps.Speaker,
+		Queue:    deps.Announcements,
+		Cues:     deps.Cues,
+		Quiet:    deps.Quiet,
+		Notify:   deps.Notify,
 	})
 	m.deps = deps
 	m.manager = manager
@@ -53,7 +54,15 @@ func (m *Module) Start(context.Context) error {
 	if m.manager == nil {
 		return nil
 	}
-	return m.manager.AttachStore(m.deps.Store)
+	if err := m.manager.AttachStore(m.deps.Store); err != nil {
+		return err
+	}
+	if m.deps.Settings != nil {
+		if svc := m.deps.Settings(); svc != nil {
+			m.manager.BindSettings(svc)
+		}
+	}
+	return nil
 }
 
 // Close stops the live Reminder manager. It is the optional Closer hook main

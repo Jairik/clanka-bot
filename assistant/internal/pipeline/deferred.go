@@ -111,6 +111,21 @@ func (q *DeferredQueue) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // BindDeferred shares orchestration state with the Dashboard and completion dispatcher.
 func (p *Pipeline) BindDeferred(q *DeferredQueue) { p.deferred = q }
 
+// deferredTrigger holds a compiled deferred-action trigger pattern and its associated event.
+type deferredTrigger struct {
+	re    *regexp.Regexp
+	event string
+}
+
+// deferredTriggers defines the supported deferred trigger patterns in deterministic evaluation order.
+// Patterns are compiled once at package initialisation rather than per utterance.
+var deferredTriggers = []deferredTrigger{
+	{re: regexp.MustCompile(`(?i)^when the music stops(?:,\s*|\s+)(.+)$`), event: "music"},
+	{re: regexp.MustCompile(`(?i)^after the timer(?:,\s*|\s+)(.+)$`), event: "timer"},
+	{re: regexp.MustCompile(`(?i)^when the reply ends(?:,\s*|\s+)(.+)$`), event: "reply"},
+	{re: regexp.MustCompile(`(?i)^after this reply(?:,\s*|\s+)(.+)$`), event: "reply"},
+}
+
 // deferredRequest recognises explicit orchestration syntax before semantic
 // routing. It returns the decision, and reports agentFallback when the action
 // is neither a safe leaf nor a chain: the caller then owns the Agent call, so
@@ -128,9 +143,9 @@ func (p *Pipeline) deferredRequest(ctx context.Context, req tool.Request, text s
 		return reply, true, ""
 	}
 	// Commas are optional because STT punctuation varies.
-	for prefix, event := range map[string]string{"when the music stops": "music", "after the timer": "timer", "when the reply ends": "reply", "after this reply": "reply"} {
-		pattern := regexp.MustCompile(`(?i)^` + prefix + `(?:,\s*|\s+)(.+)$`)
-		match := pattern.FindStringSubmatch(strings.TrimSpace(text))
+	// Evaluate deferred triggers in a fixed order with precompiled patterns to avoid per-request regex compilation.
+	for _, trigger := range deferredTriggers {
+		match := trigger.re.FindStringSubmatch(strings.TrimSpace(text))
 		if len(match) != 2 {
 			continue
 		}
@@ -151,8 +166,8 @@ func (p *Pipeline) deferredRequest(ctx context.Context, req tool.Request, text s
 		if len(plan) == 0 {
 			return reply, true, text
 		}
-		if p.deferred.Add(event, action) {
-			reply.Text = "Queued for the end of " + event + ". Say cancel queued actions to cancel. It expires in one hour."
+		if p.deferred.Add(trigger.event, action) {
+			reply.Text = "Queued for the end of " + trigger.event + ". Say cancel queued actions to cancel. It expires in one hour."
 		} else {
 			reply.Text = "The action queue is full. Cancel a queued action first."
 		}

@@ -489,3 +489,42 @@ func TestSeparateModuleCheckKeepsItsOwnStateAndNeverFailsTheReport(t *testing.T)
 		t.Error("OK() = false; an unset optional secret must not make the report unhealthy")
 	}
 }
+
+// fakeSourcedLocation provides a location with an explicit source string for testing.
+type fakeSourcedLocation struct {
+	place  location.Location
+	known  bool
+	source string
+}
+
+// Health reports no error.
+func (f fakeSourcedLocation) Health(context.Context) error { return nil }
+
+// Current returns the fake place.
+func (f fakeSourcedLocation) Current() (location.Location, bool) {
+	return f.place, f.known
+}
+
+// Source returns the fake source string.
+func (f fakeSourcedLocation) Source() string { return f.source }
+
+// TestStatusLocationReportsSourceWhenPresent verifies that Health detail names
+// the location source (such as "set on the Dashboard").
+func TestStatusLocationReportsSourceWhenPresent(t *testing.T) {
+	source := status.New(status.Options{
+		Timeout: time.Second,
+		Location: fakeSourcedLocation{
+			place:  location.Location{City: "Annapolis", Region: "Maryland"},
+			known:  true,
+			source: "set on the Dashboard",
+		},
+	})
+	report := source.Status(context.Background())
+	if report.Location.State != tool.StatusOK {
+		t.Fatalf("location state = %v, want ok", report.Location.State)
+	}
+	want := "Annapolis, Maryland (set on the Dashboard)"
+	if report.Location.Detail != want {
+		t.Fatalf("location detail = %q, want %q", report.Location.Detail, want)
+	}
+}

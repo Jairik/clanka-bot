@@ -620,6 +620,7 @@ func run() error {
 	// music.max_volume is a live Spotify setting, unset (no cap) by default.
 	defs = append(defs, spotify.Definitions()...)
 	defs = append(defs, lights.Definitions()...)
+	defs = append(defs, location.Definitions()...)
 	// The live weather temperature unit appears on the Dashboard Settings page
 	// like lights.* and spotify.*; the weather Tool reads it per reply (#318).
 	defs = append(defs, weather.Definitions()...)
@@ -668,6 +669,7 @@ func run() error {
 	// Bind after the service exists so the timezone is live overridable: the
 	// Dashboard's settings handler and any voice Tool write the same service.
 	zone.Bind(settingsSvc)
+	locSvc.Bind(settingsSvc)
 	// Quiet hours now reads and writes the one live service: a Dashboard edit
 	// or a voice Tool write is visible to the next Status read.
 	quietSvc.Bind(settingsSvc)

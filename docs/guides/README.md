@@ -102,11 +102,21 @@ refreshed on the next request after expiry; failures say "Weather is
 unavailable right now." The complete voice turn still depends on STT/TTS
 latency and upstream availability.
 
-If the IP lookup fails, the last known place is used, then the optional
-`location.fallback` values in config, then no place at all. A failed lookup is
-retried on a 30 s to 15 min backoff until one succeeds, so a Pi that boots
-without network recovers on its own; a configured fallback never suppresses
-that retry.
+If the IP lookup is inaccurate (e.g. ISP hub city, Tailscale exit node,
+mobile hotspot), you can set home-location overrides on the Dashboard's
+**Settings** page via `location.city`, `location.region`, and
+`location.timezone`. When set (City or Timezone non-empty), the override takes
+precedence over both IP lookup and config fallback. Clearing them (empty
+override or Reset) returns to lookup. Note that this `location.timezone`
+override does not change the Alarm `timezone` setting; they stay separate. The
+**Health** page reports the active place along with its source (e.g.
+`Annapolis, Maryland (set on the Dashboard)`).
+
+If the IP lookup fails and no override is set, the last known place is used,
+then the optional `location.fallback` values in config, then no place at all.
+A failed lookup is retried on a 30 s to 15 min backoff until one succeeds, so
+a Pi that boots without network recovers on its own; a configured fallback
+never suppresses that retry.
 
 Anything the Fast path does not handle goes to the Agent path. Its OpenRouter
 key resolves from the write-only secrets store first, then the

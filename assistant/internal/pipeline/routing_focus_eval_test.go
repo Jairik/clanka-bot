@@ -192,14 +192,22 @@ func runFocusEvalCases(t *testing.T, p *pipeline.Pipeline, registry *focus.Regis
 		}
 
 		if tc.HandledBy == "" {
-			fellThrough++
 			for name, holder := range holders {
 				if calls := holder.seen(); len(calls) != 0 {
-					t.Errorf("FOCUS %q with %s held delivered %v, want a fall-through", tc.Utterance, name, calls)
+					t.Errorf("FOCUS %q with %s held delivered %v, want no delivery", tc.Utterance, name, calls)
 				}
 			}
-			if got.Path == tool.PathFocusIntent {
-				t.Errorf("FOCUS %q with no capable holder took the Focus path", tc.Utterance)
+			// Bare stop suspends the session even when no holder can handle it.
+			if tc.Intent == string(focus.Stop) {
+				if got.Path != tool.PathFocusIntent || !got.Suspend {
+					t.Errorf("FOCUS %q with no capable holder got path=%s suspend=%t, want Focus and suspension", tc.Utterance, got.Path, got.Suspend)
+				}
+				t.Logf("ROUTING_EVAL_FOCUS utterance=%q holders=%v suspend path=%s", tc.Utterance, tc.Holders, got.Path)
+				continue
+			}
+			fellThrough++
+			if got.Path == tool.PathFocusIntent || got.Suspend {
+				t.Errorf("FOCUS %q with no capable holder got path=%s suspend=%t, want fall-through", tc.Utterance, got.Path, got.Suspend)
 			}
 			t.Logf("ROUTING_EVAL_FOCUS utterance=%q holders=%v fallthrough path=%s tool=%s", tc.Utterance, tc.Holders, got.Path, got.Tool)
 			continue

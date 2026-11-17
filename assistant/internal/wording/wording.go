@@ -43,6 +43,7 @@ const (
 const (
 	DefaultFiller             = "One moment."
 	DefaultUnavailableMessage = "Sorry, I can't answer that right now."
+	DefaultBuildTimeout       = 30 * time.Second
 )
 
 // ControlPhrasesKey is one Tool's live Control phrase list.
@@ -327,6 +328,18 @@ func WithRetryBackoff(initial, max time.Duration) Option {
 	}
 }
 
+// WithBuildTimeout bounds the time an Examples rebuild can spend in the
+// embedder before abandoning the attempt. A stuck embed service gives up its
+// turn so subsequent settings changes are not stalled, the previous vectors
+// stay live, and the rebuild retries on the backoff schedule.
+func WithBuildTimeout(d time.Duration) Option {
+	return func(m *Manager) {
+		if d > 0 {
+			m.buildTimeout = d
+		}
+	}
+}
+
 // ErrClosed reports a Manager that has been stopped.
 var ErrClosed = errors.New("wording: manager is closed")
 
@@ -356,6 +369,7 @@ type Manager struct {
 	// dead embed or TTS service cannot spin and a recovery needs no restart.
 	retryInitial time.Duration
 	retryMax     time.Duration
+	buildTimeout time.Duration
 
 	// builtMu guards the Examples snapshot the worker last installed and the
 	// last build state reported to the Health page. The accessor is in-memory;
@@ -408,6 +422,7 @@ func NewManager(svc *settings.Service, setup Setup, initial *speech.Filler, synt
 		filler:       initial,
 		retryInitial: 2 * time.Second,
 		retryMax:     2 * time.Minute,
+		buildTimeout: DefaultBuildTimeout,
 		wake:         make(chan struct{}, 1),
 		barrier:      make(chan chan struct{}),
 		done:         make(chan struct{}),
@@ -836,7 +851,12 @@ func (m *Manager) syncExamples(ctx context.Context) bool {
 	if !eligibilityDirty && equalExamples(current, built) {
 		return false
 	}
-	set, err := m.router.BuildSet(ctx, current)
+	// Bound the rebuild to m.buildTimeout so a stuck embed service does not
+	// block later settings changes. On timeout, the existing vectors remain
+	// live and the worker starts a bounded retry.
+	buildCtx, cancel := context.WithTimeout(ctx, m.buildTimeout)
+	set, err := m.router.BuildSet(buildCtx, current)
+	cancel()
 	if err != nil {
 		m.logger.Warn("wording: examples rebuild failed, keeping old vectors", "error", err.Error())
 		// The flag stays set, so the bounded retry keeps trying until a rebuild
@@ -874,7 +894,9 @@ func (m *Manager) syncExamples(ctx context.Context) bool {
 // syncFiller re-synthesizes the cached audio when the effective Filler text
 // changed. A failed synthesis keeps the old audio; the worker retries the same
 // key on its bounded backoff, so a dead TTS service cannot spin and a transient
-// failure recovers without another wording change.
+// failure recovers without another wording change. The manager applies no
+// timeout of its own here: production's synthFiller already wraps TTS in
+// cfg.TTS.Timeout, and tests supply their own bounded fakes.
 func (m *Manager) syncFiller(ctx context.Context, retry bool) bool {
 	text := strings.TrimSpace(m.settings.String(FillerKey))
 	if text == "" || m.synth == nil {

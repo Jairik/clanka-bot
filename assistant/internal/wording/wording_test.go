@@ -250,10 +250,11 @@ func TestUnavailableMessageAppliesOnTheNextRead(t *testing.T) {
 // is live. Phrases containing "new" point one way, rain points the opposite
 // way, and everything else points at the old clock example.
 type fakeEmbedder struct {
-	mu       sync.Mutex
-	calls    int
-	nextGate chan struct{}
-	failErr  error
+	mu            sync.Mutex
+	calls         int
+	nextGate      chan struct{}
+	blockUntilCtx bool
+	failErr       error
 }
 
 func (f *fakeEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, error) {
@@ -261,8 +262,15 @@ func (f *fakeEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, 
 	f.calls++
 	gate := f.nextGate
 	f.nextGate = nil
+	block := f.blockUntilCtx
 	failErr := f.failErr
 	f.mu.Unlock()
+	if block {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
 	if gate != nil {
 		select {
 		case <-gate:
@@ -286,6 +294,13 @@ func (f *fakeEmbedder) Embed(ctx context.Context, texts []string) ([][]float32, 
 		}
 	}
 	return vectors, nil
+}
+
+// setBlockUntilCtx sets whether Embed calls block until their context is done.
+func (f *fakeEmbedder) setBlockUntilCtx(block bool) {
+	f.mu.Lock()
+	f.blockUntilCtx = block
+	f.mu.Unlock()
 }
 
 // gateNext holds the next Embed call open until the returned channel closes.
@@ -321,9 +336,10 @@ func (f *fakeEmbedder) waitCalls(t *testing.T, want int) {
 	}
 }
 
-func newSemanticFixture(t *testing.T) (*fixture, *pipeline.SemanticRouter, *fakeEmbedder) {
+// newSemanticFixtureWith builds a semantic fixture configured with custom wording manager options.
+func newSemanticFixtureWith(t *testing.T, opts ...wording.Option) (*fixture, *pipeline.SemanticRouter, *fakeEmbedder) {
 	t.Helper()
-	f := newFixture(t, nil, nil)
+	f := newFixtureWith(t, nil, nil, nil, opts...)
 	embedder := &fakeEmbedder{}
 	router := pipeline.NewSemanticRouter(f.registry, embedder, pipeline.SemanticConfig{
 		Threshold: 0.7,
@@ -340,6 +356,11 @@ func newSemanticFixture(t *testing.T) (*fixture, *pipeline.SemanticRouter, *fake
 	f.manager.MarkExamplesBuilt(examples)
 	f.manager.Start(context.Background(), router)
 	return f, router, embedder
+}
+
+func newSemanticFixture(t *testing.T) (*fixture, *pipeline.SemanticRouter, *fakeEmbedder) {
+	t.Helper()
+	return newSemanticFixtureWith(t)
 }
 
 func TestExamplesRebuildKeepsOldVectorsUntilTheSwap(t *testing.T) {

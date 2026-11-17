@@ -102,6 +102,9 @@ func TestBargeInStopsTheReplyDropsThePendingAndStartsAFreshTurn(t *testing.T) {
 		Responder: responder,
 		Dropper:   dropper,
 		Logger:    logger,
+		// A configured stop command must not change a wake-word Barge-in,
+		// which still starts a fresh turn (#503).
+		StopCommand: "stop",
 	})
 	runLoop(t, loop)
 

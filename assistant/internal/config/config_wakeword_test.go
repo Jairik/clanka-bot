@@ -257,6 +257,51 @@ func TestCommandModelsAreRequestedWhenEnabled(t *testing.T) {
 	}
 }
 
+// TestStopCommandJoinsTheCommandList pins the #503 wiring: the optional stop
+// model is requested beside the volume models, uses the same threshold rules,
+// and stays inert while commands are off.
+func TestStopCommandJoinsTheCommandList(t *testing.T) {
+	cfg, err := config.Load(writeConfig(t, voiceBody(`wakeword:
+  addr: "wakeword:10400"
+  models: ["clanker"]
+  thresholds: {stop: 0.9}
+  commands:
+    enabled: true
+    models: ["volume_up"]
+    stop: "stop"
+`)))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Wakeword.StopCommand(); got != "stop" {
+		t.Errorf("stop command = %q, want stop", got)
+	}
+	if got, want := cfg.Wakeword.CommandModels(), []string{"volume_up", "stop"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("command models = %v, want %v", got, want)
+	}
+	if got, want := cfg.Wakeword.DetectModels(), []string{"clanker", "volume_up", "stop"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("detect models = %v, want %v", got, want)
+	}
+	if got := cfg.Wakeword.ThresholdFor("stop"); got != 0.9 {
+		t.Errorf("stop threshold = %v, want 0.9", got)
+	}
+
+	// A configured model is inert while the feature is switched off.
+	cfg, err = config.Load(writeConfig(t, voiceBody(`wakeword:
+  addr: "wakeword:10400"
+  commands: {stop: "stop"}
+`)))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.Wakeword.StopCommand(); got != "" {
+		t.Errorf("stop command = %q, want none while commands are off", got)
+	}
+	if !cfg.Wakeword.IsCommandModel("stop") {
+		t.Error("a configured stop model must still resolve its threshold while commands are off")
+	}
+}
+
 func TestCommandThresholdAcceptsAConfiguredModelWhileDisabled(t *testing.T) {
 	cfg, err := config.Load(writeConfig(t, voiceBody(`wakeword:
   addr: "wakeword:10400"
@@ -303,6 +348,13 @@ func TestWakeCommandsRejectInvalidSettings(t *testing.T) {
 			body: voiceBody(`wakeword:
   addr: "wakeword:10400"
   commands: {enabled: true, models: []}
+`),
+		},
+		{
+			name: "stop duplicates a volume model",
+			body: voiceBody(`wakeword:
+  addr: "wakeword:10400"
+  commands: {enabled: true, models: ["volume_up"], stop: "volume_up"}
 `),
 		},
 		{

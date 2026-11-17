@@ -502,6 +502,15 @@ than a clamp down. The feature stays off
 until models trained on this house's samples exist and the false-trigger
 measurement in `docs/spikes/wake-over-music.md` meets its target.
 
+A second, optional command model is `stop` (`wakeword.commands.stop`). A
+detection while a reply streams or plays cancels the reply, TTS and playback,
+drops a pending Confirmation, and suspends the session through the same
+end-session path as a standalone "stop": the follow-up window closes, the
+shared Agent history is cleared, and the loop waits for the wake word again. It
+never starts a new turn, unlike a wake-word Barge-in. The soft `sounds.ignore`
+Cue is the only sound, and `none` silences it. An empty `stop` keeps today's
+behaviour, and training the detector is a separate manual step.
+
 `wakeword` and `stt` do computation only and never mount Pulse (ADR-0001).
 Their Compose health checks are Wyoming `describe` calls, so startup waits for
 the service, not for a model: openWakeWord loads a detector on the first

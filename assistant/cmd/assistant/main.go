@@ -1103,6 +1103,9 @@ func run() error {
 		// Wake-free command models (#81): a detection runs the volume step and
 		// Cue with no STT and no routing. The handler reads Focus and the live
 		// music cap per detection, so a Dashboard change applies immediately.
+		// The optional stop model is not a volume command: the loop owns it
+		// (#503), so it is left out of the handler map below.
+		stopModel := cfg.Wakeword.StopCommand()
 		var wakeCommands map[string]voice.WakeCommand
 		if models := cfg.Wakeword.CommandModels(); len(models) > 0 {
 			handler, err := voicecmd.New(
@@ -1136,6 +1139,9 @@ func run() error {
 			}
 			wakeCommands = make(map[string]voice.WakeCommand, len(models))
 			for _, name := range models {
+				if name == stopModel {
+					continue
+				}
 				wakeCommands[name] = handler.Handle
 			}
 			logger.Info("wake-free commands enabled",
@@ -1153,6 +1159,20 @@ func run() error {
 			loop.BindListening(func() bool {
 				active, _ := voice.ListeningState(settingsSvc, time.Now())
 				return active
+			})
+			// The stop model ends the session while a reply plays (#503). The
+			// soft ignore Cue is the only sound, and `sounds.ignore: none`
+			// silences it, like an ignored turn. Play it on the loop goroutine:
+			// the loop then drains the frames captured while it played before
+			// reopening the detect stream, so the Cue cannot wake it again.
+			loop.BindStopCommand(stopModel, func(cueCtx context.Context) {
+				clip, ok := cues.Clip(sound.RoleIgnore)
+				if !ok {
+					return
+				}
+				if err := cues.PlayClip(cueCtx, quietSvc.Clip(clip)); err != nil {
+					logger.Warn("voice stop cue", "error", err.Error())
+				}
 			})
 			// A standalone "stop" and the stop command model end the session,
 			// so the next wake word starts with a fresh history. Conversation

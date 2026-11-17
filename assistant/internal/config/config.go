@@ -301,6 +301,11 @@ type WakeCommands struct {
 	// Threshold is the default detection probability for a command model
 	// without an entry in wakeword.thresholds.
 	Threshold float64 `yaml:"threshold"`
+	// Stop names the wake-free model that suspends the session while a reply is
+	// in flight (#503). Empty disables it. The name joins Models, so the service
+	// is asked for it, and its threshold comes from wakeword.thresholds or
+	// Threshold like every other command model.
+	Stop string `yaml:"stop"`
 }
 
 // WakeModels is the resolved allowlist: Models when set, otherwise the legacy
@@ -313,10 +318,19 @@ func (w Wakeword) WakeModels() []string {
 	return normalizeModelNames(source)
 }
 
-// ModelNames is the configured command list, normalized. It is independent of
-// Enabled so config validation and the Dashboard can name a model even while
-// the feature is switched off.
-func (c WakeCommands) ModelNames() []string { return normalizeModelNames(c.Models) }
+// ModelNames is the configured command list, normalized, including the optional
+// Stop model. It is independent of Enabled so config validation and the
+// Dashboard can name a model even while the feature is switched off.
+func (c WakeCommands) ModelNames() []string {
+	names := append([]string(nil), c.Models...)
+	if stop := strings.TrimSpace(c.Stop); stop != "" {
+		names = append(names, stop)
+	}
+	return normalizeModelNames(names)
+}
+
+// StopModel is the configured stop model, or "" when the stop command is off.
+func (c WakeCommands) StopModel() string { return strings.TrimSpace(c.Stop) }
 
 // CommandModels is the active command allowlist. It is empty unless commands
 // are enabled, so a configured-but-off list is never requested.
@@ -325,6 +339,15 @@ func (w Wakeword) CommandModels() []string {
 		return nil
 	}
 	return w.Commands.ModelNames()
+}
+
+// StopCommand is the wake-free model that suspends a reply (#503), or "" when
+// commands or the model are off. Nothing changes without it.
+func (w Wakeword) StopCommand() string {
+	if !w.Commands.Enabled {
+		return ""
+	}
+	return w.Commands.StopModel()
 }
 
 // DetectModels is every model the Assistant requests from the service: the
@@ -1080,6 +1103,15 @@ func (c Config) validateWakeCommands(wakeModels []string) error {
 		}
 		if wake[name] {
 			return fmt.Errorf("config: wakeword model %q cannot be both a wake word and a command", name)
+		}
+	}
+	// The stop model is not a volume command: a shared name would silently
+	// turn every volume detection into a session end, so refuse it.
+	if stop := c.Wakeword.Commands.StopModel(); stop != "" {
+		for _, name := range normalizeModelNames(c.Wakeword.Commands.Models) {
+			if name == stop {
+				return fmt.Errorf("config: wakeword.commands.stop %q must not also be in wakeword.commands.models", stop)
+			}
 		}
 	}
 	if c.Wakeword.Commands.Enabled && len(commands) == 0 {

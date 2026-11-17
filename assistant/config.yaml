@@ -354,6 +354,11 @@ wakeword:
   commands:
     enabled: false
     models: ["volume_up", "volume_down"]
+    # Optional wake-free model that cancels a reply and suspends the session,
+    # like a standalone "stop" (#503). Empty leaves today's behaviour. The name
+    # joins models above, so the service is asked for it while commands are
+    # enabled; its threshold comes from thresholds below or `threshold`.
+    stop: ""
     # Volume change per detection, percent (1..50), on the same Pulse sink
     # audio.volume_set uses.
     step: 10

@@ -144,6 +144,7 @@ func NewPlay(svc *Service) tool.Tool[PlayIn, PlayOut] {
 			// A new sink-input may have opened while the turn still holds the
 			// duck; lower it before the reply is spoken over it.
 			svc.reapplyMusic(ctx)
+			svc.wakeWatcher()
 			return PlayOut(played), nil
 		},
 		Speak: func(out PlayOut) string {
@@ -220,6 +221,7 @@ func NewNext(svc *Service) tool.Tool[NextIn, NextOut] {
 			if err := svc.player.Next(ctx); err != nil {
 				return NextOut{}, toolError(err)
 			}
+			svc.wakeWatcher()
 			return NextOut{Skipped: true}, nil
 		},
 		Speak: func(NextOut) string { return "Next track." },

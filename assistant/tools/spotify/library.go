@@ -143,8 +143,10 @@ func NewPlayPlaylist(svc *Service) tool.Tool[PlayPlaylistIn, PlayPlaylistOut] {
 			if err != nil {
 				return PlayPlaylistOut{}, toolError(err)
 			}
-			// Like spotify.play, a started playlist holds Music Focus.
+			// Like spotify.play, a started playlist holds Music Focus and
+			// wakes the completion watcher so the 2s poll resumes.
 			svc.takeFocus()
+			svc.wakeWatcher()
 			// A new sink-input may have opened while the turn still holds the
 			// duck; lower it before the reply is spoken over it.
 			svc.reapplyMusic(ctx)

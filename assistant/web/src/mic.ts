@@ -44,12 +44,14 @@ export async function startRecording(onLevel: (rms: number) => void, options: Ca
   const source = ctx.createMediaStreamSource(stream);
   const node = new AudioWorkletNode(ctx, "clanka-recorder");
   const chunks: Float32Array[] = [];
-  node.port.onmessage = (e: MessageEvent<Float32Array>) => {
+  // One handler for the live blocks and the tail flushed when recording stops.
+  const take = (e: MessageEvent<Float32Array>) => {
     chunks.push(e.data);
     let sum = 0;
     for (const v of e.data) sum += v * v;
     onLevel(Math.sqrt(sum / e.data.length));
   };
+  node.port.onmessage = take;
   source.connect(node);
   // A worklet only runs while connected to the graph; a muted gain keeps it
   // pulled without echoing the mic to the speakers.
@@ -59,15 +61,25 @@ export async function startRecording(onLevel: (rms: number) => void, options: Ca
 
   const release = () => {
     node.port.onmessage = null;
-    source.disconnect();
+    // Stop already disconnected the source so the tail could flush.
+    try {
+      source.disconnect();
+    } catch {
+      // The source was already disconnected.
+    }
     node.disconnect();
     stream.getTracks().forEach((t) => t.stop());
     void ctx.close();
   };
   return {
     cancel: release,
+    // Disconnect the source so the worklet posts its partial block, and keep
+    // the handler up for a few quanta so that tail is in the buffer before
+    // the PCM is built. A block that already filled posts nothing extra.
     stop: async () => {
       const rate = ctx.sampleRate;
+      source.disconnect();
+      await new Promise<void>((resolve) => setTimeout(resolve, 40));
       release();
       return toPCM16(chunks, rate, options.maxSeconds ?? MIC_MAX_SECONDS);
     },

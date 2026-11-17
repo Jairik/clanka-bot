@@ -1235,10 +1235,12 @@ func NewExtend(m *Manager) tool.Tool[ExtendIn, ExtendOut] {
 			}
 			return "Timer now has " + left + " left."
 		},
+		// "timer for N minutes" and a named timer sit inside timer.set's
+		// margin. These examples only say the time is being added.
 		Examples: []string{
-			"+5 minutes on the pasta timer",
-			"give the egg timer ten more minutes",
-			"+10 minutes on the timer",
+			"add five more minutes",
+			"give it ten more minutes",
+			"make it five minutes longer",
 		},
 		Extract: func(text string) (ExtendIn, bool) {
 			return extractExtend(text)

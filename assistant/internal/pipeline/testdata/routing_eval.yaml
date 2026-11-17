@@ -510,6 +510,11 @@ positives:
     - how long does the tea timer have left
   timer.extend:
     # Extending a running countdown timer by adding time to it.
+    # These three stay off the "set a timer for N" wording so they clear
+    # the margin against timer.set.
+    - add five more minutes
+    - give it ten more minutes
+    - make it five minutes longer
     - add five minutes to the timer
     - add 5 minutes to the timer
     - +5 minutes on the pasta timer

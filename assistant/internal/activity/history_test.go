@@ -3,6 +3,7 @@ package activity_test
 import (
 	"context"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -356,6 +357,170 @@ func TestPruneCapsTheRowCountIndependentlyOfAge(t *testing.T) {
 	}
 	if len(page.Entries) != 2 || page.Entries[0].ID != "req-a" || page.Entries[1].ID != "req-b" {
 		t.Fatalf("kept %+v, want the two newest", page.Entries)
+	}
+}
+
+// TestPruneTrimsMoreThanOneBatchInOneCall asserts that when more than pruneBatch
+// expired rows exist, one Prune call loops through them all and reports the total.
+func TestPruneTrimsMoreThanOneBatchInOneCall(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
+	history, st := openHistory(t, activity.HistoryOptions{
+		FullWindow:       24 * time.Hour,
+		MaxAge:           7 * 24 * time.Hour,
+		MaxRows:          2000,
+		SkipSearchWarmup: true,
+		Now:              func() time.Time { return now },
+	})
+
+	const total = 501 // pruneBatch + 1
+	at := now.Add(-2 * 24 * time.Hour).UnixMilli()
+	if _, err := st.DB().Exec(`
+		INSERT INTO activity (request_id, at, source, path, tool, outcome, transcript, reply, calls, summary)
+		WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ? - 1)
+		SELECT 'req-' || i, ? + i, 'voice', 'fast_path', 'calendar.get_events', 'ok',
+			'long transcript text ' || i, 'reply text ' || i, '[]', 0
+		FROM n`, total, at); err != nil {
+		t.Fatalf("seed expired rows: %v", err)
+	}
+
+	result, err := history.Prune(ctx)
+	if err != nil {
+		t.Fatalf("Prune: %v", err)
+	}
+	if result.Trimmed != total {
+		t.Fatalf("trimmed = %d, want %d", result.Trimmed, total)
+	}
+	if result.Remaining != total {
+		t.Fatalf("remaining = %d, want %d", result.Remaining, total)
+	}
+
+	var untrimmed int
+	if err := st.DB().QueryRow(`SELECT count(*) FROM activity WHERE summary = 0`).Scan(&untrimmed); err != nil {
+		t.Fatalf("count untrimmed: %v", err)
+	}
+	if untrimmed != 0 {
+		t.Fatalf("%d untrimmed rows remain, want 0", untrimmed)
+	}
+
+	again, err := history.Prune(ctx)
+	if err != nil {
+		t.Fatalf("second Prune: %v", err)
+	}
+	if again.Trimmed != 0 {
+		t.Fatalf("second prune trimmed = %d, want 0", again.Trimmed)
+	}
+}
+
+// budgetContext simulates a context whose deadline expires after a specified
+// number of prune passes.
+type budgetContext struct {
+	context.Context
+	deadline    time.Time
+	done        chan struct{}
+	err         error
+	mu          sync.Mutex
+	expireAfter int
+	passes      int
+}
+
+// newBudgetContext returns a context configured to expire with DeadlineExceeded
+// after expireAfterPasses passes.
+func newBudgetContext(expireAfterPasses int) *budgetContext {
+	return &budgetContext{
+		Context:     context.Background(),
+		deadline:    time.Now().Add(time.Hour),
+		done:        make(chan struct{}),
+		expireAfter: expireAfterPasses,
+	}
+}
+
+func (c *budgetContext) Deadline() (time.Time, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.passes++
+	if c.passes > c.expireAfter {
+		if c.err == nil {
+			c.err = context.DeadlineExceeded
+			c.deadline = time.Now().Add(-time.Second)
+			close(c.done)
+		}
+	}
+	return c.deadline, true
+}
+
+func (c *budgetContext) Done() <-chan struct{} {
+	return c.done
+}
+
+func (c *budgetContext) Err() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.err
+}
+
+// TestPruneStopsAtDeadlineAndSecondCallContinues asserts that when retention
+// work exceeds the context budget, the loop stops at the deadline, reports the
+// partial total of committed rows, and a second call continues.
+func TestPruneStopsAtDeadlineAndSecondCallContinues(t *testing.T) {
+	now := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
+	history, st := openHistory(t, activity.HistoryOptions{
+		FullWindow:       24 * time.Hour,
+		MaxAge:           7 * 24 * time.Hour,
+		MaxRows:          5000,
+		SkipSearchWarmup: true,
+		Now:              func() time.Time { return now },
+	})
+
+	const total = 1001 // more than one budget's worth (2 batches of 500 + 1)
+	at := now.Add(-2 * 24 * time.Hour).UnixMilli()
+	if _, err := st.DB().Exec(`
+		INSERT INTO activity (request_id, at, source, path, tool, outcome, transcript, reply, calls, summary)
+		WITH RECURSIVE n(i) AS (SELECT 0 UNION ALL SELECT i + 1 FROM n WHERE i < ? - 1)
+		SELECT 'req-' || i, ? + i, 'voice', 'fast_path', 'calendar.get_events', 'ok',
+			'long transcript text ' || i, 'reply text ' || i, '[]', 0
+		FROM n`, total, at); err != nil {
+		t.Fatalf("seed expired rows: %v", err)
+	}
+
+	// First pass: budget expires after one batch.
+	budgetCtx := newBudgetContext(1)
+	first, err := history.Prune(budgetCtx)
+	if err != nil {
+		t.Fatalf("first Prune: %v", err)
+	}
+	if first.Trimmed != 500 {
+		t.Fatalf("first prune trimmed = %d, want partial total 500", first.Trimmed)
+	}
+	if first.Remaining != total {
+		t.Fatalf("first prune remaining = %d, want %d", first.Remaining, total)
+	}
+
+	var untrimmed int
+	if err := st.DB().QueryRow(`SELECT count(*) FROM activity WHERE summary = 0`).Scan(&untrimmed); err != nil {
+		t.Fatalf("count untrimmed: %v", err)
+	}
+	if untrimmed != total-500 {
+		t.Fatalf("untrimmed after first pass = %d, want %d", untrimmed, total-500)
+	}
+
+	// Second pass: completes the remaining rows.
+	second, err := history.Prune(context.Background())
+	if err != nil {
+		t.Fatalf("second Prune: %v", err)
+	}
+	if second.Trimmed != total-500 {
+		t.Fatalf("second prune trimmed = %d, want %d", second.Trimmed, total-500)
+	}
+	if first.Trimmed+second.Trimmed != total {
+		t.Fatalf("total trimmed = %d, want %d", first.Trimmed+second.Trimmed, total)
+	}
+
+	if err := st.DB().QueryRow(`SELECT count(*) FROM activity WHERE summary = 0`).Scan(&untrimmed); err != nil {
+		t.Fatalf("count untrimmed after second pass: %v", err)
+	}
+	if untrimmed != 0 {
+		t.Fatalf("untrimmed after second pass = %d, want 0", untrimmed)
 	}
 }
 

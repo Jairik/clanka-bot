@@ -186,6 +186,9 @@ tools:
     max_results: 20
   timer:
     alert_text: "Your timer is done."
+  reminder:
+    # Longest reminder message in runes, enforced on the voice and Agent paths.
+    max_text: 500
   note:
     # Recall embeds only the query, compares it with each note's cached
     # vector and keeps matches at or above this cosine floor. 0.35 separates a
@@ -203,6 +206,8 @@ tools:
     # Open items one fixed list can hold. The set of lists itself is fixed in
     # code: shopping and to-do; no list can be created by voice.
     max_items: 200
+    # Longest item in runes, enforced on the voice and Agent paths.
+    max_item_text: 200
   voice:
     # One "faster"/"slower" step as a multiplier fraction. voice.rate is clamped
     # to [0.5, 2.0] and rounded to two decimals.

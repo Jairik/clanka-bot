@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/namematch"
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
@@ -71,6 +72,12 @@ func NewManager(opts Options) *Manager {
 	if cfg == (Config{}) {
 		cfg = DefaultConfig()
 	}
+	if cfg.MaxItems <= 0 {
+		cfg.MaxItems = DefaultConfig().MaxItems
+	}
+	if cfg.MaxItemText <= 0 {
+		cfg.MaxItemText = DefaultConfig().MaxItemText
+	}
 	var db *sql.DB
 	if opts.DB != nil {
 		db = opts.DB.DB()
@@ -84,6 +91,9 @@ func (m *Manager) Add(ctx context.Context, key, text string) (Item, bool, error)
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return Item{}, false, &Error{Message: "What should I add?"}
+	}
+	if utf8.RuneCountInString(text) > m.cfg.MaxItemText {
+		return Item{}, false, &Error{Message: "That item is too long."}
 	}
 	items, err := m.Items(ctx, key)
 	if err != nil {
@@ -177,6 +187,9 @@ func (m *Manager) UpdateItem(ctx context.Context, key, id, text string) (Item, e
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return Item{}, &Error{Message: "An item can't be empty."}
+	}
+	if utf8.RuneCountInString(text) > m.cfg.MaxItemText {
+		return Item{}, &Error{Message: "That item is too long."}
 	}
 	itemID, err := parseID(id)
 	if err != nil {

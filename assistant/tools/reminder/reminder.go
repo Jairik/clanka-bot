@@ -24,6 +24,25 @@ const (
 	CancelName = "reminder.cancel"
 )
 
+// Config is the tools.reminder section.
+type Config struct {
+	// MaxText is the longest reminder message, in runes.
+	MaxText int `yaml:"max_text"`
+}
+
+// DefaultConfig is the shipped reminder configuration.
+func DefaultConfig() Config {
+	return Config{MaxText: 500}
+}
+
+// validate rejects values that would make reminders useless or unbounded.
+func (c Config) validate() error {
+	if c.MaxText < 20 || c.MaxText > 2000 {
+		return errors.New("max_text must be from 20 to 2000 runes")
+	}
+	return nil
+}
+
 // SetIn is one Reminder request. Exactly one of DurationSeconds and At is set.
 // At is a local "HH:MM" clock time in the effective timezone; Tomorrow makes
 // an explicit "tomorrow" survive the future-if-past policy.

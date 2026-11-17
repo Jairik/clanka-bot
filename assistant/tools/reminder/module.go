@@ -4,23 +4,38 @@ import (
 	"context"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
+	"gopkg.in/yaml.v3"
 )
 
-// Module is the reminder Tool domain. The Reminder has no tools.reminder
-// settings: the Cue and quiet.volume are live settings shared with the sound
-// and Quiet-hours services.
+// Module is the reminder Tool domain.
 type Module struct {
+	cfg Config
 	// manager is created during Register; Start recovers persisted Reminders
 	// after main has bound the live settings, Cues, Zone and Quiet seams.
 	manager *Manager
 	deps    tool.Deps
 }
 
-// NewModule builds the reminder module.
-func NewModule() *Module { return &Module{} }
+// NewModule builds the reminder module with its code defaults.
+func NewModule() *Module { return &Module{cfg: DefaultConfig()} }
 
 // Name is the module name and config section suffix.
 func (*Module) Name() string { return "reminder" }
+
+// Configure decodes tools.reminder over the code defaults.
+func (m *Module) Configure(section *yaml.Node) error {
+	cfg := DefaultConfig()
+	if section != nil {
+		if err := section.Decode(&cfg); err != nil {
+			return err
+		}
+	}
+	if err := cfg.validate(); err != nil {
+		return err
+	}
+	m.cfg = cfg
+	return nil
+}
 
 // Manager exposes the live Manager for main and the tests. It is nil before
 // Register.
@@ -28,7 +43,7 @@ func (m *Module) Manager() *Manager { return m.manager }
 
 // Register adds every Reminder Tool. Persisted Reminders are recovered by
 // Start, not here, so the first recovered alert already sees the effective
-// Cue, Quiet volume and timezone. The module reads no settings at Register.
+// Cue, Quiet volume and timezone.
 func (m *Module) Register(r *tool.Registry, deps tool.Deps) error {
 	manager := NewManager(Options{
 		Now:      deps.Clock,
@@ -40,6 +55,7 @@ func (m *Module) Register(r *tool.Registry, deps tool.Deps) error {
 		Cues:     deps.Cues,
 		Quiet:    deps.Quiet,
 		Notify:   deps.Notify,
+		Config:   m.cfg,
 	})
 	m.deps = deps
 	m.manager = manager

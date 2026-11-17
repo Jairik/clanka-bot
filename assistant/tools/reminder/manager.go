@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/alertstore"
 	"github.com/Jairik/clanka-bot/assistant/internal/announce"
@@ -101,6 +102,7 @@ type Options struct {
 	// Settings resolves live settings overrides. Timezone changes reschedule
 	// pending clock-time reminders.
 	Settings func() *settings.Service
+	Config   Config
 }
 
 // Notifier is the one Notification seam the Manager needs. tool.Notifier
@@ -126,6 +128,7 @@ type Manager struct {
 	cues          CuePlayer
 	quiet         QuietGate
 	notify        Notifier
+	cfg           Config
 
 	db      *sql.DB
 	history *alertstore.Store
@@ -161,6 +164,13 @@ func NewManager(opts Options) *Manager {
 	if opts.Logger == nil {
 		opts.Logger = slog.Default()
 	}
+	cfg := opts.Config
+	if cfg == (Config{}) {
+		cfg = DefaultConfig()
+	}
+	if cfg.MaxText <= 0 {
+		cfg.MaxText = DefaultConfig().MaxText
+	}
 	lastZone := ""
 	var lastLoc *time.Location
 	if opts.Zone != nil {
@@ -177,6 +187,7 @@ func NewManager(opts Options) *Manager {
 		cues:           opts.Cues,
 		quiet:          opts.Quiet,
 		notify:         opts.Notify,
+		cfg:            cfg,
 		entries:        make(map[string]*entry),
 		active:         make(map[string]context.CancelFunc),
 		activeMessages: make(map[string]string),
@@ -351,6 +362,9 @@ func (m *Manager) add(r Reminder, delay time.Duration) (Reminder, error) {
 	r.Message = strings.TrimSpace(r.Message)
 	if r.Message == "" {
 		return Reminder{}, &Error{Message: "What should I remind you about?"}
+	}
+	if utf8.RuneCountInString(r.Message) > m.cfg.MaxText {
+		return Reminder{}, &Error{Message: "That reminder is too long."}
 	}
 	if delay < 0 {
 		delay = 0

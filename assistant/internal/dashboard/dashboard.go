@@ -165,6 +165,8 @@ type Options struct {
 	// without speaking: main passes a reply.Session created with no speaker.
 	// When nil the Activity page still lists requests but hides the box.
 	Typed TypedResponder
+	// Explainer computes the side-effect-free routing decision for the explain panel.
+	Explainer RoutingExplainer
 	// Spoken answers a Dashboard request with Pi audio through the same reply
 	// Session the voice loop uses. It is selected only while
 	// dashboard.speak_replies is on; nil hides the top-bar toggle.
@@ -255,6 +257,7 @@ type Handler struct {
 	spotifyPairing *spotify.PairingReader
 	activity       *activity.Store
 	typed          TypedResponder
+	explainer      RoutingExplainer
 	spoken         TypedResponder
 	transcriber    Transcriber
 	volume         VolumeControl
@@ -422,6 +425,7 @@ func New(opts Options) (*Handler, error) {
 		spotifyPairing: opts.SpotifyPairing,
 		activity:       opts.Activity,
 		typed:          opts.Typed,
+		explainer:      opts.Explainer,
 		spoken:         opts.Spoken,
 		transcriber:    opts.Transcriber,
 		volume:         opts.Volume,
@@ -560,6 +564,7 @@ func New(opts Options) (*Handler, error) {
 	h.Mutating("POST /settings/tools/{name}/reset", h.settingsToolReset)
 	h.Mutating("POST /settings/values/{key}", h.settingsValueSave)
 	h.Mutating("POST /settings/values/{key}/reset", h.settingsValueReset)
+	h.Mutating("POST /api/ui/routing/explain", h.routingExplain)
 	// The wording preview returns bytes only: it never plays through the Pi and
 	// never changes the active voice, so it is an authenticated GET.
 	h.Handle("GET /settings/wording/preview", h.settingsWordingPreview)

@@ -516,6 +516,24 @@ export type RoutesView = {
   Rows: RouteRow[] | null;
 };
 
+export type RoutingExplainView = {
+  path: string;
+  tool: string;
+  args: string;
+  top: RoutingScore[] | null;
+  margin: number;
+  extract: string;
+  fallthrough_reason: string;
+  chain_split: boolean;
+  focus_owner: string;
+  decision: string;
+};
+
+export type RoutingScore = {
+  tool: string;
+  score: number;
+};
+
 export type ScheduledAlert = {
   Audio: string;
   KindKey: string;

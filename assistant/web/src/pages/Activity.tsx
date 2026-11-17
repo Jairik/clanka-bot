@@ -9,7 +9,7 @@ import { activityQuery, asFilter, bucketActivity, filterActivity, FILTERS, FILTE
 import { OutcomeBadge, RequestDetail, fmtClock, isFailed, sourceIcon, useChat } from "../chat";
 import { PageFrame } from "../shell";
 import { FocusStatus, emptyFocus } from "../focus";
-import type { ActivityView, Request } from "../types";
+import type { ActivityView, LatencyView, Request } from "../types";
 import { Badge, Empty, Fold, Notice, Section, cn, foldOpen } from "../ui";
 
 type Page = { key: string; list: Request[]; next: string; notice: string };
@@ -132,6 +132,7 @@ export function ActivityPage() {
       )}
 
       <div className="space-y-3" aria-busy={searching || loadingOlder}>
+        <LatencyPanel />
         {searching && <p className="py-3 text-center text-sm text-muted">Searching the history…</p>}
         {buckets.map(({ key: bucketKey, title, list: rs }, i) => {
           const bad = rs.filter(isFailed).length;
@@ -237,3 +238,160 @@ function ActivityRow({ r }: { r: Request }) {
     </Fold>
   );
 }
+
+// formatLatencyMS formats milliseconds into a readable label (e.g. "85 ms" or "1.2 s").
+function formatLatencyMS(ms: number): string {
+  if (ms < 1000) {
+    return `${Math.round(ms)} ms`;
+  }
+  return `${(ms / 1000).toFixed(1)} s`;
+}
+
+// LatencyPanel renders the per-stage latency percentiles when opened by the user.
+export function LatencyPanel() {
+  const [open, setOpen] = useState(false);
+  const [window, setWindow] = useState<"24h" | "7d">("24h");
+  const [data, setData] = useState<LatencyView | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!open) return;
+    setLoading(true);
+    setError("");
+    let cancelled = false;
+    getJSON<LatencyView>(`/api/ui/latency?window=${window}`).then(
+      (res) => {
+        if (cancelled) return;
+        setData(res);
+        setLoading(false);
+      },
+      (err) => {
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : String(err));
+        setLoading(false);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [open, window]);
+
+  return (
+    <Section
+      title="Latency percentiles"
+      isExpanded={open}
+      onExpandedChange={setOpen}
+      summary={open && data ? `${data.records} requests` : undefined}
+      className="mb-3"
+      flush
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-separator px-3.5 py-2">
+        <span className="text-xs text-muted">
+          {data ? `${data.records} request${data.records === 1 ? "" : "s"} in window` : "Window"}
+        </span>
+        <ToggleButtonGroup
+          size="sm"
+          selectionMode="single"
+          disallowEmptySelection
+          selectedKeys={new Set([window])}
+          onSelectionChange={(k) => setWindow(String([...k][0]) as "24h" | "7d")}
+          aria-label="Latency window"
+        >
+          <ToggleButton key="24h" id="24h">24 hours</ToggleButton>
+          <ToggleButtonGroup.Separator />
+          <ToggleButton key="7d" id="7d">7 days</ToggleButton>
+        </ToggleButtonGroup>
+      </div>
+
+      {loading && !data && (
+        <p className="py-6 text-center text-xs text-muted">Loading latency statistics…</p>
+      )}
+
+      {error && (
+        <div className="p-3 text-xs text-danger">{error}</div>
+      )}
+
+      {data && (
+        <div className="space-y-3 p-3">
+          <p className="text-xs text-muted leading-relaxed">
+            {data.notice || "Sampled from successful requests with reply audio only; failed, cancelled and unmeasured requests are excluded."}
+          </p>
+
+          {(!data.paths || data.paths.length === 0) ? (
+            <p className="py-2 text-xs text-muted">No successful requests with reply audio in this window.</p>
+          ) : (
+            <div className="space-y-3">
+              {data.paths.map((p) => (
+                <div key={p.path} className="space-y-2 rounded-lg border border-separator/60 bg-surface-secondary/40 p-2.5 text-xs">
+                  <div className="flex items-center justify-between font-semibold">
+                    <span>{p.label || p.path}</span>
+                    <span className="text-muted font-normal">
+                      {p.response_count} response{p.response_count === 1 ? "" : "s"} ({p.attempts} attempt{p.attempts === 1 ? "" : "s"})
+                    </span>
+                  </div>
+
+                  {p.response && p.response.n > 0 && (
+                    <div className="flex items-center justify-between rounded bg-surface px-2 py-1">
+                      <span className="font-medium text-foreground">Response</span>
+                      <span className="font-mono tabular-nums text-muted">
+                        {p.response.n} sample{p.response.n === 1 ? "" : "s"} · p50 {formatLatencyMS(p.response.p50)} · p95 {formatLatencyMS(p.response.p95)}
+                      </span>
+                    </div>
+                  )}
+
+                  {p.stage_list && p.stage_list.length > 0 && (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs">
+                        <thead>
+                          <tr className="border-b border-separator/60 text-muted">
+                            <th className="py-1 pr-2 font-normal">Stage</th>
+                            <th className="py-1 px-2 font-normal text-right">Samples</th>
+                            <th className="py-1 px-2 font-normal text-right">p50</th>
+                            <th className="py-1 pl-2 font-normal text-right">p95</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-separator/40 font-mono">
+                          {p.stage_list.map((s) => (
+                            <tr key={s.name}>
+                              <td className="py-1 pr-2 font-sans text-foreground">{s.label}</td>
+                              <td className="py-1 px-2 text-right tabular-nums text-muted">{s.n}</td>
+                              <td className="py-1 px-2 text-right tabular-nums">{formatLatencyMS(s.p50)}</td>
+                              <td className="py-1 pl-2 text-right tabular-nums">{formatLatencyMS(s.p95)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+
+                  {(p.first_chunk.n > 0 || p.agent_token.n > 0) && (
+                    <div className="space-y-1 border-t border-separator/40 pt-1 text-muted">
+                      {p.first_chunk.n > 0 && (
+                        <div className="flex items-center justify-between">
+                          <span>First reply chunk</span>
+                          <span className="font-mono tabular-nums">
+                            {p.first_chunk.n} sample{p.first_chunk.n === 1 ? "" : "s"} · p50 {formatLatencyMS(p.first_chunk.p50)} · p95 {formatLatencyMS(p.first_chunk.p95)}
+                          </span>
+                        </div>
+                      )}
+                      {p.agent_token.n > 0 && (
+                        <div className="flex items-center justify-between">
+                          <span>Agent first token</span>
+                          <span className="font-mono tabular-nums">
+                            {p.agent_token.n} sample{p.agent_token.n === 1 ? "" : "s"} · p50 {formatLatencyMS(p.agent_token.p50)} · p95 {formatLatencyMS(p.agent_token.p95)}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </Section>
+  );
+}
+

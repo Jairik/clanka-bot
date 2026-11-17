@@ -17,6 +17,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Jairik/clanka-bot/assistant/internal/latency"
 )
 
 const (
@@ -27,6 +29,10 @@ const (
 	DefaultMaxAge = 30 * 24 * time.Hour
 	// DefaultMaxRows is the hard row bound, independent of age.
 	DefaultMaxRows = 20000
+
+	// defaultLatencyLimit bounds the aggregate latency read so a busy week
+	// never makes the percentile computation walk an unbounded result set.
+	defaultLatencyLimit = 2000
 
 	// summaryRunes bounds a trimmed text field; the row still answers "what
 	// kind of request was this" without keeping a whole conversation forever.
@@ -348,6 +354,69 @@ func (h *History) Count(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("activity history: count: %w", err)
 	}
 	return n, nil
+}
+
+// Latency reads up to defaultLatencyLimit newest rows within the window from
+// durable history and computes the percentile summary.
+func (h *History) Latency(ctx context.Context, window time.Duration) (latency.Summary, error) {
+	if h == nil {
+		return latency.Summary{}, nil
+	}
+	statement := `SELECT at, path, outcome, response_ms, stages, checkpoints FROM activity`
+	var args []any
+	if window > 0 {
+		statement += ` WHERE at >= ?`
+		args = append(args, h.now().Add(-window).UnixMilli())
+	}
+	statement += ` ORDER BY at DESC, id DESC LIMIT ?`
+	args = append(args, defaultLatencyLimit)
+
+	rows, err := h.db.QueryContext(ctx, statement, args...)
+	if err != nil {
+		return latency.Summary{}, fmt.Errorf("activity history: latency query: %w", err)
+	}
+	defer rows.Close()
+
+	var records []latency.Record
+	for rows.Next() {
+		var (
+			atMillis        int64
+			path            string
+			outcome         string
+			response        sql.NullInt64
+			stagesJSON      string
+			checkpointsJSON string
+		)
+		if err := rows.Scan(&atMillis, &path, &outcome, &response, &stagesJSON, &checkpointsJSON); err != nil {
+			return latency.Summary{}, fmt.Errorf("activity history: scan latency row: %w", err)
+		}
+		rec := latency.Record{
+			Time:    time.UnixMilli(atMillis),
+			Path:    path,
+			Outcome: outcome,
+		}
+		if response.Valid {
+			ms := float64(response.Int64)
+			rec.ResponseMS = &ms
+		}
+		if stagesJSON != "" && stagesJSON != "[]" {
+			var timings []Timing
+			if err := json.Unmarshal([]byte(stagesJSON), &timings); err == nil && len(timings) > 0 {
+				rec.Stages = TimingsToMSMap(timings)
+			}
+		}
+		if checkpointsJSON != "" && checkpointsJSON != "[]" {
+			var ckpts []Timing
+			if err := json.Unmarshal([]byte(checkpointsJSON), &ckpts); err == nil && len(ckpts) > 0 {
+				rec.Checkpoints = TimingsToMSMap(ckpts)
+			}
+		}
+		records = append(records, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return latency.Summary{}, fmt.Errorf("activity history: read latency rows: %w", err)
+	}
+	return latency.Summarize(records), nil
 }
 
 // PruneResult reports one retention pass.

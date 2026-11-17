@@ -72,6 +72,103 @@ func TestRepeatWithoutAPreviousReplyFailsClearly(t *testing.T) {
 	}
 }
 
+// TestHeardSpeaksTheTranscript covers assistant.heard: it reads back the
+// transcript the Assistant acted on verbatim with its provenance.
+func TestHeardSpeaksTheTranscript(t *testing.T) {
+	fixed := time.Date(2026, 11, 12, 15, 4, 0, 0, time.UTC)
+	store := lastreply.New()
+	store.Record(lastreply.Reply{
+		Text:      "It's 3:04 PM.",
+		Tool:      "time.now",
+		Path:      "fast_path",
+		Utterance: "what time is it",
+		Source:    "voice",
+		At:        fixed,
+	})
+	reg := newRegistry(t)
+	if err := tool.Add(reg, assistant.NewHeard(store)); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	out, ok := execute(t, reg, assistant.HeardName).(assistant.HeardOut)
+	if !ok {
+		t.Fatal("result is not assistant.HeardOut")
+	}
+	if out.Text != `I heard: "what time is it".` || out.Utterance != "what time is it" || out.Source != "voice" || !out.At.Equal(fixed) {
+		t.Fatalf("HeardOut = %+v, want the recorded transcript and provenance", out)
+	}
+	if spoken, _ := reg.Speak(assistant.HeardName, out); spoken != `I heard: "what time is it".` {
+		t.Fatalf("Speak = %q, want I heard: \"what time is it\".", spoken)
+	}
+}
+
+// TestHeardWithoutAPreviousReplyFailsClearly asserts that an empty store fails
+// with the expected spoken failure text.
+func TestHeardWithoutAPreviousReplyFailsClearly(t *testing.T) {
+	reg := newRegistry(t)
+	if err := tool.Add(reg, assistant.NewHeard(lastreply.New())); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	_, err := reg.Execute(context.Background(), assistant.HeardName, nil)
+	if err == nil {
+		t.Fatal("Execute succeeded with no previous reply")
+	}
+	if got := tool.FailureMessage(err); got != "I haven't heard anything yet." {
+		t.Fatalf("FailureMessage = %q, want I haven't heard anything yet.", got)
+	}
+}
+
+// TestHeardWithBlankTranscriptFailsClearly asserts that a blank transcript
+// also fails with "I haven't heard anything yet."
+func TestHeardWithBlankTranscriptFailsClearly(t *testing.T) {
+	store := lastreply.New()
+	store.Record(lastreply.Reply{
+		Text:      "The complete answer.",
+		Utterance: "   ",
+	})
+	reg := newRegistry(t)
+	if err := tool.Add(reg, assistant.NewHeard(store)); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	_, err := reg.Execute(context.Background(), assistant.HeardName, nil)
+	if err == nil {
+		t.Fatal("Execute succeeded with blank utterance")
+	}
+	if got := tool.FailureMessage(err); got != "I haven't heard anything yet." {
+		t.Fatalf("FailureMessage = %q, want I haven't heard anything yet.", got)
+	}
+}
+
+// TestHeardMetadata asserts Permission read, LocalOnlyYes, and that the Agent
+// tool set excludes it.
+func TestHeardMetadata(t *testing.T) {
+	reg := newRegistry(t)
+	if err := assistant.NewModule().Register(reg, tool.Deps{LastReply: lastreply.New()}); err != nil {
+		t.Fatalf("Register: %v", err)
+	}
+	info, ok := reg.Info(assistant.HeardName)
+	if !ok {
+		t.Fatalf("info for %s not found", assistant.HeardName)
+	}
+	if info.Permission != tool.PermissionRead {
+		t.Errorf("Permission = %q, want read", info.Permission)
+	}
+	if !info.LocalOnly {
+		t.Error("assistant.heard is not Local-only; transcripts must never leave the Pi")
+	}
+	if info.AgentOnly {
+		t.Error("assistant.heard is AgentOnly; it must run on the Fast path")
+	}
+
+	// The Agent path prompt builder must exclude assistant.heard.
+	agentTools := agent.NewPromptBuilder("").Tools(reg)
+	for _, at := range agentTools {
+		if at.OfFunction != nil && at.OfFunction.Function.Name == info.WireName {
+			t.Errorf("Agent tool set includes %s, want it excluded", info.WireName)
+		}
+	}
+}
+
 // TestForgetClearsHistoryAndKeepsLastReply covers the three core promises of
 // assistant.forget: the module wiring passes the shared history to the Tool, a
 // call clears that history, and the spoken confirmation says what happened.

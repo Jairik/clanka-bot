@@ -46,6 +46,18 @@ type RepeatOut struct {
 	Rate      float64   `json:"rate,omitempty"`
 }
 
+// HeardIn has no fields: reading the transcript the Assistant acted on takes
+// no arguments.
+type HeardIn struct{}
+
+// HeardOut is the transcript the Assistant acted on with its provenance.
+type HeardOut struct {
+	Text      string    `json:"text"`
+	Utterance string    `json:"utterance"`
+	At        time.Time `json:"at,omitempty"`
+	Source    string    `json:"source,omitempty"`
+}
+
 // ForgetIn has no fields: "forget the conversation" clears whatever is stored,
 // it does not take the current utterance as its input.
 type ForgetIn struct{}
@@ -428,6 +440,40 @@ func extractRepeatRate(text string) (RepeatIn, bool) {
 		return RepeatIn{Rate: RepeatFaster}, true
 	default:
 		return RepeatIn{}, true
+	}
+}
+
+// NewHeard builds assistant.heard. It reads the shared last-reply store at
+// call time; an empty store or blank transcript says "I haven't heard anything yet."
+// It is deliberately Local-only: a transcript can be private and must never
+// leave the Pi.
+func NewHeard(store *lastreply.Store) tool.Tool[HeardIn, HeardOut] {
+	return tool.Tool[HeardIn, HeardOut]{
+		Name:        HeardName,
+		Description: "Read back the transcript the Assistant acted on.",
+		Permission:  tool.PermissionRead,
+		LocalOnly:   tool.LocalOnlyYes,
+		Handler: func(_ context.Context, _ HeardIn) (HeardOut, error) {
+			if store == nil {
+				return HeardOut{}, &tool.ToolError{Say: "I haven't heard anything yet."}
+			}
+			reply, ok := store.Last()
+			if !ok || strings.TrimSpace(reply.Utterance) == "" {
+				return HeardOut{}, &tool.ToolError{Say: "I haven't heard anything yet."}
+			}
+			return HeardOut{
+				Text:      fmt.Sprintf("I heard: %q.", reply.Utterance),
+				Utterance: reply.Utterance,
+				At:        reply.At,
+				Source:    reply.Source,
+			}, nil
+		},
+		Speak: func(out HeardOut) string { return out.Text },
+		Examples: []string{
+			"did you catch that",
+			"what was my question",
+			"read back what I said",
+		},
 	}
 }
 

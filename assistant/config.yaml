@@ -464,6 +464,13 @@ control_phrases:
   # "when's my next alert" sits too close to alarm.list for the semantic
   # margin, so it routes exactly to the merged answer (#305).
   "when's my next alert": alerts.next
+  # assistant.heard reads back the transcript the Assistant acted on (#224).
+  "what did you hear": assistant.heard
+  "what did I just say": assistant.heard
+  "did you catch that": assistant.heard
+  "what was my question": assistant.heard
+  "read back what I said": assistant.heard
+  "what did you think I said": assistant.heard
   "what time is it": time.now
   "what's the time": time.now
   "what is the time": time.now

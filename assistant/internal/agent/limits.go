@@ -22,6 +22,25 @@ const (
 	DefaultMaxCompletionTokens = 300
 )
 
+// Code defaults for a conversation turn. There is no practical sentence limit:
+// the character budget is the one that cuts a long answer, so the sentence cap
+// sits high enough never to decide the reply.
+const (
+	DefaultConversationSpokenMaxSentences  = 1000
+	DefaultConversationSpokenMaxChars      = 1000
+	DefaultConversationMaxCompletionTokens = 1000
+)
+
+// ConversationLimits is the longer budget a cue-word or conversation-mode turn
+// may use for one answer.
+func ConversationLimits() Limits {
+	return Limits{
+		SpokenMaxSentences:  DefaultConversationSpokenMaxSentences,
+		SpokenMaxChars:      DefaultConversationSpokenMaxChars,
+		MaxCompletionTokens: DefaultConversationMaxCompletionTokens,
+	}
+}
+
 // Limits are the per-turn bounds on one Agent answer: how much may be spoken
 // and how many completion tokens the provider may generate.
 type Limits struct {

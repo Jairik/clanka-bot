@@ -140,6 +140,9 @@ type Completed struct {
 	TotalTokens      int64
 	CachedTokens     int64
 	Steps            int
+	// Conversation is how this turn used the longer budget: "mode" while
+	// conversation mode was on, "cue" for a cue-word turn, or empty.
+	Conversation string
 }
 
 // Observer receives every completed request. The Activity store implements
@@ -192,6 +195,9 @@ type Timeline struct {
 	totalTokens      int64
 	cachedTokens     int64
 	steps            int
+	// conversation is the kind of longer budget this turn used ("mode",
+	// "cue"), set by SetConversation. It is display metadata, never text.
+	conversation string
 }
 
 // New opens a timeline. The request ID is the one every layer logs, so voice,
@@ -507,6 +513,7 @@ func (t *Timeline) completedLocked(outcome Outcome, err error) Completed {
 	completed.TotalTokens = t.totalTokens
 	completed.CachedTokens = t.cachedTokens
 	completed.Steps = t.steps
+	completed.Conversation = t.conversation
 	if t.detail != nil {
 		copied := *t.detail
 		copied.Calls = append([]ToolCallDetail(nil), t.detail.Calls...)
@@ -680,6 +687,24 @@ func (t *Timeline) setTokens(prompt, completion, total, cached int64, steps int)
 	t.attrs["total_tokens"] = total
 	t.attrs["cached_tokens"] = cached
 	t.attrs["agent_steps"] = steps
+}
+
+// SetConversation records how the turn used the longer conversation budget:
+// "mode", "cue" or empty. It is display metadata on the same completion the
+// Activity store already reads, so the page can show it per turn.
+func SetConversation(ctx context.Context, kind string) {
+	if kind == "" {
+		return
+	}
+	if t := FromContext(ctx); t != nil {
+		t.mu.Lock()
+		defer t.mu.Unlock()
+		if t.done {
+			return
+		}
+		t.conversation = kind
+		t.attrs["conversation"] = kind
+	}
 }
 
 // SetFailure stores the failure reason on ctx's timeline.

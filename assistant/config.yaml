@@ -532,6 +532,16 @@ control_phrases:
   "forget the conversation": assistant.forget
   "clear our chat": assistant.forget
   "start over": assistant.forget
+  # Conversation mode is an explicit toggle. The phrases are exact so "that's
+  # all" cannot be mistaken for the shared "stop" Focus intent, and the Tools'
+  # Examples keep ordinary small talk on the same routing. The mode itself is
+  # in memory and ends on "that's all" or after its idle window.
+  "let's chat": conversation.start
+  "let's talk": conversation.start
+  "conversation mode": conversation.start
+  "that's all": conversation.end
+  "stop chatting": conversation.end
+  "end conversation": conversation.end
 
 # The Agent path: one OpenAI-compatible provider, no failover.
 agent:

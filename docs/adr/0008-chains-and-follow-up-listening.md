@@ -10,7 +10,10 @@ each successful step drains its reply audio before the next Tool runs. Dashboard
 text chat executes the same ordered Tools without Pi audio.
 
 `conversation.chains` defaults on. `conversation.follow_up_seconds` defaults to
-5, accepts 0–15, and 0 disables it. Settings use the Dashboard's existing live
+5, accepts 0–15, and 0 disables it. Conversation mode raises the same window to
+`conversation.mode_follow_up_seconds` (default 15, accepts 0–60) while it is
+on; music holding Focus still suppresses it, and the default window returns
+when the mode ends or idles out. Settings use the Dashboard's existing live
 HeroUI rows. Follow-up capture starts only after reply playback drains, plays the
 wake Cue, rejects buffered TTS/Cue frames and allows a 300 ms acoustic tail.
 It times out if speech has not started. Music holding Focus suppresses the

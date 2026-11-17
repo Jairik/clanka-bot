@@ -110,6 +110,10 @@ type requestView struct {
 	TotalTokens      int64
 	CachedTokens     int64
 	AgentSteps       int
+	// ConversationLabel is how this turn used the longer budget, in plain
+	// words; empty for a default-budget turn.
+	Conversation      string
+	ConversationLabel string
 }
 
 type timingView struct {
@@ -395,29 +399,31 @@ func activityFilter(value string) string {
 
 func (h *Handler) requestView(entry activity.Entry) requestView {
 	view := requestView{
-		ID:               entry.ID,
-		Time:             entry.At.Format("15:04:05"),
-		TimeISO:          entry.At.Format(time.RFC3339),
-		Source:           entry.Source,
-		SourceLabel:      activitySourceLabel(entry.Source),
-		Path:             entry.Path,
-		PathLabel:        pathLabel(entry.Path),
-		Tool:             entry.Tool,
-		Outcome:          entry.Outcome,
-		OutcomeText:      outcomeLabel(entry.Outcome),
-		OutcomePill:      outcomePill(entry.Outcome),
-		Response:         "Not measured",
-		Error:            entry.Error,
-		Transcript:       entry.Transcript,
-		Reply:            entry.Reply,
-		LocalOnly:        entry.LocalOnly,
-		Pending:          entry.Pending,
-		Summary:          entry.Summary,
-		PromptTokens:     entry.PromptTokens,
-		CompletionTokens: entry.CompletionTokens,
-		TotalTokens:      entry.TotalTokens,
-		CachedTokens:     entry.CachedTokens,
-		AgentSteps:       entry.Steps,
+		ID:                entry.ID,
+		Time:              entry.At.Format("15:04:05"),
+		TimeISO:           entry.At.Format(time.RFC3339),
+		Source:            entry.Source,
+		SourceLabel:       activitySourceLabel(entry.Source),
+		Path:              entry.Path,
+		PathLabel:         pathLabel(entry.Path),
+		Tool:              entry.Tool,
+		Outcome:           entry.Outcome,
+		OutcomeText:       outcomeLabel(entry.Outcome),
+		OutcomePill:       outcomePill(entry.Outcome),
+		Response:          "Not measured",
+		Error:             entry.Error,
+		Transcript:        entry.Transcript,
+		Reply:             entry.Reply,
+		LocalOnly:         entry.LocalOnly,
+		Pending:           entry.Pending,
+		Summary:           entry.Summary,
+		PromptTokens:      entry.PromptTokens,
+		CompletionTokens:  entry.CompletionTokens,
+		TotalTokens:       entry.TotalTokens,
+		CachedTokens:      entry.CachedTokens,
+		AgentSteps:        entry.Steps,
+		Conversation:      entry.Conversation,
+		ConversationLabel: conversationLabel(entry.Conversation),
 	}
 	if entry.ResponseMS != nil {
 		view.Measured = true
@@ -488,6 +494,19 @@ func pathLabel(path string) string {
 			return "Unrouted"
 		}
 		return path
+	}
+}
+
+// conversationLabel names how a turn used the longer conversation budget.
+// Empty means the default budget, so the page shows no row.
+func conversationLabel(kind string) string {
+	switch kind {
+	case "mode":
+		return "Conversation mode"
+	case "cue":
+		return "Cue word"
+	default:
+		return ""
 	}
 }
 

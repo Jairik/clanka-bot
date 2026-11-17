@@ -98,6 +98,8 @@ var defaults = map[string]string{
 	"quiet.off":             "Loud.",
 	"quiet.dnd":             "Do not disturb.",
 	"quiet.awake":           "Awake.",
+	"conversation.start":    "Let's talk.",
+	"conversation.end":      "Okay.",
 	"voice.set":             "Done.",
 	"voice.rate":            "Done.",
 	"reminder.set":          "Set.",

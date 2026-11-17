@@ -158,6 +158,7 @@ func TestSecretsAndTimersPreserveEachOtherAcrossReopen(t *testing.T) {
 		// phrase book; the ledger is contiguous.
 		8: "reminders", 9: "personas", 10: "notes_and_lists", 11: "activity_history",
 		12: "completion_audio", 13: "persona_phrases", 14: "activity_tokens",
+		15: "activity_conversation",
 	}
 	applied := migrations(firstStore)
 	if len(applied) != len(wantVersions) {

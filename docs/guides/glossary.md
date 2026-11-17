@@ -286,6 +286,19 @@ The short, cued listening period after a completed reply that accepts another
 request without a Wake phrase; disabled while music holds Focus.
 _Avoid_: Always listening, continuous recording
 
+**Cue word**:
+A word or phrase in a request, such as "explain" or "walk me through", that
+gives that one Agent turn the longer conversation budget. Matching is on
+normalised whole words, and the longer budget lasts only that turn.
+_Avoid_: Trigger word, magic word
+
+**Conversation mode**:
+An in-memory on/off state, started and ended by Control phrases such as "let's
+talk" and "that's all", during which every Agent turn uses the longer budget
+and the Follow-up window is raised. It ends silently after
+`conversation.mode_idle_seconds` with no turn, and a restart ends it.
+_Avoid_: Chat mode, continuous listening
+
 **Deferred action**:
 An expiring request queued for music, reply or Timer Ring completion, visible
 and cancellable until dispatched. At most eight wait, for at most one hour.

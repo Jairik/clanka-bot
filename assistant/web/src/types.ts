@@ -428,6 +428,10 @@ export type Request = {
   TotalTokens: number;
   CachedTokens: number;
   AgentSteps: number;
+  // Conversation is "mode" or "cue" when this turn used the longer budget;
+  // ConversationLabel is its plain-words form, empty for the default budget.
+  Conversation: string;
+  ConversationLabel: string;
 };
 
 export type RingKind = {

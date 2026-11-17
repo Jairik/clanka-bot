@@ -51,7 +51,7 @@ func TestLastReplyRecordsProvenance(t *testing.T) {
 	if !ok {
 		t.Fatal("the last reply was not recorded")
 	}
-	if last.Text != reply.Text || last.Tool != clock.Name || last.Path != string(tool.PathControlPhrase) || last.LocalOnly {
+	if last.Text != reply.Text || last.Tool != clock.Name || last.Path != string(tool.PathControlPhrase) || last.LocalOnly || last.Utterance != "what time is it" {
 		t.Fatalf("last = %+v, reply = %+v", last, reply)
 	}
 
@@ -60,7 +60,7 @@ func TestLastReplyRecordsProvenance(t *testing.T) {
 		t.Fatal("the private reply did not carry its Local-only provenance")
 	}
 	last, ok = store.Last()
-	if !ok || !last.LocalOnly || last.Tool != "test.private" {
+	if !ok || !last.LocalOnly || last.Tool != "test.private" || last.Utterance != "read the private one" {
 		t.Fatalf("last = %+v, %v; want a Local-only private reply", last, ok)
 	}
 }
@@ -85,7 +85,7 @@ func TestLastReplyIsRecordedForTheAgentPath(t *testing.T) {
 		t.Fatalf("reply = %+v, want the Agent path", reply)
 	}
 	last, ok := store.Last()
-	if !ok || last.Text != "an agent answer" || last.LocalOnly || last.Tool != "" {
+	if !ok || last.Text != "an agent answer" || last.LocalOnly || last.Tool != "" || last.Utterance != "an open question" {
 		t.Fatalf("last = %+v, %v; want the agent answer without a Tool", last, ok)
 	}
 }

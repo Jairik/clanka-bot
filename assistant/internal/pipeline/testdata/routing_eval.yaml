@@ -852,6 +852,32 @@ positives:
     # Repeat at a modified rate (issue #306).
     - say that again slower
     - again but slower
+  assistant.heard:
+    # Read back the transcript the Assistant acted on (issue #224).
+    - what did you hear
+    - what did I just say
+    - did you catch that
+    - what was my question
+    - read back what I said
+    - what did you think I said
+    - what did you think that I said
+    - what did you hear me say
+    - what was my last question
+    - read back my question
+    - read back my last question
+    - read back what I just asked
+    - read back what I just said
+    - read back the question
+    - can you read back what I said
+    - please read back what I said
+    - tell me what you heard
+    - tell me what you heard me say
+    - did you hear my question
+    - what was it that I asked
+    - what did you think I asked
+    - what was the question I just asked
+    - what did I ask you
+    - what did I just ask
   assistant.help:
     # Generated from the enabled registry; the wording asks for capabilities,
     # not a specific Tool.

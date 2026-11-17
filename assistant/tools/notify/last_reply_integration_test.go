@@ -273,3 +273,67 @@ func TestRepeatCannotLaunderLocalOnlyProvenance(t *testing.T) {
 		t.Fatalf("requests = %d, want zero after a repeated Local-only reply", requests.Load())
 	}
 }
+
+// TestHeardCannotLaunderLocalOnlyProvenance asserts that hearing back an utterance
+// produces a Local-only reply so a follow-up "send that to my phone" is refused
+// before the network, preventing any utterance from entering a Notification.
+func TestHeardCannotLaunderLocalOnlyProvenance(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		_, _ = io.WriteString(w, `{"id":"test"}`)
+	}))
+	defer server.Close()
+
+	last := lastreply.New()
+	notifyService, err := core.New(core.Options{
+		Reader:  newMapReader(map[string]any{core.URLKey: server.URL, core.MissedAlertsKey: true}),
+		Secrets: newMapSecrets(),
+		Logger:  slog.New(slog.NewTextHandler(io.Discard, nil)),
+		Config:  core.DefaultConfig(),
+	})
+	if err != nil {
+		t.Fatalf("notify.New: %v", err)
+	}
+
+	reg := tool.NewRegistry(5 * time.Second)
+	fixed := time.Date(2026, 11, 12, 15, 4, 0, 0, time.UTC)
+	if err := clock.Register(reg, func() time.Time { return fixed }); err != nil {
+		t.Fatalf("register clock: %v", err)
+	}
+	if err := assistant.NewModule().Register(reg, tool.Deps{LastReply: last}); err != nil {
+		t.Fatalf("register assistant: %v", err)
+	}
+	if err := notify.NewModule().Register(reg, tool.Deps{Notify: notifyService, LastReply: last}); err != nil {
+		t.Fatalf("register notify: %v", err)
+	}
+	p, err := pipeline.New(reg, map[string]string{
+		"what time is it":       clock.Name,
+		"what did you hear":     assistant.HeardName,
+		"send that to my phone": notify.Name,
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)), pipeline.WithLastReply(last))
+	if err != nil {
+		t.Fatalf("pipeline.New: %v", err)
+	}
+
+	// Turn 1: clock answer.
+	reply := p.Handle(context.Background(), tool.Request{ID: "1", Device: tool.DevicePi}, "what time is it")
+	if reply.LocalOnly {
+		t.Fatalf("clock reply = %+v, want public", reply)
+	}
+
+	// Turn 2: heard answer is Local-only.
+	heard := p.Handle(context.Background(), tool.Request{ID: "2", Device: tool.DevicePi}, "what did you hear")
+	if heard.Tool != assistant.HeardName || !heard.LocalOnly || heard.Text != `I heard: "what time is it".` {
+		t.Fatalf("heard reply = %+v, want Local-only I heard: \"what time is it\".", heard)
+	}
+
+	// Turn 3: phone tool refuses the Local-only reply.
+	reply = p.Handle(context.Background(), tool.Request{ID: "3", Device: tool.DevicePi}, "send that to my phone")
+	if !strings.Contains(reply.Text, "local-only") {
+		t.Fatalf("refusal = %q, want a local-only refusal", reply.Text)
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("requests = %d, want zero after a Local-only heard reply", requests.Load())
+	}
+}

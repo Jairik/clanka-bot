@@ -704,12 +704,18 @@ func (p *Pipeline) finish(ctx context.Context, started time.Time, req tool.Reque
 	// or shutdown) and a blank answer must not replace the last thing the user
 	// actually heard; an error or Unavailable reply was spoken, so it counts.
 	if p.lastReply != nil && ctx.Err() == nil && strings.TrimSpace(reply.Text) != "" {
+		var source string
+		if tl := latency.FromContext(ctx); tl != nil {
+			source = string(tl.Source())
+		}
 		p.lastReply.Record(lastreply.Reply{
 			Text:       reply.Text,
 			Tool:       reply.Tool,
 			Path:       string(reply.Path),
 			LocalOnly:  reply.LocalOnly,
 			SpeechRate: reply.SpeechRate,
+			Utterance:  transcript,
+			Source:     source,
 		})
 	}
 	// The reply text and its provenance are display-only: the timeline keeps

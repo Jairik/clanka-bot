@@ -505,6 +505,7 @@ func New(opts Options) (*Handler, error) {
 	h.Mutating("POST /sounds/values/{key}", h.soundsValueSave)
 	h.Mutating("POST /sounds/values/{key}/reset", h.soundsValueReset)
 	h.Mutating("POST /sounds/preview/{name}", h.soundsPreview)
+	h.Mutating("POST /sounds/delete/{name}", h.soundsDelete)
 	// The Voice page owns upload, selection, rate and the optional source note.
 	// Browser preview is an authenticated GET that synthesizes a bounded WAV
 	// and never changes the persistent active voice.

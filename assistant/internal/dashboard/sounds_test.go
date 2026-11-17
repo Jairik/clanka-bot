@@ -131,7 +131,7 @@ type soundsResp struct {
 	Error      string
 	HasLibrary bool
 	MaxUpload  string
-	Sounds     []struct{ Name, Duration, Added, Origin, AudioURL string }
+	Sounds     []struct{ Name, Duration, Added, Origin, AudioURL, DeleteAction string }
 	HasRoles   bool
 	Roles      []struct {
 		Role, Label, Key, Display, Source, SourceLabel, LowerLabel string
@@ -737,5 +737,46 @@ func TestSoundsAudioRouteServesAManuallyDroppedNameWithSpaces(t *testing.T) {
 	}
 	if rec := f.get("/sounds/audio/my%20birds"); rec.Code != http.StatusOK {
 		t.Fatalf("escaped audio status = %d, want 200", rec.Code)
+	}
+}
+
+func TestSoundsDeleteRemovesALibrarySoundAndRefusesAnAssignedOne(t *testing.T) {
+	f := newSoundsFixture(t, nil)
+	for _, name := range []string{"birds.wav", "rain.wav"} {
+		if rec := f.upload(name, testWAV(16000, 1, 100*time.Millisecond, 0.2)); rec.Code != http.StatusOK {
+			t.Fatalf("upload %s status = %d", name, rec.Code)
+		}
+	}
+	v, _ := f.view()
+	for _, row := range v.Sounds {
+		want := "/sounds/delete/" + row.Name
+		if row.Name == sound.BuiltinChime {
+			want = ""
+		}
+		if row.DeleteAction != want {
+			t.Fatalf("%s DeleteAction = %q, want %q", row.Name, row.DeleteAction, want)
+		}
+	}
+
+	rec := f.post("/sounds/delete/birds", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if v := decodeSounds(t, rec); !strings.HasPrefix(v.Flash, "Deleted.") || v.hasSound("birds") {
+		t.Fatalf("delete view = flash %q sounds %+v", v.Flash, v.Sounds)
+	}
+
+	if rec := f.post("/sounds/roles/wake", url.Values{"value": {"rain"}}); rec.Code != http.StatusOK {
+		t.Fatalf("assign status = %d", rec.Code)
+	}
+	rec = f.post("/sounds/delete/rain", nil)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("assigned delete status = %d, want 409", rec.Code)
+	}
+	if v := decodeSounds(t, rec); !strings.Contains(v.Error, "wake") || !v.hasSound("rain") {
+		t.Fatalf("assigned delete view = error %q sounds %+v", v.Error, v.Sounds)
+	}
+	if rec := f.post("/sounds/delete/missing", nil); rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown delete status = %d, want 404", rec.Code)
 	}
 }

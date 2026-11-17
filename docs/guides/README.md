@@ -1320,6 +1320,12 @@ through the same Announcement queue as unprompted speech: it waits for the
 current reply, a pending Confirmation and a ringing alert, and a new turn
 cancels it so a reply is never cut.
 
+**Delete** (`POST /sounds/delete/<name>`, confirmed on the page) removes an
+uploaded or dropped sound's file and index row. The built-in `chime` cannot be
+deleted, and a sound a Cue role still uses is refused with the role named;
+reassign the role first. A per-Alarm override naming a deleted sound falls back
+to `sounds.alarm_ring`.
+
 ```sh
 # Assign a dropped file to the error Cue, then reset to config.yaml.
 curl -s -X PUT localhost:8081/api/settings/sounds.error \

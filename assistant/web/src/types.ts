@@ -664,6 +664,8 @@ export type SoundRow = {
   Added: string;
   Origin: string;
   AudioURL: string;
+  /** Empty for the built-in chime, which cannot be deleted. */
+  DeleteAction: string;
 };
 
 export type SoundsView = {

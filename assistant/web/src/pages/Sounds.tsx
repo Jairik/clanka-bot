@@ -1,17 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@heroui/react";
-import { Play, Speaker } from "lucide-react";
+import { Play, Speaker, Trash2 } from "lucide-react";
 import { usePageData } from "../api";
 import { ResetButton, SelectField, SettingRow, useActions } from "../forms";
 import { PageFrame } from "../shell";
 import type { SoundsView } from "../types";
 import { UploadRow } from "../upload";
-import { Badge, Empty, Lede, Notice, Section, SourceBadge, Tip } from "../ui";
+import { Empty, Lede, Notice, Section, SourceBadge, Tip } from "../ui";
 
 export function SoundsPage() {
   const { data, error, set } = usePageData("sounds");
   const actions = useActions<SoundsView>(set);
   const [playing, setPlaying] = useState("");
+  const [confirming, setConfirming] = useState("");
   const audio = useRef<HTMLAudioElement | null>(null);
   useEffect(() => () => audio.current?.pause(), []);
 
@@ -57,11 +58,45 @@ export function SoundsPage() {
                           {[s.Duration, s.Origin, s.Added && `added ${s.Added}`].filter(Boolean).join(" · ")}
                         </div>
                       </div>
-                      <Tip>
-                        <Button size="sm" variant="ghost" isPending={actions.pending === pi} onPress={() => void actions.run(pi)} aria-label={`Play ${s.Name}: On Pi`}>
-                          <Speaker className="size-3.5" /> <span className="hidden sm:inline">On Pi</span>
-                        </Button>
-                      </Tip>
+                      {confirming === s.Name ? (
+                        <>
+                          <span className="text-xs text-danger">Delete?</span>
+                          <Button
+                            size="sm"
+                            variant="danger"
+                            isPending={actions.pending === s.DeleteAction}
+                            onPress={() => (setConfirming(""), void actions.run(s.DeleteAction))}
+                            aria-label={`Confirm delete ${s.Name}`}
+                          >
+                            Delete
+                          </Button>
+                          <Button size="sm" variant="ghost" onPress={() => setConfirming("")}>
+                            Cancel
+                          </Button>
+                        </>
+                      ) : (
+                        <>
+                          <Tip>
+                            <Button size="sm" variant="ghost" isPending={actions.pending === pi} onPress={() => void actions.run(pi)} aria-label={`Play ${s.Name}: On Pi`}>
+                              <Speaker className="size-3.5" /> <span className="hidden sm:inline">On Pi</span>
+                            </Button>
+                          </Tip>
+                          {s.DeleteAction && (
+                            <Tip>
+                              <Button
+                                isIconOnly
+                                size="sm"
+                                variant="danger-soft"
+                                isPending={actions.pending === s.DeleteAction}
+                                onPress={() => setConfirming(s.Name)}
+                                aria-label={`Delete ${s.Name}`}
+                              >
+                                <Trash2 className="size-3.5" />
+                              </Button>
+                            </Tip>
+                          )}
+                        </>
+                      )}
                     </li>
                   );
                 })}

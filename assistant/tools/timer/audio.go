@@ -19,6 +19,10 @@ func (m *Manager) SetAudio(ctx context.Context, id, audio string) error {
 	}
 	audio = strings.TrimSpace(audio)
 	if m.db != nil {
+		// A wedged write must not hold every timer operation past the store budget.
+		// The lock is held across the write so in-memory state and the database do not diverge.
+		ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+		defer cancel()
 		if _, err := m.db.ExecContext(ctx, `UPDATE timers SET audio=? WHERE id=?`, audio, id); err != nil {
 			return err
 		}

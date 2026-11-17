@@ -683,6 +683,9 @@ var settingLabels = map[string]string{
 	"embed.url":                 "Embedding URL",
 	"capture.source":            "Capture source",
 	"playback.sink":             "Playback sink",
+	"location.city":             "Location city",
+	"location.region":           "Location region",
+	"location.timezone":         "Location timezone",
 }
 
 func settingLabel(key string) string {

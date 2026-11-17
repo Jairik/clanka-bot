@@ -423,6 +423,9 @@ location:
   refresh_interval: 24h
   timeout: 5s
   # Used when a lookup has never succeeded. Leave empty for no location.
+  # Live overrides (location.city, location.region, location.timezone) can be
+  # set from the Dashboard Settings page and win over both lookup and fallback.
+  # Note: location.timezone does not change the Alarm timezone above.
   fallback:
     city: ""
     region: ""

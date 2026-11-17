@@ -10,7 +10,6 @@ import (
 	"database/sql"
 	"errors"
 	"os"
-	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -298,7 +297,11 @@ func (s *Source) checkLocation(ctx context.Context) tool.StatusCheck {
 	if !known {
 		return tool.StatusCheck{Name: "location", State: tool.StatusError, Detail: "No place known."}
 	}
-	return tool.StatusCheck{Name: "location", State: tool.StatusOK, Detail: formatPlace(place)}
+	var source location.Source
+	if src, ok := s.location.(interface{ Source() string }); ok {
+		source = src.Source()
+	}
+	return tool.StatusCheck{Name: "location", State: tool.StatusOK, Detail: location.FormatPlace(place, source)}
 }
 
 func (s *Source) checkModules(ctx context.Context) []tool.StatusCheck {
@@ -427,23 +430,6 @@ func Label(state tool.StatusState) string {
 	default:
 		return string(state)
 	}
-}
-
-func formatPlace(place location.Location) string {
-	name := strings.TrimSpace(place.City)
-	if region := strings.TrimSpace(place.Region); region != "" {
-		if name != "" {
-			name += ", "
-		}
-		name += region
-	}
-	if timezone := strings.TrimSpace(place.Timezone); timezone != "" {
-		name += " (" + timezone + ")"
-	}
-	if name == "" {
-		return "No place known."
-	}
-	return name
 }
 
 func formatDuration(d time.Duration) string {

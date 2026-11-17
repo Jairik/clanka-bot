@@ -33,6 +33,11 @@ func (m *Manager) AttachStore(st *store.Store) error {
 	m.db = st.DB()
 	m.history = alertstore.New(st.DB())
 	m.mu.Unlock()
+	if m.settings != nil {
+		if svc := m.settings(); svc != nil {
+			m.BindSettings(svc)
+		}
+	}
 	return m.recover()
 }
 

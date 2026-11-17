@@ -6,10 +6,20 @@ export class Recorder extends AudioWorkletProcessor {
     super();
     this.buf = new Float32Array(1024);
     this.pos = 0;
+    this.stopped = false;
+    // Flush on the audio thread before acknowledging that all samples were posted.
+    this.port.onmessage = (event) => {
+      if (event.data?.type !== "flush") return;
+      this.stopped = true;
+      if (this.pos > 0) this.port.postMessage(this.buf.slice(0, this.pos));
+      this.pos = 0;
+      this.port.postMessage({ type: "flushed" });
+    };
   }
 
   /** Accumulates audio quanta into 1024-sample blocks and posts them to the main thread. */
   process(inputs) {
+    if (this.stopped) return false;
     const ch = inputs[0] && inputs[0][0];
     if (ch && ch.length) {
       let offset = 0;
@@ -28,13 +38,7 @@ export class Recorder extends AudioWorkletProcessor {
       }
       return true;
     }
-    // Flush the partial block when the node is disconnected so the tail is kept.
-    if (this.pos > 0) {
-      this.port.postMessage(this.buf.slice(0, this.pos));
-      this.buf = new Float32Array(1024);
-      this.pos = 0;
-      return false;
-    }
+    // Keep the processor alive until the explicit flush message arrives.
     return true;
   }
 }

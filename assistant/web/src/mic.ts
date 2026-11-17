@@ -44,8 +44,13 @@ export async function startRecording(onLevel: (rms: number) => void, options: Ca
   const source = ctx.createMediaStreamSource(stream);
   const node = new AudioWorkletNode(ctx, "clanka-recorder");
   const chunks: Float32Array[] = [];
-  // One handler for the live blocks and the tail flushed when recording stops.
-  const take = (e: MessageEvent<Float32Array>) => {
+  let flushed: (() => void) | undefined;
+  // One port preserves ordering between audio blocks and the flush acknowledgement.
+  const take = (e: MessageEvent<Float32Array | { type: "flushed" }>) => {
+    if (!(e.data instanceof Float32Array)) {
+      if (e.data.type === "flushed") flushed?.();
+      return;
+    }
     chunks.push(e.data);
     let sum = 0;
     for (const v of e.data) sum += v * v;
@@ -73,15 +78,23 @@ export async function startRecording(onLevel: (rms: number) => void, options: Ca
   };
   return {
     cancel: release,
-    // Disconnect the source so the worklet posts its partial block, and keep
-    // the handler up for a few quanta so that tail is in the buffer before
-    // the PCM is built. A block that already filled posts nothing extra.
+    // Build PCM only after the audio thread confirms delivery of its final block.
     stop: async () => {
       const rate = ctx.sampleRate;
-      source.disconnect();
-      await new Promise<void>((resolve) => setTimeout(resolve, 40));
-      release();
-      return toPCM16(chunks, rate, options.maxSeconds ?? MIC_MAX_SECONDS);
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const timeout = setTimeout(() => reject(new Error("Microphone flush timed out")), 2000);
+          flushed = () => {
+            clearTimeout(timeout);
+            resolve();
+          };
+          source.disconnect();
+          node.port.postMessage({ type: "flush" });
+        });
+        return toPCM16(chunks, rate, options.maxSeconds ?? MIC_MAX_SECONDS);
+      } finally {
+        release();
+      }
     },
   };
 }

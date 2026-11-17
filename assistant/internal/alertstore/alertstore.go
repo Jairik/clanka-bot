@@ -11,6 +11,8 @@ import (
 	"database/sql"
 	"fmt"
 	"time"
+
+	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 )
 
 // State is one step of an alert's lifecycle. Fired and Ringing are open; the
@@ -273,4 +275,143 @@ func nullMillis(t time.Time) any {
 		return nil
 	}
 	return t.UnixMilli()
+}
+
+const (
+	// DefaultHistoryDays is the retention window for alert events. Older rows
+	// are deleted on startup unless they are the newest row for their kind.
+	DefaultHistoryDays = 90
+	// DefaultHistoryRows is the maximum number of alert event rows kept.
+	DefaultHistoryRows = 1000
+
+	// HistoryDaysKey is the settings key for alert history retention days.
+	HistoryDaysKey = "alerts.history_days"
+	// HistoryRowsKey is the settings key for alert history retention max rows.
+	HistoryRowsKey = "alerts.history_rows"
+)
+
+// Definitions returns the Live settings definitions for alert history retention.
+func Definitions() []settings.Definition {
+	return []settings.Definition{
+		settings.Int(HistoryDaysKey, DefaultHistoryDays,
+			settings.WithDescription("Days of fired alert history to keep before deleting"),
+			settings.WithValidator(func(v any) error {
+				n, ok := v.(int)
+				if !ok {
+					return fmt.Errorf("history days must be a whole number")
+				}
+				if n <= 0 {
+					return fmt.Errorf("history days must be at least 1")
+				}
+				return nil
+			}),
+		),
+		settings.Int(HistoryRowsKey, DefaultHistoryRows,
+			settings.WithDescription("Maximum newest fired alert history rows to keep"),
+			settings.WithValidator(func(v any) error {
+				n, ok := v.(int)
+				if !ok {
+					return fmt.Errorf("history rows must be a whole number")
+				}
+				if n <= 0 {
+					return fmt.Errorf("history rows must be at least 1")
+				}
+				return nil
+			}),
+		),
+	}
+}
+
+// PruneOptions configures alert history retention. Zero values take the defaults.
+type PruneOptions struct {
+	MaxDays int
+	MaxRows int
+	Now     time.Time
+}
+
+// PruneResult reports the count of rows deleted during a retention pass.
+type PruneResult struct {
+	Deleted   int64
+	Remaining int
+}
+
+// Prune enforces the alert history retention policy: deletes rows older than
+// MaxDays (default 90) and caps the table to the MaxRows (default 1000) newest
+// rows. The newest row for each kind is always preserved even when outside the
+// window, so the Scheduled alerts page never looks empty after a long break.
+func (s *Store) Prune(ctx context.Context, opts PruneOptions) (PruneResult, error) {
+	if s == nil || s.db == nil {
+		return PruneResult{}, nil
+	}
+	maxDays := opts.MaxDays
+	if maxDays <= 0 {
+		maxDays = DefaultHistoryDays
+	}
+	maxRows := opts.MaxRows
+	if maxRows <= 0 {
+		maxRows = DefaultHistoryRows
+	}
+	now := opts.Now
+	if now.IsZero() {
+		now = time.Now()
+	}
+	cutoff := now.Add(-time.Duration(maxDays) * 24 * time.Hour).UnixMilli()
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return PruneResult{}, fmt.Errorf("alertstore: begin prune: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Delete rows older than the age cutoff, keeping the newest row per kind.
+	resAge, err := tx.ExecContext(ctx, `
+		DELETE FROM alert_events
+		WHERE fired_at < ?
+		  AND id NOT IN (
+		    SELECT id FROM (
+		      SELECT id, ROW_NUMBER() OVER (PARTITION BY kind ORDER BY fired_at DESC, id DESC) AS rn
+		      FROM alert_events
+		    ) WHERE rn = 1
+		  )`, cutoff)
+	if err != nil {
+		return PruneResult{}, fmt.Errorf("alertstore: prune age: %w", err)
+	}
+	deletedAge, err := resAge.RowsAffected()
+	if err != nil {
+		return PruneResult{}, fmt.Errorf("alertstore: prune age rows: %w", err)
+	}
+
+	// Cap to the newest maxRows rows, also preserving the newest row per kind.
+	resCap, err := tx.ExecContext(ctx, `
+		DELETE FROM alert_events
+		WHERE id NOT IN (
+		  SELECT id FROM alert_events ORDER BY fired_at DESC, id DESC LIMIT ?
+		)
+		AND id NOT IN (
+		  SELECT id FROM (
+		    SELECT id, ROW_NUMBER() OVER (PARTITION BY kind ORDER BY fired_at DESC, id DESC) AS rn
+		    FROM alert_events
+		  ) WHERE rn = 1
+		)`, maxRows)
+	if err != nil {
+		return PruneResult{}, fmt.Errorf("alertstore: prune cap: %w", err)
+	}
+	deletedCap, err := resCap.RowsAffected()
+	if err != nil {
+		return PruneResult{}, fmt.Errorf("alertstore: prune cap rows: %w", err)
+	}
+
+	var remaining int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM alert_events`).Scan(&remaining); err != nil {
+		return PruneResult{}, fmt.Errorf("alertstore: prune count: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return PruneResult{}, fmt.Errorf("alertstore: commit prune: %w", err)
+	}
+
+	return PruneResult{
+		Deleted:   deletedAge + deletedCap,
+		Remaining: remaining,
+	}, nil
 }

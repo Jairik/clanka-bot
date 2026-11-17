@@ -688,6 +688,8 @@ var settingLabels = map[string]string{
 	"location.city":             "Location city",
 	"location.region":           "Location region",
 	"location.timezone":         "Location timezone",
+	"alerts.history_days":       "History days",
+	"alerts.history_rows":       "History rows",
 }
 
 func settingLabel(key string) string {

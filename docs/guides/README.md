@@ -1110,6 +1110,10 @@ or no-ramp, and Default (or the reset button) clears the field back to
 same `alarm.Manager.Update` as `alarm.update`, so voice and Dashboard cannot
 disagree. It also shows the newest missed Alerts and Timers from the shared
 local history (no pending row is required), bounded to the recent window.
+Retention purges alert history older than `alerts.history_days` (default 90) and
+caps the table to `alerts.history_rows` (default 1000) newest rows once at startup,
+while always keeping the newest row per kind so the page never looks empty after a
+break. Both are live settings editable on the Scheduled alerts page.
 Every write needs the Dashboard identity plus a same-origin request.
 
 The **Notes** page at `/notes` owns the two fixed Lists (`shopping` and

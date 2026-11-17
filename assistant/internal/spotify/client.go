@@ -8,7 +8,9 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
+	"time"
 )
 
 // maxAPIResponse bounds one Web API response. Playlist pages are large but
@@ -120,7 +122,7 @@ func (c *Client) doAndRead(ctx context.Context, method, path string, query url.V
 		return nil, fmt.Errorf("spotify api: response is too large")
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, newAPIError(resp.StatusCode, raw)
+		return nil, newAPIError(resp.StatusCode, resp.Header, raw)
 	}
 	return raw, nil
 }
@@ -129,10 +131,12 @@ func (c *Client) doAndRead(ctx context.Context, method, path string, query url.V
 // such as NO_ACTIVE_DEVICE; the message and body are deliberately discarded.
 // Restricted records only whether the message was Spotify's player
 // "Restriction violated" (for example pause while already paused).
+// RetryAfter is parsed from the Retry-After header, capped at 5 minutes.
 type APIError struct {
 	StatusCode int
 	Reason     string
 	Restricted bool
+	RetryAfter time.Duration
 }
 
 // Error renders the status and safe reason only.
@@ -143,8 +147,28 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("spotify api: status %d", e.StatusCode)
 }
 
-// newAPIError extracts the machine reason from Spotify's error envelope.
-func newAPIError(status int, raw []byte) *APIError {
+// maxRetryAfter is the upper bound applied to parsed Retry-After durations.
+const maxRetryAfter = 5 * time.Minute
+
+// parseRetryAfter extracts integer seconds from a Retry-After header, capped at 5 minutes.
+func parseRetryAfter(s string) time.Duration {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	sec, err := strconv.Atoi(s)
+	if err != nil || sec <= 0 {
+		return 0
+	}
+	d := time.Duration(sec) * time.Second
+	if d > maxRetryAfter {
+		return maxRetryAfter
+	}
+	return d
+}
+
+// newAPIError extracts the machine reason and Retry-After duration from Spotify's error envelope and headers.
+func newAPIError(status int, header http.Header, raw []byte) *APIError {
 	var envelope struct {
 		Error struct {
 			Status  int    `json:"status"`
@@ -153,9 +177,14 @@ func newAPIError(status int, raw []byte) *APIError {
 		} `json:"error"`
 	}
 	_ = json.Unmarshal(raw, &envelope)
+	var retryAfter time.Duration
+	if header != nil {
+		retryAfter = parseRetryAfter(header.Get("Retry-After"))
+	}
 	return &APIError{
 		StatusCode: status,
 		Reason:     envelope.Error.Reason,
 		Restricted: strings.Contains(strings.ToLower(envelope.Error.Message), "restriction violated"),
+		RetryAfter: retryAfter,
 	}
 }

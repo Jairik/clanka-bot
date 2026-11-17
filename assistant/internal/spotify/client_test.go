@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/spotify"
 )
@@ -127,3 +128,74 @@ func TestClientDoesNotFollowRedirectsToAnotherOrigin(t *testing.T) {
 		t.Fatal("the redirect target received the bearer token")
 	}
 }
+
+func TestClientParsesRetryAfter(t *testing.T) {
+	f := newAuthFixture(t)
+	f.beginAndComplete(t)
+	f.fake.mu.Lock()
+	f.fake.api = func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "7")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"status":429,"message":"Rate limit exceeded"}}`))
+	}
+	f.fake.mu.Unlock()
+	client := f.auth.Client()
+	_, err := client.Get(f.ctx, "/me/player", nil)
+	var apiErr *spotify.APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("Get error = %v, want *APIError", err)
+	}
+	if apiErr.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("StatusCode = %d, want 429", apiErr.StatusCode)
+	}
+	if apiErr.RetryAfter != 7*time.Second {
+		t.Fatalf("RetryAfter = %v, want 7s", apiErr.RetryAfter)
+	}
+}
+
+func TestClientCapsRetryAfterAtFiveMinutes(t *testing.T) {
+	f := newAuthFixture(t)
+	f.beginAndComplete(t)
+	f.fake.mu.Lock()
+	f.fake.api = func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "600")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}
+	f.fake.mu.Unlock()
+	client := f.auth.Client()
+	_, err := client.Get(f.ctx, "/me/player", nil)
+	var apiErr *spotify.APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("Get error = %v, want *APIError", err)
+	}
+	if apiErr.RetryAfter != 5*time.Minute {
+		t.Fatalf("RetryAfter = %v, want 5m (capped)", apiErr.RetryAfter)
+	}
+}
+
+func TestClientIgnoresInvalidOrNegativeRetryAfter(t *testing.T) {
+	for _, raw := range []string{"", "invalid", "-5", "0"} {
+		t.Run("raw="+raw, func(t *testing.T) {
+			f := newAuthFixture(t)
+			f.beginAndComplete(t)
+			f.fake.mu.Lock()
+			f.fake.api = func(w http.ResponseWriter, r *http.Request) {
+				if raw != "" {
+					w.Header().Set("Retry-After", raw)
+				}
+				w.WriteHeader(http.StatusTooManyRequests)
+			}
+			f.fake.mu.Unlock()
+			client := f.auth.Client()
+			_, err := client.Get(f.ctx, "/me/player", nil)
+			var apiErr *spotify.APIError
+			if !errors.As(err, &apiErr) {
+				t.Fatalf("Get error = %v, want *APIError", err)
+			}
+			if apiErr.RetryAfter != 0 {
+				t.Fatalf("RetryAfter = %v, want 0", apiErr.RetryAfter)
+			}
+		})
+	}
+}
+

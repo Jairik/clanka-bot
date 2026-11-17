@@ -43,9 +43,10 @@ for a consistent copy; the probe's own files are left untouched as a backup.
 
 An official build carries an expiry date (the startup log says
 `client expires in N days`). The heartbeat turns that into remaining days and
-the Dashboard shows an actionable warning; an expired build fails the Compose
-healthcheck instead of pretending the receiver is playable. Re-run the setup
-script with `SOLOIST_UPDATE=1` to refresh it.
+the Dashboard shows an actionable warning; an expired build degrades playback
+and is reported on the Dashboard rather than failing the Compose healthcheck
+and blocking full-stack deploys. Re-run the setup script with `SOLOIST_UPDATE=1`
+(or `make soloist-update`) to refresh it.
 
 ## Runtime
 

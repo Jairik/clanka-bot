@@ -497,6 +497,27 @@ func TestHealthShowsSpotifyPairingAndWebAPIAuthSeparately(t *testing.T) {
 	}
 }
 
+// TestHealthShowsExpiredSoloistBuildConfirmsDegradedState proves an expired receiver
+// reports "build expired" on the Health page while the process remains available.
+func TestHealthShowsExpiredSoloistBuildConfirmsDegradedState(t *testing.T) {
+	f := newSpotifyFixture(t)
+	body := "version=2\nstate=paired\nsession=idle\ndevice=Clanka\nexpires_days=-1\nupdated=" + time.Now().UTC().Format(time.RFC3339) + "\n"
+	if err := os.WriteFile(f.pairingPath, []byte(body), 0o600); err != nil {
+		t.Fatalf("write expired pairing status: %v", err)
+	}
+
+	rec := f.get("/api/ui/health")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("health = %d", rec.Code)
+	}
+	resp := rec.Body.String()
+	for _, want := range []string{"Connect pairing", "build expired", "expired 1 day(s) ago"} {
+		if !strings.Contains(resp, want) {
+			t.Errorf("health lacks %q", want)
+		}
+	}
+}
+
 // Connect is a GET link, so the document never needs Spotify's origin as a
 // form target. This keeps form-action 'self' on every document and JSON read.
 func TestSpotifyPageCSPKeepsFormActionSelf(t *testing.T) {

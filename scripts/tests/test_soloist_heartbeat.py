@@ -128,15 +128,15 @@ class SoloistStatusTest(unittest.TestCase):
         self.run_heartbeat()
         self.assertEqual(self.fields()["expires_days"], "unknown")
 
-    def test_healthcheck_fails_on_a_stale_or_expired_heartbeat(self) -> None:
+    def test_healthcheck_allows_expired_build_and_fails_on_stale(self) -> None:
         self.write_expiry(datetime.now(), 89)
         self.run_heartbeat()
         self.assertEqual(self.run_healthcheck(), 0)
 
-        # An expired build cannot play, even though the daemon answers.
+        # An expired build cannot play, but exits 0 so full-stack deploys succeed.
         self.write_expiry(datetime.now() - timedelta(days=5), 3)
         self.run_heartbeat()
-        self.assertNotEqual(self.run_healthcheck(), 0)
+        self.assertEqual(self.run_healthcheck(), 0)
 
         # A heartbeat that stopped updating is a real failure.
         self.write_expiry(datetime.now(), 89)

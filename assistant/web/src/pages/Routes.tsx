@@ -51,7 +51,7 @@ function RoutesBody({ data, filter, onFilter }: { data: RoutesView; filter: stri
   const rows = data.Rows ?? [];
   const q = filter.trim().toLowerCase();
   const shown = q
-    ? rows.filter((r) => [r.Name, r.Description, r.Permission].some((v) => v.toLowerCase().includes(q)))
+    ? rows.filter((r) => [r.Name, r.Description, r.Permission].some((v) => (v ?? "").toLowerCase().includes(q)))
     : rows;
   const totals = data.Totals;
 

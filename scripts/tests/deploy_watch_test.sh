@@ -100,6 +100,13 @@ write_curl_stub() {
 set -uo pipefail
 dir="${STUB_CURL_DIR:?STUB_CURL_DIR is required}"
 printf 'curl %s\n' "$*" >>"$dir/curl-calls"
+# The Assistant's busy probe: refused (curl exit 7) unless a case scripts it.
+for last; do :; done
+if [[ "$last" == */busy ]]; then
+	[[ -f "$dir/busy-body" ]] || exit 7
+	cat "$dir/busy-body"
+	exit 0
+fi
 if [[ -f "$dir/curl-fail" ]]; then
 	echo "curl: (22) The requested URL returned error: 503" >&2
 	exit 22
@@ -215,6 +222,7 @@ run_watch() {
 			DEPLOY_WATCH_API="http://api.test" \
 			DEPLOY_WATCH_REPO="example/clanka-bot" \
 			DEPLOY_WATCH_MIN_AGE="${WATCH_MIN_AGE-}" \
+			DEPLOY_WATCH_BUSY_URL="http://assistant.test/busy" \
 			DEPLOY_HEALTH_TIMEOUT="${DEPLOY_HEALTH_TIMEOUT:-5}" \
 			DEPLOY_POLL_INTERVAL="0.1" \
 			bash scripts/deploy-watch.sh "$@"
@@ -225,6 +233,11 @@ run_watch() {
 assert_status() {
 	local want=$1 desc=$2
 	if [[ "$STATUS" == "$want" ]]; then pass; else fail "$desc: exit $STATUS, want $want"; fi
+}
+
+assert_nonzero_status() {
+	local desc=$1
+	if [[ "$STATUS" -ne 0 ]]; then pass; else fail "$desc: expected a non-zero exit"; fi
 }
 
 assert_out_contains() {
@@ -566,7 +579,7 @@ test_young_tip_waits_for_settle() {
 	advance_origin "$repo" 0
 	run_watch "$repo"
 	assert_status 0 "young tip is not an error"
-	assert_out_contains "young tip waits for the settle window" "waiting 900s for main to settle"
+	assert_out_contains "young tip waits for the settle window" "waiting 300s for main to settle"
 	assert_calls_empty "young tip never reaches docker"
 	assert_curl_empty "young tip never asks CI"
 	if [[ "$(git -C "$repo" rev-parse HEAD)" != "$NEW_SHA" ]]; then pass; else fail "young tip leaves HEAD alone"; fi
@@ -597,6 +610,68 @@ test_settle_window_can_be_disabled() {
 	assert_env_contains "zero settle window tags the new SHA" "GIT_SHA=$short"
 }
 
+test_busy_assistant_defers_the_deploy() {
+	local repo short
+	repo=$(new_repo)
+	new_scenario
+	advance_origin "$repo" 1200
+	short="$(git -C "$repo" rev-parse --short "$NEW_SHA")"
+	printf '{"busy":true,"reasons":["music"]}\n' >"$SCENARIO/busy-body"
+	run_watch "$repo"
+	assert_status 0 "a busy assistant is not an error"
+	assert_out_contains "the deferral names the reason" "assistant is busy (music); deferring $short"
+	assert_calls_empty "a busy assistant is never restarted"
+	if [[ "$(git -C "$repo" rev-parse HEAD)" != "$NEW_SHA" ]]; then pass; else fail "a deferred deploy leaves HEAD alone"; fi
+}
+
+test_idle_assistant_deploys() {
+	local repo
+	repo=$(new_repo)
+	new_scenario
+	advance_origin "$repo" 1200
+	printf '{"busy":false,"reasons":[]}\n' >"$SCENARIO/busy-body"
+	run_watch "$repo"
+	assert_status 0 "an idle assistant deploys"
+	assert_curl_contains "the watcher asked whether the assistant is busy" "http://assistant.test/busy"
+	assert_calls_contains "an idle assistant is restarted" "docker compose up -d --no-build --remove-orphans"
+}
+
+test_busy_deferral_is_capped() {
+	local repo
+	repo=$(new_repo)
+	new_scenario
+	# 5 minute settle + 120 minute cap = 7500s; this commit is older.
+	advance_origin "$repo" 8000
+	printf '{"busy":true,"reasons":["music"]}\n' >"$SCENARIO/busy-body"
+	run_watch "$repo"
+	assert_status 0 "a capped deferral deploys"
+	assert_out_contains "the cap is reported" "deploying"
+	assert_out_contains "the cap warns" "after 120m of deferral"
+	assert_calls_contains "past the cap the stack is restarted" "docker compose up -d --no-build --remove-orphans"
+}
+
+test_force_ignores_a_busy_assistant() {
+	local repo
+	repo=$(new_repo)
+	new_scenario
+	advance_origin "$repo" 1200
+	printf '{"busy":true,"reasons":["reply"]}\n' >"$SCENARIO/busy-body"
+	run_watch "$repo" --force
+	assert_status 0 "force deploys a busy assistant"
+	assert_calls_contains "force restarts the stack" "docker compose up -d --no-build --remove-orphans"
+}
+
+test_bad_max_defer_is_rejected() {
+	local repo
+	repo=$(new_repo)
+	new_scenario
+	OUT="$TMP/output.$$"
+	(cd "$repo" && DEPLOY_WATCH_MAX_DEFER=soon DEPLOY_WATCH_LOCK="$SCENARIO/watch.lock" bash scripts/deploy-watch.sh) >"$OUT" 2>&1
+	STATUS=$?
+	assert_nonzero_status "a non-numeric cap is refused"
+	assert_out_contains "the refusal says why" "DEPLOY_WATCH_MAX_DEFER must be a whole number"
+}
+
 test_force_ignores_settle_window() {
 	local repo short
 	repo=$(new_repo)
@@ -617,7 +692,7 @@ test_future_commit_timestamp_is_clamped() {
 	run_watch "$repo"
 	assert_status 0 "future-dated commit is not an error"
 	assert_out_contains "future-dated commit is clamped to zero" "moved 0s ago"
-	assert_out_contains "future-dated commit still waits" "waiting 900s for main to settle"
+	assert_out_contains "future-dated commit still waits" "waiting 300s for main to settle"
 	assert_calls_empty "future-dated commit never reaches docker"
 }
 
@@ -663,6 +738,11 @@ run_test test_force_deploys_when_current
 run_test test_young_tip_waits_for_settle
 run_test test_settled_tip_deploys
 run_test test_settle_window_can_be_disabled
+run_test test_busy_assistant_defers_the_deploy
+run_test test_idle_assistant_deploys
+run_test test_busy_deferral_is_capped
+run_test test_force_ignores_a_busy_assistant
+run_test test_bad_max_defer_is_rejected
 run_test test_force_ignores_settle_window
 run_test test_future_commit_timestamp_is_clamped
 run_test test_bad_settle_window_is_rejected

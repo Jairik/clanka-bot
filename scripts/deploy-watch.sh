@@ -4,9 +4,13 @@
 # A checkout on another branch, or with local commits ahead of origin/main, is
 # left alone: deploy.sh builds the branch that is checked out.
 #
-# A commit younger than DEPLOY_WATCH_MIN_AGE is not built yet. Rebuilding eight
-# images takes longer than a busy main stays still, so the settle window turns a
-# burst of merges into one deploy instead of one per commit.
+# A commit younger than DEPLOY_WATCH_MIN_AGE is not deployed yet, so a burst of
+# merges becomes one deploy instead of one per commit. CI publishes the images
+# and deploy.sh restarts only the services that changed, so the window is short.
+#
+# A deploy also waits while the Assistant reports it is busy (GET /busy: music
+# playing, a reply being spoken, an alarm ringing), up to DEPLOY_WATCH_MAX_DEFER
+# minutes past the settle window, so a restart does not cut a song in half.
 #
 #   scripts/deploy-watch.sh              deploy origin/main when it moves
 #   scripts/deploy-watch.sh --dry-run    report what would happen, change nothing
@@ -29,11 +33,17 @@ LOCK_FILE="${DEPLOY_WATCH_LOCK:-/tmp/clanka-deploy-watch.lock}"
 API="${DEPLOY_WATCH_API:-https://api.github.com}"
 REPO="${DEPLOY_WATCH_REPO:-Jairik/clanka-bot}"
 CI_ENABLED="${DEPLOY_WATCH_CI:-1}"
-# A commit has to be this old before it is built. Merges arrive faster than a
-# Pi can rebuild eight images (six to thirty minutes each), so without a settle
-# window every commit starts its own full rebuild and the timer never idles.
-# --force and DEPLOY_WATCH_MIN_AGE=0 are the escapes.
-SETTLE_MINUTES="${DEPLOY_WATCH_MIN_AGE:-15}"
+# A commit has to be this old before it is deployed, so a burst of merges
+# coalesces. It was 15 when the Pi rebuilt every image itself; CI publishes
+# them now and an unchanged service is not restarted, so a short window is
+# enough. --force and DEPLOY_WATCH_MIN_AGE=0 are the escapes.
+SETTLE_MINUTES="${DEPLOY_WATCH_MIN_AGE:-5}"
+# The Assistant's busy probe on the host-published health port. Empty disables
+# the wait. An unreachable probe (the assistant is down) never blocks a deploy.
+BUSY_URL="${DEPLOY_WATCH_BUSY_URL-http://127.0.0.1:${ASSISTANT_HTTP_PORT:-8080}/busy}"
+# Minutes past the settle window a busy Assistant may hold a deploy back, so
+# music left on all day cannot stall deploys forever.
+MAX_DEFER_MINUTES="${DEPLOY_WATCH_MAX_DEFER:-120}"
 
 log() { printf 'deploy-watch: %s\n' "$*"; }
 warn() { printf 'deploy-watch: warning: %s\n' "$*" >&2; }
@@ -56,7 +66,7 @@ do.
 Flags:
   --dry-run   do every check, log what would happen, never run deploy.sh
   --force     deploy even when HEAD already equals origin/main, and ignore the
-              settle window
+              settle window and the busy wait
 
 Environment:
   DEPLOY_WATCH_CI        0 disables the CI gate (default: enabled)
@@ -64,8 +74,12 @@ Environment:
   DEPLOY_WATCH_REPO      owner/name to query (default: Jairik/clanka-bot)
   DEPLOY_WATCH_LOCK      lock file (default: /tmp/clanka-deploy-watch.lock)
   DEPLOY_WATCH_MIN_AGE   minutes a commit must have been on main before it is
-                         built, so a burst of merges coalesces into one rebuild
-                         (default: 15, 0 disables)
+                         deployed, so a burst of merges coalesces into one
+                         deploy (default: 5, 0 disables)
+  DEPLOY_WATCH_BUSY_URL  the Assistant's busy probe
+                         (default: http://127.0.0.1:8080/busy; empty disables)
+  DEPLOY_WATCH_MAX_DEFER minutes past the settle window that a busy Assistant
+                         may hold a deploy back (default: 120)
 
 The CI gate reads the public check-runs API, so no token is used or logged.
 A pending or red main is never deployed. If the API cannot be reached (or
@@ -131,6 +145,48 @@ ci_state() {
 	esac
 }
 
+# Reads the /busy payload on stdin and prints "busy <reasons>", "idle" or
+# "unknown".
+BUSY_PARSER="$(
+	cat <<'PY'
+import json
+import sys
+
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    print("unknown")
+    sys.exit(0)
+if not isinstance(data, dict) or not isinstance(data.get("busy"), bool):
+    print("unknown")
+elif data["busy"]:
+    reasons = [str(r) for r in data.get("reasons") or [] if str(r).isalnum()]
+    print("busy " + (",".join(reasons) or "activity"))
+else:
+    print("idle")
+PY
+)"
+
+# Print "busy <reasons>", "idle" or "unknown" for the Assistant right now.
+# Never fails the caller: unknown deploys, because an assistant that does not
+# answer is one a restart cannot interrupt (and may well fix).
+busy_state() {
+	local body state
+	if [[ -z "$BUSY_URL" ]] || ! command -v python3 >/dev/null 2>&1; then
+		printf 'unknown\n'
+		return 0
+	fi
+	if ! body="$(curl -fsS --max-time 5 "$BUSY_URL" 2>/dev/null)"; then
+		printf 'unknown\n'
+		return 0
+	fi
+	state="$(printf '%s' "$body" | python3 -c "$BUSY_PARSER" 2>/dev/null || true)"
+	case "$state" in
+	idle | busy\ *) printf '%s\n' "$state" ;;
+	*) printf 'unknown\n' ;;
+	esac
+}
+
 # Seconds since a commit landed on main, clamped at zero. A commit timestamped
 # in the future is clock skew, not evidence that main has already settled, but
 # it must never block a deploy for longer than the settle window either.
@@ -151,7 +207,7 @@ target_age() {
 
 main() {
 	local dry_run=0 force=0 arg changes err target current target_short current_short status
-	local branch upstream built built_short settle_secs age
+	local branch upstream built built_short settle_secs age busy
 
 	for arg in "$@"; do
 		case "$arg" in
@@ -172,6 +228,9 @@ main() {
 	# "wait thirty-five hours": refuse the run instead of guessing.
 	case "$SETTLE_MINUTES" in
 	'' | *[!0-9]*) die "DEPLOY_WATCH_MIN_AGE must be a whole number of minutes, got '$SETTLE_MINUTES'" ;;
+	esac
+	case "$MAX_DEFER_MINUTES" in
+	'' | *[!0-9]*) die "DEPLOY_WATCH_MAX_DEFER must be a whole number of minutes, got '$MAX_DEFER_MINUTES'" ;;
 	esac
 
 	# One watcher at a time. The fd stays open for the whole run; the kernel
@@ -252,6 +311,20 @@ main() {
 		green) log "CI is green for $target_short" ;;
 		*) warn "CI status for $target_short is unknown; deploying anyway" ;;
 		esac
+	fi
+
+	# Do not restart the stack in the middle of a song, a reply or a ringing
+	# alarm. The next tick asks again; past the cap the deploy goes ahead.
+	if ((force == 0)) && [[ -n "$BUSY_URL" ]]; then
+		busy="$(busy_state)"
+		if [[ "$busy" == busy\ * ]]; then
+			age="$(target_age "$target")"
+			if ((age < settle_secs + MAX_DEFER_MINUTES * 60)); then
+				log "assistant is busy (${busy#busy }); deferring $target_short to a later tick"
+				exit 0
+			fi
+			warn "assistant is still busy (${busy#busy }) after ${MAX_DEFER_MINUTES}m of deferral; deploying $target_short anyway"
+		fi
 	fi
 
 	if ((dry_run == 1)); then

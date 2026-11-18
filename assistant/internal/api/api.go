@@ -51,6 +51,17 @@ func WithAnnouncements(announcer Announcer) Option {
 	return func(s *server) { s.announcer = announcer }
 }
 
+// BusyFunc names what the Assistant is doing right now that a restart would
+// cut off ("ring", "reply", "music"). An empty result means idle.
+type BusyFunc func(ctx context.Context) []string
+
+// WithBusy serves GET /busy on this handler. The deploy watcher reads it from
+// the host before it restarts the stack, so a deploy waits for a song, a reply
+// or a ringing alarm to finish. Without it /busy reports idle.
+func WithBusy(busy BusyFunc) Option {
+	return func(s *server) { s.busy = busy }
+}
+
 // WithDebugAllowlist replaces the source-address check. It exists for tests
 // and for a deployment whose bridge gateway is known another way. Production
 // uses the default: loopback plus this container's default gateway (the host
@@ -97,6 +108,7 @@ func NewHandler(p *pipeline.Pipeline, logger *slog.Logger, debugEnabled bool, op
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", s.healthz)
+	mux.HandleFunc("/busy", s.busyz)
 	// The debug entries and the mounted API share one browser guard: loopback
 	// Host only, same-origin Fetch Metadata, and a JSON Content-Type on a
 	// mutation body. The source-address check stays in the handlers below.
@@ -118,6 +130,7 @@ type server struct {
 	api          http.Handler
 	announcer    Announcer
 	observer     latency.Observer
+	busy         BusyFunc
 	debugAllowed func(net.IP) bool
 	// hosts is the debug listener's Host allowlist. It is loopback-only: the
 	// listener is documented for curl on the Pi host, and Docker publishes it
@@ -132,6 +145,26 @@ func (s *server) healthz(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+type busyResponse struct {
+	Busy    bool     `json:"busy"`
+	Reasons []string `json:"reasons"`
+}
+
+// busyz reports whether a restart now would interrupt the owner. It reveals
+// only coarse activity names, never content, and is read-only.
+func (s *server) busyz(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	reasons := []string{}
+	if s.busy != nil {
+		reasons = append(reasons, s.busy(r.Context())...)
+	}
+	writeJSON(w, http.StatusOK, busyResponse{Busy: len(reasons) > 0, Reasons: reasons})
 }
 
 type transcriptRequest struct {

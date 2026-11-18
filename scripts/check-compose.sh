@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Check the deployment conventions the stack relies on:
-#   - every service builds locally so it has a clanka/<service>:${GIT_SHA:-dev}
-#     image (upstream images are wrapped in a small Dockerfile)
+#   - every service builds locally so it has a
+#     clanka/<service>:${CLANKA_TAG_<SERVICE>:-${GIT_SHA:-dev}} image (upstream
+#     images are wrapped in a small Dockerfile); deploy.sh sets the per-service
+#     tag to the content key so an unchanged service is not recreated
 #   - every service restarts unless stopped
 #   - every service has a health check, and no health check calls the internet
 #   - a locally built ML service downloads model weights before its first
@@ -258,9 +260,10 @@ check_weights_layer() {
 }
 
 check_service() {
-	local svc=$1 block want context dockerfile dfile
+	local svc=$1 block want var context dockerfile dfile
 	block="$(service_block "$svc")"
-	want='clanka/'"$svc"':${GIT_SHA:-dev}'
+	var="CLANKA_TAG_$(tr 'a-z-' 'A-Z_' <<<"$svc")"
+	want='clanka/'"$svc"':${'"$var"':-${GIT_SHA:-dev}}'
 
 	if ! grep -qF -- "image: $want" <<<"$block"; then
 		fail "$svc: image must be $want"

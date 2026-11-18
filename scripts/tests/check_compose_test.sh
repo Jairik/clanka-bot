@@ -48,7 +48,7 @@ write_valid_assistant_compose() {
 services:
   assistant:
     build: ./assistant
-    image: clanka/assistant:${GIT_SHA:-dev}
+    image: clanka/assistant:${CLANKA_TAG_ASSISTANT:-${GIT_SHA:-dev}}
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -69,7 +69,7 @@ write_privilege_exception_services() {
 	cat >>"$FIXTURE/docker-compose.yml" <<'YAML'
   soloist:
     build: ./soloist
-    image: clanka/soloist:${GIT_SHA:-dev}
+    image: clanka/soloist:${CLANKA_TAG_SOLOIST:-${GIT_SHA:-dev}}
     restart: unless-stopped
     network_mode: host
     security_opt:
@@ -79,7 +79,7 @@ write_privilege_exception_services() {
       interval: 10s
   dashboard-web:
     build: ./dashboard
-    image: clanka/dashboard-web:${GIT_SHA:-dev}
+    image: clanka/dashboard-web:${CLANKA_TAG_DASHBOARD_WEB:-${GIT_SHA:-dev}}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
@@ -114,7 +114,7 @@ test_accepts_the_current_conventions() {
 test_requires_sha_image_tag() {
 	new_fixture
 	write_valid_assistant_compose
-	sed -i 's|clanka/assistant:${GIT_SHA:-dev}|clanka/assistant:latest|' "$FIXTURE/docker-compose.yml"
+	sed -i 's|clanka/assistant:${CLANKA_TAG_ASSISTANT:-${GIT_SHA:-dev}}|clanka/assistant:latest|' "$FIXTURE/docker-compose.yml"
 	run_check
 	assert_status 1 "non-SHA image tag fails"
 	assert_out_contains "image failure is named" "image must be clanka/assistant"
@@ -152,7 +152,7 @@ write_tts_service() {
   tts:
     build:
       context: ./tts
-    image: clanka/tts:${GIT_SHA:-dev}
+    image: clanka/tts:${CLANKA_TAG_TTS:-${GIT_SHA:-dev}}
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -237,7 +237,7 @@ test_accepts_sentence_transformer_weights_layer() {
 	cat >>"$FIXTURE/docker-compose.yml" <<'YAML'
   embed:
     build: ./embed
-    image: clanka/embed:${GIT_SHA:-dev}
+    image: clanka/embed:${CLANKA_TAG_EMBED:-${GIT_SHA:-dev}}
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -277,7 +277,7 @@ test_requires_build_context() {
 	write_valid_assistant_compose
 	cat >>"$FIXTURE/docker-compose.yml" <<'YAML'
   wakeword:
-    image: clanka/wakeword:${GIT_SHA:-dev}
+    image: clanka/wakeword:${CLANKA_TAG_WAKEWORD:-${GIT_SHA:-dev}}
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -299,7 +299,7 @@ test_requires_dockerfile_in_build_context() {
 	cat >>"$FIXTURE/docker-compose.yml" <<'YAML'
   stt:
     build: ./stt
-    image: clanka/stt:${GIT_SHA:-dev}
+    image: clanka/stt:${CLANKA_TAG_STT:-${GIT_SHA:-dev}}
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -358,7 +358,7 @@ test_rejects_unclassified_service() {
 	cat >>"$FIXTURE/docker-compose.yml" <<'YAML'
   metrics:
     build: ./metrics
-    image: clanka/metrics:${GIT_SHA:-dev}
+    image: clanka/metrics:${CLANKA_TAG_METRICS:-${GIT_SHA:-dev}}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:9090/healthz"]
@@ -477,7 +477,7 @@ write_commented_web_search() {
 	cat >>"$FIXTURE/docker-compose.yml" <<'YAML'
   web-search:  # internal search, added later
     build: ./searxng
-    image: clanka/web-search:${GIT_SHA:-dev}
+    image: clanka/web-search:${CLANKA_TAG_WEB_SEARCH:-${GIT_SHA:-dev}}
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -519,7 +519,7 @@ test_rejects_unclassified_commented_service() {
 	cat >>"$FIXTURE/docker-compose.yml" <<'YAML'
   metrics:  # internal telemetry, added later
     build: ./metrics
-    image: clanka/metrics:${GIT_SHA:-dev}
+    image: clanka/metrics:${CLANKA_TAG_METRICS:-${GIT_SHA:-dev}}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "true"]
@@ -568,7 +568,7 @@ write_assistant_web_search_health_dep() {
 services:
   assistant:
     build: ./assistant
-    image: clanka/assistant:${GIT_SHA:-dev}
+    image: clanka/assistant:${CLANKA_TAG_ASSISTANT:-${GIT_SHA:-dev}}
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true

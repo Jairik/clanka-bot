@@ -409,7 +409,10 @@ class InstallTests(unittest.TestCase):
             out = io.StringIO()
             with mock.patch.object(train_cli, "MODELS", models), redirect_stdout(out):
                 self.assertEqual(args.func(args), 0)
-            self.assertIn("scp -o BatchMode=yes", out.getvalue())
+            text = out.getvalue()
+            self.assertIn("scp -o BatchMode=yes", text)
+            self.assertIn("mkdir -p", text)
+            self.assertIn("wakeword/models/local", text)
 
 
 if __name__ == "__main__":

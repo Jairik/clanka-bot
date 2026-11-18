@@ -261,6 +261,15 @@ services:
     # --threshold is the fallback for clients that do not send the per-model
     # map; the Assistant sends a threshold for every model it requests, so
     # WAKEWORD_THRESHOLD/WAKEWORD_THRESHOLDS in .env are the real knobs.
+    #
+    # models/local is gitignored. The entrypoint copies any .tflite there
+    # next to the baked detectors before the server starts, so a try-out
+    # phrase survives a pull of the published image and does not block deploy.
+    # Same filename as a baked model replaces that baked model.
+    volumes:
+      - ./wakeword/models/local:/usr/src/local_models:ro
+      - ./wakeword/local-models.sh:/usr/src/local-models.sh:ro
+    entrypoint: ["/bin/bash", "/usr/src/local-models.sh"]
     command: ["--custom-model-dir", "/usr/src/custom_models", "--threshold", "${WAKEWORD_THRESHOLD:-0.5}"]
     expose:
       - "10400"

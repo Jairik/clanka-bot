@@ -65,7 +65,9 @@ DEFAULT_HELD_OUT = ["caro_davy", "stuart_bell"]
 SPEED_FACTORS = (0.9, 0.95, 1.05, 1.1)
 
 DEFAULT_REMOTE = os.environ.get("CLANKA_PI", "rbpi@pi")
-REMOTE_MODEL_DIR = os.environ.get("CLANKA_PI_MODEL_DIR", "clanka-bot/wakeword/models")
+# Gitignored on the Pi. install --to pi lands here so the checkout stays
+# clean and auto-deploy keeps running. The wakeword entrypoint copies it in.
+REMOTE_MODEL_DIR = os.environ.get("CLANKA_PI_MODEL_DIR", "clanka-bot/wakeword/models/local")
 SIGN_IN_HINT = "run `ssh {remote}` once to sign in"
 BUILTIN_PHRASES = {"clanker": "clanker", "volume-up": "volume up", "volume-down": "volume down"}
 
@@ -909,6 +911,13 @@ def eval_phrase(args: argparse.Namespace, slug: str, work: Path) -> None:
 
 
 def install(args: argparse.Namespace, slug: str) -> None:
+    """Place a trained model for commit, or copy it to the Pi's local dir.
+
+    --to pi copies into the gitignored wakeword/models/local directory.
+    That used to be the tracked models directory, which made the checkout
+    dirty and caused auto-deploy to skip. The container copies the local
+    directory in at start, so the Pi only needs a wakeword restart.
+    """
     key = phrase_key(slug)
     model = MODELS / f"{key}.tflite"
     if not model.exists():
@@ -921,24 +930,32 @@ def install(args: argparse.Namespace, slug: str) -> None:
         print(f"then set WAKEWORD_MODEL={key} in .env and restart assistant")
         return
     remote = args.remote
-    remote_path = f"{remote}:{args.remote_dir}/{key}.tflite"
-    cmd = ["scp", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", str(model), remote_path]
-    print("+ " + shlex.join(cmd), flush=True)
+    # Relative to the Pi user's home. The directory is gitignored, so the
+    # first copy has to create it; ssh starts in that home directory.
+    remote_dir = args.remote_dir
+    remote_path = f"{remote}:{remote_dir}/{key}.tflite"
+    mkdir_cmd = [
+        "ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15",
+        remote, "mkdir -p " + shlex.quote(remote_dir),
+    ]
+    copy_cmd = ["scp", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", str(model), remote_path]
+    print("+ " + shlex.join(mkdir_cmd), flush=True)
+    print("+ " + shlex.join(copy_cmd), flush=True)
     if args.dry_run:
         return
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise CLIError(
-            f"could not copy the model to {remote}"
-            + scp_hint(remote, result)
-            + (f"\n{result.stderr.strip()}" if result.stderr.strip() else "")
-        )
+    for cmd in (mkdir_cmd, copy_cmd):
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise CLIError(
+                f"could not copy the model to {remote}"
+                + scp_hint(remote, result)
+                + (f"\n{result.stderr.strip()}" if result.stderr.strip() else "")
+            )
     print(f"model copied to {remote_path}")
-    print("rebuild and restart the wakeword service on the Pi (deploy.sh refuses a")
-    print("dirty checkout, so this builds the copied file directly):")
-    print(f"  ssh -o BatchMode=yes {remote} 'cd ~/clanka-bot && GIT_SHA=$(git rev-parse --short HEAD) docker compose build wakeword && docker compose up -d wakeword assistant'")
-    print(f"then set WAKEWORD_MODEL={key} in .env and restart assistant")
-    print("to make it durable, commit the model on the desktop and run scripts/deploy.sh on the Pi")
+    print("the checkout stays clean; wakeword copies this directory in at start.")
+    print("restart wakeword, then set WAKEWORD_MODELS to include the name and restart assistant:")
+    print(f"  ssh -o BatchMode=yes {remote} 'cd ~/clanka-bot && docker compose up -d wakeword assistant'")
+    print("to ship the model to every machine, commit it on the desktop and run scripts/deploy.sh")
 
 
 # ---------- status ----------

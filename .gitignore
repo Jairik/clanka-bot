@@ -19,6 +19,12 @@ wakeword/training/real/
 wakeword/training/**/*.wav
 !wakeword/tests/fixtures/*.wav
 
+# Try-out wake detectors for this machine. The wakeword service copies them
+# in at container start. Ignoring them keeps auto-deploy from seeing a dirty
+# checkout (deploy-watch leaves a dirty tree alone).
+wakeword/models/local/*
+!wakeword/models/local/.gitkeep
+
 # Wake-phrase sample bundles exported from the Dashboard. They contain the
 # owner's voice and are copied off the Pi by hand, never committed.
 /exports/

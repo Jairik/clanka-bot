@@ -119,7 +119,7 @@ Every line is prefixed `deploy-watch:` and the deploy it starts keeps its own
 | --- | --- |
 | `already on <sha>` | nothing new; the normal quiet case |
 | `origin/main <sha> moved <n>s ago; waiting <n>s for main to settle` | the tip is younger than `DEPLOY_WATCH_MIN_AGE`; a merge burst is still arriving, so no build yet |
-| `working tree has local changes` | the checkout was edited by hand; commit, stash or move the file |
+| `working tree has local changes` | the checkout was edited by hand; commit, stash or move the file. Try-out wake models belong in `wakeword/models/local/`, which is gitignored |
 | `checkout is on '<branch>' (upstream <upstream>), not origin/main; leaving it alone` | the checkout is on another branch (or has no upstream); the timer only tracks `main`; set the upstream with `git branch --set-upstream-to=origin/main <branch>` |
 | `checkout is not behind origin/main (local commits?); leaving it alone` | `HEAD` is ahead of or diverged from `origin/main`; push the commit or roll back |
 | `CI is still running for <sha>` | a check has not finished; the next tick retries |

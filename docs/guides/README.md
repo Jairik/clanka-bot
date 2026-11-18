@@ -516,8 +516,10 @@ Their Compose health checks are Wyoming `describe` calls, so startup waits for
 the service, not for a model: openWakeWord loads a detector on the first
 `Detect` for it. `wakeword` bakes the locally trained `clanker` detector next to
 the upstream built-ins, so `WAKEWORD_MODELS` can name `okay_nabu` (or another
-upstream name) too; see `wakeword/training/README.md`
-for how it is trained and how to add the owner's own voice. The Dashboard's
+upstream name) too. A `.tflite` in `wakeword/models/local/` (gitignored) is
+copied in when the container starts, so a try-out phrase does not need a
+commit or a new image. See `wakeword/training/README.md`
+for how a phrase is trained and how to add the owner's own voice. The Dashboard's
 Settings page lists the configured models and lets you edit each live threshold,
 and its Health page
 checks that the service advertises each one. Moonshine weights are downloaded anonymously from

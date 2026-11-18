@@ -137,11 +137,12 @@ and false accepts per hour over the background set.
 
 **install** without `--to pi` verifies `wakeword/models/<phrase>.tflite` (the underscore model name, e.g. `volume_up.tflite`) and
 prints the commit and redeploy commands. `install --to pi` copies it to
-`~/clanka-bot/wakeword/models/` on `rbpi@pi` with `BatchMode=yes` and prints a
-`docker compose build wakeword && up -d` command, because `deploy.sh` refuses a
-dirty checkout and the copied file is untracked. For a durable install, commit
-the model on the desktop and deploy normally. Either way, set
-`WAKEWORD_MODEL=<phrase>` in `.env` and restart `assistant`.
+`~/clanka-bot/wakeword/models/local/` on `rbpi@pi` with `BatchMode=yes`. That
+directory is gitignored, and the wakeword container copies it in at start, so
+the checkout stays clean and auto-deploy keeps running. Restart `wakeword`;
+do not rebuild the image. For a model every machine should run, commit it
+on the desktop and deploy normally. Either way, add the name to
+`WAKEWORD_MODELS` in `.env` and restart `assistant`.
 
 **status** lists every `~/.cache/clanka/wakeword-*` work directory with its
 real and synthetic counts, whether its model exists, and the last eval summary.
@@ -378,7 +379,8 @@ exception: it needs **0.98** to meet the false-trigger budget, set per model in
 `assistant/config.yaml` (`wakeword.thresholds.volume_up`). Override any model
 with `WAKEWORD_THRESHOLDS=...`. The wakeword image copies every
 `wakeword/models/*.tflite`, so adding a committed model needs a rebuild, not a
-Dockerfile change. The false-trigger protocol for the command models is §5.2 of
+Dockerfile change. A model only this machine should run goes in
+`wakeword/models/local/` and is copied in on the next `wakeword` start. The false-trigger protocol for the command models is §5.2 of
 [`docs/spikes/wake-over-music.md`](../../docs/spikes/wake-over-music.md).
 
 ### `volume_up` starter: provenance and numbers (2026-11-13)

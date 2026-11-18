@@ -1,0 +1,3 @@
+# Drop a .tflite here to try a wake phrase on this machine without committing it.
+# The wakeword container copies these in at start. Git ignores every other file
+# in this directory, so auto-deploy still sees a clean checkout.

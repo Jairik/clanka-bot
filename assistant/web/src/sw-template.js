@@ -14,7 +14,12 @@ self.addEventListener("install", (event) => {
   event.waitUntil(
     caches
       .open(CACHE)
-      .then((cache) => cache.addAll(PRECACHE))
+      .then(async (cache) => {
+        await cache.addAll(PRECACHE);
+        // Precache the exact URLs in the artifact index, including its build query.
+        const index = await cache.match("/index.html");
+        await cache.addAll(bundleShellURLs(index?.headers.get("X-Dashboard-UI-Build")));
+      })
       .then(() => self.skipWaiting()),
   );
 });

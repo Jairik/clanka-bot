@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# One poll of main, shared by the systemd timer: if origin/main has moved past
-# HEAD, and CI is not still running or red, hand over to scripts/deploy.sh.
+# One poll of main, shared by the systemd timer: if origin/main has not
+# deployed successfully and CI allows it, hand over to scripts/deploy.sh.
 # A checkout on another branch, or with local commits ahead of origin/main, is
 # left alone: deploy.sh builds the branch that is checked out.
 #
@@ -14,16 +14,11 @@
 #
 #   scripts/deploy-watch.sh              deploy origin/main when it moves
 #   scripts/deploy-watch.sh --dry-run    report what would happen, change nothing
-#   scripts/deploy-watch.sh --force      redeploy even when HEAD is already there
+#   scripts/deploy-watch.sh --force      deploy origin/main even if already deployed
 #
-# This script does not retry a failed deploy. deploy.sh pulls before it builds,
-# so a build or health failure leaves HEAD already at the new commit and the
-# next tick sees nothing to do; that commit stays deployed-but-broken until main
-# moves again. The way back is `make rollback SHA=<commit>` or a revert, not a
-# spin loop against the same SHA.
+# The deployed SHA ledger advances only after health and smoke checks pass.
 #
-# All git writes happen inside deploy.sh (`git pull --ff-only`); the watcher
-# itself only fetches and reads.
+# The watcher records successful deploys via deploy.sh; it only fetches and reads.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -57,16 +52,16 @@ usage() {
 	cat <<'EOF'
 Usage: scripts/deploy-watch.sh [--dry-run] [--force]
 
-Poll origin/main once. When it is ahead of HEAD and its CI checks are green (or
-have not reported at all), run scripts/deploy.sh, which pulls, rebuilds and
-waits for health. A checkout on another branch, or one with local commits ahead
+Poll origin/main once. When this commit has not deployed successfully and the
+CI gate allows it, run scripts/deploy.sh for that exact SHA. A checkout on
+another branch, or one with local commits ahead
 of origin/main, is left alone without touching Docker. Safe to run from a
 systemd timer: one run at a time, and it exits 0 whenever there is nothing to
 do.
 
 Flags:
   --dry-run   do every check, log what would happen, never run deploy.sh
-  --force     deploy even when HEAD already equals origin/main, and ignore the
+  --force     deploy even when origin/main is already deployed, and ignore the
               settle window and the busy wait
 
 Environment:
@@ -85,7 +80,7 @@ Environment:
 The CI gate reads the public check-runs API, so no token is used or logged.
 A pending or red main is never deployed. If the API cannot be reached (or
 python3 is missing) the watcher warns and deploys anyway, so a network blip
-cannot wedge the timer; HEAD equality still prevents pointless rebuilds.
+cannot wedge the timer; the deployed SHA still prevents pointless rebuilds.
 EOF
 }
 
@@ -208,7 +203,7 @@ target_age() {
 
 main() {
 	local dry_run=0 force=0 arg changes err target current target_short current_short status
-	local branch upstream built built_short settle_secs age busy
+	local branch upstream built settle_secs age busy state_file deployed
 
 	for arg in "$@"; do
 		case "$arg" in
@@ -245,6 +240,7 @@ main() {
 	cd "$ROOT" || die "cannot enter $ROOT"
 	command -v git >/dev/null 2>&1 || die "git is required"
 	[[ -e "$ROOT/.git" ]] || die "$ROOT is not a git checkout"
+	state_file="$(git rev-parse --git-path deployed-sha)"
 
 	changes="$(git status --porcelain --untracked-files=normal)"
 	if [[ -n "$changes" ]]; then
@@ -261,9 +257,7 @@ main() {
 	target="$(git rev-parse origin/main)"
 	current="$(git rev-parse HEAD)"
 
-	# deploy.sh pulls and builds the checked-out branch, so only a branch that
-	# tracks origin/main is deployable here. A detached HEAD is the rollback
-	# path: deploy.sh's ensure_on_branch recovers it before building.
+	# A detached rollback can return to the tracked branch before building.
 	branch="$(git symbolic-ref --quiet --short HEAD || true)"
 	if [[ -n "$branch" ]]; then
 		upstream="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
@@ -280,8 +274,9 @@ main() {
 		fi
 	fi
 
-	if [[ "$target" == "$current" && "$force" -eq 0 ]]; then
-		log "already on $(git rev-parse --short "$current")"
+	deployed="$(cat "$state_file" 2>/dev/null || true)"
+	if [[ "$target" == "$deployed" && "$force" -eq 0 ]]; then
+		log "already deployed $(git rev-parse --short "$target")"
 		exit 0
 	fi
 	target_short="$(git rev-parse --short "$target")"
@@ -337,13 +332,11 @@ main() {
 	log "deploying $target_short (was $current_short)"
 	# Not `if ! status=$?`: the negation would report 0 and turn a failed
 	# deploy into a success. Keep the branch form so the real status survives.
-	if bash "$ROOT/scripts/deploy.sh"; then
-		# deploy.sh builds the local HEAD, so reporting the remote SHA without
-		# checking would claim a commit the host is not running.
-		built="$(git rev-parse HEAD)"
+	if DEPLOY_EXPECTED_SHA="$target" bash "$ROOT/scripts/deploy.sh"; then
+		# The ledger is written only after the approved build passes checks.
+		built="$(cat "$state_file" 2>/dev/null || true)"
 		if [[ "$built" != "$target" ]]; then
-			built_short="$(git rev-parse --short "$built")"
-			die "deploy returned 0 but HEAD is $built_short, not $target_short; refusing to report success"
+			die "deploy returned 0 but recorded SHA is ${built:-missing}, expected $target; refusing to report success"
 		fi
 		log "deployed $target_short"
 	else

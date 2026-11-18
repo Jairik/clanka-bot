@@ -72,6 +72,8 @@ func parseICS(r io.Reader, loc *time.Location, windowStart, windowEnd time.Time)
 		endProp := child.Props.Get(ical.PropDateTimeEnd)
 		var endTime time.Time
 		var duration time.Duration
+		var days int
+		var remainder time.Duration
 		if endProp != nil {
 			endTime, err = parseEventTime(endProp, loc)
 			if err != nil {
@@ -79,12 +81,22 @@ func parseICS(r io.Reader, loc *time.Location, windowStart, windowEnd time.Time)
 			}
 			if !endTime.Before(startTime) {
 				duration = endTime.Sub(startTime)
+				if allDay && isAllDayProp(endProp) {
+					// Date values describe calendar days even across a DST change.
+					days = int(utcDate(endTime).Sub(utcDate(startTime)) / (24 * time.Hour))
+				}
 			}
 		} else if durProp := child.Props.Get(ical.PropDuration); durProp != nil {
 			duration = parseICSDuration(durProp.Value)
 			endTime = startTime.Add(duration)
+			if allDay {
+				days = int(duration / (24 * time.Hour))
+				remainder = duration % (24 * time.Hour)
+				endTime = startTime.AddDate(0, 0, days).Add(remainder)
+			}
 		} else if allDay {
 			duration = 24 * time.Hour
+			days = 1
 			endTime = startTime.AddDate(0, 0, 1)
 		} else {
 			duration = 0
@@ -107,11 +119,17 @@ func parseICS(r io.Reader, loc *time.Location, windowStart, windowEnd time.Time)
 					for _, original := range overrides[uid] {
 						set.ExDate(original)
 					}
-					// Search 1 day before windowStart to catch events spanning midnight into windowStart.
-					expandStart := windowStart.AddDate(0, 0, -1)
+					// Search back by the event duration to catch overlapping recurrences.
+					expandStart := windowStart.Add(-duration)
+					if days > 0 {
+						expandStart = windowStart.Add(-remainder).In(startTime.Location()).AddDate(0, 0, -days)
+					}
 					occs := set.Between(expandStart, windowEnd, true)
 					for _, occ := range occs {
 						occEnd := occ.Add(duration)
+						if days > 0 {
+							occEnd = occ.AddDate(0, 0, days).Add(remainder)
+						}
 						if occ.Before(windowEnd) && occEnd.After(windowStart) {
 							events = append(events, EventInstance{
 								Summary: summary,
@@ -145,6 +163,12 @@ func parseICS(r io.Reader, loc *time.Location, windowStart, windowEnd time.Time)
 	})
 
 	return events, nil
+}
+
+// utcDate preserves the displayed calendar date without a time zone offset.
+func utcDate(instant time.Time) time.Time {
+	year, month, day := instant.Date()
+	return time.Date(year, month, day, 0, 0, 0, 0, time.UTC)
 }
 
 // isAllDayProp reports whether a DTSTART property indicates an all-day event.

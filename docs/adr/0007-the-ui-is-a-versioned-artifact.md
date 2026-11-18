@@ -2,10 +2,10 @@
 
 The Dashboard's React app ships as its own SHA-tagged Compose service
 (`dashboard-web`) rather than only inside the assistant image. The assistant
-proxies to it on the Dashboard origin: `/` and every asset request try the
-artifact first and fall back to the bundle embedded in the binary on any
-failure. A page-only fix is a rebuild and restart of that one service; a stopped
-artifact still serves a working Dashboard with no internet.
+serves it on the Dashboard origin after downloading and verifying a full
+bundle. It retains recent builds so open pages can finish loading when the
+artifact stops. Fresh navigation falls back to the bundle embedded in the
+binary. A page-only fix rebuilds and restarts the standalone service.
 
 Why: the UI changes far more often than the Go API, and rebuilding the assistant
 image to fix a layout meant restarting the process that owns audio, the voice
@@ -26,9 +26,11 @@ the two constants together.
   which is how a UI-only deploy and a rollback are checked. The version is the
   artifact's own build (its image entrypoint fills it into the nginx template),
   so rolling back the artifact alone is visible without restarting the assistant.
+  Images built before the bundle endpoint was added use the embedded fallback
+  when paired with the updated assistant.
 - A failed artifact is skipped for a short cooldown after one timed-out attempt,
-  so a wedged container does not add its timeout to every asset on every load;
-  a missing file (an old tab during a UI-only deploy) is not an outage.
+  so a wedged container only delays the first request in a burst. Previously
+  verified assets stay available while the assistant is running.
 - A view change that an older UI would misread requires bumping `APIVersion` in
   the same commit as the Go change and in `web/src/api-version.ts`.
 - `make web-image` ships a UI-only change; `make deploy` and `scripts/deploy.sh`

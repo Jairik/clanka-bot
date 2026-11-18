@@ -389,7 +389,7 @@ run_smoke() {
 }
 
 main() {
-	local requested="" arg sha image missing branch upstream
+	local requested="" arg sha image missing branch upstream full_sha state_file tmp
 	for arg in "$@"; do
 		case "$arg" in
 		-h | --help)
@@ -423,6 +423,10 @@ main() {
 	check_pulse
 
 	cd "$ROOT"
+	# Manual deploys, rollbacks and the watcher share the same stack.
+	exec 8>"$(git rev-parse --git-path deploy.lock)"
+	flock 8
+	state_file="$(git rev-parse --git-path deployed-sha)"
 	command -v docker >/dev/null 2>&1 || die "docker is required"
 	docker compose version >/dev/null 2>&1 ||
 		die "the docker compose v2 plugin is required"
@@ -444,6 +448,7 @@ main() {
 		log "rolling back to $sha"
 		git checkout --quiet --detach "$requested" ||
 			die "could not check out $requested"
+		full_sha="$(git rev-parse HEAD)"
 		sha="$(git rev-parse --short HEAD)"
 		export GIT_SHA="$sha"
 		export_image_tags
@@ -473,8 +478,16 @@ main() {
 		fi
 	else
 		ensure_on_branch
-		if ! git pull --ff-only; then
-			die "git pull --ff-only failed (local changes or diverged history)"
+		if [[ -n "${DEPLOY_EXPECTED_SHA:-}" ]]; then
+			[[ "$DEPLOY_EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] || die "approved SHA must be a full commit SHA"
+			upstream="$(git rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null || true)"
+			[[ "$upstream" == origin/main ]] || die "approved deploy requires tracking origin/main"
+			git merge-base --is-ancestor HEAD "$DEPLOY_EXPECTED_SHA" || die "checkout cannot fast-forward to approved SHA"
+			git merge-base --is-ancestor "$DEPLOY_EXPECTED_SHA" origin/main || die "approved SHA is not on origin/main"
+			git merge --ff-only "$DEPLOY_EXPECTED_SHA" || die "could not fast-forward to approved SHA"
+			[[ "$(git rev-parse HEAD)" == "$DEPLOY_EXPECTED_SHA" ]] || die "checkout does not match approved SHA"
+		else
+			git pull --ff-only || die "git pull --ff-only failed (local changes or diverged history)"
 		fi
 		# A pull on a branch that is ahead of its upstream says "Already up to
 		# date" without moving HEAD. Building that commit would deploy work
@@ -486,6 +499,7 @@ main() {
 				die "refusing to deploy: $branch has commits that are not on $upstream; push or reset first"
 			fi
 		fi
+		full_sha="$(git rev-parse HEAD)"
 		sha="$(git rev-parse --short HEAD)"
 		export GIT_SHA="$sha"
 		if receiver_key_present; then
@@ -504,6 +518,10 @@ main() {
 
 	wait_for_health
 	run_smoke
+	# Publish the selected commit only after both post-start checks succeed.
+	tmp="$(mktemp "$state_file.XXXXXX")"
+	printf '%s\n' "$full_sha" >"$tmp"
+	mv -f "$tmp" "$state_file"
 	log "deployed $sha"
 	prune_old_images "$sha"
 }

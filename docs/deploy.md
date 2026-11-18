@@ -328,7 +328,10 @@ docker compose ps dashboard-web
 
 The assistant reaches the artifact over the internal Compose network and keeps
 serving the document and assets on the Dashboard origin, so identity, Host and
-CSP checks stay where they are. `X-Dashboard-UI: artifact` and
+CSP checks stay where they are. It caches each complete bundle before serving
+its index and retains three recent builds in memory. An open page can finish
+loading its assets when the artifact stops. A fresh navigation uses the
+embedded UI during the outage. `X-Dashboard-UI: artifact` and
 `X-Dashboard-UI-Version: <tag>` on the response say which copy a page came from.
 The tag is the image tag the artifact runs: `key-<content key>` after
 `deploy.sh` (it changes only when `web/` does, so the container is not
@@ -619,9 +622,9 @@ without the other.
       tokens) in a file mode 0600; treat a backup like the secrets it contains.
 - [ ] Back up and restore the database. `make backup OWNER=<your-tailnet-login>`
       downloads an authenticated copy of the live SQLite file to `backups/`
-      (`POST /api/ui/backup`; owner-only and same-origin, never a GET). The file
-      contains the secrets table, so store it like the secrets database, not in a
-      shared or cloud-synced folder. To restore, stop the assistant
+      (`POST /api/ui/backup`; owner-only and same-origin). The backup is
+      published with mode 0600 after the download succeeds. It contains the
+      secrets table, so keep it in a private location. To restore, stop the assistant
       (`docker compose stop assistant`), replace `assistant-data/assistant.db`
       (and its `-wal`/`-shm` siblings if present) with the backup on the same
       volume, start it (`docker compose start assistant`) and check the migration

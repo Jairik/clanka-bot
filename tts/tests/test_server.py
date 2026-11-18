@@ -3,6 +3,8 @@ import sys
 import threading
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import server  # noqa: E402
@@ -99,6 +101,53 @@ async def with_server(engine, body):
 
 def run(engine, body):
     asyncio.run(with_server(engine, body))
+
+
+# A failed audio write stops streaming while the model is still unwinding.
+@pytest.mark.parametrize("cancel_during_cleanup", [False, True])
+def test_disconnect_keeps_model_locked_until_worker_exits(cancel_during_cleanup):
+    async def scenario():
+        stopped = threading.Event()
+        release = threading.Event()
+
+        class DisconnectEngine(FakeEngine):
+            def synthesize(self, state, text, stop=None, rate=1.0):
+                self.texts.append(text)
+                yield b"\x01\x02"
+                if text == "first":
+                    assert stop.wait(2)
+                    stopped.set()
+                    assert release.wait(2)
+
+        class Session(server._Session):
+            async def write(self, event):
+                if AudioChunk.is_type(event.type) and self.writer == "closed":
+                    raise ConnectionResetError()
+
+        engine = DisconnectEngine()
+        tts = server.TtsServer(engine)
+        first = asyncio.create_task(Session(tts, "closed").synthesize("first", None))
+        second = None
+        try:
+            assert await asyncio.to_thread(stopped.wait, 2)
+            if cancel_during_cleanup:
+                first.cancel()
+            second = asyncio.create_task(Session(tts, None).synthesize("second", None))
+            await asyncio.sleep(0)
+            assert tts.lock.locked()
+            assert engine.texts == ["first"]
+        finally:
+            release.set()
+            results = await asyncio.gather(first, return_exceptions=True)
+            if second is not None:
+                await second
+        assert engine.texts == ["first", "second"]
+        if cancel_during_cleanup:
+            assert isinstance(results[0], asyncio.CancelledError)
+        else:
+            assert results[0] is None
+
+    asyncio.run(scenario())
 
 
 def test_describe_advertises_a_warm_pocket_tts_program():

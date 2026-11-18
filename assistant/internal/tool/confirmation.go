@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -24,10 +25,13 @@ const PendingTTL = 60 * time.Second
 // PendingConfirmation is the single confirm Tool call waiting for a spoken
 // yes. It lasts one turn and never queues across turns.
 type PendingConfirmation struct {
+	ID      uint64
 	Tool    string
 	Args    json.RawMessage
 	Summary string
 }
+
+var confirmationID atomic.Uint64
 
 // ConfirmationRequiredError reports a confirm Tool that needs a Confirmation.
 // The handler did not run and no pending call was stored.
@@ -62,6 +66,7 @@ func (r *Registry) Propose(name string, args json.RawMessage) (PendingConfirmati
 		return PendingConfirmation{}, fmt.Errorf("tool %q: %w", name, err)
 	}
 	pending := PendingConfirmation{
+		ID:      confirmationID.Add(1),
 		Tool:    e.info.Name,
 		Args:    append(json.RawMessage(nil), args...),
 		Summary: e.summary(args),
@@ -70,7 +75,7 @@ func (r *Registry) Propose(name string, args json.RawMessage) (PendingConfirmati
 	r.pending = &pending
 	r.pendingAt = r.nowTime()
 	r.pendingMu.Unlock()
-	return pending, nil
+	return pending.clone(), nil
 }
 
 // Pending returns the waiting call, if any. A call older than PendingTTL is
@@ -82,18 +87,42 @@ func (r *Registry) Pending() (PendingConfirmation, bool) {
 	if r.pending == nil || r.expireLocked() {
 		return PendingConfirmation{}, false
 	}
-	return *r.pending, true
+	return r.pending.clone(), true
+}
+
+// Inspecting a proposal cannot change the argument bytes that a yes will run.
+func (pending PendingConfirmation) clone() PendingConfirmation {
+	pending.Args = append(json.RawMessage(nil), pending.Args...)
+	return pending
 }
 
 // ExecutePending runs and consumes the stored call. The pending call is
 // cleared before the handler runs, so it can run at most once. An expired call
 // is absent: a late yes cannot run the old outward-facing call.
 func (r *Registry) ExecutePending(ctx context.Context) (any, PendingConfirmation, error) {
+	return r.executePending(ctx, 0)
+}
+
+// ExecutePendingFor consumes only the matching proposal.
+func (r *Registry) ExecutePendingFor(ctx context.Context, id uint64) (any, PendingConfirmation, error) {
+	if id == 0 {
+		return nil, PendingConfirmation{}, ErrNoPending
+	}
+	return r.executePending(ctx, id)
+}
+
+// A zero ID is reserved for unconditional consumers of the legacy API.
+func (r *Registry) executePending(ctx context.Context, id uint64) (any, PendingConfirmation, error) {
 	r.pendingMu.Lock()
 	r.expireLocked()
 	pending := r.pending
-	r.pending = nil
-	r.pendingAt = time.Time{}
+	if pending != nil && id != 0 && pending.ID != id {
+		pending = nil
+	}
+	if pending != nil {
+		r.pending = nil
+		r.pendingAt = time.Time{}
+	}
 	r.pendingMu.Unlock()
 	if pending == nil {
 		return nil, PendingConfirmation{}, ErrNoPending
@@ -112,6 +141,18 @@ func (r *Registry) ExecutePending(ctx context.Context) (any, PendingConfirmation
 	}
 	result, err := r.run(ctx, e, pending.Args)
 	return result, *pending, err
+}
+
+// DropPendingFor discards only the observed proposal.
+func (r *Registry) DropPendingFor(id uint64) bool {
+	r.pendingMu.Lock()
+	defer r.pendingMu.Unlock()
+	if r.pending == nil || r.expireLocked() || r.pending.ID != id {
+		return false
+	}
+	r.pending = nil
+	r.pendingAt = time.Time{}
+	return true
 }
 
 // DropPending discards the waiting call. Cancellation and Barge-in (#25) use

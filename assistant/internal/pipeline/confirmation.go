@@ -63,11 +63,10 @@ func (c *Confirmation) Resolve(ctx context.Context, req tool.Request, transcript
 
 	if isClearYes(transcript) {
 		req.Path = tool.PathConfirmation
-		result, done, err := c.registry.ExecutePending(tool.WithRequest(ctx, req))
+		result, done, err := c.registry.ExecutePendingFor(tool.WithRequest(ctx, req), pending.ID)
 		if errors.Is(err, tool.ErrNoPending) {
-			// The call expired between the Pending read and the Execute, so this
-			// yes answers nothing: route the utterance as an ordinary request.
-			c.logger.Info("confirmation expired", "request_id", req.ID)
+			// An expired, replaced, or consumed call leaves this yes unanswered.
+			c.logger.Info("confirmation no longer pending", "request_id", req.ID)
 			return ConfirmationResult{}
 		}
 		if err != nil {
@@ -95,7 +94,9 @@ func (c *Confirmation) Resolve(ctx context.Context, req tool.Request, transcript
 
 	// No, silence, Barge-in or an unrelated request drops the call. The caller
 	// still routes the utterance, so a new request is not lost.
-	c.registry.DropPending()
+	if !c.registry.DropPendingFor(pending.ID) {
+		return ConfirmationResult{}
+	}
 	c.logger.Info("confirmation cancelled", "request_id", req.ID, "tool", pending.Tool)
 	return ConfirmationResult{Prefix: CancelledReply}
 }

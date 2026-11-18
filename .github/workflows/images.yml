@@ -4,10 +4,9 @@ name: Pi images
 # compiling on an SD card. Runs for main only: pull requests never publish.
 #
 # Each image is published as <registry>/<service>:key-<key>, where the key is a
-# hash of everything that goes into it (scripts/image-keys.py). A service whose
-# key is already published is skipped outright, so a commit that touches only
-# the assistant builds only the assistant, and a docs-only commit builds
-# nothing. The Pi computes the same keys from its checkout and pulls them.
+# hash of its deployment inputs (scripts/image-keys.py). A published key is
+# reused, so a dashboard-only commit builds dashboard-web and a docs-only
+# commit builds nothing. The Pi computes the same keys from its checkout.
 on:
   push:
     branches: [main]

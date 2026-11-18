@@ -12,12 +12,24 @@
 # from Compose (--custom-model-dir, --threshold) are forwarded unchanged.
 
 set -euo pipefail
+shopt -s nullglob
 
-if [[ -d /usr/src/local_models ]]; then
-	shopt -s nullglob
-	for model in /usr/src/local_models/*.tflite; do
-		cp -f "$model" /usr/src/custom_models/
+# Preserve the baked models in older images until the image is rebuilt.
+if [[ -d /usr/src/baked_models ]]; then
+	for model in /usr/src/custom_models/*.tflite; do
+		# Existing Compose overrides can bind-mount an individual detector.
+		if ! mountpoint -q -- "$model"; then
+			rm -f -- "$model"
+		fi
 	done
 fi
+
+# Baked files are restored first, followed by local files from the directory mount.
+for model in /usr/src/baked_models/*.tflite /usr/src/local_models/*.tflite; do
+	target="/usr/src/custom_models/${model##*/}"
+	if ! mountpoint -q -- "$target"; then
+		cp -f -- "$model" "$target"
+	fi
+done
 
 exec bash /usr/src/docker_run.sh "$@"

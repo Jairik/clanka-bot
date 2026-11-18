@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"bytes"
 	"errors"
 	"io/fs"
 	"mime"
@@ -8,6 +9,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // app serves the embedded React build. Hashed files under /assets/ are served
@@ -31,22 +33,11 @@ func (h *Handler) app(w http.ResponseWriter, r *http.Request) {
 	// page fix ships without rebuilding this binary. A stopped or failing
 	// service falls through to the embedded document below.
 	if h.uiArtifact != nil {
-		accept := r.Header.Get("Accept-Encoding")
-		if r.Header.Get("Range") != "" {
-			accept = ""
-		}
-		if data, coding, ok := h.uiArtifact.fetch(r.Context(), "index.html", accept); ok {
+		if bundle := h.uiArtifact.refresh(r.Context()); bundle != nil {
 			w.Header().Set("Content-Security-Policy", appSecurityPolicy())
 			w.Header().Set("Content-Type", "text/html; charset=utf-8")
-			w.Header().Set("X-Dashboard-UI", "artifact")
-			if v := h.uiArtifact.reportedVersion(); v != "" {
-				w.Header().Set("X-Dashboard-UI-Version", v)
-			}
-			if coding != "" {
-				w.Header().Set("Content-Encoding", coding)
-			}
-			w.Header().Set("Content-Length", strconv.Itoa(len(data)))
-			_, _ = w.Write(data)
+			setArtifactHeaders(w, bundle)
+			_, _ = w.Write(bundle.index)
 			return
 		}
 	}
@@ -100,11 +91,19 @@ func isAssetPath(name string) bool {
 }
 
 func (h *Handler) appFile(w http.ResponseWriter, r *http.Request, name string) {
-	// A standalone artifact serves the asset when it has it. A Range request
-	// keeps the embedded ServeContent path, which already answers ranges.
-	if h.uiArtifact != nil && r.Header.Get("Range") == "" {
-		if data, coding, ok := h.uiArtifact.fetch(r.Context(), name, r.Header.Get("Accept-Encoding")); ok {
-			h.serveArtifactAsset(w, name, data, coding)
+	if h.uiArtifact != nil {
+		digest := r.URL.Query().Get(uiBuildQuery)
+		bundle := h.uiArtifact.find(name, digest)
+		// Direct asset requests can arrive before the first page navigation.
+		if bundle == nil && digest == "" {
+			h.uiArtifact.refresh(r.Context())
+			bundle = h.uiArtifact.find(name, "")
+		}
+		if bundle != nil && serveArtifactAsset(w, r, bundle, name) {
+			return
+		}
+		if digest != "" {
+			http.NotFound(w, r)
 			return
 		}
 	}
@@ -167,9 +166,21 @@ func (h *Handler) appFile(w http.ResponseWriter, r *http.Request, name string) {
 	http.ServeContent(w, r, name, info.ModTime(), seeker)
 }
 
-// serveArtifactAsset writes one file fetched from the standalone UI service
-// with the same cache and type rules as the embedded copy.
-func (h *Handler) serveArtifactAsset(w http.ResponseWriter, name string, data []byte, coding string) {
+// serveArtifactAsset uses the published snapshot and the embedded cache rules.
+func serveArtifactAsset(w http.ResponseWriter, r *http.Request, bundle *uiBundle, name string) bool {
+	data, ok := bundle.files[name]
+	if !ok {
+		return false
+	}
+	coding := ""
+	if r.Header.Get("Range") == "" {
+		accept := r.Header.Get("Accept-Encoding")
+		if sibling, ok := bundle.files[name+".br"]; ok && acceptsEncoding(accept, "br") {
+			data, coding = sibling, "br"
+		} else if sibling, ok := bundle.files[name+".gz"]; ok && acceptsEncoding(accept, "gzip") {
+			data, coding = sibling, "gzip"
+		}
+	}
 	switch {
 	case strings.HasPrefix(name, "assets/"):
 		w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
@@ -182,16 +193,25 @@ func (h *Handler) serveArtifactAsset(w http.ResponseWriter, name string, data []
 	if path.Ext(name) == ".webmanifest" {
 		w.Header().Set("Content-Type", "application/manifest+json")
 	}
-	w.Header().Set("X-Dashboard-UI", "artifact")
-	if v := h.uiArtifact.reportedVersion(); v != "" {
-		w.Header().Set("X-Dashboard-UI-Version", v)
-	}
+	setArtifactHeaders(w, bundle)
 	if coding != "" {
 		w.Header().Set("Content-Encoding", coding)
 		w.Header().Set("Accept-Ranges", "none")
+		w.Header().Set("Content-Length", strconv.Itoa(len(data)))
+		_, _ = w.Write(data)
+		return true
 	}
-	w.Header().Set("Content-Length", strconv.Itoa(len(data)))
-	_, _ = w.Write(data)
+	http.ServeContent(w, r, name, time.Time{}, bytes.NewReader(data))
+	return true
+}
+
+// Each response reports the same build that supplied its bytes.
+func setArtifactHeaders(w http.ResponseWriter, bundle *uiBundle) {
+	w.Header().Set("X-Dashboard-UI", "artifact")
+	w.Header().Set("X-Dashboard-UI-Build", bundle.digest)
+	if bundle.version != "" {
+		w.Header().Set("X-Dashboard-UI-Version", bundle.version)
+	}
 }
 
 // precompressed chooses the best build-time encoding the client accepts. Only

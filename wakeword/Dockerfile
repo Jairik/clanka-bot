@@ -16,7 +16,9 @@ RUN ls /usr/src/.venv/lib/python3.11/site-packages/pyopen_wakeword/models/*.tfli
 # and a name that is not present is simply never detected. Compose passes
 # --custom-model-dir /usr/src/custom_models. This layer comes before the app
 # code so editing the health check does not rebuild it.
-COPY models/*.tflite /usr/src/custom_models/
+COPY models/*.tflite /usr/src/baked_models/
+# Keep the default entrypoint usable without the Compose overlay.
+RUN mkdir -p /usr/src/custom_models && cp /usr/src/baked_models/*.tflite /usr/src/custom_models/
 
 # Per-model thresholds. The upstream handler applies one global --threshold to
 # every model; the Assistant sends a threshold map with each detect request so

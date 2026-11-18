@@ -2,7 +2,7 @@
 // versioned shell) is cache-first. Previews, takes and media are not, because
 // their URL does not carry the voice, the rate or the owner.
 import { describe, expect, it } from "vitest";
-import { shouldCache } from "../sw-cache-policy.js";
+import { bundleShellURLs, shouldCache } from "../sw-cache-policy.js";
 
 const url = (path: string) => new URL(path, "https://clanka.example");
 const get = (destination = "") => ({ destination });
@@ -19,6 +19,19 @@ describe("shouldCache", () => {
   it("caches the versioned shell files", () => {
     expect(shouldCache(get("script"), url("/theme.js"))).toBe(true);
     expect(shouldCache(get(), url("/offline.html"))).toBe(true);
+  });
+
+  // Offline artifact URLs are cached without opening the cache to private queries.
+  it("precaches and serves only the expected build-qualified shell files", () => {
+    const digest = "a".repeat(64);
+    const paths = bundleShellURLs(digest);
+    expect(paths).toHaveLength(4);
+    expect(paths).toContain("/theme.js?ui_build=" + digest);
+    for (const path of paths) expect(shouldCache(get(), url(path))).toBe(true);
+    expect(bundleShellURLs(null)).toEqual([]);
+    expect(shouldCache(get(), url("/theme.js?ui_build=invalid"))).toBe(false);
+    expect(shouldCache(get(), url("/voices/audio/alba?ui_build=" + digest))).toBe(false);
+    expect(shouldCache(get(), url(paths[0] + "&extra=yes"))).toBe(false);
   });
 
   it("never caches a preview, whose query carries the draft text", () => {

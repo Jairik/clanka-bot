@@ -597,6 +597,7 @@ test_rollback_reuses_images_without_build() {
 	assert_calls_not_contains "rollback never pulls" "docker pull"
 	assert_env_contains "rollback tags with the rollback SHA" "GIT_SHA=$short"
 	if [[ "$(git -C "$repo" rev-parse HEAD)" == "$first" ]]; then pass; else fail "rollback checks out the requested commit"; fi
+	if [[ "$(cat "$repo/.git/deployed-sha")" == "$first" ]]; then pass; else fail "rollback records its full SHA"; fi
 }
 
 test_rollback_refuses_missing_image() {
@@ -884,6 +885,27 @@ test_same_commit_and_args_give_the_same_key() {
 	if [[ "$second" != "$third" ]]; then pass; else fail "a change inside the context must change the key"; fi
 }
 
+# A UI-only source change must keep the assistant's running image tag.
+test_dashboard_change_only_updates_its_image_key() {
+	local repo before after
+	repo=$(new_repo)
+	new_scenario
+	mkdir -p "$repo/assistant/web"
+	echo 'FROM scratch' >"$repo/assistant/web/Dockerfile.web"
+	echo 'old dashboard' >"$repo/assistant/web/index.html"
+	git -C "$repo" add assistant/web
+	git -C "$repo" commit -qm "initial dashboard"
+	printf '%s\n' '{"services":{"assistant":{"build":{"context":"assistant","dockerfile":"Dockerfile"}},"dashboard-web":{"build":{"context":"assistant","dockerfile":"web/Dockerfile.web"}}}}' >"$SCENARIO/config.json"
+	before="$(cd "$repo" && STUB_DOCKER_DIR="$SCENARIO" PATH="$STUB_BIN:$PATH" python3 -I scripts/image-keys.py)"
+	echo 'new dashboard' >"$repo/assistant/web/index.html"
+	git -C "$repo" commit -qam "dashboard-only change"
+	after="$(cd "$repo" && STUB_DOCKER_DIR="$SCENARIO" PATH="$STUB_BIN:$PATH" python3 -I scripts/image-keys.py)"
+	[[ "$(printf '%s\n' "$before" | grep '^assistant ')" == "$(printf '%s\n' "$after" | grep '^assistant ')" ]] &&
+		pass || fail "a web-only file changed the assistant image key"
+	[[ "$(printf '%s\n' "$before" | grep '^dashboard-web ')" != "$(printf '%s\n' "$after" | grep '^dashboard-web ')" ]] &&
+		pass || fail "a web-only file did not change the dashboard image key"
+}
+
 test_deploy_runs_smoke_turn() {
 	local repo
 	repo=$(new_repo)
@@ -918,6 +940,7 @@ EOF
 	run_deploy "$repo"
 	assert_nonzero "deploy with failed smoke fails"
 	assert_out_contains "smoke failure is reported" "post-deploy smoke turn failed"
+	[[ ! -e "$repo/.git/deployed-sha" ]] && pass || fail "failed smoke must not record a deployed SHA"
 	assert_out_contains "response body is in log" "smoke: response body: {\"route\":\"agent_path\"}"
 }
 
@@ -936,6 +959,44 @@ EOF
 	DEPLOY_SMOKE=0 run_deploy "$repo"
 	assert_status 0 "deploy with DEPLOY_SMOKE=0 succeeds"
 	assert_out_not_contains "smoke turn did not run" "running post-deploy smoke turn"
+}
+
+# A partial or colliding backup must never be published as a successful copy.
+test_backup_is_private_and_atomic() {
+	local repo out
+	repo=$(new_repo)
+	new_scenario
+	mkdir "$SCENARIO/bin"
+	cat >"$SCENARIO/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+# curl's final argument is its output file.
+printf '%s' "${BACKUP_BODY:?}" >"${!#}"
+exit "${BACKUP_STATUS:-0}"
+EOF
+	cat >"$SCENARIO/bin/date" <<'EOF'
+#!/usr/bin/env bash
+# Use a fixed name to exercise same-second backups.
+echo 20261117-010203
+EOF
+	chmod +x "$SCENARIO/bin/"{curl,date}
+	out="$repo/backups/assistant-20261117-010203.db"
+	OUT="$SCENARIO/backup-output"
+	(
+		cd "$repo" || exit
+		umask 022
+		export PATH="$SCENARIO/bin:$PATH" OWNER=owner@example.test
+		BACKUP_BODY=partial BACKUP_STATUS=18 make backup && exit 1
+		[[ -z "$(find backups -mindepth 1 -print -quit)" ]] || exit 1
+		BACKUP_BODY=complete make backup || exit 1
+		[[ "$(cat "$out")" == complete && "$(stat -c '%a' "$out")" == 600 ]] || exit 1
+		if BACKUP_BODY=duplicate make backup; then
+			exit 1
+		fi
+		[[ "$(cat "$out")" == complete ]]
+	) >"$OUT" 2>&1
+	STATUS=$?
+	assert_status 0 "backup publishes only a complete mode-0600 file"
+	[[ "$(grep -c '^Wrote ' "$OUT")" == 1 ]] && pass || fail "only the complete backup reports success"
 }
 
 run_test() {
@@ -980,9 +1041,11 @@ run_test test_deploy_without_registry_builds_everything
 run_test test_deploy_reuses_a_local_key_image
 run_test test_rollback_restores_a_pruned_key_tag
 run_test test_same_commit_and_args_give_the_same_key
+run_test test_dashboard_change_only_updates_its_image_key
 run_test test_deploy_runs_smoke_turn
 run_test test_deploy_smoke_failure_fails_deploy
 run_test test_deploy_smoke_disabled_skips
+run_test test_backup_is_private_and_atomic
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]

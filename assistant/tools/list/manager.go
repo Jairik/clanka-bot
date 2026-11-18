@@ -95,7 +95,18 @@ func (m *Manager) Add(ctx context.Context, key, text string) (Item, bool, error)
 	if utf8.RuneCountInString(text) > m.cfg.MaxItemText {
 		return Item{}, false, &Error{Message: "That item is too long."}
 	}
-	items, err := m.Items(ctx, key)
+	if m.db == nil {
+		return Item{}, false, ErrUnavailable
+	}
+	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
+	defer cancel()
+	// The store begins write transactions with BEGIN IMMEDIATE across connections.
+	tx, err := m.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Item{}, false, fmt.Errorf("list: begin add: %w", err)
+	}
+	defer tx.Rollback()
+	items, err := readItems(ctx, tx, key)
 	if err != nil {
 		return Item{}, false, err
 	}
@@ -113,9 +124,7 @@ func (m *Manager) Add(ctx context.Context, key, text string) (Item, bool, error)
 		return Item{}, false, &Error{Message: "That list is full."}
 	}
 	now := m.now()
-	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
-	defer cancel()
-	result, err := m.db.ExecContext(ctx,
+	result, err := tx.ExecContext(ctx,
 		`INSERT INTO list_items (list_key, text, done, created_at, updated_at) VALUES (?, ?, 0, ?, ?)`,
 		key, text, now.UnixMilli(), now.UnixMilli())
 	if err != nil {
@@ -124,6 +133,9 @@ func (m *Manager) Add(ctx context.Context, key, text string) (Item, bool, error)
 	id, err := result.LastInsertId()
 	if err != nil {
 		return Item{}, false, fmt.Errorf("list: saved item id: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return Item{}, false, fmt.Errorf("list: save item: %w", err)
 	}
 	m.logger.Info("list item added", "list", key, "item_id", id)
 	return Item{ID: strconv.FormatInt(id, 10), List: key, Text: text, CreatedAt: now, UpdatedAt: now}, true, nil
@@ -137,7 +149,14 @@ func (m *Manager) Items(ctx context.Context, key string) ([]Item, error) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, storeTimeout)
 	defer cancel()
-	rows, err := m.db.QueryContext(ctx,
+	return readItems(ctx, m.db, key)
+}
+
+// Read through the caller's transaction when list invariants depend on the rows.
+func readItems(ctx context.Context, db interface {
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+}, key string) ([]Item, error) {
+	rows, err := db.QueryContext(ctx,
 		`SELECT id, list_key, text, done, created_at, updated_at
 		 FROM list_items WHERE list_key = ? ORDER BY done, id`,
 		key)

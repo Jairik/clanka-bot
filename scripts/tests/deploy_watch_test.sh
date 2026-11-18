@@ -111,6 +111,12 @@ if [[ -f "$dir/curl-fail" ]]; then
 	echo "curl: (22) The requested URL returned error: 503" >&2
 	exit 22
 fi
+# Move the test remote while the watcher is checking the earlier commit.
+if [[ -f "$dir/advance-during-ci" ]]; then
+	mapfile -t advance <"$dir/advance-during-ci"
+	git --git-dir="${advance[0]}" update-ref refs/heads/main "${advance[1]}"
+	rm "$dir/advance-during-ci"
+fi
 cat "$dir/curl-body" 2>/dev/null || printf '{"total_count":0,"check_runs":[]}\n'
 STUB
 	chmod +x "$STUB_BIN/curl"
@@ -299,8 +305,12 @@ test_no_new_commit() {
 	repo=$(new_repo)
 	new_scenario
 	run_watch "$repo"
+	assert_status 0 "first poll establishes deployed state"
+	assert_calls_contains "unknown deployed state triggers a deploy" "docker compose up"
+	new_scenario
+	run_watch "$repo"
 	assert_status 0 "up-to-date poll exits zero"
-	assert_out_contains "up-to-date poll says so" "already on"
+	assert_out_contains "up-to-date poll says so" "already deployed"
 	assert_calls_empty "up-to-date poll never reaches docker"
 }
 
@@ -330,6 +340,33 @@ test_ci_failed_deploy_is_reported() {
 	assert_out_contains "failed deploy names the sha" "deploy of"
 	assert_out_contains "failed deploy says it failed" "failed"
 	assert_out_not_contains "failed deploy is not reported as success" "deployed "
+	# HEAD has advanced but the failed attempt never became the deployed SHA.
+	[[ "$(git -C "$repo" rev-parse HEAD)" == "$NEW_SHA" && ! -e "$repo/.git/deployed-sha" ]] && pass ||
+		fail "failed deploy should advance HEAD without recording success"
+	new_scenario
+	run_watch "$repo"
+	assert_status 0 "same commit succeeds on the next tick"
+	assert_calls_contains "retry starts containers" "docker compose up"
+	[[ "$(cat "$repo/.git/deployed-sha")" == "$NEW_SHA" ]] && pass || fail "retry records the full deployed SHA"
+}
+
+test_deploys_the_ci_checked_sha_even_if_origin_advances() {
+	local repo remote approved latest
+	repo=$(new_repo)
+	new_scenario
+	advance_origin "$repo"
+	approved=$NEW_SHA
+	advance_origin "$repo"
+	latest=$NEW_SHA
+	remote="$(git -C "$repo" remote get-url origin)"
+	git --git-dir="$remote" update-ref refs/heads/main "$approved" "$latest"
+	printf '%s\n' "$remote" "$latest" >"$SCENARIO/advance-during-ci"
+	run_watch "$repo"
+	assert_status 0 "deploy succeeds after origin advances"
+	assert_curl_contains "CI checks the earlier SHA" "commits/$approved/check-runs"
+	assert_env_contains "compose starts the approved SHA" "GIT_SHA=${approved:0:7}"
+	[[ "$(git -C "$repo" rev-parse HEAD)" == "$approved" && "$(cat "$repo/.git/deployed-sha")" == "$approved" ]] &&
+		pass || fail "HEAD and the deployed SHA must match the approved commit"
 }
 
 test_ci_pending_waits() {
@@ -489,19 +526,18 @@ test_diverged_history_is_left_alone() {
 	if [[ "$(git -C "$repo" rev-parse HEAD)" == "$head" ]]; then pass; else fail "diverged checkout keeps its local commit"; fi
 }
 
-test_success_without_moving_head_is_an_error() {
-	local repo target_short local_short local_full
+test_success_without_a_deployed_record_is_an_error() {
+	local repo target_short local_full
 	repo=$(new_repo stub-deploy)
 	new_scenario
 	advance_origin "$repo"
 	target_short="$(git -C "$repo" rev-parse --short "$NEW_SHA")"
 	local_full="$(git -C "$repo" rev-parse HEAD)"
-	local_short="$(git -C "$repo" rev-parse --short "$local_full")"
 	run_watch "$repo"
 	if [[ "$STATUS" != 0 ]]; then pass; else fail "deploy that leaves HEAD behind must exit non-zero, got $STATUS"; fi
 	assert_out_contains "mismatch is reported" "refusing to report success"
-	assert_out_contains "mismatch names both SHAs" \
-		"deploy-watch: error: deploy returned 0 but HEAD is $local_short, not $target_short"
+	assert_out_contains "mismatch names the missing record and expected SHA" \
+		"deploy-watch: error: deploy returned 0 but recorded SHA is missing, expected $NEW_SHA"
 	assert_out_not_contains "mismatch is not announced as deployed" "deploy-watch: deployed $target_short"
 	if [[ "$(git -C "$repo" rev-parse HEAD)" == "$local_full" ]]; then pass; else fail "mismatch leaves HEAD alone"; fi
 }
@@ -732,6 +768,7 @@ run_test test_unknown_flag
 run_test test_no_new_commit
 run_test test_ci_green_deploys
 run_test test_ci_failed_deploy_is_reported
+run_test test_deploys_the_ci_checked_sha_even_if_origin_advances
 run_test test_ci_pending_waits
 run_test test_ci_red_does_not_deploy
 run_test test_ci_disabled_deploys
@@ -743,7 +780,7 @@ run_test test_non_main_branch_is_left_alone
 run_test test_branch_without_upstream_is_left_alone
 run_test test_local_commit_ahead_is_left_alone
 run_test test_diverged_history_is_left_alone
-run_test test_success_without_moving_head_is_an_error
+run_test test_success_without_a_deployed_record_is_an_error
 run_test test_detached_rollback_recovers_when_origin_moves
 run_test test_dry_run_changes_nothing
 run_test test_lock_held_skips

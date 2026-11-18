@@ -20,6 +20,7 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 IMAGE=${IMAGE:-clanka/wakeword:test}
 THRESHOLD=${THRESHOLD:-0.5}
 cid=""
+local_models=""
 
 docker build -q -t "$IMAGE" "$HERE/.." >/dev/null
 
@@ -36,6 +37,9 @@ start_service() {
 cleanup() {
   if [[ -n "$cid" ]]; then
     docker rm -f "$cid" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "$local_models" ]]; then
+    rm -rf "$local_models"
   fi
 }
 trap cleanup EXIT
@@ -97,3 +101,24 @@ cid=$(start_service 1.0)
 wait_ready "$cid"
 py --model clanker --positive /test/fixtures/positive \
   --thresholds clanker=0.0 --expect hit
+
+# A restart removes local-only models and restores baked models underneath overrides.
+docker rm -f "$cid" >/dev/null
+local_models="$(mktemp -d)"
+cp "$HERE/../models/volume_up.tflite" "$local_models/clanker.tflite"
+cp "$HERE/../models/volume_up.tflite" "$local_models/review_added.tflite"
+cp "$HERE/../models/volume_up.tflite" "$local_models/review_bound.tflite"
+cid=$(docker run -d \
+  -v "$local_models:/usr/src/local_models:ro" \
+  -v "$local_models/review_bound.tflite:/usr/src/custom_models/review_bound.tflite:ro" \
+  -v "$HERE/../local-models.sh:/usr/src/local-models.sh:ro" \
+  --entrypoint /bin/bash "$IMAGE" /usr/src/local-models.sh \
+  --uri tcp://0.0.0.0:10400 --custom-model-dir /usr/src/custom_models)
+wait_ready "$cid"
+docker exec "$cid" cmp /usr/src/custom_models/clanker.tflite /usr/src/custom_models/review_added.tflite
+rm "$local_models/"{clanker,review_added}.tflite
+docker restart "$cid" >/dev/null
+wait_ready "$cid"
+docker exec "$cid" cmp /usr/src/custom_models/clanker.tflite /usr/src/baked_models/clanker.tflite
+docker exec "$cid" test ! -e /usr/src/custom_models/review_added.tflite
+docker exec "$cid" mountpoint -q /usr/src/custom_models/review_bound.tflite

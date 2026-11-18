@@ -1,16 +1,15 @@
-// The standalone Dashboard web artifact (#105). The UI is built and shipped as
-// its own SHA-tagged Compose service, so a page fix does not rebuild the Go
-// binary or restart the assistant. The browser still talks only to the
-// assistant: this file fetches the document and assets from the internal
-// service on the same origin, and every failure falls back to the bundle
-// embedded in the binary. The identity and Host checks stay here, on the server
-// that owns them.
 package dashboard
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -21,50 +20,38 @@ import (
 )
 
 const (
-	// uiArtifactTimeout bounds one artifact fetch. The Pi serves it over the
-	// Compose network, so a wedged container fails fast and the fallback runs.
-	uiArtifactTimeout = 2 * time.Second
-	// maxUIArtifact bounds one file, so a misconfigured upstream cannot stream
-	// an unbounded body into the Dashboard.
-	maxUIArtifact = 8 << 20
-	// uiArtifactCooldown is how long a failed artifact is skipped before one
-	// request probes it again. A stopped container refuses instantly, but a
-	// wedged one would otherwise cost one timeout per sibling per asset on
-	// every page load.
+	uiArtifactTimeout  = 2 * time.Second
 	uiArtifactCooldown = 30 * time.Second
+	maxUIBundle        = 16 << 20
+	retainedUIBuilds   = 3
+	uiBuildQuery       = "ui_build"
 )
 
-// uiArtifact is the internal client for the standalone Dashboard build.
+// uiBundle is immutable after publication so concurrent asset requests can
+// keep using it while a new build is fetched or the upstream is unavailable.
+type uiBundle struct {
+	digest  string
+	version string
+	index   []byte
+	files   map[string][]byte
+}
+
+// uiArtifact refreshes the standalone build on navigation and retains recent
+// bundles so an already-served document can finish loading during an outage.
 type uiArtifact struct {
 	base   *url.URL
 	pin    string
 	client *http.Client
 	logger *slog.Logger
 
-	mu      sync.Mutex
-	healthy bool
-	known   bool
-	// downUntil skips the artifact for a cooldown after a transport or server
-	// failure; a missing file does not set it.
+	refreshMu sync.Mutex
+	mu        sync.RWMutex
+	active    *uiBundle
+	recent    []*uiBundle
 	downUntil time.Time
-	// version is the build the artifact reports in X-Dashboard-UI-Version, so
-	// a --no-deps rollback of the artifact is visible without restarting the
-	// assistant. pin is the fallback until the artifact answers.
-	version string
 }
 
-// fetchOutcome separates "the artifact is down" from "the artifact does not
-// have this file": the first arms the cooldown, the second must not.
-type fetchOutcome int
-
-const (
-	fetchOK fetchOutcome = iota
-	fetchMissing
-	fetchDown
-)
-
-// newUIArtifact parses the configured base URL. An empty value disables the
-// artifact and leaves the embedded bundle as the only copy.
+// newUIArtifact leaves the embedded bundle as the only copy when the URL is empty.
 func newUIArtifact(raw, version string, logger *slog.Logger) (*uiArtifact, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -92,157 +79,188 @@ func newUIArtifact(raw, version string, logger *slog.Logger) (*uiArtifact, error
 	}, nil
 }
 
-// reportedVersion names the copy that answered: the build the artifact reports
-// when it has told us, the configured pin before that.
+// reportedVersion is the last verified artifact build for diagnostics.
 func (artifact *uiArtifact) reportedVersion() string {
-	if artifact == nil {
-		return ""
-	}
-	artifact.mu.Lock()
-	defer artifact.mu.Unlock()
-	if artifact.version != "" {
-		return artifact.version
+	artifact.mu.RLock()
+	defer artifact.mu.RUnlock()
+	if len(artifact.recent) > 0 {
+		return artifact.recent[0].version
 	}
 	return artifact.pin
 }
 
-// fetch reads one file, preferring a build-time .br/.gz sibling the client
-// accepts. ok=false means the caller must serve the embedded copy.
-func (artifact *uiArtifact) fetch(ctx context.Context, name, accept string) ([]byte, string, bool) {
-	if artifact == nil || artifact.cooling() {
-		return nil, "", false
-	}
-	for _, candidate := range encodingCandidates(name, accept) {
-		data, outcome := artifact.get(ctx, name+candidate.suffix)
-		switch outcome {
-		case fetchOK:
-			artifact.recovered()
-			return data, candidate.coding, true
-		case fetchDown:
-			artifact.failed()
-			return nil, "", false
-		}
-		// A sibling the build did not emit is normal; try the next candidate.
-	}
-	data, outcome := artifact.get(ctx, name)
-	switch outcome {
-	case fetchOK:
-		artifact.recovered()
-		return data, "", true
-	case fetchDown:
-		artifact.failed()
-	}
-	// A missing file is not an outage: an old tab asks for an asset the new
-	// build no longer has. Fall back without touching the artifact's health.
-	return nil, "", false
-}
-
-func (artifact *uiArtifact) get(ctx context.Context, name string) ([]byte, fetchOutcome) {
-	ctx, cancel := context.WithTimeout(ctx, uiArtifactTimeout)
-	defer cancel()
-	target := *artifact.base
-	target.Path = path.Join(artifact.base.Path, name)
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
-	if err != nil {
-		return nil, fetchDown
-	}
-	request.Header.Set("Accept", "*/*")
-	response, err := artifact.client.Do(request)
-	if err != nil {
-		return nil, fetchDown
-	}
-	defer response.Body.Close()
-	if response.StatusCode == http.StatusNotFound {
-		return nil, fetchMissing
-	}
-	if response.StatusCode != http.StatusOK {
-		// A stopped or still-starting container, or a broken upstream.
-		return nil, fetchDown
-	}
-	data, err := io.ReadAll(io.LimitReader(response.Body, maxUIArtifact+1))
-	if err != nil || len(data) > maxUIArtifact {
-		return nil, fetchDown
-	}
-	artifact.observeVersion(response.Header.Get("X-Dashboard-UI-Version"))
-	return data, fetchOK
-}
-
-// observeVersion records the artifact's own build so a rollback of the artifact
-// alone is reported truthfully, and warns when it disagrees with the pin.
-func (artifact *uiArtifact) observeVersion(raw string) {
-	version := strings.TrimSpace(raw)
-	if version == "" {
-		return
-	}
-	artifact.mu.Lock()
-	changed := artifact.version != version
-	artifact.version = version
-	pin := artifact.pin
-	artifact.mu.Unlock()
-	if changed && pin != "" && version != pin {
-		artifact.logger.Warn("dashboard ui artifact is not the configured build", "artifact", version, "pin", pin)
-	}
-}
-
-// cooling reports whether a recent failure still suppresses artifact fetches.
-func (artifact *uiArtifact) cooling() bool {
-	artifact.mu.Lock()
-	defer artifact.mu.Unlock()
-	return time.Now().Before(artifact.downUntil)
-}
-
-// failed and recovered log only the transition, so a stopped artifact does not
-// write one warning per asset request.
-func (artifact *uiArtifact) failed() {
-	artifact.mu.Lock()
-	defer artifact.mu.Unlock()
-	artifact.downUntil = time.Now().Add(uiArtifactCooldown)
-	if !artifact.known || artifact.healthy {
-		artifact.logger.Warn("dashboard ui artifact unavailable", "fallback", "embedded bundle", "url", artifact.base.String())
-	}
-	artifact.known = true
-	artifact.healthy = false
-}
-
-func (artifact *uiArtifact) recovered() {
-	artifact.mu.Lock()
-	defer artifact.mu.Unlock()
-	artifact.downUntil = time.Time{}
-	if !artifact.known || !artifact.healthy {
-		artifact.logger.Info("dashboard ui artifact serving", "version", artifact.reportedVersionLocked(), "url", artifact.base.String())
-	}
-	artifact.known = true
-	artifact.healthy = true
-}
-
-// reportedVersionLocked is reportedVersion for a caller that holds the lock.
-func (artifact *uiArtifact) reportedVersionLocked() string {
-	if artifact.version != "" {
-		return artifact.version
-	}
-	return artifact.pin
-}
-
-// encodingCandidate is one precompressed sibling and its Content-Encoding.
-type encodingCandidate struct {
-	suffix string
-	coding string
-}
-
-// encodingCandidates lists the siblings the build emits, best first. It mirrors
-// the embedded-bundle rule in precompressed: only text assets get siblings.
-func encodingCandidates(name, accept string) []encodingCandidate {
-	switch path.Ext(name) {
-	case ".js", ".css", ".html", ".svg", ".json":
-	default:
+// refresh confirms that the artifact is live before serving a standalone
+// document. The small digest response avoids transferring an unchanged build.
+func (artifact *uiArtifact) refresh(ctx context.Context) *uiBundle {
+	artifact.refreshMu.Lock()
+	defer artifact.refreshMu.Unlock()
+	if ctx.Err() != nil || time.Now().Before(artifact.downUntil) {
 		return nil
 	}
-	var out []encodingCandidate
-	if acceptsEncoding(accept, "br") {
-		out = append(out, encodingCandidate{suffix: ".br", coding: "br"})
+
+	body, version, err := artifact.get(ctx, "ui-bundle.sha256", 128)
+	digest := strings.TrimSpace(string(body))
+	if err == nil {
+		var decoded []byte
+		decoded, err = hex.DecodeString(digest)
+		if err == nil && len(decoded) != sha256.Size {
+			err = fmt.Errorf("invalid bundle digest")
+		}
 	}
-	if acceptsEncoding(accept, "gzip") {
-		out = append(out, encodingCandidate{suffix: ".gz", coding: "gzip"})
+	if err == nil {
+		bundle := artifact.find("", digest)
+		if bundle == nil {
+			var archive []byte
+			archive, _, err = artifact.get(ctx, "ui-bundle.tar.gz", maxUIBundle)
+			if err == nil && fmt.Sprintf("%x", sha256.Sum256(archive)) != digest {
+				err = fmt.Errorf("bundle changed during download")
+			}
+			if err == nil {
+				bundle, err = readUIBundle(digest, archive)
+			}
+		}
+		if err == nil {
+			if version == "" {
+				version = artifact.pin
+			}
+			if bundle.version != version {
+				copy := *bundle
+				copy.version = version
+				bundle = &copy
+			}
+			artifact.publish(bundle)
+			return bundle
+		}
 	}
-	return out
+	// An abandoned navigation should not trip the circuit breaker.
+	if ctx.Err() == nil {
+		artifact.downUntil = time.Now().Add(uiArtifactCooldown)
+		artifact.mu.Lock()
+		artifact.active = nil
+		artifact.mu.Unlock()
+		artifact.logger.Warn("dashboard ui artifact unavailable", "url", artifact.base.String(), "error", err)
+	}
+	return nil
+}
+
+// publish keeps the active build first and retains a small window for open tabs.
+func (artifact *uiArtifact) publish(bundle *uiBundle) {
+	artifact.mu.Lock()
+	defer artifact.mu.Unlock()
+	if artifact.active == bundle {
+		return
+	}
+	if artifact.active == nil || artifact.active.version != bundle.version {
+		artifact.logger.Info("dashboard ui artifact serving", "version", bundle.version, "url", artifact.base.String())
+		if artifact.pin != "" && bundle.version != artifact.pin {
+			artifact.logger.Warn("dashboard ui artifact is not the configured build", "artifact", bundle.version, "pin", artifact.pin)
+		}
+	}
+	recent := []*uiBundle{bundle}
+	for _, older := range artifact.recent {
+		if older.digest != bundle.digest && len(recent) < retainedUIBuilds {
+			recent = append(recent, older)
+		}
+	}
+	artifact.active = bundle
+	artifact.recent = recent
+}
+
+// find uses the document's digest for mutable files and the file name for
+// content-hashed Vite assets, including lazy imports from an older document.
+func (artifact *uiArtifact) find(name, digest string) *uiBundle {
+	artifact.mu.RLock()
+	defer artifact.mu.RUnlock()
+	switch {
+	case digest != "":
+		for _, bundle := range artifact.recent {
+			if bundle.digest == digest {
+				return bundle
+			}
+		}
+	case strings.HasPrefix(name, "assets/"):
+		for _, bundle := range artifact.recent {
+			if _, ok := bundle.files[name]; ok {
+				return bundle
+			}
+		}
+	default:
+		return artifact.active
+	}
+	return nil
+}
+
+// get bounds the upstream body before parsing it or adding it to the cache.
+func (artifact *uiArtifact) get(ctx context.Context, name string, limit int64) ([]byte, string, error) {
+	target := *artifact.base
+	target.Path = path.Join(target.Path, name)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
+	if err != nil {
+		return nil, "", err
+	}
+	req.Header.Set("Accept-Encoding", "identity")
+	res, err := artifact.client.Do(req)
+	if err != nil {
+		return nil, "", err
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusOK {
+		return nil, "", fmt.Errorf("%s returned HTTP %d", name, res.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(res.Body, limit+1))
+	if err != nil {
+		return nil, "", err
+	}
+	if int64(len(data)) > limit {
+		return nil, "", fmt.Errorf("%s exceeds the bundle limit", name)
+	}
+	return data, strings.TrimSpace(res.Header.Get("X-Dashboard-UI-Version")), nil
+}
+
+// readUIBundle completes and bounds extraction before the index is published.
+func readUIBundle(digest string, archive []byte) (*uiBundle, error) {
+	compressed, err := gzip.NewReader(bytes.NewReader(archive))
+	if err != nil {
+		return nil, err
+	}
+	defer compressed.Close()
+	limited := &io.LimitedReader{R: compressed, N: maxUIBundle + 1}
+	reader := tar.NewReader(limited)
+	bundle := &uiBundle{digest: digest, files: make(map[string][]byte)}
+	for {
+		header, err := reader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, err
+		}
+		if header.Typeflag == tar.TypeDir {
+			continue
+		}
+		name := strings.TrimPrefix(header.Name, "./")
+		if !fs.ValidPath(name) || header.Typeflag != tar.TypeReg || header.Size > limited.N || len(bundle.files) >= 1024 {
+			return nil, fmt.Errorf("invalid or oversized bundle member %q", name)
+		}
+		if _, exists := bundle.files[name]; exists {
+			return nil, fmt.Errorf("duplicate bundle member %q", name)
+		}
+		body, err := io.ReadAll(reader)
+		if err != nil {
+			return nil, err
+		}
+		bundle.files[name] = body
+	}
+	index := string(bundle.files["index.html"])
+	if index == "" || limited.N <= 0 {
+		return nil, fmt.Errorf("bundle is oversized or missing index.html")
+	}
+
+	// The document links to mutable root files as well as hashed Vite assets.
+	// Bind those links to this bundle so a later navigation can use the fallback.
+	for _, name := range []string{"theme.js", "favicon.svg", "manifest.webmanifest", "icons/apple-touch-icon.png"} {
+		index = strings.ReplaceAll(index, "\"/"+name+"\"", "\"/"+name+"?"+uiBuildQuery+"="+digest+"\"")
+	}
+	bundle.index = []byte(index)
+	return bundle, nil
 }

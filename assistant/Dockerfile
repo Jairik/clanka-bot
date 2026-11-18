@@ -16,7 +16,7 @@ RUN mkdir -p ../internal/dashboard/ui && pnpm build
 # running the compiler under emulation. The cache mounts keep the module and
 # build caches across local builds, so a one-file change does not recompile
 # every package (on the Pi a cold compile has taken close to half an hour).
-FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
 ARG TARGETOS
 ARG TARGETARCH
 WORKDIR /src

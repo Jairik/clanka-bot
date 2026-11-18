@@ -63,8 +63,13 @@ build-arm64: ## Build all images for the Pi under QEMU (not for latency work).
 backup: ## Download an authenticated SQLite backup of the assistant database.
 	@mkdir -p backups
 	@test -n "$$OWNER" || { echo "usage: make backup OWNER=you@tailnet.example.com" >&2; exit 2; }
-	@out=backups/assistant-$$(date +%Y%m%d-%H%M%S).db; \
-	curl -fsS -X POST -H "Tailscale-User-Login: $$OWNER" -H 'Sec-Fetch-Site: same-origin' http://127.0.0.1:8082/api/ui/backup -o "$$out"; \
+	@# Publish by link so a second backup cannot overwrite the finished file.
+	@set -e; umask 077; out=backups/assistant-$$(date +%Y%m%d-%H%M%S).db; \
+	test ! -e "$$out" || { echo "backup already exists: $$out" >&2; exit 1; }; \
+	tmp=$$(mktemp backups/.assistant-backup.XXXXXX); \
+	trap 'rm -f "$$tmp"' EXIT; \
+	curl -fsS -X POST -H "Tailscale-User-Login: $$OWNER" -H 'Sec-Fetch-Site: same-origin' http://127.0.0.1:8082/api/ui/backup -o "$$tmp"; \
+	test -s "$$tmp"; ln -T "$$tmp" "$$out"; \
 	echo "Wrote $$out ($$(wc -c < "$$out") bytes)"; \
 	ls -lh "$$out"
 

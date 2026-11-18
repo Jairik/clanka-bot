@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,6 +15,42 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 )
+
+// Separate managers use the same database limits even when they add together.
+func TestConcurrentAddsEnforceDuplicateAndCapacityChecks(t *testing.T) {
+	ctx := context.Background()
+	first := openListStore(t)
+	second, err := store.Open(ctx, first.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { second.Close() })
+	m1, m2 := testManager(t, first, nil), testManager(t, second, nil)
+	if _, _, err := m1.Add(ctx, KeyShopping, "milk"); err != nil {
+		t.Fatal(err)
+	}
+	var calls sync.WaitGroup
+	start := make(chan struct{})
+	for _, add := range []struct {
+		manager *Manager
+		text    string
+	}{{m1, "Café"}, {m2, "CAFÉ"}, {m1, "bread"}, {m2, "rice"}} {
+		calls.Go(func() {
+			<-start
+			_, _, err := add.manager.Add(ctx, KeyShopping, add.text)
+			var full *Error
+			if err != nil && (!errors.As(err, &full) || full.Message != "That list is full.") {
+				t.Errorf("Add(%q): %v", add.text, err)
+			}
+		})
+	}
+	close(start)
+	calls.Wait()
+	items, err := m1.Items(ctx, KeyShopping)
+	if err != nil || len(items) != 3 || strings.EqualFold(items[1].Text, items[2].Text) {
+		t.Fatalf("items = %+v, err = %v; want three distinct items", items, err)
+	}
+}
 
 // fakeEmbedder gives the name matcher one explicit vector table.
 type fakeEmbedder struct {

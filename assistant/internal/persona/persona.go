@@ -135,6 +135,7 @@ type Service struct {
 	logger *slog.Logger
 
 	mu       sync.RWMutex
+	writeMu  sync.Mutex // Keeps concurrent database writes and cache updates in the same order.
 	personas map[string]Persona
 	settings *settings.Service
 }
@@ -295,6 +296,8 @@ func (s *Service) create(ctx context.Context, clean Input, book *phrasebook.Serv
 // keeps its applied voice/wording until it is selected again; the personality
 // prompt applies on the next turn because the prompt builder reads the record.
 func (s *Service) Update(ctx context.Context, name string, in Input) (Persona, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
 	existing, ok := s.Get(name)
 	if !ok {
 		return Persona{}, &Error{Kind: ErrUnknownPersona, Message: fmt.Sprintf("I couldn't find a persona called %s.", name)}

@@ -29,7 +29,9 @@ Each tick, in order:
 3. `git fetch origin main`. A checkout on another branch (its upstream is not
    `origin/main`, or it has none) is left alone without touching Docker. So is
    a checkout whose `HEAD` is not an ancestor of `origin/main` — local commits
-   on `main`, or diverged history. If `HEAD` already is `origin/main`, stop.
+   on `main`, or diverged history. If the last successful deployment already
+   matches `origin/main`, stop. A checkout with no deployment record runs
+   once to establish that state.
 4. Optionally wait for `main` to settle. A commit younger than
    `DEPLOY_WATCH_MIN_AGE` minutes (default 0, so off) is not deployed yet. The
    age is the commit's own timestamp. The window is off because the CI gate
@@ -40,7 +42,7 @@ Each tick, in order:
 5. Ask GitHub for the commit's check runs. Still-running checks mean "try
    again next tick"; a failure, timeout or cancellation means "never deploy
    this commit" — the running stack stays as it is until a new commit lands.
-   A missing or unreachable API is a warning, not a block: `HEAD` equality
+   A missing or unreachable API is a warning. The deployed SHA record
    still prevents redundant builds.
 6. Wait while the Assistant is busy. The watcher asks `GET /busy` on the
    host-published health port (`127.0.0.1:8080`). While music is playing (from
@@ -50,17 +52,18 @@ Each tick, in order:
    minutes (default 120) past the settle window, so music left on all day
    cannot stall `main` forever. An assistant that does not answer never blocks
    a deploy, and `--force` skips this wait.
-7. Run `scripts/deploy.sh` unchanged: `git pull --ff-only`, reuse or pull the
+7. Run `scripts/deploy.sh` with the exact CI-approved SHA. It fast-forwards to
+   that fetched commit without a second pull, reuses or pulls the
    images CI published for the commit (building only any that are missing),
-   run them by content key, `docker compose up -d --no-build --remove-orphans`,
-   then the bounded health wait and the best-effort old-image prune. Only the
+   runs them by content key with `docker compose up -d --no-build --remove-orphans`,
+   then waits for health and runs the smoke check. Only the
    services whose image or config changed are recreated. A prune warning
    leaves the deployed stack green. The CI gate in step 5 includes the
    **Pi images** workflow, so the images exist by the time this runs.
-8. Re-read `HEAD` and report `deployed <sha>` only when it is the commit the
-   watcher asked for. A deploy that exits 0 but leaves `HEAD` elsewhere is an
-   error that names both SHAs, so the journal never claims a build the host is
-   not running.
+8. Record the deployed SHA only after health and smoke checks pass, then run
+   the best-effort old-image prune. Failed
+   attempts remain eligible for retry on a later tick, even though checkout
+   HEAD has already advanced.
 
 `deploy.sh` stays the only thing that builds or starts containers. The watcher
 decides *when*, never *how*, so a manual `make deploy`, a rollback and a timer
@@ -126,7 +129,7 @@ Every line is prefixed `deploy-watch:` and the deploy it starts keeps its own
 
 | Line | Meaning |
 | --- | --- |
-| `already on <sha>` | nothing new; the normal quiet case |
+| `already deployed <sha>` | the current main tip passed health and smoke checks on this host |
 | `origin/main <sha> moved <n>s ago; waiting <n>s for main to settle` | the tip is younger than `DEPLOY_WATCH_MIN_AGE`; a merge burst is still arriving, so no build yet |
 | `working tree has local changes` | the checkout was edited by hand; commit, stash or move the file. Try-out wake models belong in `wakeword/models/local/`, which is gitignored |
 | `checkout is on '<branch>' (upstream <upstream>), not origin/main; leaving it alone` | the checkout is on another branch (or has no upstream); the timer only tracks `main`; set the upstream with `git branch --set-upstream-to=origin/main <branch>` |
@@ -138,7 +141,7 @@ Every line is prefixed `deploy-watch:` and the deploy it starts keeps its own
 | `no CI checks reported for <sha>; deploying anyway` | the commit has no check runs at all |
 | `CI status for <sha> is unknown; deploying anyway` | the API could not be reached or parsed; see "a network blip is not a CI failure" below |
 | `deploying <sha> (was <sha>)` | the deploy started |
-| `deploy returned 0 but HEAD is <sha>, not <sha>; refusing to report success` | `deploy.sh` succeeded but left the checkout on another commit; investigate before trusting the build |
+| `deploy returned 0 but recorded SHA is <sha>, expected <sha>` | the watcher could not verify that the approved commit was deployed |
 | `image pruning failed; the deployment is still healthy` | the old-image cleanup could not read its inventory; the stack is up, and the next deploy retries |
 | `deploy of <sha> failed (exit <n>)` | the build or the health wait failed; see the `deploy:` lines and `docker compose ps` |
 
@@ -150,13 +153,11 @@ A one-off check without deploying:
 
 ## Failure behaviour
 
-- **Red CI**: the commit is skipped, not reverted. A later commit that is green
-  deploys normally; to override, run `./scripts/deploy-watch.sh --force` or
-  `make deploy` by hand.
-- **Failed build or unhealthy stack**: the new containers are already up, and
-  the health wait only reports the failure. The timer does not roll back — go
-  back explicitly with `make rollback SHA=<previous commit>` (see
-  `docs/deploy.md`).
+- **Red CI**: the timer skips the commit and deploys a later green commit.
+  A manual `make deploy` bypasses the CI gate.
+- **Failed build, health check, or smoke check**: the timer retries the
+  eligible commit on a later tick. To restore an earlier build immediately,
+  run `make rollback SHA=<previous commit>` (see `docs/deploy.md`).
 - **Dirty checkout**: the timer keeps skipping every tick and logs why. This is
   the one steady-state fault worth an alert; the journal makes it obvious.
 - **Local commits or another branch**: the timer skips every tick with one
@@ -168,8 +169,8 @@ A one-off check without deploying:
   back, and the timer resumes 3 min after boot, so a reboot never silently
   pulls a new commit while audio is still initialising.
 - **GitHub unreachable**: the tick logs `CI status ... is unknown` and deploys
-  anyway. A network blip is not a CI failure, and a commit that is already at
-  `HEAD` is skipped regardless, so this cannot cause a redundant rebuild loop.
+  anyway. A commit that already passed health and smoke is skipped on later
+  ticks.
 
 ## Build load
 
@@ -216,9 +217,10 @@ older tags.
 
 A deploy recreates only the containers whose image or config changed. A commit
 that touches only the dashboard restarts `dashboard-web` (the assistant serves
-its embedded copy meanwhile); one that touches the assistant restarts the
-assistant, which is unreachable for the seconds its health check takes, and
-cuts any audio it was playing. The busy wait (step 6) keeps that from landing
+its embedded copy meanwhile). The embedded bundle refreshes when the assistant
+image is rebuilt for an assistant change. That restart makes the assistant
+unreachable while its health check runs and cuts any audio it was playing.
+The busy wait (step 6) keeps that from landing
 mid-song or mid-reply, but it cannot see a conversation you are about to start;
 pause the timer when you are demoing. True zero downtime for the assistant is
 not on offer: it is the one container that owns the microphone and speaker

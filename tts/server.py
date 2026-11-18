@@ -249,25 +249,44 @@ class _Session:
                     publish(None)
 
             # Generation blocks the CPU, so it runs off the event loop.
-            threading.Thread(target=worker, daemon=True).start()
+            thread = threading.Thread(target=worker, daemon=True)
+            thread.start()
 
             failure: Optional[Exception] = None
-            while True:
-                item = await queue.get()
-                if item is None:
-                    break
-                if isinstance(item, Exception):
-                    failure = item
-                    break
-                if not item:
-                    continue
-                try:
-                    await self.write(
-                        AudioChunk(rate=sample_rate, width=_WIDTH, channels=_CHANNELS, audio=item).event()
-                    )
-                except (ConnectionError, RuntimeError):
-                    stop.set()
-                    return
+            disconnected = False
+            try:
+                while True:
+                    item = await queue.get()
+                    if item is None:
+                        break
+                    if isinstance(item, Exception):
+                        failure = item
+                        break
+                    if not item:
+                        continue
+                    try:
+                        await self.write(
+                            AudioChunk(rate=sample_rate, width=_WIDTH, channels=_CHANNELS, audio=item).event()
+                        )
+                    except (ConnectionError, RuntimeError):
+                        disconnected = True
+                        break
+            finally:
+                stop.set()
+                # A cancellation during cleanup must not release the model lock early.
+                joined = asyncio.create_task(asyncio.to_thread(thread.join))
+                cancelled = False
+                while not joined.done():
+                    try:
+                        await asyncio.shield(joined)
+                    except asyncio.CancelledError:
+                        cancelled = True
+                joined.result()
+                if cancelled:
+                    raise asyncio.CancelledError
+
+            if disconnected:
+                return
 
             if failure is not None:
                 _LOGGER.warning("synthesis failed: %s", failure)

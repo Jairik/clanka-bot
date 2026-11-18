@@ -127,6 +127,38 @@ func TestProposeThenExecutePendingRunsTheStoredCallOnce(t *testing.T) {
 }
 
 // TestReproposeRefreshesThePendingTTL ages the replacement from its own question.
+// Identical replacement proposals still need their own approval.
+func TestOnlyTheObservedConfirmationCanBeConsumed(t *testing.T) {
+	reg := tool.NewRegistry(time.Second)
+	runs := 0
+	if err := tool.Add(reg, sendTool(&runs)); err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	args := json.RawMessage(`{"to":"doctor"}`)
+	old, err := reg.Propose("mail.send", args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	current, err := reg.Propose("mail.send", args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := reg.ExecutePendingFor(ctx, old.ID); !errors.Is(err, tool.ErrNoPending) {
+		t.Fatalf("stale approval: %v", err)
+	}
+	if reg.DropPendingFor(old.ID) {
+		t.Fatal("stale cancellation removed the replacement")
+	}
+	current.Args[0] = '!'
+	if _, _, err := reg.ExecutePendingFor(ctx, current.ID); err != nil {
+		t.Fatalf("current approval: %v", err)
+	}
+	if _, _, err := reg.ExecutePendingFor(ctx, current.ID); !errors.Is(err, tool.ErrNoPending) || runs != 1 {
+		t.Fatalf("repeated approval: err %v, handler ran %d times", err, runs)
+	}
+}
+
 func TestReproposeRefreshesThePendingTTL(t *testing.T) {
 	clock := newFakeClock()
 	reg := tool.NewRegistry(time.Second, tool.WithClock(clock.Now))

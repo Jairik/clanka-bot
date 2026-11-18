@@ -1,6 +1,10 @@
 package dashboard_test
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,29 +16,43 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/dashboard"
 )
 
-// artifactServer is the standalone dashboard-web service, in miniature: a
-// document, one hashed asset and its brotli sibling.
-func artifactServer(t *testing.T) *httptest.Server {
+// artifactServer publishes a document and its complete build like dashboard-web.
+func artifactServer(t *testing.T, version string) *httptest.Server {
 	t.Helper()
 	files := map[string]string{
-		"/index.html":       "<!doctype html><title>artifact build</title>",
-		"/assets/app.js":    "console.log('artifact asset')",
-		"/assets/app.js.br": "artifact-brotli-bytes",
+		"index.html":          `<!doctype html><title>artifact build</title><script src="/theme.js"></script><script src="/assets/app.js"></script>`,
+		"assets/app.js":       "import('/assets/lazy-097a.js')",
+		"assets/app.js.br":    "artifact-brotli-bytes",
+		"assets/lazy-097a.js": "console.log('lazy chunk')",
+		"theme.js":            "artifact theme",
 	}
+	var buf bytes.Buffer
+	compressed := gzip.NewWriter(&buf)
+	archive := tar.NewWriter(compressed)
+	for name, body := range files {
+		if err := archive.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(body))}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.WriteString(archive, body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := compressed.Close(); err != nil {
+		t.Fatal(err)
+	}
+	digest := fmt.Sprintf("%x", sha256.Sum256(buf.Bytes()))
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Dashboard-UI-Version", version)
 		switch r.URL.Path {
-		case "/boom":
-			http.Error(w, "broken", http.StatusInternalServerError)
+		case "/ui-bundle.sha256":
+			_, _ = io.WriteString(w, digest)
+		case "/ui-bundle.tar.gz":
+			_, _ = w.Write(buf.Bytes())
 		default:
-			body, ok := files[r.URL.Path]
-			if !ok {
-				http.NotFound(w, r)
-				return
-			}
-			// The artifact reports its own build, as nginx does from the image
-			// entrypoint template.
-			w.Header().Set("X-Dashboard-UI-Version", "real-sha")
-			_, _ = io.WriteString(w, body)
+			http.NotFound(w, r)
 		}
 	}))
 	t.Cleanup(server.Close)
@@ -49,7 +67,7 @@ func artifactHandler(t *testing.T, url string) *dashboard.Handler {
 }
 
 func TestUIDocumentComesFromTheStandaloneArtifact(t *testing.T) {
-	server := artifactServer(t)
+	server := artifactServer(t, "real-sha")
 	handler := artifactHandler(t, server.URL)
 
 	rec := serve(handler, request(http.MethodGet, "/activity", owner))
@@ -71,7 +89,7 @@ func TestUIDocumentComesFromTheStandaloneArtifact(t *testing.T) {
 }
 
 func TestUIAssetPrefersTheArtifactBrotliSibling(t *testing.T) {
-	server := artifactServer(t)
+	server := artifactServer(t, "real-sha")
 	handler := artifactHandler(t, server.URL)
 
 	req := request(http.MethodGet, "/assets/app.js", owner)
@@ -92,7 +110,7 @@ func TestUIAssetPrefersTheArtifactBrotliSibling(t *testing.T) {
 }
 
 func TestUIArtifactStoppedFallsBackToTheEmbeddedBundle(t *testing.T) {
-	server := artifactServer(t)
+	server := artifactServer(t, "real-sha")
 	url := server.URL
 	// A stopped service is a connection error; a started-but-broken one is a
 	// non-200. Both must serve the embedded copy.
@@ -120,8 +138,39 @@ func TestUIArtifactStoppedFallsBackToTheEmbeddedBundle(t *testing.T) {
 	}
 }
 
+// A page handed to the browser already has a complete snapshot to load from.
+func TestUIArtifactPageFinishesLoadingAfterTheUpstreamStops(t *testing.T) {
+	server := artifactServer(t, "real-sha")
+	handler := artifactHandler(t, server.URL)
+	page := serve(handler, request(http.MethodGet, "/", owner))
+	if page.Header().Get("X-Dashboard-UI") != "artifact" {
+		t.Fatalf("unexpected page: %s", page.Body.String())
+	}
+	_, theme, _ := strings.Cut(page.Body.String(), `src="/theme.js?`)
+	query, _, _ := strings.Cut(theme, `"`)
+	if query == "" {
+		t.Fatal("the document did not bind theme.js to its bundle")
+	}
+	server.Close()
+
+	fallback := serve(handler, request(http.MethodGet, "/", owner))
+	if fallback.Header().Get("X-Dashboard-UI") != "embedded" {
+		t.Fatal("fresh navigation did not use the embedded UI")
+	}
+	for name, want := range map[string]string{
+		"/assets/app.js":       "lazy-097a.js",
+		"/assets/lazy-097a.js": "lazy chunk",
+		"/theme.js?" + query:   "artifact theme",
+	} {
+		rec := serve(handler, request(http.MethodGet, name, owner))
+		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), want) {
+			t.Errorf("%s returned %d %q, want %q", name, rec.Code, rec.Body.String(), want)
+		}
+	}
+}
+
 func TestUIArtifactMissingAssetIsStillA404(t *testing.T) {
-	server := artifactServer(t)
+	server := artifactServer(t, "real-sha")
 	handler := artifactHandler(t, server.URL)
 
 	rec := serve(handler, request(http.MethodGet, "/assets/nope.js", owner))
@@ -163,14 +212,7 @@ func TestAPIVersionMatchesTheUI(t *testing.T) {
 // TestUIArtifactVersionFallsBackToTheConfiguredPin covers an artifact that does
 // not report a build (an older image, or a proxy in front of it).
 func TestUIArtifactVersionFallsBackToTheConfiguredPin(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/index.html" {
-			http.NotFound(w, r)
-			return
-		}
-		_, _ = io.WriteString(w, "<!doctype html><title>artifact build</title>")
-	}))
-	t.Cleanup(server.Close)
+	server := artifactServer(t, "")
 	handler := artifactHandler(t, server.URL)
 
 	rec := serve(handler, request(http.MethodGet, "/", owner))

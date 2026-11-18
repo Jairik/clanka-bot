@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Print a content key for every Compose service that builds an image.
 
-The key changes only when something that goes into the image changes: the
-committed files under the service's build context, its Dockerfile, its resolved
-build args and the target platform. CI publishes arm64 images under
+The key tracks the service's committed build inputs, Dockerfile, resolved
+build args and target platform. The assistant refreshes its embedded UI when
+its own inputs change, while dashboard-only changes ship via dashboard-web.
+CI publishes arm64 images under
 <registry>/<service>:key-<key>, and the Pi pulls the image whose key matches its
 own checkout and .env. A commit that does not touch a service therefore reuses
 the image already published for it instead of rebuilding.
@@ -31,8 +32,7 @@ import sys
 # image security update, since a floating base tag is not part of the key).
 KEY_VERSION = "1"
 
-# Services whose image uses only part of their build context, as paths relative
-# to that context. Anything not listed is keyed on its whole context.
+# Explicit input directories, relative to each service's build context.
 IMAGE_PATHS = {
     # The UI artifact copies only web/ out of the assistant context, so Go-only
     # commits keep the published image.
@@ -49,6 +49,22 @@ def run(*cmd: str, cwd: str) -> str:
 def tree_id(root: str, path: str) -> str:
     """The git object id of a committed path (a tree or a blob)."""
     return run("git", "rev-parse", f"HEAD:{path}", cwd=root).strip()
+
+
+def image_trees(root: str, context: str, service: str) -> dict[str, str]:
+    if service != "assistant":
+        paths = IMAGE_PATHS.get(service, ["."])
+        return {p: tree_id(root, os.path.normpath(os.path.join(context, p))) for p in paths}
+
+    # The embedded UI is rebuilt with the assistant, while web-only commits
+    # update the standalone service and leave the running assistant alone.
+    tree = "HEAD^{tree}" if context == "." else f"HEAD:{context}"
+    files: dict[str, str] = {}
+    for entry in run("git", "ls-tree", "-z", tree, cwd=root).split("\0"):
+        metadata, _, name = entry.partition("\t")
+        if name and name != "web":
+            files[name] = metadata
+    return files
 
 
 def compose_services(root: str, env_file: str | None) -> dict:
@@ -79,7 +95,6 @@ def keys(root: str, env_file: str | None, platform: str) -> list[dict]:
             raise SystemExit(f"image-keys: {name} builds outside the repo")
         dockerfile = build.get("dockerfile") or "Dockerfile"
         args = {k: "" if v is None else str(v) for k, v in (build.get("args") or {}).items()}
-        paths = IMAGE_PATHS.get(name, ["."])
         inputs = {
             "version": KEY_VERSION,
             "service": name,
@@ -87,7 +102,7 @@ def keys(root: str, env_file: str | None, platform: str) -> list[dict]:
             "context": context,
             "dockerfile": dockerfile,
             "dockerfile_id": tree_id(root, os.path.normpath(os.path.join(context, dockerfile))),
-            "trees": {p: tree_id(root, os.path.normpath(os.path.join(context, p))) for p in paths},
+            "trees": image_trees(root, context, name),
             "args": dict(sorted(args.items())),
         }
         digest = hashlib.sha256(

@@ -74,12 +74,9 @@ services:
       # example pi.example.ts.net). Empty fails closed: only a loopback Host is
       # accepted, so the Dashboard is reachable by curl but not through serve.
       ASSISTANT_DASHBOARD_HOSTS: ${ASSISTANT_DASHBOARD_HOSTS:-}
-      # The Dashboard UI ships as its own artifact (dashboard-web), pinned to
-      # that image's tag so the pin and the header agree.
-      # The assistant proxies to it on the same origin; when it is stopped the
-      # embedded copy in the binary serves instead. Empty disables the artifact.
+      # The standalone dashboard-web service reports its own build tag.
+      # The assistant serves it on the same origin with an embedded fallback.
       ASSISTANT_DASHBOARD_UI_URL: ${ASSISTANT_DASHBOARD_UI_URL:-http://dashboard-web:8080}
-      ASSISTANT_DASHBOARD_UI_VERSION: ${CLANKA_TAG_DASHBOARD_WEB:-${GIT_SHA:-dev}}
       ASSISTANT_EMBED_URL: "http://embed:8085"
       ASSISTANT_TTS_ADDR: "tts:10200"
       # ADR-0003: the one SQLite database lives on the assistant-data volume.

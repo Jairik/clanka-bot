@@ -15,11 +15,15 @@ COPY web/ ./
 # Vite writes to ../internal/dashboard/ui/dist; the Go image embeds the same
 # path. This image copies it into a static server instead.
 RUN mkdir -p ../internal/dashboard/ui && pnpm build
+# Ship a complete snapshot so an index can be served with every lazy chunk available.
+RUN tar -czf /tmp/ui-bundle.tar.gz -C ../internal/dashboard/ui/dist . \
+    && sha256sum /tmp/ui-bundle.tar.gz | cut -d ' ' -f 1 > /tmp/ui-bundle.sha256
 
 FROM nginx:1.29-alpine
 # The build is the artifact: no Node, no package manager and no shell tooling
 # beyond what the static server needs.
 COPY --from=build /src/internal/dashboard/ui/dist /usr/share/nginx/html
+COPY --from=build /tmp/ui-bundle.tar.gz /tmp/ui-bundle.sha256 /usr/share/nginx/html/
 # A template, not a config: the image entrypoint fills in DASHBOARD_UI_VERSION,
 # which Compose sets to the deployed SHA, so the assistant can report the build
 # that actually answered, even after a --no-deps rollback of this service alone.

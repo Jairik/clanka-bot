@@ -10,6 +10,34 @@ import (
 	"time"
 )
 
+// Multi-day occurrences remain visible through their last local calendar day.
+func TestRecurringEventsOverlapTheWindowAcrossDST(t *testing.T) {
+	loc, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range []struct {
+		when string
+		hour int
+	}{
+		{"DTSTART;VALUE=DATE:20260307\nDTEND;VALUE=DATE:20260310", 0},
+		{"DTSTART;TZID=America/New_York:20260307T100000\nDURATION:P3D", 10},
+	} {
+		feed := "BEGIN:VCALENDAR\nVERSION:2.0\nBEGIN:VEVENT\nUID:conference\n" +
+			event.when + "\nRRULE:FREQ=WEEKLY;COUNT=2\nSUMMARY:Conference\nEND:VEVENT\nEND:VCALENDAR"
+		start := time.Date(2026, 3, 16, 0, 0, 0, 0, loc)
+		end := time.Date(2026, 3, 17, event.hour, 0, 0, 0, loc)
+		events, err := parseICS(strings.NewReader(feed), loc, start, start.AddDate(0, 0, 1))
+		if err != nil || len(events) != 1 || !events[0].End.Equal(end) {
+			t.Fatalf("recurring event for %s: %+v, %v; want end %v", event.when, events, err, end)
+		}
+		events, err = parseICS(strings.NewReader(feed), loc, end, end.AddDate(0, 0, 1))
+		if err != nil || len(events) != 0 {
+			t.Fatalf("events after end: %+v, %v", events, err)
+		}
+	}
+}
+
 // TestMovedOccurrenceReplacesOriginal checks a detached override replaces its original.
 func TestMovedOccurrenceReplacesOriginal(t *testing.T) {
 	feed := `BEGIN:VCALENDAR

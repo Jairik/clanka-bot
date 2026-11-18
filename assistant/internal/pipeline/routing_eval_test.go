@@ -825,6 +825,9 @@ func evalRegistry(t *testing.T) (*tool.Registry, *timer.Manager, *alarm.Manager,
 	if err := mm.Register(reg, tool.Deps{}); err != nil {
 		t.Fatalf("register monster: %v", err)
 	}
+	// General lighting commands reach the PC lights through the same seam
+	// production wires in tools.NewSet.
+	lm.PC = mm
 	if err := calendar.NewModule().Register(reg, tool.Deps{Clock: func() time.Time { return fixed }}); err != nil {
 		t.Fatalf("register calendar: %v", err)
 	}

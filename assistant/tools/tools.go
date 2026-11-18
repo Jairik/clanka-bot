@@ -47,6 +47,14 @@ func NewSet() *Set {
 	timerModule := timer.NewModule()
 	alarmModule := alarm.NewModule()
 	reminderModule := reminder.NewModule()
+	// A general lighting command ("turn the lights off") also reaches the PC /
+	// desk lights: the BLE module owns that group and calls the Monster module
+	// through the lighting seam. One module pointer is both wired and
+	// registered, and the handler reads the seam per request, after Register
+	// has built the Monster service.
+	lightsModule := lights.NewModule()
+	monsterModule := monster.NewModule()
+	lightsModule.PC = monsterModule
 	return &Set{modules: []tool.Module{
 		clock.NewModule(),
 		weather.NewModule(),
@@ -68,8 +76,8 @@ func NewSet() *Set {
 		spotifytools.NewModule(),
 		note.NewModule(),
 		list.NewModule(),
-		lights.NewModule(),
-		monster.NewModule(),
+		lightsModule,
+		monsterModule,
 		alerts.NewModule(
 			alerts.TimerSource(timerModule.Manager),
 			alerts.AlarmSource(alarmModule.Manager),

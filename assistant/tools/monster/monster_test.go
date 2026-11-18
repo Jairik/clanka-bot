@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/lighting"
 	core "github.com/Jairik/clanka-bot/assistant/internal/monster"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 )
@@ -20,6 +21,7 @@ type fakeAPI struct {
 	devices    []core.Device
 	properties map[string]map[string]any
 	err        error
+	setErr     map[string]error
 	mu         sync.Mutex
 	setCalls   []setCall
 }
@@ -39,7 +41,7 @@ func (f *fakeAPI) Set(_ context.Context, _, _, dsn, name string, value any) erro
 	f.mu.Lock()
 	f.setCalls = append(f.setCalls, setCall{dsn: dsn, name: name, value: value})
 	f.mu.Unlock()
-	return nil
+	return f.setErr[dsn]
 }
 
 func (f *fakeAPI) calls() []setCall {
@@ -382,5 +384,125 @@ func TestToolExtract(t *testing.T) {
 	in, ok = sceneTool.Extract("set monitor light to reading scene")
 	if !ok || in.Value != "reading" {
 		t.Fatalf("extract scene: ok=%v in=%+v", ok, in)
+	}
+}
+
+// Targets claims the PC wording the BLE module must leave alone, plural
+// included, and nothing that means the ordinary room lights.
+func TestTargetsOwnsThePCWording(t *testing.T) {
+	m := &Module{}
+	for _, text := range []string{"turn off the pc light", "turn on the pc lights", "dim the monitor light", "switch off the light bar"} {
+		if !m.Targets(text) {
+			t.Errorf("Targets(%q) = false, want the Monster module to own it", text)
+		}
+	}
+	for _, text := range []string{"turn on the lights", "turn off the desk lamp", "dim the lights to 20 percent"} {
+		if m.Targets(text) {
+			t.Errorf("Targets(%q) = true, want the BLE group", text)
+		}
+	}
+}
+
+// The PC alias is extracted as a general target, so the Fast path can answer
+// "turn off the pc light" without an embedding lookup.
+func TestExtractPCPhrasing(t *testing.T) {
+	m := &Module{}
+	power := toolByName(m, "monster.power")
+	in, ok := power.Extract("turn off the pc light")
+	if !ok || in.Value != "off" || in.Device != "" {
+		t.Fatalf("extract = %+v ok=%v, want off for the generic PC target", in, ok)
+	}
+	in, ok = power.Extract("turn on the pc lights")
+	if !ok || in.Value != "on" {
+		t.Fatalf("extract plural = %+v ok=%v", in, ok)
+	}
+}
+
+// A generic "pc light" resolves to the one bar-like device on an account that
+// also holds strips.
+func TestGenericTargetResolvesTheBar(t *testing.T) {
+	api := &fakeAPI{devices: []core.Device{
+		{DSN: "DSN1", Name: "Lounge Strip", Model: "MLB7-Strip"},
+		{DSN: "DSN2", Name: "Desk", Model: "MNW7-2027-ICW"},
+	}}
+	m := configured(api)
+	power := toolByName(m, "monster.power")
+	if _, err := power.Handler(context.Background(), In{Device: "", Value: "on"}); err != nil {
+		t.Fatalf("generic target: %v", err)
+	}
+	calls := api.calls()
+	if len(calls) != 1 || calls[0].dsn != "DSN2" {
+		t.Fatalf("calls = %+v, want the bar", calls)
+	}
+}
+
+// Two bar-like devices stay ambiguous instead of guessing.
+func TestGenericTargetStaysAmbiguousWithTwoBars(t *testing.T) {
+	api := &fakeAPI{devices: []core.Device{
+		{DSN: "DSN1", Name: "Monitor Left"},
+		{DSN: "DSN2", Name: "Monitor Right"},
+	}}
+	m := configured(api)
+	power := toolByName(m, "monster.power")
+	_, err := power.Handler(context.Background(), In{Device: "", Value: "on"})
+	var toolErr *tool.ToolError
+	if !errors.As(err, &toolErr) || !strings.Contains(toolErr.Say, "Specify") {
+		t.Fatalf("err = %v, want the ambiguity refusal", err)
+	}
+}
+
+// ApplyEvery writes every account light and counts them.
+func TestApplyEveryWritesEveryLight(t *testing.T) {
+	api := &fakeAPI{devices: []core.Device{
+		{DSN: "DSN1", Name: "Duo+"},
+		{DSN: "DSN2", Name: "Strip"},
+	}}
+	m := configured(api)
+	res := m.ApplyEvery(context.Background(), "power", "off")
+	if res.Applied != 2 || res.Total != 2 || res.Err != nil {
+		t.Fatalf("result = %+v, want 2/2", res)
+	}
+	calls := api.calls()
+	if len(calls) != 2 || calls[0].name != "power" || calls[0].value != 0 || calls[1].name != "power" || calls[1].value != 0 {
+		t.Fatalf("calls = %+v", calls)
+	}
+}
+
+// One dead device is a partial batch, not a silent success.
+func TestApplyEveryReportsAPartialBatch(t *testing.T) {
+	api := &fakeAPI{
+		devices: []core.Device{{DSN: "DSN1", Name: "Duo+"}, {DSN: "DSN2", Name: "Strip"}},
+		setErr:  map[string]error{"DSN2": errors.New("upstream refused")},
+	}
+	m := configured(api)
+	res := m.ApplyEvery(context.Background(), "color", "#ff0000")
+	if res.Applied != 1 || res.Total != 2 || res.Err == nil {
+		t.Fatalf("result = %+v, want 1/2 with an error", res)
+	}
+}
+
+// No account is zero lights and no error: a general command skips it.
+func TestApplyEveryWithoutAnAccountIsEmpty(t *testing.T) {
+	m := &Module{Service: core.NewService(core.Options{API: &fakeAPI{}})}
+	res := m.ApplyEvery(context.Background(), "power", "on")
+	if res != (lighting.Result{}) {
+		t.Fatalf("result = %+v, want the empty result", res)
+	}
+}
+
+// A cloud failure is reported so the group reply can say the PC light did not
+// answer.
+func TestApplyEveryReportsACloudFailure(t *testing.T) {
+	m := configured(&fakeAPI{err: core.ErrUpstream})
+	res := m.ApplyEvery(context.Background(), "power", "on")
+	if res.Total != 0 || res.Err == nil {
+		t.Fatalf("result = %+v, want an error", res)
+	}
+}
+
+// An unwired module is empty rather than a panic.
+func TestApplyEveryWithoutAService(t *testing.T) {
+	if res := (&Module{}).ApplyEvery(context.Background(), "power", "on"); res != (lighting.Result{}) {
+		t.Fatalf("result = %+v", res)
 	}
 }

@@ -5,6 +5,7 @@
   "Error": "",
   "HasRegistry": true,
   "HasIntegrations": true,
+  "RuntimeReady": false,
   "Surface": [
     { "Name": "lights", "Description": "Control the home lights.", "Permission": "anyone" }
   ],

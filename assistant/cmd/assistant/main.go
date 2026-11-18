@@ -30,6 +30,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/embed"
 	"github.com/Jairik/clanka-bot/assistant/internal/equalizer"
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
+	"github.com/Jairik/clanka-bot/assistant/internal/hermes"
 	"github.com/Jairik/clanka-bot/assistant/internal/integrations"
 	"github.com/Jairik/clanka-bot/assistant/internal/lastreply"
 	"github.com/Jairik/clanka-bot/assistant/internal/latency"
@@ -310,7 +311,7 @@ func run() error {
 	// The declared names are the write-only allowlist: Tool modules first, then
 	// the Agent provider's key. Environment variables with the same names are
 	// the bootstrap; a stored value wins.
-	secretNames := append(toolSet.SecretNames(), provider.APIKeyEnv)
+	secretNames := append(toolSet.SecretNames(), provider.APIKeyEnv, hermes.SecretName)
 	secretsSvc, err := secrets.New(ctx, st.DB(), secretNames)
 	if err != nil {
 		return fmt.Errorf("secrets: %w", err)
@@ -951,8 +952,23 @@ func run() error {
 		return err
 	}
 
+	// The sidecar receives only the explicit request and its dedicated provider key.
+	hermesJobs, err := hermes.New(ctx, st.DB(), "http://hermes:8642/run", os.Getenv("HERMES_RUNTIME_TOKEN"), func() string {
+		key, _ := secretsSvc.Get(hermes.SecretName)
+		return key
+	}, func(text string) {
+		if announcements != nil {
+			announcements.Enqueue(text)
+		}
+	}, logger)
+	if err != nil {
+		return fmt.Errorf("restore Hermes jobs: %w", err)
+	}
+	defer hermesJobs.Close()
+
 	opts := []pipeline.Option{
 		pipeline.WithAgent(agentPath, baseCfg.Agent.RequestPrefixes),
+		pipeline.WithHermes(hermesJobs.Handle),
 		pipeline.WithHistory(agentPath.History()),
 		// Spoken Confirmation for confirm Tools, enforced by the registry.
 		pipeline.WithConfirmationResolver(pipeline.NewConfirmation(registry, logger)),
@@ -1339,6 +1355,7 @@ func run() error {
 			// The Routes page reads live Tool metadata; the Hermes page reads the
 			// same registry and the account registry.
 			Registry:     registry,
+			HermesReady:  hermesJobs.Configured,
 			Integrations: integrationSvc,
 			Verifier:     integrationVerifier,
 			Spotify:      spotifyModule.Auth(),

@@ -24,7 +24,7 @@ COMPOSE_FILE="${COMPOSE_FILE:-$ROOT/docker-compose.yml}"
 ML_SERVICES="wakeword stt tts embed"
 # Services that need no capability and no privilege gain. assistant handles
 # untrusted text but still needs none; it keeps its system D-Bus mount for BLE.
-HARDENED_SERVICES="assistant embed wakeword stt tts web-search"
+HARDENED_SERVICES="assistant embed wakeword stt tts web-search hermes"
 # Soloist is out of scope for #241's cap_drop/pids_limit block, but its existing
 # no-new-privileges is still a documented convention and is enforced here.
 # Host networking is not a Linux capability, and it runs as the host UID.

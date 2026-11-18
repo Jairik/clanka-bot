@@ -252,6 +252,19 @@ ensure_receiver() {
 		die "could not prepare the Soloist receiver"
 }
 
+# Enabling the receiver must preserve profiles selected in the shell or .env.
+enable_receiver() {
+	local profiles="${COMPOSE_PROFILES-}"
+	if [[ ! -v COMPOSE_PROFILES ]]; then
+		profiles="$(docker compose config --environment 2>/dev/null | sed -n 's/^COMPOSE_PROFILES=//p' || true)"
+	fi
+	if [[ ",$profiles," != *,spotify,* ]]; then
+		profiles="${profiles:+$profiles,}spotify"
+	fi
+	export COMPOSE_PROFILES="$profiles"
+	ensure_receiver
+}
+
 # Content keys of this checkout, one per service that builds an image
 # (scripts/image-keys.py). Filled by export_image_tags.
 declare -A KEY_OF=()
@@ -468,8 +481,7 @@ main() {
 		((missing == 0)) || exit 1
 
 		if receiver_key_present; then
-			export COMPOSE_PROFILES=spotify
-			ensure_receiver
+			enable_receiver
 		fi
 		if ! docker compose up -d --no-build --remove-orphans; then
 			printf -- '--- docker compose ps ---\n' >&2
@@ -503,8 +515,7 @@ main() {
 		sha="$(git rev-parse --short HEAD)"
 		export GIT_SHA="$sha"
 		if receiver_key_present; then
-			export COMPOSE_PROFILES=spotify
-			ensure_receiver
+			enable_receiver
 		fi
 		export_image_tags
 		prepare_images "$sha"

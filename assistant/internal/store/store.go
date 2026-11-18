@@ -332,6 +332,14 @@ var migrations = []migration{
 		`ALTER TABLE activity ADD COLUMN cached_tokens INTEGER`,
 		`ALTER TABLE activity ADD COLUMN agent_steps INTEGER`,
 	}},
+	{version: 15, name: "hermes_jobs", statements: []string{
+		// Persist results and state without storing prompts or provider credentials.
+		`CREATE TABLE hermes_jobs (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			state TEXT NOT NULL,
+			result TEXT NOT NULL DEFAULT ''
+		)`,
+	}},
 }
 
 // Open opens (creating if needed) the database at path, applies pending

@@ -61,6 +61,7 @@ compose)
 		case "${1:-}" in
 		--services) cat "$dir/services" ;;
 		--images) cat "$dir/images" ;;
+		--environment) cat "$dir/compose-environment" 2>/dev/null || true ;;
 		--format) cat "$dir/config.json" 2>/dev/null || echo '{"services":{}}' ;;
 		*) echo "services: {}" ;;
 		esac
@@ -469,6 +470,20 @@ test_deploy_with_spotify_key_enables_profile() {
 	assert_out_contains "deploy provisions the receiver" "using existing receiver binary"
 	assert_calls_contains "deploy health-checks the receiver" "docker compose ps -q soloist"
 	assert_out_contains "deploy waits for both services" "all 2 service"
+}
+
+test_receiver_preserves_selected_profiles() {
+	local repo
+	repo=$(new_repo)
+	new_scenario
+	set_services assistant soloist hermes
+	set_health assistant healthy
+	set_health soloist healthy
+	set_health hermes healthy
+	printf 'COMPOSE_PROFILES=hermes\n' >"$SCENARIO/compose-environment"
+	run_deploy "$repo"
+	assert_status 0 "deploy with Hermes and Spotify succeeds"
+	assert_env_contains "deploy preserves Hermes when enabling Spotify" "COMPOSE_PROFILES=hermes,spotify"
 }
 
 test_make_up_runs_optional_setup_without_key() {
@@ -1013,6 +1028,7 @@ run_test test_waits_for_every_service
 run_test test_provisions_the_receiver_before_compose_up
 run_test test_deploy_without_spotify_key_skips_receiver
 run_test test_deploy_with_spotify_key_enables_profile
+run_test test_receiver_preserves_selected_profiles
 run_test test_make_up_runs_optional_setup_without_key
 run_test test_rollback_removes_orphans_from_a_newer_service_set
 run_test test_reports_timeout_with_diagnostics

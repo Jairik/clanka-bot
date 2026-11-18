@@ -558,7 +558,7 @@ test_real_compose_file_passes() {
 	(cd "$REPO_ROOT" && bash scripts/check-compose.sh) >"$OUT" 2>&1
 	STATUS=$?
 	assert_status 0 "the checked-in compose file passes"
-	assert_out_contains "the full eight-service stack is checked" "8 service(s)"
+	assert_out_contains "the full stack, including optional services, is checked" "9 service(s)"
 }
 
 write_assistant_web_search_health_dep() {

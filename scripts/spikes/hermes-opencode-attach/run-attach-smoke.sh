@@ -31,6 +31,12 @@ if ! command -v python3 >/dev/null 2>&1; then
   exit 2
 fi
 
+# Keep the loopback server password scoped to this run and out of startup logs.
+OPENCODE_PASSWORD="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')"
+export OPENCODE_PASSWORD
+export OPENCODE_SERVER_PASSWORD="$OPENCODE_PASSWORD"
+export OPENCODE_SERVER_USERNAME=opencode
+
 # Pick two ephemeral loopback ports, then release them for the children.
 read -r FAKE_PORT SERVE_PORT < <(python3 - <<'PY'
 import socket
@@ -119,6 +125,11 @@ start_fake() {
   return 1
 }
 
+# Probe a protected endpoint so readiness also checks the server credentials.
+server_ready() {
+  curl -fsS -m 1 -u "opencode:$OPENCODE_PASSWORD" -o /dev/null "http://127.0.0.1:$SERVE_PORT/api/info" 2>/dev/null
+}
+
 start_serve() {
   local key="${1:-}"
   if [[ -n "$key" ]]; then
@@ -130,7 +141,7 @@ start_serve() {
   fi
   SERVE_PID=$!
   for _ in $(seq 1 100); do
-    if curl -sS -m 1 -o /dev/null "http://127.0.0.1:$SERVE_PORT/" 2>/dev/null; then
+    if server_ready; then
       return 0
     fi
     sleep 0.1
@@ -179,13 +190,18 @@ run_attach fake-ok spike/fake-model "Say something brief." 60 TERM
 [[ $(grep -c 'fake summary: attach path reached the provider' "$LAST_OUT") -ge 1 ]] \
   || fail "fake success did not return the stub summary"
 
+# A rejected attach password must stay distinct from a bad model-provider token.
+OPENCODE_PASSWORD=wrong run_attach fake-badpassword spike/fake-model "Say something brief." 10 TERM
+[[ "$LAST_RC" -ne 0 ]] || fail "bad server password unexpectedly succeeded"
+grep -q 'rejected the password' "$LAST_OUT" || fail "bad server password was not surfaced"
+
 run_attach fake-timeout spike/fake-model "SLOW please take your time" 6 TERM
 [[ "$LAST_RC" -eq 124 ]] || fail "timeout did not exit 124"
-curl -sS -m 2 -o /dev/null "http://127.0.0.1:$SERVE_PORT/" || fail "server unhealthy after timeout"
+server_ready || fail "server unhealthy after timeout"
 
 run_attach fake-interrupt spike/fake-model "SLOW cancel me" 5 INT
 [[ "$LAST_RC" -eq 124 ]] || fail "interrupt did not exit 124"
-curl -sS -m 2 -o /dev/null "http://127.0.0.1:$SERVE_PORT/" || fail "server unhealthy after interrupt"
+server_ready || fail "server unhealthy after interrupt"
 
 stop_serve
 start_serve wrong

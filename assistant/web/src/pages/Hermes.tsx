@@ -1,6 +1,4 @@
-// Hermes: what the MCP adapter would expose and which accounts it may use.
-// Hermes itself is not part of this build, so the page says that plainly and
-// treats every grant as stored intent.
+// Hermes offers model-only jobs while account grants remain stored intent.
 import { useState } from "react";
 import { Button, Switch } from "@heroui/react";
 import { ChevronDown } from "lucide-react";
@@ -20,16 +18,20 @@ export function HermesPage() {
     <PageFrame id="hermes">
       <Notice error={error || actions.error} flash={actions.flash} onDismiss={actions.clear} />
       <div className="space-y-2.5">
-        <Section title="Hermes is not installed" summary="not running" tone="warn" defaultOpen flush>
+        <Section
+          title={data?.RuntimeReady ? "Hermes model-only jobs" : "Hermes needs setup"}
+          summary={data?.RuntimeReady ? "configured" : "unconfigured"}
+          tone={data?.RuntimeReady ? undefined : "warn"}
+          defaultOpen
+          flush
+        >
           <div className="space-y-2 px-3.5 py-3 text-xs leading-relaxed">
-            <p>
-              Hermes is not installed in this build, so no process, job queue or MCP adapter is running and nothing on this page starts
-              one.
-            </p>
-            <p className="text-muted">
-              This page sets up what Hermes would get once the adapter is installed: the Tools it could call and the accounts it could
-              use. Everything here is stored intent until then.
-            </p>
+            {data?.RuntimeReady ? (
+              <p>Start a job with “Ask Hermes” followed by a request. Say “Ask Hermes status”, “Ask Hermes result”, or “Ask Hermes cancel” to manage the latest job.</p>
+            ) : (
+              <p>Enable the private sidecar on the Pi and add its OpenCode Go key in Secrets.</p>
+            )}
+            <p className="text-muted">The model-only runtime uses the current request. Account grants apply when the MCP adapter is available.</p>
           </div>
         </Section>
 
@@ -256,7 +258,7 @@ function IntegrationEditor({ row, actions }: { row: Integration; actions: Action
                 <span className="block text-sm">Allow Hermes</span>
                 <span className="mt-0.5 block text-[11px] text-muted">
                   {ready
-                    ? "Stored intent: it applies once Hermes is installed."
+                    ? "Applies when the MCP adapter is available."
                     : "Link the account before granting access."}
                 </span>
               </span>

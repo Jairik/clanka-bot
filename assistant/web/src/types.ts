@@ -188,6 +188,7 @@ export type HermesView = {
   Error: string;
   HasRegistry: boolean;
   HasIntegrations: boolean;
+  RuntimeReady: boolean;
   Surface: HermesTool[] | null;
   SurfaceCount: number;
   LocalOnlyCount: number;

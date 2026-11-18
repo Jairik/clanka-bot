@@ -58,9 +58,7 @@ type routeRowView struct {
 	Examples       int
 }
 
-// hermesView is the Hermes control panel: what Hermes would see, and which
-// linked accounts it may use. Hermes itself is not installed by this build, so
-// the page says that plainly instead of pretending a job runner exists.
+// hermesView describes the model-only runtime and a future adapter's surface.
 type hermesView struct {
 	Owner           string
 	Page            string
@@ -68,6 +66,7 @@ type hermesView struct {
 	Error           string
 	HasRegistry     bool
 	HasIntegrations bool
+	RuntimeReady    bool
 	Surface         []hermesToolView
 	SurfaceCount    int
 	LocalOnlyCount  int
@@ -322,6 +321,7 @@ func (h *Handler) buildHermesView(flash, problem string) hermesView {
 		Error:           problem,
 		HasRegistry:     h.registry != nil,
 		HasIntegrations: h.integrations != nil,
+		RuntimeReady:    h.hermesReady != nil && h.hermesReady(),
 		Surface:         []hermesToolView{},
 		Rows:            []integrationView{},
 	}
@@ -431,7 +431,7 @@ func hermesFlashMessage(name string) string {
 	case flashHermesUnlinked:
 		return "Stored values cleared. Environment values, if any, remain in effect."
 	case flashHermesGranted:
-		return "Hermes access granted. It applies once Hermes is installed."
+		return "Hermes access granted. It applies when the MCP adapter is available."
 	case flashHermesRevoked:
 		return "Hermes access revoked."
 	default:

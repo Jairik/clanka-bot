@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"regexp"
 	"strings"
 	"time"
 
@@ -22,6 +23,9 @@ import (
 
 // PlaceholderReply is returned when no path exists yet for a transcript.
 const PlaceholderReply = "I don't know how to do that yet."
+
+// Preserve the owner's task text, including case and quoted names.
+var hermesPrefix = regexp.MustCompile(`(?is)^\s*ask\s+hermes(?:[\s,!.?:]+|$)(.*)$`)
 
 // reasonNoFocus reports a shared Control phrase that no Focus holder took, so
 // it fell through to the semantic Fast path.
@@ -138,6 +142,11 @@ func WithAgent(runner AgentRunner, requestPrefixes []string) Option {
 	}
 }
 
+// WithHermes receives explicit Hermes requests without using Agent history.
+func WithHermes(handle func(context.Context, string) string) Option {
+	return func(p *Pipeline) { p.hermes = handle }
+}
+
 // WithHistory records Fast path turns in the Agent path's shared history.
 func WithHistory(history *agent.History) Option {
 	return func(p *Pipeline) { p.history = history }
@@ -220,6 +229,7 @@ type Pipeline struct {
 	intentPhrases map[string]string
 	logger        *slog.Logger
 	agent         AgentRunner
+	hermes        func(context.Context, string) string
 	prefixes      []string
 	history       *agent.History
 	semantic      *SemanticRouter
@@ -392,6 +402,7 @@ type routeKind int
 
 const (
 	routeKindConfirmation routeKind = iota
+	routeKindHermes
 	routeKindPrefix
 	routeKindBriefing
 	routeKindControlPhrase
@@ -466,6 +477,17 @@ func (p *Pipeline) planRoute(ctx context.Context, transcript string) RoutingDeci
 	}
 
 	normalized := NormalizePhrase(transcript)
+
+	// A disabled Hermes still owns its prefix so it never falls through to a model.
+	if match := hermesPrefix.FindStringSubmatch(transcript); match != nil {
+		return RoutingDecision{
+			routeKind:  routeKindHermes,
+			Path:       tool.PathHermes,
+			prefixRest: strings.TrimSpace(match[1]),
+			FocusOwner: p.focusOwner(),
+			Decision:   "explicit Hermes request",
+		}
+	}
 
 	// Live wording is read once, from one snapshot, after the Confirmation
 	// stage and before either routing step that uses it.
@@ -719,6 +741,16 @@ func (p *Pipeline) route(ctx context.Context, req tool.Request, transcript strin
 				}
 				return reply
 			}
+		}
+		return reply
+
+	case routeKindHermes:
+		markRouting()
+		record.reason = ""
+		reply.Path, reply.LocalOnly = tool.PathHermes, true
+		reply.Text = "Hermes is disabled."
+		if p.hermes != nil {
+			reply.Text = p.hermes(ctx, decision.prefixRest)
 		}
 		return reply
 

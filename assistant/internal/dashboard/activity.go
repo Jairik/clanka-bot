@@ -487,6 +487,8 @@ func pathLabel(path string) string {
 		return "Fast path"
 	case "agent_path":
 		return "Agent path"
+	case "hermes":
+		return "Hermes"
 	case "control_phrase":
 		// A Control phrase is part of the Fast path; the suffix keeps the
 		// exact route visible without hiding that it never waited on an Agent.

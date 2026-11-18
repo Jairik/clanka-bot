@@ -50,6 +50,7 @@ services:
     cap_drop:
       - ALL
     pids_limit: 256
+    networks: [default, hermes-private]
     # Run as the host user so the read-only Pulse socket and cookie are usable.
     user: "${ASSISTANT_UID:-1000}:${ASSISTANT_GID:-1000}"
     ports:
@@ -78,6 +79,8 @@ services:
       # The assistant serves it on the same origin with an embedded fallback.
       ASSISTANT_DASHBOARD_UI_URL: ${ASSISTANT_DASHBOARD_UI_URL:-http://dashboard-web:8080}
       ASSISTANT_EMBED_URL: "http://embed:8085"
+      # Shared only with the optional Hermes sidecar.
+      HERMES_RUNTIME_TOKEN: ${HERMES_RUNTIME_TOKEN:-}
       ASSISTANT_TTS_ADDR: "tts:10200"
       # ADR-0003: the one SQLite database lives on the assistant-data volume.
       ASSISTANT_DATA_DIR: "/app/data"
@@ -209,6 +212,33 @@ services:
       # slow load; deploy.sh then tolerates a transient 'unhealthy' for
       # DEPLOY_COLD_START_GRACE (default 150s) past this start.
       start_period: 90s
+
+  # The private bridge connects only assistant and Hermes. Egress is separate.
+  hermes:
+    profiles: [hermes]
+    build:
+      context: ./hermes
+    image: clanka/hermes:${CLANKA_TAG_HERMES:-${GIT_SHA:-dev}}
+    restart: unless-stopped
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 256
+    mem_limit: 1g
+    read_only: true
+    tmpfs:
+      - /tmp:mode=1777,size=64m
+      - /opt/data:mode=1777,size=128m
+    networks: [hermes-private, hermes-egress]
+    environment:
+      HERMES_RUNTIME_TOKEN: ${HERMES_RUNTIME_TOKEN:-}
+    healthcheck:
+      test: ["CMD", "/opt/hermes/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8642/healthz', timeout=2)"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
 
   # The Dashboard UI as its own versioned artifact (#105). The assistant is the
   # only client and proxies on the same origin, so identity, Host and CSP stay
@@ -465,6 +495,11 @@ services:
       timeout: 3s
       retries: 5
       start_period: 30s
+
+networks:
+  hermes-private:
+    internal: true
+  hermes-egress:
 
 volumes:
   # Named so the database survives `docker compose down`, rebuilds and deploys.

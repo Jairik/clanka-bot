@@ -139,6 +139,8 @@ type Options struct {
 	// its metadata to show what is deterministic, what only the Agent may call,
 	// and what stays on the Pi. Nil makes those pages explanatory.
 	Registry *tool.Registry
+	// HermesReady reports whether the model-only sidecar has its credential.
+	HermesReady func() bool
 	// Focus reports what currently holds the user's attention (Ring, Reply,
 	// Music) so the Dashboard can show why speech is or is not playing. Nil
 	// hides the focus view.
@@ -248,6 +250,7 @@ type Handler struct {
 	phraseGenReady func() bool
 	registry       *tool.Registry
 	integrations   *integrations.Service
+	hermesReady    func() bool
 	verifier       *integrations.Verifier
 	// focusReg and announceQueue feed the focus view and its live delta. Either
 	// may be nil, which hides the view.
@@ -418,6 +421,7 @@ func New(opts Options) (*Handler, error) {
 		phraseGenReady: opts.PhraseGenReady,
 		registry:       opts.Registry,
 		integrations:   opts.Integrations,
+		hermesReady:    opts.HermesReady,
 		verifier:       opts.Verifier,
 		focusReg:       opts.Focus,
 		announceQueue:  opts.Announcements,

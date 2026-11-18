@@ -1,4 +1,4 @@
-// The Hermes page: an honest not-installed card, the surface it would get, and
+// The Hermes page: runtime setup, the surface it would get, and
 // accounts whose secrets are written one field at a time.
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -47,6 +47,7 @@ const view = (rows: Integration[] = [github(), openrouter()]): HermesView => ({
   Error: "",
   HasRegistry: true,
   HasIntegrations: true,
+  RuntimeReady: false,
   SurfaceCount: 2,
   LocalOnlyCount: 5,
   ConfirmCount: 3,
@@ -77,12 +78,12 @@ function stub(write: (path: string) => HermesView, get: () => HermesView = () =>
   return calls;
 }
 
-it("says Hermes is not installed and shows the surface it would get", async () => {
+it("shows the setup required and the surface a future adapter would get", async () => {
   stub(() => view());
   render(<HermesPage />);
 
-  expect(await screen.findByText("Hermes is not installed")).toBeTruthy();
-  expect(screen.getByText(/not installed in this build/)).toBeTruthy();
+  expect(await screen.findByText("Hermes needs setup")).toBeTruthy();
+  expect(screen.getByText(/Enable the private sidecar/)).toBeTruthy();
   expect(screen.getByText("2 tools")).toBeTruthy();
   expect(screen.getByText("lights.power")).toBeTruthy();
   expect(screen.getByText(/5 Tools run on the Pi/)).toBeTruthy();

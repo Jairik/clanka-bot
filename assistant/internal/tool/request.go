@@ -13,6 +13,7 @@ const (
 	PathFocusIntent Path = "focus_intent"
 	PathFast        Path = "fast_path"
 	PathAgent       Path = "agent_path"
+	PathHermes      Path = "hermes"
 	PathFallthrough Path = "fallthrough"
 	// PathBriefing is the pipeline stage that composes several Tools into one
 	// spoken morning briefing. It is a stage, not a Tool, so it has no Tool

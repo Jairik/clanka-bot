@@ -1,9 +1,30 @@
-# Hermes control panel
+# Hermes setup and control panel
 
-The Dashboard's **Hermes** page configures the surface Hermes will get and the
-accounts it may use. It is deliberately honest about the runtime: **this build
-does not install or run Hermes.** The page shows "not installed", the exact
-Tool surface an adapter would publish, and the accounts you can link today.
+Hermes can run explicit, model-only jobs on the Pi. The Dashboard shows whether
+the runtime is configured, the candidate Tool surface for the future MCP
+adapter, and the accounts you can link today.
+
+## Pi setup
+
+Read the private machine notes before connecting to the Pi. On the Pi, add
+`hermes` to the existing comma-separated `COMPOSE_PROFILES` setting and set
+`HERMES_RUNTIME_TOKEN` in the private `.env` to a generated random value of at
+least 32 characters. Keep any existing profiles. Deploy normally so Compose
+recreates the assistant with the token and starts the private sidecar.
+
+Use secure entry or Dashboard **Secrets** to store a separately authorized Pi
+key as `HERMES_OPENCODE_GO_API_KEY`. The key and explicit task go to the sidecar
+over the authenticated private Compose network. The assistant sends no history,
+Tool results or linked-account secrets. Hermes uses OpenCode Go's
+DeepSeek V4.1 Flash model and has zero enabled tools. The sidecar publishes no
+host port and keeps its per-job runtime files in temporary storage.
+
+Say or type **Ask Hermes** followed by the task. The assistant returns a job
+number immediately. **Ask Hermes status**, **Ask Hermes result**, and
+**Ask Hermes cancel** act on the latest job. The assistant stores the latest 50
+job states and results in SQLite. It announces completion or failure on the Pi.
+After a restart an unfinished job is marked interrupted, so it won't run again
+without a fresh request.
 
 ## What the page shows
 
@@ -36,19 +57,17 @@ Use scoped credentials. A GitHub fine-grained PAT limited to the repositories
 and read/write scopes Hermes should have is the intended shape; do not paste a
 classic all-repo token.
 
-## What is still missing
+## MCP and OpenCode delegation
 
-The Map 2 spec's phase 6 items are not implemented in this tree:
-
-1. an MCP server that publishes the surface above;
-2. a `hermes.delegate` / `status` / `result` Tool set and the durable job table;
-3. the "ask Hermes" request prefix and its routing slot;
-4. the Hermes container/sidecar and its OpenCode Go credential.
+The Map 2 phase 6 backlog includes the MCP server, Agent-callable job Tools, and
+the desktop OpenCode adapter. Account grants are stored intent until the
+adapter enforces them at execution. Outward writes also require spoken
+Confirmation at delegation.
 
 The spike in `docs/spikes/hermes-opencode-attach.md` covers the transport
 (`opencode serve` over Tailscale), the auth findings and the measured latency.
-The control panel is the Dashboard half of that work: accounts and grants are
-durable now, so the adapter can read them when it lands.
+Accounts and grants are durable, so a future adapter can use the existing
+services and keep credentials with the Tool modules that need them.
 
 ## Security notes
 

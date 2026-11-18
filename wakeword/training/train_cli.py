@@ -888,7 +888,7 @@ def eval_phrase(args: argparse.Namespace, slug: str, work: Path) -> None:
     scores = json.loads(result_path.read_text())
     threshold = args.threshold
     rates = threshold_rates(scores, threshold)
-    print(f"\n{phrase_text(slug)!r} at threshold {threshold:.2f}:")
+    print(f"\n{phrase_text(slug)!r} at threshold {threshold}:")
     for key, label in (
         ("voices", "recall, TTS voices held out of training"),
         ("positives", "recall, TTS training voices"),
@@ -900,9 +900,9 @@ def eval_phrase(args: argparse.Namespace, slug: str, work: Path) -> None:
         value = rates.get(key)
         print(f"  {label}: " + ("no clips" if value is None else f"{value['rate']:.1%} of {value['n']}"))
     events = scores.get("background_events_per_hour") or {}
-    per_hour = events.get(f"{threshold:.2f}") if isinstance(events, dict) else None
+    per_hour = events.get(str(threshold), events.get(f"{threshold:.2f}")) if isinstance(events, dict) else None
     print(f"  background false accepts per hour: " + ("no background audio" if per_hour is None else f"{per_hour:.2f}"))
-    print(f"  threshold: {threshold:.2f} (the service's WAKEWORD_THRESHOLD)")
+    print(f"  threshold: {threshold} (the service's WAKEWORD_THRESHOLD)")
     if rates.get("real_positive") is None:
         print("  note: no real takes were held out; record some with the Dashboard or record.py")
 
@@ -976,8 +976,9 @@ def eval_summary(work: Path, key: str, threshold: float = 0.5) -> str:
         if value:
             parts.append(f"{label} {value['rate']:.0%}")
     events = scores.get("background_events_per_hour") or {}
-    if isinstance(events, dict) and events.get(f"{threshold:.2f}") is not None:
-        parts.append(f"fa/h {events[f'{threshold:.2f}']:.2f}")
+    per_hour = events.get(str(threshold), events.get(f"{threshold:.2f}")) if isinstance(events, dict) else None
+    if per_hour is not None:
+        parts.append(f"fa/h {per_hour:.2f}")
     return ", ".join(parts) or "eval empty"
 
 

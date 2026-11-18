@@ -173,10 +173,10 @@ test("a first visit warms only the current page's neighbour", async ({ page, isM
   });
   await settle(page, "/");
 
-  // Home's only neighbour is Activity. Settings, Voice Samples and Monster must
-  // not download until the user asks for them.
+  // Home's only neighbour is Alerts (routes.ts railOrder). Settings, Voice
+  // Samples and Monster must not download until the user asks for them.
   await expect.poll(() => chunks.length, { timeout: 10_000 }).toBeGreaterThan(0);
-  expect(chunks.filter((file) => !file.startsWith("Activity-"))).toEqual([]);
+  expect(chunks.filter((file) => !file.startsWith("Alerts-"))).toEqual([]);
 
   // Hover warms exactly the hovered page.
   await page.getByRole("link", { name: "Sounds" }).hover();

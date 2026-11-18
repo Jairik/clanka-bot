@@ -3,7 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Button, Drawer, Popover, SearchField } from "@heroui/react";
 import {
-  Activity, AlarmClock, Bell, Bot, HeartPulse, KeyRound, Lamp, Lightbulb, MessageSquare, Mic, MicOff, Minus, MoreHorizontal, Music, Plus,
+  Activity, AlarmClock, Bell, Bot, HeartPulse, KeyRound, Lamp, Lightbulb, MessageSquare, Mic, MicOff, Minus, MoreHorizontal, Music, PanelLeftClose, PanelLeftOpen, Plus,
   Settings, Smile, StickyNote, Volume, Volume1, Volume2, VolumeX, Waves, Waypoints, type LucideIcon,
 } from "lucide-react";
 import { APIVersionMismatch, getJSON, navigate, postForm, restoreKey, useHash, useLocation } from "./api";
@@ -19,23 +19,30 @@ import { useVisiblePolling } from "./visibility";
 
 export type PageId = "home" | "activity" | "alerts" | "notes" | "health" | "sounds" | "voices" | "personas" | "voice-samples" | "spotify" | "lights" | "monster" | "secrets" | "routes" | "hermes" | "settings";
 
-export const PAGES: { id: PageId; path: string; title: string; blurb: string; icon: LucideIcon }[] = [
-  { id: "home", path: "/", title: "Chat", blurb: "", icon: MessageSquare },
-  { id: "activity", path: "/activity", title: "Activity", blurb: "Every request that reached the assistant, newest first.", icon: Activity },
-  { id: "alerts", path: "/alerts", title: "Alerts", blurb: "Timers, Alarms and Reminders, plus the Rings nobody answered.", icon: AlarmClock },
-  { id: "notes", path: "/notes", title: "Notes", blurb: "The shopping and to-do lists, and the facts you asked clanka to remember.", icon: StickyNote },
-  { id: "health", path: "/health", title: "Health", blurb: "Each Compose service, the location, and every Tool module check.", icon: HeartPulse },
-  { id: "sounds", path: "/sounds", title: "Sounds", blurb: "The sound library, Cue roles and Ring behaviour.", icon: Bell },
-  { id: "voices", path: "/voices", title: "Voices", blurb: "The speaking voice, its rate, and the voice library.", icon: Waves },
-  { id: "personas", path: "/personas", title: "Personas & common phrases", blurb: "Manage each persona’s voice, personality, and spoken replies.", icon: Smile },
-  { id: "voice-samples", path: "/voice-samples", title: "Voice samples", blurb: "Record takes for a wake phrase, then export the set for desktop training.", icon: Mic },
-  { id: "spotify", path: "/spotify", title: "Spotify", blurb: "Connect pairing for playback and Web API auth for control.", icon: Music },
-  { id: "lights", path: "/lights", title: "Lights", blurb: "Bluetooth controllers: power, colour, brightness and modes.", icon: Lightbulb },
-  { id: "monster", path: "/monster", title: "Monster lights", blurb: "Monster Smart Lighting: power, white, colour and scenes over the cloud.", icon: Lamp },
-  { id: "secrets", path: "/secrets", title: "Secrets", blurb: "Write-only values the Agent and Tool modules read.", icon: KeyRound },
-  { id: "routes", path: "/routes", title: "Routes", blurb: "Which path answers each request, and which Tools stay on the Pi.", icon: Waypoints },
-  { id: "hermes", path: "/hermes", title: "Hermes", blurb: "The Tool surface and accounts Hermes would get once it is installed.", icon: Bot },
-  { id: "settings", path: "/settings", title: "Settings", blurb: "Tools, wording, quiet hours and every other live setting.", icon: Settings },
+/**
+ * Rail sections, three pages each, so the eye can take in a group at a glance.
+ * Settings sits on its own at the foot of the rail.
+ */
+export const NAV_GROUPS = ["Assistant", "Voice", "Home", "System", "Setup"] as const;
+export type NavGroup = (typeof NAV_GROUPS)[number] | "Footer";
+
+export const PAGES: { id: PageId; path: string; title: string; blurb: string; icon: LucideIcon; group: NavGroup }[] = [
+  { id: "home", path: "/", title: "Chat", blurb: "", icon: MessageSquare, group: "Assistant" },
+  { id: "alerts", path: "/alerts", title: "Alerts", blurb: "Timers, Alarms and Reminders, plus the Rings nobody answered.", icon: AlarmClock, group: "Assistant" },
+  { id: "notes", path: "/notes", title: "Notes", blurb: "The shopping and to-do lists, and the facts you asked clanka to remember.", icon: StickyNote, group: "Assistant" },
+  { id: "voices", path: "/voices", title: "Voices", blurb: "The speaking voice, its rate, and the voice library.", icon: Waves, group: "Voice" },
+  { id: "personas", path: "/personas", title: "Personas & common phrases", blurb: "Manage each persona’s voice, personality, and spoken replies.", icon: Smile, group: "Voice" },
+  { id: "sounds", path: "/sounds", title: "Sounds", blurb: "The sound library, Cue roles and Ring behaviour.", icon: Bell, group: "Voice" },
+  { id: "spotify", path: "/spotify", title: "Spotify", blurb: "Connect pairing for playback and Web API auth for control.", icon: Music, group: "Home" },
+  { id: "lights", path: "/lights", title: "Lights", blurb: "Bluetooth controllers: power, colour, brightness and modes.", icon: Lightbulb, group: "Home" },
+  { id: "monster", path: "/monster", title: "Monster lights", blurb: "Monster Smart Lighting: power, white, colour and scenes over the cloud.", icon: Lamp, group: "Home" },
+  { id: "activity", path: "/activity", title: "Activity", blurb: "Every request that reached the assistant, newest first.", icon: Activity, group: "System" },
+  { id: "health", path: "/health", title: "Health", blurb: "Each Compose service, the location, and every Tool module check.", icon: HeartPulse, group: "System" },
+  { id: "routes", path: "/routes", title: "Routes", blurb: "Which path answers each request, and which Tools stay on the Pi.", icon: Waypoints, group: "System" },
+  { id: "voice-samples", path: "/voice-samples", title: "Voice samples", blurb: "Record takes for a wake phrase, then export the set for desktop training.", icon: Mic, group: "Setup" },
+  { id: "secrets", path: "/secrets", title: "Secrets", blurb: "Write-only values the Agent and Tool modules read.", icon: KeyRound, group: "Setup" },
+  { id: "hermes", path: "/hermes", title: "Hermes", blurb: "The Tool surface and accounts Hermes would get once it is installed.", icon: Bot, group: "Setup" },
+  { id: "settings", path: "/settings", title: "Settings", blurb: "Tools, wording, quiet hours and every other live setting.", icon: Settings, group: "Footer" },
 ];
 // Legacy bookmarks open the shared persona page.
 export const pageFor = (path: string) => {
@@ -169,38 +176,7 @@ export function Shell({ children }: { children: ReactNode }) {
       >
         Skip to content
       </a>
-      <aside className="hidden w-[70px] shrink-0 flex-col border-r md:flex">
-        <Tip label="clanka" hint="Back to the chat" placement="right">
-          <a href="/" onClick={link("/")} className="flex h-[70px] shrink-0 items-center justify-center border-b" aria-label="Home">
-            <Logo className="size-6" />
-          </a>
-        </Tip>
-        <nav className="flex flex-1 flex-col items-center gap-1 overflow-y-auto py-4" aria-label="Pages">
-          {PAGES.map(({ id, path: to, title, blurb, icon: I }) => (
-            // The link is the tooltip trigger itself (through Focusable), so
-            // no button role wraps it. Hover/focus also warms that page's
-            // chunk so navigation is instant.
-            <Tip key={id} label={title} hint={id === "health" && healthBad ? "A check is failing." : blurb || "Talk to clanka."} placement="right">
-              <a
-                href={to}
-                onClick={link(to)}
-                onMouseEnter={() => prefetch(id)}
-                onFocus={() => prefetch(id)}
-                aria-label={title}
-                aria-current={page === id ? "page" : undefined}
-                className={cn(
-                  "relative flex size-10 items-center justify-center border border-transparent",
-                  page === id ? "border-border bg-surface-secondary text-foreground" : "text-muted hover:text-foreground",
-                )}
-              >
-                <I className="size-[18px]" strokeWidth={1.5} />
-                {id === "health" && healthBad && <span className="absolute top-2 right-2 size-1.5 rounded-full bg-danger" />}
-              </a>
-            </Tip>
-          ))}
-        </nav>
-        <Owner />
-      </aside>
+      <Rail page={page} healthBad={healthBad} />
 
       <div className="relative flex min-w-0 flex-1 flex-col">
         <header className="pt-safe flex h-14 shrink-0 items-center gap-2 border-b px-3 md:h-[70px] md:px-6">
@@ -236,6 +212,116 @@ export function Shell({ children }: { children: ReactNode }) {
   );
 }
 
+// ---------- desktop rail ----------
+
+const RAIL_KEY = "clanka.rail.expanded";
+
+/** Whether the rail shows labels. Remembered per browser; storage may be blocked. */
+function useRailExpanded() {
+  const [expanded, setExpanded] = useState(() => {
+    try {
+      return localStorage.getItem(RAIL_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const toggle = useCallback(() => {
+    setExpanded((was) => {
+      try {
+        localStorage.setItem(RAIL_KEY, was ? "0" : "1");
+      } catch {
+        // Private window or blocked storage: the choice lasts this visit only.
+      }
+      return !was;
+    });
+  }, []);
+  return [expanded, toggle] as const;
+}
+
+/**
+ * Icon rail that expands into a labelled sidebar. Pages come in groups of
+ * three: a hairline divides them when collapsed, a small heading names them
+ * when expanded. Icons keep the same x position in both states, so the
+ * width animates without anything jumping sideways.
+ */
+function Rail({ page, healthBad }: { page?: PageId; healthBad: boolean }) {
+  const [expanded, toggle] = useRailExpanded();
+  const item = ({ id, path: to, title, blurb, icon: I }: (typeof PAGES)[number]) => {
+    const a = (
+      // The link is the tooltip trigger itself (through Focusable), so no
+      // button role wraps it. Hover/focus also warms that page's chunk so
+      // navigation is instant.
+      <a
+        key={id}
+        href={to}
+        onClick={link(to)}
+        onMouseEnter={() => prefetch(id)}
+        onFocus={() => prefetch(id)}
+        aria-label={title}
+        aria-current={page === id ? "page" : undefined}
+        className={cn(
+          "relative flex h-10 w-full shrink-0 items-center gap-3 border border-transparent px-[10px] text-sm",
+          page === id ? "border-border bg-surface-secondary text-foreground" : "text-muted hover:text-foreground",
+        )}
+      >
+        <I className="size-[18px] shrink-0" strokeWidth={1.5} />
+        {expanded && <span className="truncate">{title}</span>}
+        {id === "health" && healthBad && (
+          <span className={cn("absolute size-1.5 rounded-full bg-danger", expanded ? "top-1/2 right-3 -translate-y-1/2" : "top-2 right-2")} />
+        )}
+      </a>
+    );
+    // Expanded, the label is on screen, so the tooltip only adds the blurb.
+    const hint = id === "health" && healthBad ? "A check is failing." : blurb || "Talk to clanka.";
+    return (
+      <Tip key={id} label={expanded ? hint : title} hint={expanded ? undefined : hint} placement="right">
+        {a}
+      </Tip>
+    );
+  };
+  const ToggleIcon = expanded ? PanelLeftClose : PanelLeftOpen;
+  return (
+    <aside
+      className={cn(
+        "hidden shrink-0 flex-col overflow-hidden border-r transition-[width] duration-200 ease-out motion-reduce:transition-none md:flex",
+        expanded ? "w-56" : "w-[70px]",
+      )}
+      data-expanded={expanded ? "true" : "false"}
+    >
+      <Tip label="clanka" hint="Back to the chat" placement="right">
+        <a href="/" onClick={link("/")} className="flex h-[70px] shrink-0 items-center gap-3 border-b px-[23px]" aria-label="Home">
+          <Logo className="size-6 shrink-0" />
+          {expanded && <span className="font-serif text-lg">clanka</span>}
+        </a>
+      </Tip>
+      <nav className="flex flex-1 flex-col overflow-x-hidden overflow-y-auto px-[14px] py-3" aria-label="Pages">
+        {NAV_GROUPS.map((g, i) => (
+          <div key={g} role="group" aria-label={g} className={cn("flex flex-col gap-1", i > 0 && "mt-3 border-t pt-3")}>
+            {expanded && <span className="px-[11px] pb-1 text-[11px] tracking-wide text-subtle uppercase">{g}</span>}
+            {PAGES.filter((p) => p.group === g).map(item)}
+          </div>
+        ))}
+        <div className="mt-auto flex flex-col gap-1 pt-3">{PAGES.filter((p) => p.group === "Footer").map(item)}</div>
+      </nav>
+      <div className="shrink-0 px-[14px] pb-3">
+        <Tip label={expanded ? "Collapse sidebar" : "Expand sidebar"} placement="right">
+          <button
+            type="button"
+            onClick={toggle}
+            aria-expanded={expanded}
+            aria-label={expanded ? "Collapse sidebar" : "Expand sidebar"}
+            className="flex h-10 w-full items-center gap-3 border border-transparent px-[10px] text-sm text-muted hover:text-foreground"
+          >
+            <ToggleIcon className="size-[18px] shrink-0" strokeWidth={1.5} />
+            {expanded && <span className="truncate">Collapse</span>}
+          </button>
+        </Tip>
+      </div>
+      <Owner expanded={expanded} />
+    </aside>
+  );
+}
+
 /** Client-side navigation for a plain <a>, keeping middle-click/new-tab working. */
 export const link = (to: string) => (e: React.MouseEvent) => {
   if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
@@ -243,15 +329,16 @@ export const link = (to: string) => (e: React.MouseEvent) => {
   navigate(to);
 };
 
-function Owner() {
+function Owner({ expanded }: { expanded: boolean }) {
   const { Owner: owner } = useSession();
   return (
-    <div className="flex h-[70px] shrink-0 items-center justify-center border-t">
+    <div className="flex h-[70px] shrink-0 items-center gap-3 border-t px-[17px]">
       <Tip label="Signed in" hint={owner} placement="right">
-        <span tabIndex={0} aria-label={`Signed in as ${owner}`} className="flex size-9 items-center justify-center border text-[11px] uppercase">
+        <span tabIndex={0} aria-label={`Signed in as ${owner}`} className="flex size-9 shrink-0 items-center justify-center border text-[11px] uppercase">
           {owner.slice(0, 2)}
         </span>
       </Tip>
+      {expanded && <span className="truncate text-sm text-muted">{owner}</span>}
     </div>
   );
 }

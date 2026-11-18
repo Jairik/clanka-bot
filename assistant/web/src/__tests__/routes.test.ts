@@ -33,13 +33,13 @@ describe("prefetchNear", () => {
   it("warms the pages either side of the current one", () => {
     const load = vi.fn();
     prefetchNear("sounds", load);
-    expect(ids(load)).toEqual(["health", "voices"]);
+    expect(ids(load)).toEqual(["personas", "spotify"]);
   });
 
   it("warms only the neighbour that exists at either end of the rail", () => {
     const atHome = vi.fn();
     prefetchNear("home", atHome);
-    expect(ids(atHome)).toEqual(["activity"]);
+    expect(ids(atHome)).toEqual(["alerts"]);
 
     const atSettings = vi.fn();
     prefetchNear("settings", atSettings);
@@ -96,7 +96,7 @@ describe("route chunks", () => {
   });
 
   it("fetches the current page's neighbour on idle, not every page", async () => {
-    prefetchNear("home");
+    prefetchNear("health");
     await vi.waitFor(() => expect(loaded.activity).toBe(true));
     expect(loaded.settings).toBe(false);
   });

@@ -124,11 +124,12 @@ func (b *PromptBuilder) MessagesFor(utterance string, history []Turn, conversati
 	return messages
 }
 
-// systemPart builds the one system message. The base prompt, the Clarify rule
-// and the active Persona are resolved once here; the Persona is labelled so the
-// model can tell instructions from history and Tool output, and it is appended
-// last so the Clarify rule survives any Persona. An empty prompt adds nothing.
-// The conversation note, when present, stays inside this same labelled part.
+// systemPart builds the one system message. The base prompt, the Clarify rule,
+// the active Persona and the conversation note are resolved once here; the
+// Persona is labelled so the model can tell instructions from history and Tool
+// output, and it is appended after the Clarify rule so that rule survives any
+// Persona. An empty prompt adds nothing. The conversation note, when present,
+// stays inside this same labelled part.
 func (b *PromptBuilder) systemPart(conversation bool) string {
 	text := b.system()
 	if clause := b.clarifyClause(); clause != "" {

@@ -888,6 +888,9 @@ func run() error {
 	// the spoken cue never keeps the old voice forever.
 	wordingMgr, err := wording.NewManager(settingsSvc, wordingSetup, filler, synthFiller, logger,
 		wording.WithFillerKeys(voicelib.KeyName, voicelib.KeyRate, speech.PronunciationKey),
+		// The active Persona's Conversation trigger phrases are extra Control
+		// phrases beside the global lists, so a selection adds to the defaults.
+		wording.WithPersonaPhrases(personaSvc.TriggerPhrases),
 		wording.WithFillerSignature(func() string {
 			ref, rate, ok := voiceSvc.ActiveSpeech()
 			if !ok {
@@ -944,8 +947,8 @@ func run() error {
 		ConversationFunc: func(utterance string) string {
 			return conversationState.Turn(utterance, settingsSvc.Strings(conversation.CueWordsKey))
 		},
-		Headers:          provider.Headers,
-		Routing:          provider.Routing,
+		Headers:      provider.Headers,
+		Routing:      provider.Routing,
 		SystemPrompt: cfg.Agent.SystemPrompt,
 		// The place line is appended to the base prompt. With no configured
 		// prompt the default is the base, so the brevity and ignore rules still
@@ -970,11 +973,11 @@ func run() error {
 		// The Clarify line is live wording read while the system part is built.
 		ClarifyMessage:     baseCfg.Agent.ClarifyMessage,
 		ClarifyMessageFunc: wordingMgr.ClarifyMessage,
-		FirstTokenTimeout:      cfg.Agent.FirstTokenTimeout.Duration(),
-		RequestTimeout:         cfg.Agent.RequestTimeout.Duration(),
-		MaxSteps:               cfg.Agent.MaxSteps,
-		HistoryTurns:           cfg.Agent.History.Turns,
-		HistoryQuiet:           cfg.Agent.History.Quiet.Duration(),
+		FirstTokenTimeout:  cfg.Agent.FirstTokenTimeout.Duration(),
+		RequestTimeout:     cfg.Agent.RequestTimeout.Duration(),
+		MaxSteps:           cfg.Agent.MaxSteps,
+		HistoryTurns:       cfg.Agent.History.Turns,
+		HistoryQuiet:       cfg.Agent.History.Quiet.Duration(),
 		// Use the same instance assistant.forget holds, built before Tools
 		// registered above, so a spoken forget clears the Agent path's context.
 		History: conversationHistory,
@@ -1225,9 +1228,12 @@ func run() error {
 				}
 			})
 			// A standalone "stop" and the stop command model end the session,
-			// so the next wake word starts with a fresh history. Conversation
-			// mode (#499) will also be turned off here.
-			loop.BindSessionEnd(conversationHistory.Reset)
+			// so the next wake word starts with a fresh history and without
+			// conversation mode (#499).
+			loop.BindSessionEnd(func() {
+				conversationHistory.Reset()
+				conversationState.End()
+			})
 			// With music holding Focus, require a wake word instead of trusting unverified AEC.
 			loop.BindFollowUp(func() time.Duration {
 				if focusRegistry.Held(focus.Music) {
@@ -1405,8 +1411,8 @@ func run() error {
 			},
 			// One recent-request ring and the text-only session; both share
 			// the pipeline, registry and settings of the voice path.
-			Activity: activityStore,
-			Typed:    typedSession,
+			Activity:  activityStore,
+			Typed:     typedSession,
 			Explainer: p,
 			// The live Focus registry and Announcement queue feed the Dashboard's
 			// "what holds Focus / what is waiting" view and its SSE delta (#217).

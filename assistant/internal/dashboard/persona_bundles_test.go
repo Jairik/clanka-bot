@@ -65,7 +65,7 @@ func TestPersonaBundleRoundTripKeepsOriginal(t *testing.T) {
 		want := bundle.Persona
 		want.Name = name
 		p, ok := f.personas.Get(name)
-		if !ok || p.Input() != want {
+		if !ok || !reflect.DeepEqual(p.Input(), want) {
 			t.Errorf("persona %q differs from export", name)
 		}
 		got := f.phrases.Entries(name)

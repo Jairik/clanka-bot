@@ -8,6 +8,7 @@ package persona
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -16,11 +17,14 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/conversation"
+	"github.com/Jairik/clanka-bot/assistant/internal/phrase"
 	"github.com/Jairik/clanka-bot/assistant/internal/phrasebook"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 	"github.com/Jairik/clanka-bot/assistant/internal/store"
 	"github.com/Jairik/clanka-bot/assistant/internal/voicelib"
 	"github.com/Jairik/clanka-bot/assistant/internal/wording"
+	toolconv "github.com/Jairik/clanka-bot/assistant/tools/conversation"
 )
 
 // Settings keys and validation bounds.
@@ -36,6 +40,18 @@ const (
 	// MaxWordingRunes bounds the Filler and Unavailable wording, which are
 	// spoken and synthesized like any other wording setting.
 	MaxWordingRunes = 500
+	// MaxPhrases bounds one optional Persona phrase list. A Persona adds
+	// claims to every request's routing table, so a pasted block cannot grow
+	// it without limit.
+	MaxPhrases = 32
+)
+
+// ConversationStartTool and ConversationEndTool are the Control phrase owners
+// a Persona's optional trigger phrases add to. They are the conversation
+// Tools' own names, so a rename cannot leave routing pointed at a dead Tool.
+const (
+	ConversationStartTool = toolconv.StartName
+	ConversationEndTool   = toolconv.EndName
 )
 
 // Sentinels let callers map a rejection to a spoken or HTTP response without
@@ -77,22 +93,47 @@ type Persona struct {
 	Personality string
 	Filler      string
 	Unavailable string
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	// Clarify and CueWords are optional live wording. An empty field resets
+	// the live setting to its global layer, so switching to a Persona without
+	// them restores the default rather than keeping the previous Persona's.
+	Clarify  string
+	CueWords []string
+	// StartPhrases and EndPhrases are optional Conversation trigger phrases.
+	// They add to the global Control phrases on the next request and never
+	// replace them. They stay on the record, so no settings transaction owns
+	// them.
+	StartPhrases []string
+	EndPhrases   []string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 // Input is a create or edit form. It contains no times; the service owns them.
 type Input struct {
-	Name        string `json:"name"`
-	Voice       string `json:"voice"`
-	Personality string `json:"personality"`
-	Filler      string `json:"filler"`
-	Unavailable string `json:"unavailable"`
+	Name         string   `json:"name"`
+	Voice        string   `json:"voice"`
+	Personality  string   `json:"personality"`
+	Filler       string   `json:"filler"`
+	Unavailable  string   `json:"unavailable"`
+	Clarify      string   `json:"clarify"`
+	CueWords     []string `json:"cue_words"`
+	StartPhrases []string `json:"start_phrases"`
+	EndPhrases   []string `json:"end_phrases"`
 }
 
 // Input returns the portable fields of a stored Persona.
 func (p Persona) Input() Input {
-	return Input{Name: p.Name, Voice: p.Voice, Personality: p.Personality, Filler: p.Filler, Unavailable: p.Unavailable}
+	return Input{
+		Name:         p.Name,
+		Voice:        p.Voice,
+		Personality:  p.Personality,
+		Filler:       p.Filler,
+		Unavailable:  p.Unavailable,
+		Clarify:      p.Clarify,
+		CueWords:     p.CueWords,
+		StartPhrases: p.StartPhrases,
+		EndPhrases:   p.EndPhrases,
+	}
 }
 
 // VoiceLibrary is the read-only voice seam the Persona service validates
@@ -114,9 +155,13 @@ type Current struct {
 	EffectiveVoiceBuiltin bool
 	EffectiveFiller       string
 	EffectiveUnavailable  string
+	EffectiveClarify      string
+	EffectiveCueWords     []string
 	VoiceDiffers          bool
 	FillerDiffers         bool
 	UnavailableDiffers    bool
+	ClarifyDiffers        bool
+	CueWordsDiffers       bool
 	Exact                 bool
 	PersonaVoiceReady     bool
 }
@@ -178,7 +223,7 @@ func (s *Service) Bind(svc *settings.Service) {
 func (*Service) Definitions() []settings.Definition {
 	return []settings.Definition{
 		settings.String(ActiveKey, "",
-			settings.WithDescription("Active Persona name. Selecting a Persona writes voice.name, agent.filler and agent.unavailable_message with it in one transaction; resetting this key leaves those applied values alone."),
+			settings.WithDescription("Active Persona name. Selecting a Persona writes voice.name, agent.filler, agent.unavailable_message and the optional clarify line and cue words with it in one transaction; resetting this key leaves those applied values alone."),
 			settings.WithValidator(validateActiveSetting),
 		),
 	}
@@ -260,21 +305,27 @@ func (s *Service) create(ctx context.Context, clean Input, book *phrasebook.Serv
 	}
 	now := time.Now().UTC().Truncate(time.Second)
 	p := Persona{
-		Name:        clean.Name,
-		Voice:       clean.Voice,
-		Personality: clean.Personality,
-		Filler:      clean.Filler,
-		Unavailable: clean.Unavailable,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		Name:         clean.Name,
+		Voice:        clean.Voice,
+		Personality:  clean.Personality,
+		Filler:       clean.Filler,
+		Unavailable:  clean.Unavailable,
+		Clarify:      clean.Clarify,
+		CueWords:     clean.CueWords,
+		StartPhrases: clean.StartPhrases,
+		EndPhrases:   clean.EndPhrases,
+		CreatedAt:    now,
+		UpdatedAt:    now,
 	}
 	insert := func(db interface {
 		ExecContext(context.Context, string, ...any) (sql.Result, error)
 	}) error {
 		_, err := db.ExecContext(ctx,
-			`INSERT INTO personas (name, voice, personality, filler, unavailable, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			p.Name, p.Voice, p.Personality, p.Filler, p.Unavailable, stamp(p.CreatedAt), stamp(p.UpdatedAt))
+			`INSERT INTO personas (name, voice, personality, filler, unavailable, clarify, cue_words, start_phrases, end_phrases, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			p.Name, p.Voice, p.Personality, p.Filler, p.Unavailable,
+			p.Clarify, encodeList(p.CueWords), encodeList(p.StartPhrases), encodeList(p.EndPhrases),
+			stamp(p.CreatedAt), stamp(p.UpdatedAt))
 		return err
 	}
 	var err error
@@ -284,6 +335,11 @@ func (s *Service) create(ctx context.Context, clean Input, book *phrasebook.Serv
 		err = book.InsertForPersona(ctx, p.Name, phrases, func(tx *sql.Tx) error { return insert(tx) })
 	}
 	if err != nil {
+		// The primary key collation is the last guard against a concurrent
+		// create; the snapshot is only updated after a successful write.
+		if strings.Contains(strings.ToLower(err.Error()), "unique") {
+			return Persona{}, &Error{Kind: ErrPersonaExists, Message: fmt.Sprintf("A persona called %s already exists.", clean.Name)}
+		}
 		return Persona{}, fmt.Errorf("persona: create %s: %w", clean.Name, err)
 	}
 	s.personas[p.Name] = p
@@ -313,10 +369,16 @@ func (s *Service) Update(ctx context.Context, name string, in Input) (Persona, e
 	updated.Personality = clean.Personality
 	updated.Filler = clean.Filler
 	updated.Unavailable = clean.Unavailable
+	updated.Clarify = clean.Clarify
+	updated.CueWords = clean.CueWords
+	updated.StartPhrases = clean.StartPhrases
+	updated.EndPhrases = clean.EndPhrases
 	updated.UpdatedAt = now
 	if _, err := s.db.ExecContext(ctx,
-		`UPDATE personas SET voice = ?, personality = ?, filler = ?, unavailable = ?, updated_at = ? WHERE name = ?`,
-		updated.Voice, updated.Personality, updated.Filler, updated.Unavailable, stamp(updated.UpdatedAt), existing.Name); err != nil {
+		`UPDATE personas SET voice = ?, personality = ?, filler = ?, unavailable = ?, clarify = ?, cue_words = ?, start_phrases = ?, end_phrases = ?, updated_at = ? WHERE name = ?`,
+		updated.Voice, updated.Personality, updated.Filler, updated.Unavailable,
+		updated.Clarify, encodeList(updated.CueWords), encodeList(updated.StartPhrases), encodeList(updated.EndPhrases),
+		stamp(updated.UpdatedAt), existing.Name); err != nil {
 		return Persona{}, fmt.Errorf("persona: update %s: %w", existing.Name, err)
 	}
 	s.mu.Lock()
@@ -342,12 +404,22 @@ func (s *Service) Select(ctx context.Context, name string) (Persona, error) {
 	if err := s.validateBundle(p); err != nil {
 		return Persona{}, err
 	}
-	if err := svc.SetMany(ctx, map[string]any{
+	values := map[string]any{
 		voicelib.KeyName:       p.Voice,
 		wording.FillerKey:      p.Filler,
 		wording.UnavailableKey: p.Unavailable,
 		ActiveKey:              p.Name,
-	}); err != nil {
+	}
+	// An empty optional field clears the previous Persona's applied override,
+	// so switching Personas restores the global value. A manual override that
+	// no Persona claims is the owner's global value and is left alone.
+	previousName := strings.TrimSpace(svc.String(ActiveKey))
+	previous, hasPrevious := s.Get(previousName)
+	reselect := hasPrevious && strings.EqualFold(previousName, p.Name)
+	var resets []string
+	applyOptionalString(svc, values, &resets, wording.ClarifyKey, p.Clarify, previous.Clarify, hasPrevious, reselect)
+	applyOptionalList(svc, values, &resets, conversation.CueWordsKey, p.CueWords, previous.CueWords, hasPrevious, reselect)
+	if err := svc.SetManyReset(ctx, values, resets); err != nil {
 		s.logger.Error("persona select failed", "name", p.Name, "error", err.Error())
 		return Persona{}, &Error{Kind: ErrInvalidPersona, Message: "The persona could not be applied; nothing was changed."}
 	}
@@ -406,8 +478,69 @@ func (s *Service) Current() (Current, bool) {
 	current.FillerDiffers = !sameWording(current.EffectiveFiller, p.Filler)
 	current.EffectiveUnavailable = svc.String(wording.UnavailableKey)
 	current.UnavailableDiffers = !sameWording(current.EffectiveUnavailable, p.Unavailable)
-	current.Exact = !current.VoiceDiffers && !current.FillerDiffers && !current.UnavailableDiffers
+	current.EffectiveClarify, current.ClarifyDiffers = optionalStringDrift(svc, wording.ClarifyKey, p.Clarify)
+	current.EffectiveCueWords, current.CueWordsDiffers = optionalListDrift(svc, conversation.CueWordsKey, p.CueWords)
+	current.Exact = !current.VoiceDiffers && !current.FillerDiffers && !current.UnavailableDiffers &&
+		!current.ClarifyDiffers && !current.CueWordsDiffers
 	return current, true
+}
+
+// optionalStringDrift compares one optional field with the live setting. An
+// empty Persona field keeps the global value, but a stored override is still
+// drift: selecting the Persona again would clear it.
+func optionalStringDrift(svc *settings.Service, key, persona string) (string, bool) {
+	value, ok := svc.Get(key)
+	if !ok {
+		return "", strings.TrimSpace(persona) != ""
+	}
+	effective, _ := value.Value.(string)
+	if strings.TrimSpace(persona) == "" {
+		return effective, value.Source == settings.SourceOverride
+	}
+	return effective, !sameWording(effective, persona)
+}
+
+// optionalListDrift is optionalStringDrift for a list-valued setting.
+func optionalListDrift(svc *settings.Service, key string, persona []string) ([]string, bool) {
+	value, ok := svc.Get(key)
+	if !ok {
+		return nil, len(persona) > 0
+	}
+	effective, _ := value.Value.([]string)
+	if len(persona) == 0 {
+		return effective, value.Source == settings.SourceOverride
+	}
+	return effective, !sameList(effective, persona)
+}
+
+// TriggerPhrases returns the active Persona's optional Conversation trigger
+// phrases, keyed by Tool name. The live wording source merges them into the
+// global Control phrases on every request, so a selection never rewrites the
+// shared lists. An empty result adds nothing.
+func (s *Service) TriggerPhrases() map[string][]string {
+	svc := s.settingsService()
+	if svc == nil {
+		return nil
+	}
+	name := strings.TrimSpace(svc.String(ActiveKey))
+	if name == "" {
+		return nil
+	}
+	p, ok := s.Get(name)
+	if !ok {
+		return nil
+	}
+	out := make(map[string][]string, 2)
+	if len(p.StartPhrases) > 0 {
+		out[ConversationStartTool] = append([]string(nil), p.StartPhrases...)
+	}
+	if len(p.EndPhrases) > 0 {
+		out[ConversationEndTool] = append([]string(nil), p.EndPhrases...)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // Personality returns the active Persona's prompt for the Agent path. The
@@ -445,11 +578,15 @@ func (s *Service) settingsService() *settings.Service {
 // create or update writes anything.
 func (s *Service) validate(in Input, requireReadyVoice bool) (Input, error) {
 	clean := Input{
-		Name:        cleanName(in.Name),
-		Voice:       strings.TrimSpace(in.Voice),
-		Personality: strings.TrimSpace(in.Personality),
-		Filler:      cleanWording(in.Filler),
-		Unavailable: cleanWording(in.Unavailable),
+		Name:         cleanName(in.Name),
+		Voice:        strings.TrimSpace(in.Voice),
+		Personality:  strings.TrimSpace(in.Personality),
+		Filler:       cleanWording(in.Filler),
+		Unavailable:  cleanWording(in.Unavailable),
+		Clarify:      cleanWording(in.Clarify),
+		CueWords:     cleanList(in.CueWords),
+		StartPhrases: cleanList(in.StartPhrases),
+		EndPhrases:   cleanList(in.EndPhrases),
 	}
 	if clean.Name == "" {
 		return Input{}, invalid("Give the persona a name.")
@@ -476,6 +613,27 @@ func (s *Service) validate(in Input, requireReadyVoice bool) (Input, error) {
 		return Input{}, invalid("Write the Unavailable message.")
 	}
 	if err := checkText(clean.Unavailable, MaxWordingRunes, false, "Unavailable message"); err != nil {
+		return Input{}, err
+	}
+	if clean.Clarify != "" {
+		if err := checkText(clean.Clarify, MaxWordingRunes, false, "clarify line"); err != nil {
+			return Input{}, err
+		}
+	}
+	if err := checkList(clean.CueWords, "cue word"); err != nil {
+		return Input{}, err
+	}
+	if err := checkList(clean.StartPhrases, "start trigger phrase"); err != nil {
+		return Input{}, err
+	}
+	if err := checkList(clean.EndPhrases, "end trigger phrase"); err != nil {
+		return Input{}, err
+	}
+	// A save must not create a phrase that another Tool's Control list already
+	// owns. Selection does not repeat this check: a later global edit must not
+	// make an existing Persona unselectable; the routing overlay keeps the
+	// global phrase in that case.
+	if err := s.validateTriggerPhrases(clean.StartPhrases, clean.EndPhrases); err != nil {
 		return Input{}, err
 	}
 	// Portable bundles may refer to voices from another installation.
@@ -505,6 +663,20 @@ func (s *Service) validateBundle(p Persona) error {
 	if err := checkText(p.Unavailable, MaxWordingRunes, false, "Unavailable message"); err != nil {
 		return err
 	}
+	if p.Clarify != "" {
+		if err := checkText(p.Clarify, MaxWordingRunes, false, "clarify line"); err != nil {
+			return err
+		}
+	}
+	if err := checkList(p.CueWords, "cue word"); err != nil {
+		return err
+	}
+	if err := checkList(p.StartPhrases, "start trigger phrase"); err != nil {
+		return err
+	}
+	if err := checkList(p.EndPhrases, "end trigger phrase"); err != nil {
+		return err
+	}
 	return s.validateVoice(p.Voice)
 }
 
@@ -528,7 +700,7 @@ func (s *Service) validateVoice(name string) error {
 // reload replaces the in-memory index from SQLite.
 func (s *Service) reload(ctx context.Context) error {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT name, voice, personality, filler, unavailable, created_at, updated_at FROM personas ORDER BY name`)
+		`SELECT name, voice, personality, filler, unavailable, clarify, cue_words, start_phrases, end_phrases, created_at, updated_at FROM personas ORDER BY name`)
 	if err != nil {
 		return fmt.Errorf("persona: read library: %w", err)
 	}
@@ -537,12 +709,17 @@ func (s *Service) reload(ctx context.Context) error {
 	indexed := make(map[string]Persona)
 	for rows.Next() {
 		var (
-			p                Persona
-			created, updated string
+			p                    Persona
+			cueWords, start, end string
+			created, updated     string
 		)
-		if err := rows.Scan(&p.Name, &p.Voice, &p.Personality, &p.Filler, &p.Unavailable, &created, &updated); err != nil {
+		if err := rows.Scan(&p.Name, &p.Voice, &p.Personality, &p.Filler, &p.Unavailable,
+			&p.Clarify, &cueWords, &start, &end, &created, &updated); err != nil {
 			return fmt.Errorf("persona: read library row: %w", err)
 		}
+		p.CueWords = decodeList(cueWords)
+		p.StartPhrases = decodeList(start)
+		p.EndPhrases = decodeList(end)
 		p.CreatedAt, _ = time.Parse(time.RFC3339, created)
 		p.UpdatedAt, _ = time.Parse(time.RFC3339, updated)
 		indexed[p.Name] = p
@@ -569,6 +746,184 @@ func cleanName(name string) string {
 // cleanWording trims the spoken phrase without changing its inner spacing.
 func cleanWording(text string) string {
 	return strings.TrimSpace(text)
+}
+
+// cleanList trims each entry and drops blank ones. A form textarea sends one
+// phrase per line, and a trailing newline is formatting, not a value.
+func cleanList(list []string) []string {
+	out := make([]string, 0, len(list))
+	for _, text := range list {
+		if text = strings.TrimSpace(text); text != "" {
+			out = append(out, text)
+		}
+	}
+	return out
+}
+
+// checkList bounds every phrase in one optional list, including the count.
+func checkList(list []string, label string) error {
+	if len(list) > MaxPhrases {
+		return invalid(fmt.Sprintf("A phrase list is limited to %d entries.", MaxPhrases))
+	}
+	for _, text := range list {
+		if err := checkText(text, MaxWordingRunes, false, label); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// encodeList stores a string list as JSON text. An empty list keeps the
+// column's default form so a row always decodes.
+func encodeList(list []string) string {
+	if len(list) == 0 {
+		return "[]"
+	}
+	raw, err := json.Marshal(list)
+	if err != nil {
+		return "[]"
+	}
+	return string(raw)
+}
+
+// decodeList reads the JSON text stored by encodeList. A corrupt value reads
+// as empty rather than making the whole library unreadable.
+func decodeList(raw string) []string {
+	var list []string
+	if err := json.Unmarshal([]byte(raw), &list); err != nil {
+		return nil
+	}
+	return cleanList(list)
+}
+
+// applyOptionalString writes a non-empty optional field. An empty one clears
+// the live override only when it is the previous Persona's applied value, or
+// when the same Persona is selected again after an edit; a manual override
+// that no Persona claims is left alone. A build without the setting has
+// nothing to apply.
+func applyOptionalString(svc *settings.Service, values map[string]any, resets *[]string, key, value, previous string, hasPrevious, reselect bool) {
+	current, ok := svc.Get(key)
+	if !ok {
+		return
+	}
+	if value = strings.TrimSpace(value); value != "" {
+		values[key] = value
+		return
+	}
+	if current.Source != settings.SourceOverride {
+		return
+	}
+	if reselect {
+		*resets = append(*resets, key)
+		return
+	}
+	effective, _ := current.Value.(string)
+	if hasPrevious && strings.TrimSpace(previous) != "" && sameWording(effective, previous) {
+		*resets = append(*resets, key)
+	}
+}
+
+// applyOptionalList is applyOptionalString for a list-valued setting.
+func applyOptionalList(svc *settings.Service, values map[string]any, resets *[]string, key string, list, previous []string, hasPrevious, reselect bool) {
+	current, ok := svc.Get(key)
+	if !ok {
+		return
+	}
+	if len(list) > 0 {
+		values[key] = append([]string(nil), list...)
+		return
+	}
+	if current.Source != settings.SourceOverride {
+		return
+	}
+	if reselect {
+		*resets = append(*resets, key)
+		return
+	}
+	effective, _ := current.Value.([]string)
+	if hasPrevious && len(previous) > 0 && sameList(effective, previous) {
+		*resets = append(*resets, key)
+	}
+}
+
+// validateTriggerPhrases checks the optional Conversation trigger phrases. They
+// add to the global Control phrases, so a phrase may not be repeated or already
+// belong to another Tool's list; otherwise it would be ambiguous or shadow an
+// existing route.
+func (s *Service) validateTriggerPhrases(start, end []string) error {
+	groups := []struct {
+		label string
+		tool  string
+		list  []string
+	}{
+		{"start", ConversationStartTool, start},
+		{"end", ConversationEndTool, end},
+	}
+	seen := make(map[string]string, len(start)+len(end))
+	for _, group := range groups {
+		for _, text := range group.list {
+			key := phrase.Normalize(text)
+			if key == "" {
+				return invalid("A conversation trigger phrase must not be blank.")
+			}
+			if prev, ok := seen[key]; ok {
+				if prev == group.label {
+					return invalid(fmt.Sprintf("The trigger phrase %q is repeated.", text))
+				}
+				return invalid(fmt.Sprintf("The trigger phrase %q cannot be both a start and an end phrase.", text))
+			}
+			seen[key] = group.label
+		}
+	}
+	svc := s.settingsService()
+	if svc == nil {
+		return nil
+	}
+	owners, ambiguous := controlPhraseOwners(svc)
+	for _, group := range groups {
+		for _, text := range group.list {
+			key := phrase.Normalize(text)
+			owner, claimed := owners[key]
+			if !claimed {
+				continue
+			}
+			if ambiguous[key] || owner != group.tool {
+				return invalid(fmt.Sprintf("The trigger phrase %q is already a Control phrase for %s.", text, owner))
+			}
+		}
+	}
+	return nil
+}
+
+// controlPhraseOwners indexes every global Control phrase by its normalized
+// text. A phrase claimed by two owners is marked ambiguous rather than letting
+// one of them win.
+func controlPhraseOwners(svc *settings.Service) (map[string]string, map[string]bool) {
+	owners := make(map[string]string)
+	ambiguous := make(map[string]bool)
+	for _, value := range svc.List() {
+		var owner string
+		switch {
+		case strings.HasPrefix(value.Key, "tools.") && strings.HasSuffix(value.Key, ".control_phrases"):
+			owner = strings.TrimSuffix(strings.TrimPrefix(value.Key, "tools."), ".control_phrases")
+		case strings.HasPrefix(value.Key, "focus.") && strings.HasSuffix(value.Key, ".phrases"):
+			owner = value.Key
+		default:
+			continue
+		}
+		list, _ := value.Value.([]string)
+		for _, text := range list {
+			key := phrase.Normalize(text)
+			if key == "" {
+				continue
+			}
+			if prev, ok := owners[key]; ok && prev != owner {
+				ambiguous[key] = true
+			}
+			owners[key] = owner
+		}
+	}
+	return owners, ambiguous
 }
 
 // checkName applies the bounds that keep a name usable in a URL and by voice.
@@ -609,6 +964,21 @@ func checkText(text string, limit int, multiline bool, label string) error {
 // is not reported as a different bundle.
 func sameWording(effective, persona string) bool {
 	return strings.TrimSpace(effective) == strings.TrimSpace(persona)
+}
+
+// sameList compares two cue-word lists in order. An empty Persona list means
+// the global value applies, so the caller decides when there is anything to
+// compare.
+func sameList(effective, persona []string) bool {
+	if len(effective) != len(persona) {
+		return false
+	}
+	for i := range effective {
+		if strings.TrimSpace(effective[i]) != strings.TrimSpace(persona[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 // validateActiveSetting allows an empty marker and otherwise checks the same

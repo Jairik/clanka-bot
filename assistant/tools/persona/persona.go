@@ -229,17 +229,23 @@ type CurrentIn struct{}
 // that actually apply. A manual override or an edit after selection sets the
 // corresponding Differs flag; the caller must not claim the exact bundle then.
 type CurrentOut struct {
-	Persona              string `json:"persona"`
-	Voice                string `json:"voice"`
-	EffectiveVoice       string `json:"effective_voice"`
-	EffectiveFiller      string `json:"effective_filler"`
-	EffectiveUnavailable string `json:"effective_unavailable"`
-	Filler               string `json:"filler"`
-	Unavailable          string `json:"unavailable"`
-	VoiceDiffers         bool   `json:"voice_differs"`
-	FillerDiffers        bool   `json:"filler_differs"`
-	UnavailableDiffers   bool   `json:"unavailable_differs"`
-	Exact                bool   `json:"exact"`
+	Persona              string   `json:"persona"`
+	Voice                string   `json:"voice"`
+	EffectiveVoice       string   `json:"effective_voice"`
+	EffectiveFiller      string   `json:"effective_filler"`
+	EffectiveUnavailable string   `json:"effective_unavailable"`
+	EffectiveClarify     string   `json:"effective_clarify"`
+	EffectiveCueWords    []string `json:"effective_cue_words"`
+	Filler               string   `json:"filler"`
+	Unavailable          string   `json:"unavailable"`
+	Clarify              string   `json:"clarify"`
+	CueWords             []string `json:"cue_words"`
+	VoiceDiffers         bool     `json:"voice_differs"`
+	FillerDiffers        bool     `json:"filler_differs"`
+	UnavailableDiffers   bool     `json:"unavailable_differs"`
+	ClarifyDiffers       bool     `json:"clarify_differs"`
+	CueWordsDiffers      bool     `json:"cue_words_differs"`
+	Exact                bool     `json:"exact"`
 }
 
 func (m *Module) newCurrent() tool.Tool[CurrentIn, CurrentOut] {
@@ -263,11 +269,17 @@ func (m *Module) newCurrent() tool.Tool[CurrentIn, CurrentOut] {
 				EffectiveVoice:       current.EffectiveVoice,
 				EffectiveFiller:      current.EffectiveFiller,
 				EffectiveUnavailable: current.EffectiveUnavailable,
+				EffectiveClarify:     current.EffectiveClarify,
+				EffectiveCueWords:    current.EffectiveCueWords,
 				Filler:               current.Persona.Filler,
 				Unavailable:          current.Persona.Unavailable,
+				Clarify:              current.Persona.Clarify,
+				CueWords:             current.Persona.CueWords,
 				VoiceDiffers:         current.VoiceDiffers,
 				FillerDiffers:        current.FillerDiffers,
 				UnavailableDiffers:   current.UnavailableDiffers,
+				ClarifyDiffers:       current.ClarifyDiffers,
+				CueWordsDiffers:      current.CueWordsDiffers,
 				Exact:                current.Exact,
 			}, nil
 		},
@@ -297,7 +309,7 @@ func (m *Module) newCurrent() tool.Tool[CurrentIn, CurrentOut] {
 // speakCurrent states the exact bundle only when no difference exists; each
 // mismatch is named so a manual voice/Filler override is not hidden.
 func speakCurrent(out CurrentOut) string {
-	details := make([]string, 0, 3)
+	details := make([]string, 0, 5)
 	if out.VoiceDiffers {
 		if out.EffectiveVoice != "" {
 			details = append(details, fmt.Sprintf("the voice is set to %s instead of %s", out.EffectiveVoice, out.Voice))
@@ -310,6 +322,12 @@ func speakCurrent(out CurrentOut) string {
 	}
 	if out.UnavailableDiffers {
 		details = append(details, "the Unavailable message is different")
+	}
+	if out.ClarifyDiffers {
+		details = append(details, "the Clarify line is different")
+	}
+	if out.CueWordsDiffers {
+		details = append(details, "the cue words are different")
 	}
 	if len(details) == 0 {
 		return fmt.Sprintf("I'm using the %s persona.", out.Persona)

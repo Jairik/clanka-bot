@@ -34,7 +34,7 @@ func TestDefaultsAreTerseAndOnlyActionsAreOverridable(t *testing.T) {
 			t.Errorf("%s is overridable, want content replies left alone", name)
 		}
 	}
-	for _, name := range []string{"timer.set", "lights.power", "spotify.play", "note.remember", "persona.switch"} {
+	for _, name := range []string{"timer.set", "lights.power", "spotify.play", "note.remember", "persona.switch", "conversation.start", "conversation.end"} {
 		text, ok := phrasebook.Default(name)
 		if !ok || strings.TrimSpace(text) == "" {
 			t.Fatalf("%s has no default", name)

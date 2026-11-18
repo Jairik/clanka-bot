@@ -958,6 +958,7 @@ func (p *Pipeline) callAgent(ctx context.Context, req tool.Request, transcript s
 	// The conversation kind is display-only, but Activity renders it per turn
 	// from the same completion as the route and the token counts.
 	latency.SetConversation(ctx, result.Conversation)
+	reply.Ignored = result.Ignored
 	// The single provider retry, when it happened, is visible on the request
 	// line so a slow turn can be explained without reading the debug log.
 	latency.SetAttr(ctx, "agent_retries", result.Retries)

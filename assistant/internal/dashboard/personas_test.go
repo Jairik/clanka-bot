@@ -8,9 +8,12 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/agent"
+	"github.com/Jairik/clanka-bot/assistant/internal/conversation"
 	"github.com/Jairik/clanka-bot/assistant/internal/dashboard"
 	"github.com/Jairik/clanka-bot/assistant/internal/persona"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
@@ -56,6 +59,8 @@ func newPersonasFixture(t *testing.T) *personasFixture {
 		settings.String(voicelib.KeyName, "alba", settings.WithConfig("alba")),
 		settings.String(wording.FillerKey, wording.DefaultFiller, settings.WithConfig(wording.DefaultFiller)),
 		settings.String(wording.UnavailableKey, wording.DefaultUnavailableMessage, settings.WithConfig(wording.DefaultUnavailableMessage)),
+		settings.String(wording.ClarifyKey, agent.DefaultClarifyMessage, settings.WithConfig(agent.DefaultClarifyMessage)),
+		settings.Strings(conversation.CueWordsKey, conversation.DefaultCueWords, settings.WithConfig(conversation.DefaultCueWords)),
 	}
 	defs = append(defs, personas.Definitions()...)
 	svc, err := settings.New(ctx, st, defs...)
@@ -94,6 +99,7 @@ type personasResp struct {
 
 type personaForm struct {
 	Action, Name, Voice, Personality, Filler, Unavailable string
+	Clarify, CueWords, StartPhrases, EndPhrases           string
 	NameLocked                                            bool
 	Voices                                                []struct {
 		Name, Label string
@@ -395,5 +401,76 @@ func TestPersonaWritesAnswerJSONWithTheRealStatus(t *testing.T) {
 	v, rec = f.postView("/personas", personaValues("", "alba", ""))
 	if rec.Code != http.StatusBadRequest || v.Error == "" {
 		t.Fatalf("validation error = %d %q, want 400 with an error", rec.Code, v.Error)
+	}
+}
+
+// TestPersonaOptionalWordingCoversTheFormAndTheLiveSettings pins the #500
+// fields: the form round-trips them, selecting applies the clarify line and cue
+// words, and a manual edit is reported as drift rather than the exact bundle.
+func TestPersonaOptionalWordingCoversTheFormAndTheLiveSettings(t *testing.T) {
+	f := newPersonasFixture(t)
+	values := personaValues("GLaDOS", "alba", "You are GLaDOS.")
+	values.Set("clarify", "Say that again.")
+	values.Set("cue_words", "explain\nwalk me through")
+	values.Set("start_phrases", "start the chat")
+	values.Set("end_phrases", "shut it down")
+	created, rec := f.postView("/personas", values)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create = %d %s", rec.Code, rec.Body.String())
+	}
+	form := created.Rows[0].Edit
+	if form.Clarify != "Say that again." || form.CueWords != "explain\nwalk me through" ||
+		form.StartPhrases != "start the chat" || form.EndPhrases != "shut it down" {
+		t.Fatalf("saved form = %+v, want the optional fields one phrase per line", form)
+	}
+
+	if rec := f.post("/personas/GLaDOS/select", nil); rec.Code != http.StatusOK {
+		t.Fatalf("select = %d %s", rec.Code, rec.Body.String())
+	}
+	if got := f.settings.String(wording.ClarifyKey); got != "Say that again." {
+		t.Errorf("clarify after select = %q", got)
+	}
+	if got := f.settings.Strings(conversation.CueWordsKey); !slices.Equal(got, []string{"explain", "walk me through"}) {
+		t.Errorf("cue words after select = %v", got)
+	}
+
+	if _, err := f.settings.Set(f.ctx, wording.ClarifyKey, "Different line."); err != nil {
+		t.Fatalf("override clarify: %v", err)
+	}
+	v := f.view()
+	if v.Active == nil || v.Active.Exact {
+		t.Fatalf("active = %+v, want drift after a manual clarify edit", v.Active)
+	}
+	if notes := strings.Join(v.Active.Notes, "\n"); !strings.Contains(notes, "Clarify line has been changed") {
+		t.Errorf("drift notes = %q, want the Clarify line", notes)
+	}
+
+	// Editing the active Persona to clear the optional fields leaves the old
+	// overrides live, so the page must still report drift until it is reselected.
+	if rec := f.post("/personas/GLaDOS/select", nil); rec.Code != http.StatusOK {
+		t.Fatalf("re-select = %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := f.post("/personas/GLaDOS", personaValues("GLaDOS", "alba", "You are GLaDOS.")); rec.Code != http.StatusOK {
+		t.Fatalf("update = %d %s", rec.Code, rec.Body.String())
+	}
+	v = f.view()
+	if v.Active == nil || v.Active.Exact {
+		t.Fatalf("active after clearing = %+v, want drift while the overrides are live", v.Active)
+	}
+	if notes := strings.Join(v.Active.Notes, "\n"); !strings.Contains(notes, "cue words have been changed") {
+		t.Errorf("drift notes = %q, want the cue words", notes)
+	}
+
+	if rec := f.post("/personas/GLaDOS/select", nil); rec.Code != http.StatusOK {
+		t.Fatalf("final select = %d %s", rec.Code, rec.Body.String())
+	}
+	if v := f.view(); v.Active == nil || !v.Active.Exact {
+		t.Fatalf("active after the clearing select = %+v, want the exact bundle", v.Active)
+	}
+	if got := f.settings.String(wording.ClarifyKey); got != agent.DefaultClarifyMessage {
+		t.Errorf("clarify after the clearing select = %q, want the global default", got)
+	}
+	if got := f.settings.Strings(conversation.CueWordsKey); !slices.Equal(got, conversation.DefaultCueWords) {
+		t.Errorf("cue words after the clearing select = %v, want the global list", got)
 	}
 }

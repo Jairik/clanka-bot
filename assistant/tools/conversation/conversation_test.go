@@ -3,10 +3,14 @@ package conversation_test
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"testing"
 	"time"
 
+	convcore "github.com/Jairik/clanka-bot/assistant/internal/conversation"
+	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
+	"github.com/Jairik/clanka-bot/assistant/internal/wording"
 	"github.com/Jairik/clanka-bot/assistant/tools/conversation"
 )
 
@@ -59,5 +63,47 @@ func TestMissingModeFailsClearly(t *testing.T) {
 	}
 	if _, err := registry.Execute(context.Background(), conversation.StartName, json.RawMessage(`{}`)); err == nil {
 		t.Fatal("start with no latch succeeded, want a clear failure")
+	}
+}
+
+// TestWordingDefinesLiveTogglePhrases pins the Dashboard surface for #500: both
+// toggle phrases are ordinary live Control phrase lists, and the cue words are
+// a live wording setting.
+func TestWordingDefinesLiveTogglePhrases(t *testing.T) {
+	registry := tool.NewRegistry(time.Second)
+	if err := conversation.NewModule().Register(registry, tool.Deps{Conversation: &fakeMode{}}); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	setup, err := wording.Build(registry, wording.Config{
+		Filler:             "One moment.",
+		UnavailableMessage: "Sorry, I can't answer that right now.",
+	})
+	if err != nil {
+		t.Fatalf("wording.Build: %v", err)
+	}
+	defs := make(map[string]settings.Definition, len(setup.Definitions))
+	for _, def := range setup.Definitions {
+		defs[def.Key] = def
+	}
+	for _, key := range []string{
+		wording.ControlPhrasesKey(conversation.StartName),
+		wording.ControlPhrasesKey(conversation.EndName),
+		wording.ExamplesKey(conversation.StartName),
+		wording.ExamplesKey(conversation.EndName),
+	} {
+		if _, ok := defs[key]; !ok {
+			t.Errorf("wording definitions lack %s", key)
+		}
+	}
+	if !slices.Contains(setup.ControlTools, conversation.StartName) || !slices.Contains(setup.ControlTools, conversation.EndName) {
+		t.Errorf("control tools = %v, want both conversation Tools", setup.ControlTools)
+	}
+
+	cue := make(map[string]settings.Definition)
+	for _, def := range convcore.Definitions() {
+		cue[def.Key] = def
+	}
+	if _, ok := cue[convcore.CueWordsKey]; !ok {
+		t.Errorf("conversation definitions lack %s", convcore.CueWordsKey)
 	}
 }

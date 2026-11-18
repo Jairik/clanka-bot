@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
@@ -250,6 +251,45 @@ func TestSetManyIsAllOrNothing(t *testing.T) {
 	}
 	if got := svc.String("a"); got != "default" {
 		t.Errorf("a = %q after a rejected batch, want default", got)
+	}
+}
+
+func TestSetManyResetClearsAndWritesInOneBatch(t *testing.T) {
+	ctx := context.Background()
+	svc, _, _ := openSettings(t,
+		settings.String("a", "default", settings.WithConfig("config")),
+		settings.String("b", "default", settings.WithConfig("config")),
+	)
+	if err := svc.SetMany(ctx, map[string]any{"a": "old", "b": "old"}); err != nil {
+		t.Fatalf("seed overrides: %v", err)
+	}
+	var observed []string
+	svc.SetObserver(func(keys []string) { observed = append(observed, keys...) })
+
+	if err := svc.SetManyReset(ctx, map[string]any{"a": "new"}, []string{"b"}); err != nil {
+		t.Fatalf("SetManyReset: %v", err)
+	}
+	if got := svc.String("a"); got != "new" {
+		t.Errorf("a = %q, want new", got)
+	}
+	if got := svc.String("b"); got != "config" {
+		t.Errorf("b = %q, want the config layer", got)
+	}
+	if len(observed) != 2 || observed[0] != "a" || observed[1] != "b" {
+		t.Errorf("observed keys = %v, want one batch with a and b", observed)
+	}
+
+	// A key in both lists is a wiring error, and nothing is written.
+	before := svc.String("a")
+	if err := svc.SetManyReset(ctx, map[string]any{"a": "other"}, []string{"a"}); err == nil {
+		t.Fatal("SetManyReset accepted a key in both values and reset")
+	}
+	if got := svc.String("a"); got != before {
+		t.Errorf("a = %q after a rejected batch, want %q", got, before)
+	}
+	// An unknown reset key is rejected before the transaction.
+	if err := svc.SetManyReset(ctx, nil, []string{"missing"}); !errors.Is(err, settings.ErrUnknownSetting) {
+		t.Errorf("unknown reset error = %v, want ErrUnknownSetting", err)
 	}
 }
 

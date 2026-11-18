@@ -389,7 +389,7 @@ func (a *Agent) Run(ctx context.Context, req tool.Request, utterance string, onD
 						"tools", callNames(recorded),
 						"duration_ms", time.Since(started).Milliseconds(),
 					)
-					result := Result{Ignored: true, Calls: recorded, Retries: retries}
+					result := Result{Ignored: true, Calls: recorded, Retries: retries, Conversation: kind}
 					usage.apply(&result)
 					return result
 				}

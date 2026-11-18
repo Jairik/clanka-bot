@@ -196,7 +196,8 @@ test("the built worker precaches the shell and never caches media", async ({ pag
 
   // The shipped policy is the tested one, not an un-replaced placeholder.
   expect(sw).toContain('request.destination === "audio"');
-  expect(sw).toContain("if (url.search) return false;");
+  expect(sw).toContain("BUNDLE_SHELL.includes(url.pathname)");
+  expect(sw).toContain('bundleShellURLs(index?.headers.get("X-Dashboard-UI-Build"))');
   expect(sw).not.toContain("__CACHE_POLICY__");
 });
 

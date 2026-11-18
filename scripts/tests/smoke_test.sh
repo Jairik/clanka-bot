@@ -172,6 +172,18 @@ test_successful_smoke_turn() {
 	assert_calls_contains "sets same-origin header" "Sec-Fetch-Site: same-origin"
 }
 
+# Live installations can give the smoke phrase an exact clock route.
+test_clock_control_phrase_succeeds() {
+	new_scenario
+	echo "ASSISTANT_DASHBOARD_OWNER=alice@example.com" >"$SCENARIO/.env"
+	cat >"$SCENARIO/response_body" <<'JSON'
+{"route":"control_phrase","tool":"time.now","reply":"It's 3:04 PM."}
+JSON
+	run_smoke "$SCENARIO/.env"
+	assert_status 0 "control phrase smoke exits 0"
+	assert_out_contains "reports control_phrase" "route=control_phrase"
+}
+
 test_wrong_route_fails_script() {
 	new_scenario
 	echo "ASSISTANT_DASHBOARD_OWNER=alice@example.com" >"$SCENARIO/.env"
@@ -180,7 +192,7 @@ test_wrong_route_fails_script() {
 JSON
 	run_smoke "$SCENARIO/.env"
 	assert_nonzero "wrong route fails"
-	assert_out_contains "clear error message on wrong route" "expected Fast path (fast_path), got 'agent_path'"
+	assert_out_contains "clear error message on wrong route" "expected a clock route (fast_path or control_phrase), got 'agent_path'"
 	assert_out_contains "identifies embed may be stopped" "embed service may be stopped"
 	assert_out_contains "includes response body" '{"route":"agent_path"'
 }
@@ -240,6 +252,7 @@ run_test() {
 
 run_test test_skips_when_owner_is_empty
 run_test test_successful_smoke_turn
+run_test test_clock_control_phrase_succeeds
 run_test test_wrong_route_fails_script
 run_test test_wrong_tool_fails_script
 run_test test_empty_reply_fails_script

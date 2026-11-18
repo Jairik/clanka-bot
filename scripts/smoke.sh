@@ -86,8 +86,9 @@ stages = data.get("stages", {}) or {}
 routing_ms = stages.get("routing_ms", 0)
 tool_ms = stages.get("tool_ms", 0)
 
-if route != "fast_path":
-    msg = f"smoke: error: expected Fast path (fast_path), got {route!r}"
+# The owner may have a Control phrase for the same read-only clock Tool.
+if route not in {"fast_path", "control_phrase"}:
+    msg = f"smoke: error: expected a clock route (fast_path or control_phrase), got {route!r}"
     if route == "agent_path":
         msg += " (pipeline fell through to agent; embed service may be stopped)"
     sys.stderr.write(f"{msg}; tool={tool!r} reply={reply!r}\nresponse body: {raw}\n")

@@ -7,3 +7,6 @@ package activity_test
 // magnitude. The scale keeps the assertion meaningful: the window scan this
 // issue is about is still slower than the scaled ceiling.
 const raceSlowdown = 40
+
+// raceEnabled reports whether this binary carries the race detector.
+const raceEnabled = true

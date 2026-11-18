@@ -1,8 +1,7 @@
 # Auto-deploy on the Pi
 
 The Pi turns `main` into the running stack by itself: a systemd timer polls the
-remote, and when `main` has moved to a commit that has had a few minutes to
-settle and whose CI checks are green, it runs the normal `scripts/deploy.sh`
+remote, and when `main` has moved to a commit whose CI checks are green, it runs the normal `scripts/deploy.sh`
 path. This reverses #13's "no auto-deploy", which assumed nothing could check a
 commit before it landed. CI now runs on every push, and the checks API is
 readable without a token for this public repo, so the timer can refuse a red
@@ -18,7 +17,8 @@ push itself still comes from the desktop.
   `scripts/deploy.sh`. Safe to run at any time and a no-op when nothing moved.
 - `scripts/install-deploy-watch.sh` — writes and enables the systemd units.
 - `/etc/systemd/system/clanka-deploy.service` + `clanka-deploy.timer` — the
-  timer fires the oneshot service 3 min after boot and every 2 min after that.
+  timer fires the oneshot service 3 min after boot and every 30 s after that,
+  so a green `main` is live about half a minute after CI finishes.
 
 Each tick, in order:
 
@@ -30,13 +30,13 @@ Each tick, in order:
    `origin/main`, or it has none) is left alone without touching Docker. So is
    a checkout whose `HEAD` is not an ancestor of `origin/main` — local commits
    on `main`, or diverged history. If `HEAD` already is `origin/main`, stop.
-4. Wait for `main` to settle. A commit younger than `DEPLOY_WATCH_MIN_AGE`
-   (default 5 minutes) is not deployed yet, so a burst of merges coalesces into
-   one deploy at the end of it. The age is the commit's own timestamp. It was 15
-   minutes while the Pi rebuilt every image itself; CI publishes the images now
-   and an unchanged service is not restarted, so the shorter window is enough
-   (the host-build fallback still exists, see "Build load" below). `--force`, a
-   manual `make deploy`, and `DEPLOY_WATCH_MIN_AGE=0` all skip this wait.
+4. Optionally wait for `main` to settle. A commit younger than
+   `DEPLOY_WATCH_MIN_AGE` minutes (default 0, so off) is not deployed yet. The
+   age is the commit's own timestamp. The window is off because the CI gate
+   already coalesces a burst of merges: CI cancels a superseded run, so only
+   the newest tip ever goes green. It was 15 minutes while the Pi rebuilt every
+   image itself; raise it again if you are landing changes the Pi has to build
+   (see "Build load" below). `--force` and a manual `make deploy` skip it.
 5. Ask GitHub for the commit's check runs. Still-running checks mean "try
    again next tick"; a failure, timeout or cancellation means "never deploy
    this commit" — the running stack stays as it is until a new commit lands.
@@ -180,10 +180,11 @@ args differ from `deploy/pi-images.env`, or the registry is unreachable. That
 fallback has the old cost (from three minutes with a warm layer cache to half an
 hour), so the guards below still matter:
 
-- `DEPLOY_WATCH_MIN_AGE` (the settle window) refuses to deploy a tip younger
-  than 5 minutes, so a burst of merges coalesces into one deploy at the end of
-  it instead of one deploy per commit. If you are landing changes the Pi will
-  have to build itself, raise it (15 was the old default).
+- `DEPLOY_WATCH_MIN_AGE` (the settle window, off by default) refuses to
+  deploy a tip younger than that many minutes. The CI gate already folds a
+  burst of merges into one deploy, but if you are landing changes the Pi will
+  have to build itself, set it to 15 (the old default) so each build covers
+  the whole burst.
 - The unit sets `COMPOSE_PARALLEL_LIMIT=1`. Compose builds services
   concurrently by default, and eight parallel builds on an 8 GB Pi 5 is enough
   to thrash swap hard: `tailscaled` and `sshd` stopped getting scheduled for
@@ -236,7 +237,7 @@ nothing here publishes images to a registry.
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `DEPLOY_WATCH_CI` | `1` | `0` deploys without asking GitHub about the checks |
-| `DEPLOY_WATCH_MIN_AGE` | `5` | minutes a commit must have been on `main` before it is deployed; `0` disables the settle window, `--force` skips it |
+| `DEPLOY_WATCH_MIN_AGE` | `0` | minutes a commit must have been on `main` before it is deployed; `0` (the default) disables the settle window, `--force` skips it |
 | `DEPLOY_WATCH_BUSY_URL` | `http://127.0.0.1:8080/busy` | the Assistant's busy probe; empty disables the busy wait |
 | `DEPLOY_WATCH_MAX_DEFER` | `120` | minutes past the settle window a busy Assistant may hold a deploy back |
 | `DEPLOY_WATCH_REPO` | `Jairik/clanka-bot` | repository whose check runs gate the deploy |
@@ -248,6 +249,9 @@ nothing here publishes images to a registry.
 | `DEPLOY_PRUNE_BUILD_CACHE` | `0` | `1` also prunes the host-wide build cache during the deploy, best effort |
 | `DEPLOY_BUILD_CACHE_AGE` | `168h` | age bound for the opt-in build-cache prune |
 
-The poll interval is the timer's `OnUnitActiveSec`. Edit the unit (or the
+The poll interval is the timer's `OnUnitActiveSec` (30 s, with `AccuracySec=1s`
+so systemd does not round it up to a minute). An idle tick is one `git fetch`;
+GitHub is asked only after `main` moves, so even this interval stays far under
+the 60 requests an hour GitHub allows without a token. Edit the unit (or the
 installer and re-run it) to change it; the watcher itself is stateless, so any
 interval works.

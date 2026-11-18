@@ -27,10 +27,29 @@ jobs:
         with:
           go-version-file: assistant/go.mod
           cache-dependency-path: assistant/go.sum
-      - name: Vet
-        run: go vet ./...
       - name: Test with race detector
         run: go test -race -count=1 ./...
+      # The activity scale tests skip under -race (the detector slows the
+      # pure-Go SQLite driver ~27x and they test bounds, not concurrency), so
+      # the package runs once more without it.
+      - name: Test activity scale bounds without race
+        run: go test -count=1 ./internal/activity
+
+  go-vet:
+    # Its own job so it runs alongside the tests instead of before them.
+    name: Go vet
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: assistant
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: assistant/go.mod
+          cache-dependency-path: assistant/go.sum
+      - run: go vet ./...
 
   web:
     name: Dashboard web app

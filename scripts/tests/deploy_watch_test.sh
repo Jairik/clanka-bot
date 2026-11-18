@@ -577,6 +577,7 @@ test_young_tip_waits_for_settle() {
 	repo=$(new_repo)
 	new_scenario
 	advance_origin "$repo" 0
+	WATCH_MIN_AGE=5
 	run_watch "$repo"
 	assert_status 0 "young tip is not an error"
 	assert_out_contains "young tip waits for the settle window" "waiting 300s for main to settle"
@@ -610,6 +611,17 @@ test_settle_window_can_be_disabled() {
 	assert_env_contains "zero settle window tags the new SHA" "GIT_SHA=$short"
 }
 
+test_fresh_tip_deploys_by_default() {
+	local repo short
+	repo=$(new_repo)
+	new_scenario
+	advance_origin "$repo" 0
+	short="$(git -C "$repo" rev-parse --short "$NEW_SHA")"
+	run_watch "$repo"
+	assert_status 0 "a fresh green tip deploys with no settle window"
+	assert_out_contains "the fresh tip is deployed" "deploying $short"
+}
+
 test_busy_assistant_defers_the_deploy() {
 	local repo short
 	repo=$(new_repo)
@@ -640,7 +652,7 @@ test_busy_deferral_is_capped() {
 	local repo
 	repo=$(new_repo)
 	new_scenario
-	# 5 minute settle + 120 minute cap = 7500s; this commit is older.
+	# No settle window + 120 minute cap = 7200s; this commit is older.
 	advance_origin "$repo" 8000
 	printf '{"busy":true,"reasons":["music"]}\n' >"$SCENARIO/busy-body"
 	run_watch "$repo"
@@ -689,6 +701,7 @@ test_future_commit_timestamp_is_clamped() {
 	repo=$(new_repo)
 	new_scenario
 	advance_origin "$repo" -300
+	WATCH_MIN_AGE=5
 	run_watch "$repo"
 	assert_status 0 "future-dated commit is not an error"
 	assert_out_contains "future-dated commit is clamped to zero" "moved 0s ago"
@@ -738,6 +751,7 @@ run_test test_force_deploys_when_current
 run_test test_young_tip_waits_for_settle
 run_test test_settled_tip_deploys
 run_test test_settle_window_can_be_disabled
+run_test test_fresh_tip_deploys_by_default
 run_test test_busy_assistant_defers_the_deploy
 run_test test_idle_assistant_deploys
 run_test test_busy_deferral_is_capped

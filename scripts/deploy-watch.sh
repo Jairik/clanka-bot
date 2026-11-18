@@ -4,9 +4,9 @@
 # A checkout on another branch, or with local commits ahead of origin/main, is
 # left alone: deploy.sh builds the branch that is checked out.
 #
-# A commit younger than DEPLOY_WATCH_MIN_AGE is not deployed yet, so a burst of
-# merges becomes one deploy instead of one per commit. CI publishes the images
-# and deploy.sh restarts only the services that changed, so the window is short.
+# The CI gate is what coalesces a burst of merges: CI cancels a superseded run,
+# so only the newest tip goes green. DEPLOY_WATCH_MIN_AGE adds an optional
+# settle window on top (off by default) for when the Pi has to build itself.
 #
 # A deploy also waits while the Assistant reports it is busy (GET /busy: music
 # playing, a reply being spoken, an alarm ringing), up to DEPLOY_WATCH_MAX_DEFER
@@ -33,11 +33,12 @@ LOCK_FILE="${DEPLOY_WATCH_LOCK:-/tmp/clanka-deploy-watch.lock}"
 API="${DEPLOY_WATCH_API:-https://api.github.com}"
 REPO="${DEPLOY_WATCH_REPO:-Jairik/clanka-bot}"
 CI_ENABLED="${DEPLOY_WATCH_CI:-1}"
-# A commit has to be this old before it is deployed, so a burst of merges
-# coalesces. It was 15 when the Pi rebuilt every image itself; CI publishes
-# them now and an unchanged service is not restarted, so a short window is
-# enough. --force and DEPLOY_WATCH_MIN_AGE=0 are the escapes.
-SETTLE_MINUTES="${DEPLOY_WATCH_MIN_AGE:-5}"
+# A commit has to be this old before it is deployed. Off by default: CI
+# cancels a superseded run and the gate waits for green, so a burst of merges
+# already coalesces into one deploy, and a deploy is a pull that restarts only
+# changed services. It was 15 when the Pi rebuilt every image itself; raise it
+# again if the Pi has to build (see docs/auto-deploy.md "Build load").
+SETTLE_MINUTES="${DEPLOY_WATCH_MIN_AGE:-0}"
 # The Assistant's busy probe on the host-published health port. Empty disables
 # the wait. An unreachable probe (the assistant is down) never blocks a deploy.
 BUSY_URL="${DEPLOY_WATCH_BUSY_URL-http://127.0.0.1:${ASSISTANT_HTTP_PORT:-8080}/busy}"
@@ -75,7 +76,7 @@ Environment:
   DEPLOY_WATCH_LOCK      lock file (default: /tmp/clanka-deploy-watch.lock)
   DEPLOY_WATCH_MIN_AGE   minutes a commit must have been on main before it is
                          deployed, so a burst of merges coalesces into one
-                         deploy (default: 5, 0 disables)
+                         deploy (default: 0, off)
   DEPLOY_WATCH_BUSY_URL  the Assistant's busy probe
                          (default: http://127.0.0.1:8080/busy; empty disables)
   DEPLOY_WATCH_MAX_DEFER minutes past the settle window that a busy Assistant

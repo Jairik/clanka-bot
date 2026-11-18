@@ -1,6 +1,9 @@
 # Stack topology: one Compose file runs on the dev box (amd64) and the Pi
 # (arm64). Deployment conventions (checked by scripts/check-compose.sh):
-#   - every service tags its image clanka/<service>:${GIT_SHA:-dev}
+#   - every service tags its image clanka/<service>:${CLANKA_TAG_<SERVICE>:-${GIT_SHA:-dev}}.
+#     scripts/deploy.sh sets CLANKA_TAG_<SERVICE>=key-<content key>, so a commit
+#     that does not change a service leaves its container running; a bare
+#     `docker compose` falls back to the SHA (or dev)
 #   - restart: unless-stopped, so the stack returns after a reboot
 #   - a healthcheck that never calls the internet, so the stack does not flap
 #     when the network drops
@@ -18,7 +21,7 @@ services:
       context: ./embed
       args:
         EMBED_MODEL: ${EMBED_MODEL:-sentence-transformers/all-MiniLM-L6-v2}
-    image: clanka/embed:${GIT_SHA:-dev}
+    image: clanka/embed:${CLANKA_TAG_EMBED:-${GIT_SHA:-dev}}
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -40,7 +43,7 @@ services:
   assistant:
     build:
       context: ./assistant
-    image: clanka/assistant:${GIT_SHA:-dev}
+    image: clanka/assistant:${CLANKA_TAG_ASSISTANT:-${GIT_SHA:-dev}}
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -71,11 +74,12 @@ services:
       # example pi.example.ts.net). Empty fails closed: only a loopback Host is
       # accepted, so the Dashboard is reachable by curl but not through serve.
       ASSISTANT_DASHBOARD_HOSTS: ${ASSISTANT_DASHBOARD_HOSTS:-}
-      # The Dashboard UI ships as its own SHA-tagged artifact (dashboard-web).
+      # The Dashboard UI ships as its own artifact (dashboard-web), pinned to
+      # that image's tag so the pin and the header agree.
       # The assistant proxies to it on the same origin; when it is stopped the
       # embedded copy in the binary serves instead. Empty disables the artifact.
       ASSISTANT_DASHBOARD_UI_URL: ${ASSISTANT_DASHBOARD_UI_URL:-http://dashboard-web:8080}
-      ASSISTANT_DASHBOARD_UI_VERSION: ${GIT_SHA:-dev}
+      ASSISTANT_DASHBOARD_UI_VERSION: ${CLANKA_TAG_DASHBOARD_WEB:-${GIT_SHA:-dev}}
       ASSISTANT_EMBED_URL: "http://embed:8085"
       ASSISTANT_TTS_ADDR: "tts:10200"
       # ADR-0003: the one SQLite database lives on the assistant-data volume.
@@ -222,12 +226,13 @@ services:
       dockerfile: web/Dockerfile.web
     # Only web/ goes into this image, so scripts/image-keys.py keys it on
     # assistant/web alone and a Go-only change reuses the published artifact.
-    image: clanka/dashboard-web:${GIT_SHA:-dev}
+    image: clanka/dashboard-web:${CLANKA_TAG_DASHBOARD_WEB:-${GIT_SHA:-dev}}
     restart: unless-stopped
     environment:
-      # Set at start, not baked: the same image serves every commit whose web/
-      # is unchanged, and the header must still name the deployed commit.
-      DASHBOARD_UI_VERSION: ${GIT_SHA:-dev}
+      # Set at start, not baked: the header names the image tag (its content
+      # key on a deploy), which changes only when web/ does. Naming the commit
+      # here would recreate this container on every deploy.
+      DASHBOARD_UI_VERSION: ${CLANKA_TAG_DASHBOARD_WEB:-${GIT_SHA:-dev}}
     expose:
       - "8080"
     healthcheck:
@@ -243,7 +248,7 @@ services:
   wakeword:
     build:
       context: ./wakeword
-    image: clanka/wakeword:${GIT_SHA:-dev}
+    image: clanka/wakeword:${CLANKA_TAG_WAKEWORD:-${GIT_SHA:-dev}}
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -287,7 +292,7 @@ services:
       context: ./stt
       args:
         STT_MODELS: ${STT_MODELS:-small-streaming,tiny-streaming}
-    image: clanka/stt:${GIT_SHA:-dev}
+    image: clanka/stt:${CLANKA_TAG_STT:-${GIT_SHA:-dev}}
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -323,7 +328,7 @@ services:
         # Selectable built-in voices, baked into the image. `all` is the full
         # Pocket TTS set; a subset trims the image and the Dashboard list.
         TTS_CATALOGUE: ${TTS_CATALOGUE:-all}
-    image: clanka/tts:${GIT_SHA:-dev}
+    image: clanka/tts:${CLANKA_TAG_TTS:-${GIT_SHA:-dev}}
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -369,7 +374,7 @@ services:
   web-search:
     build:
       context: ./searxng
-    image: clanka/web-search:${GIT_SHA:-dev}
+    image: clanka/web-search:${CLANKA_TAG_WEB_SEARCH:-${GIT_SHA:-dev}}
     restart: unless-stopped
     security_opt:
       - no-new-privileges:true
@@ -415,7 +420,7 @@ services:
     profiles: ["spotify"]
     build:
       context: ./soloist
-    image: clanka/soloist:${GIT_SHA:-dev}
+    image: clanka/soloist:${CLANKA_TAG_SOLOIST:-${GIT_SHA:-dev}}
     restart: unless-stopped
     network_mode: host
     hostname: ${SPOTIFY_MDNS_HOSTNAME:-clanka}

@@ -1210,10 +1210,31 @@ func run() error {
 		}()
 	}
 
+	// What a restart would cut off right now. The deploy watcher reads it on
+	// the published health port and defers a deploy while anything is held.
+	// The music check sees playback started from a phone too, not only voice.
+	busy := func(ctx context.Context) []string {
+		var reasons []string
+		for _, prio := range []focus.Priority{focus.Ring, focus.Reply, focus.Music} {
+			if focusRegistry.Held(prio) {
+				reasons = append(reasons, prio.String())
+			}
+		}
+		if musicStreams != nil && !focusRegistry.Held(focus.Music) {
+			probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			present, err := musicStreams.Present(probeCtx)
+			cancel()
+			if err == nil && present {
+				reasons = append(reasons, focus.Music.String())
+			}
+		}
+		return reasons
+	}
+
 	// The health listener never serves the debug route; the debug listener does.
 	servers := []*http.Server{{
 		Addr:              cfg.HTTP.Addr,
-		Handler:           api.NewHandler(p, logger, false),
+		Handler:           api.NewHandler(p, logger, false, api.WithBusy(busy)),
 		ReadHeaderTimeout: 5 * time.Second,
 	}}
 	if cfg.Debug.Enabled {

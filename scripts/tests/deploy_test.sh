@@ -44,8 +44,8 @@ write_docker_stub() {
 set -uo pipefail
 dir="${STUB_DOCKER_DIR:?STUB_DOCKER_DIR is required}"
 printf 'docker %s\n' "$*" >>"$dir/calls"
-printf 'GIT_SHA=%s\nDOCKER_DEFAULT_PLATFORM=%s\nCOMPOSE_PROJECT_NAME=%s\nCOMPOSE_PROFILES=%s\n' \
-	"${GIT_SHA-}" "${DOCKER_DEFAULT_PLATFORM-}" "${COMPOSE_PROJECT_NAME-}" "${COMPOSE_PROFILES-}" >>"$dir/env"
+printf 'GIT_SHA=%s\nDOCKER_DEFAULT_PLATFORM=%s\nCOMPOSE_PROJECT_NAME=%s\nCOMPOSE_PROFILES=%s\nCLANKA_TAG_ASSISTANT=%s\n' \
+	"${GIT_SHA-}" "${DOCKER_DEFAULT_PLATFORM-}" "${COMPOSE_PROJECT_NAME-}" "${COMPOSE_PROFILES-}" "${CLANKA_TAG_ASSISTANT-}" >>"$dir/env"
 
 cmd="${1:-}"
 shift || true
@@ -128,6 +128,12 @@ image)
 			echo "Error response from daemon: No such image" >&2
 			exit 1
 		fi
+		# local-images, when present, lists the only refs on this host;
+		# `docker tag` adds to it.
+		if [[ -f "$dir/local-images" ]] && ! grep -qxF -- "${1:-}" "$dir/local-images"; then
+			echo "Error response from daemon: No such image" >&2
+			exit 1
+		fi
 		echo "[]"
 		;;
 	ls)
@@ -153,6 +159,10 @@ image)
 	;;
 ps)
 	cat "$dir/running" 2>/dev/null || true
+	;;
+tag)
+	[[ -f "$dir/local-images" ]] && printf '%s\n' "${2:-}" >>"$dir/local-images"
+	echo "tagged"
 	;;
 pull)
 	if [[ -f "$dir/pull-fails" ]]; then
@@ -791,10 +801,13 @@ test_deploy_uses_published_images() {
 	repo=$(new_repo)
 	sha=$(git -C "$repo" rev-parse --short HEAD)
 	new_scenario
+	: >"$SCENARIO/local-images"
 	run_deploy "$repo"
 	assert_status 0 "deploy with a published image succeeds"
 	assert_calls_contains "deploy pulls the image by its content key" "docker pull --quiet ghcr.io/jairik/clanka-bot/assistant:key-"
-	assert_calls_contains "the pulled image gets the deploy SHA tag" "clanka/assistant:$sha"
+	assert_calls_contains "the pulled image runs under its key tag" "docker tag ghcr.io/jairik/clanka-bot/assistant:key-"
+	assert_calls_contains "the pulled image also gets the deploy SHA tag" "clanka/assistant:$sha"
+	if grep -q '^CLANKA_TAG_ASSISTANT=key-[0-9a-f]\{24\}$' "$SCENARIO/env"; then pass; else fail "compose runs the key tag"; fi
 	assert_calls_not_contains "a published image is never rebuilt" "compose build"
 	assert_calls_order "images are ready before compose up" "docker pull" "docker compose up"
 }
@@ -803,6 +816,7 @@ test_deploy_builds_an_unpublished_image() {
 	local repo
 	repo=$(new_repo)
 	new_scenario
+	: >"$SCENARIO/local-images"
 	touch "$SCENARIO/pull-fails"
 	run_deploy "$repo"
 	assert_status 0 "a missing published image still deploys"
@@ -815,10 +829,44 @@ test_deploy_without_registry_builds_everything() {
 	local repo
 	repo=$(new_repo)
 	new_scenario
+	: >"$SCENARIO/local-images"
 	DEPLOY_REGISTRY="" run_deploy "$repo"
 	assert_status 0 "registry-less deploy succeeds"
 	assert_calls_not_contains "no registry means no pull" "docker pull"
 	assert_calls_contains "every service builds on the host" "docker compose build assistant"
+}
+
+test_deploy_reuses_a_local_key_image() {
+	local repo key sha
+	repo=$(new_repo)
+	sha=$(git -C "$repo" rev-parse --short HEAD)
+	new_scenario
+	key="$(cd "$repo" && STUB_DOCKER_DIR="$SCENARIO" PATH="$STUB_BIN:$PATH" python3 -I scripts/image-keys.py | awk '{print $2}')"
+	printf 'clanka/assistant:key-%s\n' "$key" >"$SCENARIO/local-images"
+	run_deploy "$repo"
+	assert_status 0 "deploy with the image already on the host succeeds"
+	assert_out_contains "deploy says it reuses the local image" "reusing local assistant image"
+	assert_calls_not_contains "an image already on the host is not pulled" "docker pull"
+	assert_calls_not_contains "an image already on the host is not built" "compose build"
+	assert_calls_contains "the reused image is still recorded under the SHA" "docker tag clanka/assistant:key-$key clanka/assistant:$sha"
+	assert_env_contains "compose runs the unchanged key tag" "CLANKA_TAG_ASSISTANT=key-$key"
+}
+
+test_rollback_restores_a_pruned_key_tag() {
+	local repo first short
+	repo=$(new_repo)
+	first=$(git -C "$repo" rev-parse HEAD)
+	short=$(git -C "$repo" rev-parse --short "$first")
+	echo two >"$repo/second.txt"
+	git -C "$repo" add -A
+	git -C "$repo" commit -qm second
+	new_scenario
+	printf 'clanka/assistant:%s\n' "$short" >"$SCENARIO/local-images"
+	printf 'clanka/assistant:%s\n' "$short" >"$SCENARIO/images"
+	run_deploy "$repo" "$first"
+	assert_status 0 "rollback with only the SHA ledger tag succeeds"
+	assert_calls_contains "rollback re-creates the key tag from the SHA tag" "docker tag clanka/assistant:$short clanka/assistant:key-"
+	assert_calls_not_contains "rollback never pulls" "docker pull"
 }
 
 test_same_commit_and_args_give_the_same_key() {
@@ -929,6 +977,8 @@ run_test test_does_not_prune_when_health_fails
 run_test test_deploy_uses_published_images
 run_test test_deploy_builds_an_unpublished_image
 run_test test_deploy_without_registry_builds_everything
+run_test test_deploy_reuses_a_local_key_image
+run_test test_rollback_restores_a_pruned_key_tag
 run_test test_same_commit_and_args_give_the_same_key
 run_test test_deploy_runs_smoke_turn
 run_test test_deploy_smoke_failure_fails_deploy

@@ -12,6 +12,11 @@
 # candidates: `dev`,
 # `arm64-*` and other local tags are never touched. A failed `rmi` warns; an
 # incomplete inventory removes nothing.
+#
+# Compose runs clanka/<service>:key-<content key> (deploy.sh), and the SHA tags
+# are the ledger of what each commit ran. After the SHA sets are pruned, a key
+# tag whose image no surviving SHA tag and no running container uses is
+# removed too; one that is still referenced is left alone.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -145,6 +150,9 @@ fi
 declare -A set_newest=()
 declare -A set_tags=()
 declare -A tag_id=()
+declare -A key_id=() # clanka/<service>:key-<key> -> image ID
+declare -A sha_ref_id=() # every clanka/<service>:<sha> -> image ID
+declare -A gone=() # refs this run removed
 while IFS='|' read -r repo tag id created; do
 	if [[ -z "$repo" || -z "$tag" || -z "$id" || -z "$created" ]]; then
 		[[ -n "$repo" || -n "$tag" ]] &&
@@ -152,8 +160,13 @@ while IFS='|' read -r repo tag id created; do
 		continue
 	fi
 	[[ "$repo" == clanka/* ]] || continue
+	if [[ "$tag" =~ ^key-[0-9a-f]+$ ]]; then
+		key_id["$repo:$tag"]="$id"
+		continue
+	fi
 	[[ "$tag" =~ $SHA_PATTERN ]] || continue
 	ref="$repo:$tag"
+	sha_ref_id["$ref"]="$id"
 	tag_id["$ref"]="$id"
 	set_tags["$tag"]+="$ref"$'\n'
 	if [[ -z "${set_newest[$tag]:-}" || "$created" > "${set_newest[$tag]}" ]]; then
@@ -289,12 +302,33 @@ for sha in "${ordered[@]}"; do
 		[[ -n "$ref" ]] || continue
 		if docker image rmi "$ref"; then
 			removed=$((removed + 1))
+			gone["$ref"]=1
 			log "removed $ref"
 		else
 			failed=$((failed + 1))
 			warn "could not remove $ref; leaving it in place"
 		fi
 	done <<<"${commit_tags[$sha]}"
+done
+
+# Key tags: drop the ones nothing kept still points at. Removing the last tag of
+# an image is what frees its layers.
+declare -A held_id=()
+for ref in "${!sha_ref_id[@]}"; do
+	[[ -n "${gone[$ref]:-}" ]] || held_id["${sha_ref_id[$ref]}"]=1
+done
+for ref in "${!key_id[@]}"; do
+	id="${key_id[$ref]}"
+	if [[ -n "${held_id[$id]:-}" ]] || ref_is_running "$ref" || id_is_running "$id"; then
+		continue
+	fi
+	if docker image rmi "$ref"; then
+		removed=$((removed + 1))
+		log "removed $ref (no kept commit uses it)"
+	else
+		failed=$((failed + 1))
+		warn "could not remove $ref; leaving it in place"
+	fi
 done
 
 # Build cache is shared by the whole Docker daemon and cannot be scoped to this

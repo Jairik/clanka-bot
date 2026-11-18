@@ -6,7 +6,7 @@
 #   sudo scripts/install-deploy-watch.sh --status   show unit and timer state
 #   sudo scripts/install-deploy-watch.sh --uninstall
 #
-# The timer runs scripts/deploy-watch.sh every five minutes as the account that
+# The timer runs scripts/deploy-watch.sh every 30 seconds as the account that
 # owns this checkout, so a plain `git pull` deploy needs no root and no
 # password. The unit is a *system* unit: a system unit with User= does not
 # inherit the account's group memberships, hence the explicit
@@ -41,7 +41,7 @@ Usage: scripts/install-deploy-watch.sh [--user NAME]
        scripts/install-deploy-watch.sh --uninstall
 
 Install (or refresh) clanka-deploy.service + clanka-deploy.timer, which run
-scripts/deploy-watch.sh every five minutes to deploy main when it moves.
+scripts/deploy-watch.sh every 30 seconds to deploy main when it moves.
 Must be run with sudo; the timer runs as the invoking user.
 
 Options:
@@ -140,8 +140,12 @@ install_units() {
 		printf '%s\n' 'Description=Poll main and deploy clanka-bot when it moves'
 		printf '\n%s\n' '[Timer]'
 		printf '%s\n' 'OnBootSec=3min'
-		printf '%s\n' 'OnUnitActiveSec=5min'
-		printf '%s\n' 'RandomizedDelaySec=30'
+		# An idle tick is one git fetch; GitHub is only asked once main has
+		# moved, so polling this often stays far under the 60/hour anonymous
+		# API limit. AccuracySec keeps systemd from coalescing the ticks to
+		# its default one-minute accuracy.
+		printf '%s\n' 'OnUnitActiveSec=30s'
+		printf '%s\n' 'AccuracySec=1s'
 		printf '%s\n' 'Unit=clanka-deploy.service'
 		printf '\n%s\n' '[Install]'
 		printf '%s\n' 'WantedBy=timers.target'
@@ -156,7 +160,7 @@ install_units() {
 	"$SYSTEMCTL" restart "$TIMER_NAME" || die "could not restart $TIMER_NAME"
 
 	cat <<EOF
-deploy-watch-install: installed; main is now polled every 5 minutes.
+deploy-watch-install: installed; main is now polled every 30 seconds.
   next runs      systemctl list-timers $TIMER_NAME
   follow a run   journalctl -u clanka-deploy -f
   one run now    sudo systemctl start clanka-deploy.service

@@ -42,12 +42,22 @@ sudo bash scripts/install-deploy-watch.sh  # opt in to the auto-deploy timer (au
    its upstream says "Already up to date" without moving `HEAD`, so without
    this check the script would build an unpushed local commit. Push or reset
    first; a branch with no upstream is left to `git pull`'s own error.
-5. For every active service, pulls `ghcr.io/jairik/clanka-bot/<service>:key-<key>`
-   and tags it `clanka/<service>:<sha>` (`GIT_SHA` is `git rev-parse --short
-   HEAD`). A service with no published image for its key is built on the host
-   with `docker compose build <service>` instead, with a warning. Then it runs
-   `docker compose up -d --no-build --remove-orphans`, so containers from a
-   different service set are removed.
+5. For every active service, makes `clanka/<service>:key-<key>` exist: an image
+   already on the host under that key is reused, otherwise
+   `ghcr.io/jairik/clanka-bot/<service>:key-<key>` is pulled. A service with no
+   published image for its key is built on the host with
+   `docker compose build <service>` instead, with a warning. Every image is
+   also tagged `clanka/<service>:<sha>` (`GIT_SHA` is `git rev-parse --short
+   HEAD`), the per-commit ledger that rollback and the prune read. Then it
+   exports `CLANKA_TAG_<SERVICE>=key-<key>` and runs
+   `docker compose up -d --no-build --remove-orphans`. Compose recreates a
+   container only when its image reference or config changed, so **a commit
+   that does not touch a service leaves that container running**: a
+   dashboard-only deploy restarts `dashboard-web` and nothing else, and music,
+   the wake word and the loaded models carry on. Containers from a different
+   service set are removed. If the keys cannot be computed, the variables stay
+   unset, Compose falls back to the SHA tag and every service restarts, as
+   before.
 6. Waits up to `DEPLOY_HEALTH_TIMEOUT` seconds (default 180) for every service
    in `docker-compose.yml` to be healthy. A transient `unhealthy` that the
    container entered within `DEPLOY_COLD_START_GRACE` seconds (default 150) of its
@@ -56,7 +66,8 @@ sudo bash scripts/install-deploy-watch.sh  # opt in to the auto-deploy timer (au
    a crash-loop (`exited`/`dead`) is always a failure. On failure it exits
    non-zero, prints `docker compose ps` and the logs of the failing service(s).
 7. After the health wait, runs `scripts/prune-images.sh` best effort to
-   reclaim old SHA-tagged image sets. A prune failure warns and never fails an
+   reclaim old image sets (SHA tags, then key tags nothing kept still uses). A
+   prune failure warns and never fails an
    otherwise healthy deploy; the policy is under
    [Image retention and disk space](#image-retention-and-disk-space).
 8. Because the service list comes from Compose, the script keeps working as the
@@ -318,10 +329,12 @@ docker compose ps dashboard-web
 The assistant reaches the artifact over the internal Compose network and keeps
 serving the document and assets on the Dashboard origin, so identity, Host and
 CSP checks stay where they are. `X-Dashboard-UI: artifact` and
-`X-Dashboard-UI-Version: <sha>` on the response say which copy a page came from.
-The version is the build the artifact reports about itself, so after a `--no-deps`
-rollback of `dashboard-web` the header shows the old SHA without restarting the
-assistant. To go back to the copy embedded in the running assistant:
+`X-Dashboard-UI-Version: <tag>` on the response say which copy a page came from.
+The tag is the image tag the artifact runs: `key-<content key>` after
+`deploy.sh` (it changes only when `web/` does, so the container is not
+recreated on every commit), or the SHA after a bare `make web-image`. It is the
+build the artifact reports about itself, so after a `--no-deps` rollback of
+`dashboard-web` the header shows the old tag without restarting the assistant. To go back to the copy embedded in the running assistant:
 
 ```sh
 docker compose stop dashboard-web
@@ -695,6 +708,10 @@ same pass by hand. The policy is deliberately narrow:
 
 - Only `clanka/*` tags matching a commit SHA (`^[0-9a-f]{7,40}$`) are
   candidates. `dev`, `arm64-*` and other local tags are never touched.
+- `clanka/*:key-<key>` tags (what Compose runs) follow the SHA sets: after the
+  SHA pass, a key tag whose image no surviving SHA tag and no running container
+  uses is removed. An unchanged service's image is shared by many commits' SHA
+  tags, so it stays as long as any kept commit names it.
 - The deployed SHA (`GIT_SHA`), the newest `DEPLOY_KEEP_IMAGES` **commits**
   (default `3`) and any `DEPLOY_PINNED_SHAS` survive. The window counts distinct
   commits, not tags: a deploy that leaves a commit tagged several ways (a 7-char

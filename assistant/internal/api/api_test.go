@@ -2,6 +2,7 @@ package api_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"log/slog"
 	"net"
@@ -292,5 +293,34 @@ func TestDebugTranscriptFeedsTheActivityObserver(t *testing.T) {
 	}
 	if got.Detail == nil || got.Detail.Reply == "" || len(got.Detail.Calls) != 1 {
 		t.Fatalf("display detail = %+v", got.Detail)
+	}
+}
+
+func TestBusyReportsIdleWithoutAProbe(t *testing.T) {
+	handler, _ := newTestServer(t)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/busy", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if got := strings.TrimSpace(rec.Body.String()); got != `{"busy":false,"reasons":[]}` {
+		t.Fatalf("body = %s", got)
+	}
+}
+
+func TestBusyReportsTheProbeReasons(t *testing.T) {
+	handler, _ := newTestServerWith(t, api.WithBusy(func(context.Context) []string {
+		return []string{"music"}
+	}))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/busy", nil))
+	if got := strings.TrimSpace(rec.Body.String()); got != `{"busy":true,"reasons":["music"]}` {
+		t.Fatalf("body = %s", got)
+	}
+
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/busy", nil))
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("POST status = %d, want 405", rec.Code)
 	}
 }

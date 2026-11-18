@@ -241,6 +241,31 @@ test_retention_keeps_deployed_and_newest_sets() {
 	assert_calls_not_contains "another unrelated repository is never touched" "redis"
 }
 
+test_key_tags_follow_their_commit_sets() {
+	new_case
+	GIT_SHA_TEST=bbbbbbb
+	export DEPLOY_KEEP_IMAGES=1
+	# tts is unchanged across both commits: one image, two SHA tags, one key.
+	add_image clanka/tts ccccccc 111111111111 "2026-11-01 10:00:00 +0000 UTC"
+	add_image clanka/tts bbbbbbb 111111111111 "2026-11-01 10:00:00 +0000 UTC"
+	add_image clanka/tts key-aaaa 111111111111 "2026-11-01 10:00:00 +0000 UTC"
+	# assistant changed: the old key is only held by the pruned commit.
+	add_image clanka/assistant ccccccc 222222222222 "2026-11-01 10:00:00 +0000 UTC"
+	add_image clanka/assistant key-0d 222222222222 "2026-11-01 10:00:00 +0000 UTC"
+	add_image clanka/assistant bbbbbbb 333333333333 "2026-11-02 10:00:00 +0000 UTC"
+	add_image clanka/assistant key-0e 333333333333 "2026-11-02 10:00:00 +0000 UTC"
+	# A key tag a container still runs survives even with no SHA tag.
+	add_image clanka/stt key-0f 444444444444 "2026-10-01 10:00:00 +0000 UTC"
+	set_running clanka/stt:key-0f
+	run_prune
+	assert_status 0 "a prune with key tags succeeds"
+	assert_calls_contains "the old commit's SHA tags go" "docker image rmi clanka/assistant:ccccccc"
+	assert_calls_contains "an orphaned key tag goes" "docker image rmi clanka/assistant:key-0d"
+	assert_calls_not_contains "a key held by the deployed commit stays" "rmi clanka/assistant:key-0e"
+	assert_calls_not_contains "an unchanged service's key stays" "rmi clanka/tts:key-aaaa"
+	assert_calls_not_contains "a running key tag stays" "rmi clanka/stt:key-0f"
+}
+
 test_current_sha_can_be_a_full_sha_and_newest() {
 	new_case
 	GIT_SHA_TEST=7777777777777777777777777777777777777777
@@ -560,6 +585,7 @@ run_test() {
 run_test test_help
 run_test test_rejects_unknown_argument
 run_test test_retention_keeps_deployed_and_newest_sets
+run_test test_key_tags_follow_their_commit_sets
 run_test test_current_sha_can_be_a_full_sha_and_newest
 run_test test_zero_keep_retains_only_the_deployed_set
 run_test test_keeps_a_whole_set_used_by_a_running_container

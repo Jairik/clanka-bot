@@ -3,8 +3,10 @@
 #
 #   scripts/deploy.sh            pull the current branch, fetch the arm64
 #                                images CI published for it (building any that
-#                                are missing), tag them with the SHA, start the
-#                                stack and wait for health
+#                                are missing), tag them by content key (and
+#                                the SHA, for rollback), start the stack and
+#                                wait for health. Only services whose image or
+#                                config changed are recreated.
 #   scripts/deploy.sh <commit>   check that commit out and reuse the images
 #                                already built for it (no rebuild)
 #
@@ -40,9 +42,11 @@ Usage: scripts/deploy.sh [SHA]
 
 Without a SHA: pull the current branch with --ff-only, pull the images CI
 published for this checkout (matched by content key, scripts/image-keys.py),
-tag them clanka/<service>:<short SHA>, build only the ones that are not
-published, start the stack, wait for every health check and prune old
-SHA-tagged image sets (best effort; see scripts/prune-images.sh).
+run each as clanka/<service>:key-<key> (also tagged with the short SHA for
+rollback), reuse any already on this host, build only the ones that are not
+published, start the stack, wait for every health check and prune old image
+sets (best effort; see scripts/prune-images.sh). Compose recreates only the
+services whose image or config changed; the rest keep running.
 A branch with commits that are not on its upstream is refused: only pushed
 commits are deployed.
 
@@ -248,42 +252,84 @@ ensure_receiver() {
 		die "could not prepare the Soloist receiver"
 }
 
-# Make clanka/<service>:<sha> exist for every active service that builds an
-# image. Each one is pulled from the registry by its content key, so a commit
-# that did not touch a service reuses the image CI already published (and a
-# pull of an unchanged image moves no layers). A service whose key is not
-# published (CI still running, a Pi-only .env value, no network) is built here
-# instead; a missing registry is never a failed deploy.
+# Content keys of this checkout, one per service that builds an image
+# (scripts/image-keys.py). Filled by export_image_tags.
+declare -A KEY_OF=()
+
+# The Compose variable that names a service's image tag.
+tag_var() {
+	local svc=$1
+	svc="${svc^^}"
+	printf 'CLANKA_TAG_%s\n' "${svc//-/_}"
+}
+
+# Tag every image by its content key instead of the commit: Compose recreates a
+# container whenever its image reference changes, so a SHA tag restarted all
+# eight services on every deploy. With CLANKA_TAG_<SERVICE>=key-<key> a commit
+# that does not touch a service leaves that container (and its audio, its
+# Spotify session, its warm model) running. If the keys cannot be computed the
+# variables stay unset and Compose falls back to the SHA, as before.
+export_image_tags() {
+	local keys_out svc key var
+	KEY_OF=()
+	if ! keys_out="$(python3 -I "$ROOT/scripts/image-keys.py" 2>&1)"; then
+		warn "could not compute image keys (${keys_out:-no output}); tagging by commit, so every service restarts"
+		return 0
+	fi
+	while read -r svc key; do
+		[[ -n "$svc" && -n "$key" ]] || continue
+		KEY_OF[$svc]=$key
+		var="$(tag_var "$svc")"
+		export "$var=key-$key"
+	done <<<"$keys_out"
+}
+
+# The tag Compose will run a service from: its key tag, or the SHA fallback.
+run_ref() {
+	local svc=$1 sha=$2
+	if [[ -n "${KEY_OF[$svc]:-}" ]]; then
+		printf 'clanka/%s:key-%s\n' "$svc" "${KEY_OF[$svc]}"
+	else
+		printf 'clanka/%s:%s\n' "$svc" "$sha"
+	fi
+}
+
+# Make the image Compose will run exist for every active service that builds
+# one. An image already on this host under its key is reused as is (no pull,
+# no network). Otherwise it is pulled from the registry by its content key, and
+# a service whose key is not published (CI still running, a Pi-only .env value,
+# no network) is built here instead; a missing registry is never a failed
+# deploy. Every image also gets clanka/<service>:<sha>, the per-commit ledger
+# that rollback and prune-images.sh read.
 prepare_images() {
-	local sha=$1 keys_out svc key ref target
+	local sha=$1 svc ref target
 	local -a active local_build=()
-	local -A key_of=()
 	mapfile -t active < <(docker compose config --services 2>/dev/null)
 	((${#active[@]} > 0)) || die "could not list the compose services"
 
-	if [[ -z "$REGISTRY" ]]; then
-		log "DEPLOY_REGISTRY is empty; building every image on this host"
-		local_build=("${active[@]}")
-	elif ! keys_out="$(python3 -I "$ROOT/scripts/image-keys.py" 2>&1)"; then
-		warn "could not compute image keys (${keys_out:-no output}); building every image on this host"
+	if ((${#KEY_OF[@]} == 0)); then
+		log "no image keys; building every image on this host"
 		local_build=("${active[@]}")
 	else
-		while read -r svc key; do
-			[[ -n "$svc" ]] && key_of[$svc]=$key
-		done <<<"$keys_out"
 		for svc in "${active[@]}"; do
-			key="${key_of[$svc]:-}"
 			# No build section: Compose pulls the service's own image.
-			[[ -n "$key" ]] || continue
-			ref="$REGISTRY/$svc:key-$key"
-			target="clanka/$svc:$sha"
+			[[ -n "${KEY_OF[$svc]:-}" ]] || continue
+			target="$(run_ref "$svc" "$sha")"
+			if docker image inspect "$target" >/dev/null 2>&1; then
+				log "reusing local $svc image (key-${KEY_OF[$svc]})"
+				continue
+			fi
+			if [[ -z "$REGISTRY" ]]; then
+				local_build+=("$svc")
+				continue
+			fi
+			ref="$REGISTRY/$svc:key-${KEY_OF[$svc]}"
 			if docker pull --quiet "$ref" >/dev/null 2>&1 && docker tag "$ref" "$target"; then
-				# Drop the registry tag; the image stays under the SHA tag,
-				# which prune-images.sh manages.
+				# Drop the registry tag; the key and SHA tags keep the image.
 				docker image rm "$ref" >/dev/null 2>&1 || true
-				log "using published $svc image (key-$key)"
+				log "using published $svc image (key-${KEY_OF[$svc]})"
 			else
-				warn "no published $svc image for key-$key; building it on this host"
+				warn "no published $svc image for key-${KEY_OF[$svc]}; building it on this host"
 				local_build+=("$svc")
 			fi
 		done
@@ -295,6 +341,25 @@ prepare_images() {
 			die "docker compose build failed"
 		fi
 	fi
+
+	for svc in "${!KEY_OF[@]}"; do
+		printf '%s\n' "${active[@]}" | grep -qxF -- "$svc" || continue
+		docker tag "$(run_ref "$svc" "$sha")" "clanka/$svc:$sha" ||
+			die "could not tag clanka/$svc:$sha"
+	done
+}
+
+# A rollback runs the key tags of the old commit. Recreate any that a prune
+# removed from the SHA ledger, which always outlives them.
+restore_key_tags() {
+	local sha=$1 svc target
+	for svc in "${!KEY_OF[@]}"; do
+		target="$(run_ref "$svc" "$sha")"
+		docker image inspect "$target" >/dev/null 2>&1 && continue
+		if docker image inspect "clanka/$svc:$sha" >/dev/null 2>&1; then
+			docker tag "clanka/$svc:$sha" "$target" || true
+		fi
+	done
 }
 
 # Reclaim old SHA-tagged images after a healthy start. Best effort: a prune
@@ -381,7 +446,9 @@ main() {
 			die "could not check out $requested"
 		sha="$(git rev-parse --short HEAD)"
 		export GIT_SHA="$sha"
-		log "reusing images tagged clanka/<service>:$sha"
+		export_image_tags
+		restore_key_tags "$sha"
+		log "reusing the images deployed for $sha"
 
 		# Fail before touching containers when a rollback image is absent.
 		image=""
@@ -425,8 +492,9 @@ main() {
 			export COMPOSE_PROFILES=spotify
 			ensure_receiver
 		fi
+		export_image_tags
 		prepare_images "$sha"
-		log "starting clanka/<service>:$sha"
+		log "starting $sha; services whose image and config are unchanged keep running"
 		if ! docker compose up -d --no-build --remove-orphans; then
 			printf -- '--- docker compose ps ---\n' >&2
 			docker compose ps >&2 || true

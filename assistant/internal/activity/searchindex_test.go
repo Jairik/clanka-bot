@@ -116,6 +116,7 @@ func bestQueryTime(t *testing.T, history *activity.History, text string, runs in
 // real match still returns the same rows, and the cost does not grow with the
 // window.
 func TestSearchIsBoundedOnTheRetainedWindow(t *testing.T) {
+	skipScaleUnderRace(t)
 	// One rare marker near the oldest end, so the match cannot come from a
 	// newest-page shortcut.
 	history, _ := seedWindow(t, largeWindowRows, fillerHaystack, map[int]string{5: "weather needle"})
@@ -305,6 +306,7 @@ func TestSearchMatchesTheSameRowsInTheSameOrder(t *testing.T) {
 // read and the cursor together, which is where a bounded candidate set could
 // silently drop a row.
 func TestSearchMatchesTheRingRuleAcrossFiltersAndPages(t *testing.T) {
+	skipScaleUnderRace(t)
 	ctx := context.Background()
 	history, _ := openHistory(t, activity.HistoryOptions{})
 	base := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
@@ -806,6 +808,7 @@ func TestSearchIndexBackfillIsIdempotent(t *testing.T) {
 // peak haystack. The test measures the bytes the index's shadow tables actually
 // occupy (dbstat) and the database's free pages.
 func TestSearchIndexIsReclaimedAfterATrim(t *testing.T) {
+	skipScaleUnderRace(t)
 	ctx := context.Background()
 	const rows = 4000
 	st := openStore(t)
@@ -861,6 +864,7 @@ func TestSearchIndexIsReclaimedAfterATrim(t *testing.T) {
 // policy moves that work to the maintenance path, so the p99 stays close to the
 // index-free write it replaces.
 func TestSearchIndexKeepsTheWritePathBounded(t *testing.T) {
+	skipScaleUnderRace(t)
 	history, _ := seedWindow(t, largeWindowRows, fillerHaystack, nil)
 	warmSearchIndex(t, history)
 	base := time.Now().Add(time.Duration(largeWindowRows) * time.Minute)
@@ -989,5 +993,17 @@ func seedRawRows(t *testing.T, st *store.Store, rows, haystack int) {
 			'calendar.get_events', 'ok', ? || ' ' || i
 		FROM n`, rows, base, filler.String()); err != nil {
 		t.Fatalf("seed rows: %v", err)
+	}
+}
+
+// skipScaleUnderRace skips a scale test under the race detector. These tests
+// seed thousands of rows through the pure-Go SQLite driver, which the detector
+// slows about 27x, and they check size and timing bounds rather than
+// concurrency. CI runs this package a second time without -race, so they still
+// gate every change.
+func skipScaleUnderRace(t *testing.T) {
+	t.Helper()
+	if raceEnabled {
+		t.Skip("scale test; runs in the no-race pass (go test ./internal/activity)")
 	}
 }

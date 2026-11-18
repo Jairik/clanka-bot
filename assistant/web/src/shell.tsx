@@ -3,7 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Button, Drawer, Popover, SearchField } from "@heroui/react";
 import {
-  Activity, AlarmClock, Bell, Bot, HeartPulse, KeyRound, Lamp, Lightbulb, MessageSquare, Mic, MicOff, Minus, MoreHorizontal, Music, PanelLeftClose, PanelLeftOpen, Plus,
+  Activity, AlarmClock, Bell, Bot, HeartPulse, KeyRound, Lightbulb, MessageSquare, Mic, MicOff, Minus, MoreHorizontal, Music, PanelLeftClose, PanelLeftOpen, Plus,
   Settings, Smile, StickyNote, Volume, Volume1, Volume2, VolumeX, Waves, Waypoints, type LucideIcon,
 } from "lucide-react";
 import { APIVersionMismatch, getJSON, navigate, postForm, restoreKey, useHash, useLocation } from "./api";
@@ -17,11 +17,11 @@ import { snapVolume, VOL_STEP } from "./volume";
 import { Logo } from "./logo";
 import { useVisiblePolling } from "./visibility";
 
-export type PageId = "home" | "activity" | "alerts" | "notes" | "health" | "sounds" | "voices" | "personas" | "voice-samples" | "spotify" | "lights" | "monster" | "secrets" | "routes" | "hermes" | "settings";
+export type PageId = "home" | "activity" | "alerts" | "notes" | "health" | "sounds" | "voices" | "personas" | "voice-samples" | "spotify" | "lights" | "secrets" | "routes" | "hermes" | "settings";
 
 /**
- * Rail sections, three pages each, so the eye can take in a group at a glance.
- * Settings sits on its own at the foot of the rail.
+ * Rail sections group related pages, so the eye can take in a group at a
+ * glance. Settings sits on its own at the foot of the rail.
  */
 export const NAV_GROUPS = ["Assistant", "Voice", "Home", "System", "Setup"] as const;
 export type NavGroup = (typeof NAV_GROUPS)[number] | "Footer";
@@ -34,8 +34,7 @@ export const PAGES: { id: PageId; path: string; title: string; blurb: string; ic
   { id: "personas", path: "/personas", title: "Personas & common phrases", blurb: "Manage each persona’s voice, personality, and spoken replies.", icon: Smile, group: "Voice" },
   { id: "sounds", path: "/sounds", title: "Sounds", blurb: "The sound library, Cue roles and Ring behaviour.", icon: Bell, group: "Voice" },
   { id: "spotify", path: "/spotify", title: "Spotify", blurb: "Connect pairing for playback and Web API auth for control.", icon: Music, group: "Home" },
-  { id: "lights", path: "/lights", title: "Lights", blurb: "Bluetooth controllers: power, colour, brightness and modes.", icon: Lightbulb, group: "Home" },
-  { id: "monster", path: "/monster", title: "Monster lights", blurb: "Monster Smart Lighting: power, white, colour and scenes over the cloud.", icon: Lamp, group: "Home" },
+  { id: "lights", path: "/lights", title: "Lights", blurb: "Room Bluetooth controllers and the PC / desk Monster lights: power, brightness, colour, white and scenes.", icon: Lightbulb, group: "Home" },
   { id: "activity", path: "/activity", title: "Activity", blurb: "Every request that reached the assistant, newest first.", icon: Activity, group: "System" },
   { id: "health", path: "/health", title: "Health", blurb: "Each Compose service, the location, and every Tool module check.", icon: HeartPulse, group: "System" },
   { id: "routes", path: "/routes", title: "Routes", blurb: "Which path answers each request, and which Tools stay on the Pi.", icon: Waypoints, group: "System" },
@@ -44,10 +43,12 @@ export const PAGES: { id: PageId; path: string; title: string; blurb: string; ic
   { id: "hermes", path: "/hermes", title: "Hermes", blurb: "The Tool surface and accounts Hermes would get once it is installed.", icon: Bot, group: "Setup" },
   { id: "settings", path: "/settings", title: "Settings", blurb: "Tools, wording, quiet hours and every other live setting.", icon: Settings, group: "Footer" },
 ];
-// Legacy bookmarks open the shared persona page.
+// Legacy bookmarks open the pages that replaced them: the phrasebook became
+// Personas, and the Monster page became part of Lights. The address is kept.
+const LEGACY_PAGES: Record<string, string> = { "/phrasebook": "/personas", "/monster": "/lights" };
 export const pageFor = (path: string) => {
   const clean = path.replace(/\/+$/, "") || "/";
-  return PAGES.find((p) => p.path === (clean === "/phrasebook" ? "/personas" : clean));
+  return PAGES.find((p) => p.path === (LEGACY_PAGES[clean] ?? clean));
 };
 
 // ---------- session (who, and which optional services are wired) ----------

@@ -1,7 +1,7 @@
 // Thin helpers over HeroUI v3 (React Aria underneath). Anything that is just a
 // HeroUI component is imported from @heroui/react at the call site; these exist
 // only where the dashboard repeats the same composition.
-import { Chip, Disclosure, Focusable, Slider, Tooltip } from "@heroui/react";
+import { Button, Chip, Disclosure, Focusable, Slider, Tooltip } from "@heroui/react";
 import { ChevronRight } from "lucide-react";
 import { clsx, type ClassValue } from "clsx";
 import { twMerge } from "tailwind-merge";
@@ -170,6 +170,32 @@ export function Notice({ flash, error, onDismiss }: { flash?: string; error?: st
         <button onClick={onDismiss} className="-mt-0.5 text-xs text-muted hover:text-foreground">
           Dismiss
         </button>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The first read of one section: say it is loading, or say why it failed and
+ * offer the same read again. Sections use it independently, so one slow
+ * transport never hides the other's controls.
+ */
+export function InitialRead({
+  error, retry, className,
+}: { error?: string; retry?: () => void | Promise<void>; className?: string }) {
+  return (
+    <div className={cn("py-3 text-sm text-muted", className)}>
+      {error ? (
+        <>
+          <Notice error={error} />
+          {retry && (
+            <Button variant="secondary" onPress={() => void retry()}>
+              Retry
+            </Button>
+          )}
+        </>
+      ) : (
+        <p role="status">Loading…</p>
       )}
     </div>
   );

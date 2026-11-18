@@ -1,10 +1,12 @@
-// The Monster page reads the cloud view and posts each command as JSON, then
-// reloads, because the cloud is the only source of truth.
+// The Monster half of the unified Lights page: it reads the cloud view and
+// posts each command as JSON, then reloads, because the cloud is the only
+// source of truth. The Bluetooth half is stubbed quiet on every render, since
+// the one page reads both endpoints.
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it } from "vitest";
-import { MonsterPage } from "../pages/Monster";
-import { json, stubFetch } from "./harness";
+import { LightsPage } from "../pages/Lights";
+import { json, stubFetch, type Route } from "./harness";
 
 const device = {
   dsn: "DSN1",
@@ -26,23 +28,28 @@ let gets: number;
 
 const configured = (devices = [device]) => ({ configured: true, status: `${devices.length} light`, devices });
 
+/** The Bluetooth view is present but quiet, so only the cloud half is under test. */
+const stub = (monster: Route) =>
+  stubFetch({
+    "/api/ui/lights": () => json({ enabled: false, status: "", devices: [] }),
+    "/api/ui/monster": monster,
+  });
+
 beforeEach(() => {
   posts = [];
   gets = 0;
-  stubFetch({
-    "/api/ui/monster": async (init) => {
-      if (init?.method === "POST") {
-        posts.push(JSON.parse(String(init.body)));
-        return json({ ok: true });
-      }
-      gets++;
-      return json(configured());
-    },
+  stub(async (init) => {
+    if (init?.method === "POST") {
+      posts.push(JSON.parse(String(init.body)));
+      return json({ ok: true });
+    }
+    gets++;
+    return json(configured());
   });
 });
 
 it("shows a light and sends power, then reloads the view", async () => {
-  render(<MonsterPage />);
+  render(<LightsPage />);
   await screen.findByText("Lounge bar");
   expect(screen.getByText("M-LB-1")).toBeTruthy();
   expect(gets).toBe(1);
@@ -53,7 +60,7 @@ it("shows a light and sends power, then reloads the view", async () => {
 });
 
 it("sends the colour picked in the colour input", async () => {
-  render(<MonsterPage />);
+  render(<LightsPage />);
   await screen.findByText("Lounge bar");
 
   fireEvent.change(screen.getByLabelText("Lounge bar colour"), { target: { value: "#ff0000" } });
@@ -62,14 +69,12 @@ it("sends the colour picked in the colour input", async () => {
 });
 
 it("shows a refused write and still reloads the view", async () => {
-  stubFetch({
-    "/api/ui/monster": async (init) => {
-      if (init?.method === "POST") return new Response("Monster rejected the email or password.", { status: 502 });
-      gets++;
-      return json(configured());
-    },
+  stub(async (init) => {
+    if (init?.method === "POST") return new Response("Monster rejected the email or password.", { status: 502 });
+    gets++;
+    return json(configured());
   });
-  render(<MonsterPage />);
+  render(<LightsPage />);
   await screen.findByText("Lounge bar");
 
   await userEvent.click(screen.getByRole("button", { name: "Lounge bar on" }));
@@ -78,27 +83,23 @@ it("shows a refused write and still reloads the view", async () => {
 });
 
 it("shows a configured account's cloud error instead of an empty account", async () => {
-  stubFetch({
-    "/api/ui/monster": () =>
-      json({
-        configured: true,
-        status: "",
-        error: "Monster rejected the email or password. Replace them on the Secrets page.",
-        devices: [],
-      }),
-  });
-  render(<MonsterPage />);
+  stub(() =>
+    json({
+      configured: true,
+      status: "",
+      error: "Monster rejected the email or password. Replace them on the Secrets page.",
+      devices: [],
+    }),
+  );
+  render(<LightsPage />);
 
   await screen.findByText(/Monster rejected the email or password/);
   expect(screen.queryByText(/No Monster lights on this account/)).toBeNull();
 });
 
 it("points at the Secrets page when the account is not set up", async () => {
-  stubFetch({
-    "/api/ui/monster": () =>
-      json({ configured: false, status: "Add MONSTER_EMAIL and MONSTER_PASSWORD on the Secrets page.", devices: [] }),
-  });
-  render(<MonsterPage />);
+  stub(() => json({ configured: false, status: "Add MONSTER_EMAIL and MONSTER_PASSWORD on the Secrets page.", devices: [] }));
+  render(<LightsPage />);
 
   const link = await screen.findByRole("link", { name: "Secrets" });
   expect(link.getAttribute("href")).toBe("/secrets");

@@ -19,6 +19,8 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/tools/audiocontrol"
 	"github.com/Jairik/clanka-bot/assistant/tools/clock"
 	"github.com/Jairik/clanka-bot/assistant/tools/github"
+	lightsmodule "github.com/Jairik/clanka-bot/assistant/tools/lights"
+	monstermodule "github.com/Jairik/clanka-bot/assistant/tools/monster"
 	"github.com/Jairik/clanka-bot/assistant/tools/timer"
 	"github.com/Jairik/clanka-bot/assistant/tools/weather"
 	"github.com/Jairik/clanka-bot/assistant/tools/web"
@@ -448,4 +450,25 @@ func TestGitHubMissingTokenAppearsInModuleHealth(t *testing.T) {
 		return
 	}
 	t.Fatal("the module list returned no github health check")
+}
+
+// TestLightsModuleReachesTheRegisteredMonsterModule pins the group seam: the
+// BLE module must call the same Monster module NewSet registers, or a general
+// command would silently control the room lights only.
+func TestLightsModuleReachesTheRegisteredMonsterModule(t *testing.T) {
+	set := tools.NewSet()
+	lightsModule, ok := set.Module("lights").(*lightsmodule.Module)
+	if !ok || lightsModule == nil {
+		t.Fatal("lights module is not in the set")
+	}
+	monsterModule, ok := set.Module("monster").(*monstermodule.Module)
+	if !ok || monsterModule == nil {
+		t.Fatal("monster module is not in the set")
+	}
+	if lightsModule.PC == nil {
+		t.Fatal("lights.PC is nil: general commands would never reach the PC light")
+	}
+	if lightsModule.PC != monsterModule {
+		t.Fatalf("lights.PC = %T %p, want the registered monster module %p", lightsModule.PC, lightsModule.PC, monsterModule)
+	}
 }

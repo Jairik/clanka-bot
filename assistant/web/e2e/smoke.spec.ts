@@ -28,12 +28,16 @@ const ROUTES = [
  * Open a route and wait until the shell's session view and the chat's activity
  * view have answered. Those two requests happen on every route, so an
  * assertion after this cannot race the first render; the live stream is held
- * open, so Playwright's "network idle" is never reached. Errors are left to the
+ * open, so Playwright's "network idle" is never reached. The Lights page reads
+ * two transports independently, so both of its views are awaited too (the
+ * legacy /monster address is the same page). Errors are left to the
  * route/response collector in watch(), which names the failing request instead
  * of leaving a timeout.
  */
 async function settle(page: Page, route: string) {
-  const answers = ["/api/ui/session", "/api/ui/activity"].map((path) =>
+  const paths = ["/api/ui/session", "/api/ui/activity"];
+  if (route === "/lights" || route === "/monster") paths.push("/api/ui/lights", "/api/ui/monster");
+  const answers = paths.map((path) =>
     page.waitForResponse((res) => res.request().method() === "GET" && new URL(res.url()).pathname === path),
   );
   await page.goto(route);
@@ -63,6 +67,18 @@ test.describe("routes", () => {
       expect(problems).toEqual([]);
     });
   }
+});
+
+test("the legacy Monster address is the Lights page, with one Lights entry", async ({ page, isMobile }) => {
+  test.skip(isMobile, "the rail navigation is desktop-only");
+  await settle(page, "/monster");
+  await expect(page.getByRole("heading", { level: 1 })).toHaveText("Lights");
+
+  // The two lighting pages became one: the rail lists it once and no longer
+  // has a separate Monster entry.
+  const pages = page.getByRole("navigation", { name: "Pages" });
+  await expect(pages.getByRole("link", { name: "Lights", exact: true })).toHaveCount(1);
+  await expect(pages.getByRole("link", { name: "Monster lights" })).toHaveCount(0);
 });
 
 test("the collector catches a broken page", async ({ page }) => {
@@ -173,8 +189,8 @@ test("a first visit warms only the current page's neighbour", async ({ page, isM
   });
   await settle(page, "/");
 
-  // Home's only neighbour is Alerts (routes.ts railOrder). Settings, Voice
-  // Samples and Monster must not download until the user asks for them.
+  // Home's only neighbour is Alerts (routes.ts railOrder). Settings and Voice
+  // Samples must not download until the user asks for them.
   await expect.poll(() => chunks.length, { timeout: 10_000 }).toBeGreaterThan(0);
   expect(chunks.filter((file) => !file.startsWith("Alerts-"))).toEqual([]);
 

@@ -92,6 +92,9 @@ type Entry struct {
 	TotalTokens      int64
 	CachedTokens     int64
 	Steps            int
+	// Conversation is how an Agent turn used the longer budget: "mode" while
+	// conversation mode was on, "cue" for a cue-word turn, or empty.
+	Conversation string
 	// Summary is set when retention has trimmed this row's long text.
 	Summary bool
 	// Cursor is the durable history position this row was read at. It is empty
@@ -187,6 +190,7 @@ func (s *Store) Observe(completed latency.Completed) {
 		TotalTokens:      completed.TotalTokens,
 		CachedTokens:     completed.CachedTokens,
 		Steps:            completed.Steps,
+		Conversation:     completed.Conversation,
 	}
 	if completed.HasResponse {
 		ms := completed.Response.Milliseconds()

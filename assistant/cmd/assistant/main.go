@@ -26,6 +26,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/completion"
 	"github.com/Jairik/clanka-bot/assistant/internal/config"
 	"github.com/Jairik/clanka-bot/assistant/internal/connections"
+	"github.com/Jairik/clanka-bot/assistant/internal/conversation"
 	"github.com/Jairik/clanka-bot/assistant/internal/dashboard"
 	"github.com/Jairik/clanka-bot/assistant/internal/embed"
 	"github.com/Jairik/clanka-bot/assistant/internal/equalizer"
@@ -563,6 +564,13 @@ func run() error {
 	nameThreshold := namematch.NewThreshold(baseCfg.NameMatch.Threshold)
 	embedClient := embed.NewClient(cfg.Embed.URL, cfg.Embed.Model)
 	names := namematch.New(embedClient, namematch.Config{Threshold: nameThreshold.Get})
+	// Conversation mode is an in-memory latch shared by its Tools, the Agent
+	// path's per-turn budget and the Follow-up window. A restart ends it, like
+	// the Follow-up window itself; the idle window is read live.
+	conversationState := conversation.NewState(time.Now, func() time.Duration {
+		return time.Duration(settingsSvc.Int(conversation.ModeIdleSecondsKey)) * time.Second
+	})
+
 	deps := tool.Deps{
 		Logger:        logger,
 		Location:      locSvc.Current,
@@ -580,13 +588,14 @@ func run() error {
 		Embed: embedClient,
 		// The live settings service is created below; a module reads it per
 		// action through this late-bound closure and never snapshots it.
-		Settings:  func() *settings.Service { return settingsSvc },
-		Quiet:     quietSvc,
-		Voices:    voiceSvc,
-		Notify:    notifySvc,
-		LastReply: lastReplyStore,
-		Status:    systemStatus.Status,
-		History:   conversationHistory,
+		Settings:     func() *settings.Service { return settingsSvc },
+		Quiet:        quietSvc,
+		Voices:       voiceSvc,
+		Notify:       notifySvc,
+		LastReply:    lastReplyStore,
+		Status:       systemStatus.Status,
+		History:      conversationHistory,
+		Conversation: conversationState,
 	}
 	if speechSpeaker != nil {
 		deps.Speaker = speechSpeaker
@@ -698,6 +707,9 @@ func run() error {
 		}
 		return nil
 	})))
+	// Conversation mode's cue words and windows are live too, so a Dashboard
+	// change applies to the next turn.
+	defs = append(defs, conversation.Definitions()...)
 	defs = append(defs, equalizer.Definitions()...)
 	// The Hermes page's per-account grants are ordinary live settings, so they
 	// appear on Settings too and a reset revokes access.
@@ -926,6 +938,12 @@ func run() error {
 				MaxCompletionTokens: settingsSvc.Int(agent.MaxCompletionTokensKey),
 			}
 		},
+		// A cue word lifts the budget for one turn; conversation mode lifts it
+		// for every turn until it ends. The latch also restarts its idle clock
+		// on a mode turn, which is the only per-turn state it keeps.
+		ConversationFunc: func(utterance string) string {
+			return conversationState.Turn(utterance, settingsSvc.Strings(conversation.CueWordsKey))
+		},
 		Headers:          provider.Headers,
 		Routing:          provider.Routing,
 		SystemPrompt: cfg.Agent.SystemPrompt,
@@ -994,6 +1012,9 @@ func run() error {
 		// Keep the previous completed reply and its provenance so
 		// assistant.repeat and notify.phone can resolve it.
 		pipeline.WithLastReply(lastReplyStore),
+		// Every request counts as a turn for conversation mode's idle clock,
+		// not just an Agent turn.
+		pipeline.WithConversationTurn(conversationState.Touch),
 		// Morning briefing: one spoken reply composed above the Tool registry
 		// from the weather, alarms, timers, reminders and to-do list.
 		pipeline.WithBriefing(briefing.New(registry, time.Now, logger)),
@@ -1220,6 +1241,12 @@ func run() error {
 					if err != nil || present {
 						return 0
 					}
+				}
+				// Conversation mode keeps the window open long enough for a
+				// reply without the wake word; the default window applies
+				// again as soon as the mode ends.
+				if conversationState.Active() {
+					return time.Duration(settingsSvc.Int(conversation.ModeFollowUpSecondsKey)) * time.Second
 				}
 				return time.Duration(settingsSvc.Int("conversation.follow_up_seconds")) * time.Second
 			})

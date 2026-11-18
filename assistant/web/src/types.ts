@@ -473,6 +473,10 @@ export type Request = {
   TotalTokens: number;
   CachedTokens: number;
   AgentSteps: number;
+  // ConversationLabel is how this turn used the longer budget, in plain
+  // words; empty for a default-budget turn.
+  Conversation: string;
+  ConversationLabel: string;
 };
 
 export type RingKind = {

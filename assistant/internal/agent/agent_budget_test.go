@@ -54,6 +54,54 @@ func TestStreamingRequestCarriesTheCompletionTokenCap(t *testing.T) {
 	}
 }
 
+// truncatedToolCallReply streams a Tool call whose arguments are still
+// arriving, then enough text to reach the spoken budget. The client cancels
+// the stream mid-call, so the call must never reach the loop.
+func truncatedToolCallReply(content string, call fakeCall) string {
+	var b strings.Builder
+	b.WriteString(toolCallChunk(call))
+	b.WriteString(streamChunk(content))
+	writeFinish(&b, "tool_calls")
+	return b.String()
+}
+
+func TestSpokenBudgetCutEndsTheTurnWithoutRunningToolCalls(t *testing.T) {
+	fake := newFakeProvider(t,
+		truncatedToolCallReply(
+			"Sure. Here is the answer. Third sentence.",
+			fakeCall{ID: "call-1", Name: "time.now", Args: `{"city":`},
+		),
+		textReply("This second step must not run."),
+	)
+	server := fake.start()
+	a := newTestAgent(t, testSettings(server.URL), nil, nil)
+
+	var spoken strings.Builder
+	result := a.Run(context.Background(), tool.Request{ID: "req-truncated-tool"}, "what time is it", func(delta string) {
+		spoken.WriteString(delta)
+	})
+
+	if !result.Truncated {
+		t.Fatalf("result.Truncated = false, want the budget to cut the reply")
+	}
+	want := "Sure. Here is the answer."
+	if result.Text != want {
+		t.Fatalf("reply = %q, want %q", result.Text, want)
+	}
+	if got := spoken.String(); got != want {
+		t.Errorf("streamed text = %q, want %q", got, want)
+	}
+	if len(result.Calls) != 0 {
+		t.Errorf("result.Calls = %+v, want the half-written call dropped", result.Calls)
+	}
+	if result.Steps != 1 {
+		t.Errorf("steps = %d, want the turn to end after the truncated step", result.Steps)
+	}
+	if got := fake.requestCount(); got != 1 {
+		t.Errorf("provider requests = %d, want no further model step", got)
+	}
+}
+
 func TestLiveLimitsOverrideTheCompletionTokenCapPerTurn(t *testing.T) {
 	fake := newFakeProvider(t, textReply("Hello."))
 	server := fake.start()

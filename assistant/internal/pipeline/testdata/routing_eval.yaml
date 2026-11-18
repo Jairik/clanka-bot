@@ -1939,6 +1939,48 @@ positives:
     - "what comes next on my calendar"
     - "what's the upcoming event on my calendar"
     - "tell me the upcoming event on my calendar"
+  conversation.start:
+    - "let's chat"
+    - "let's talk"
+    - "can we just chat"
+    - "can we talk for a bit"
+    - "I want to talk with you"
+    - "I want to have a chat"
+    - "I'd like to chat"
+    - "I'd like to talk"
+    - "talk with me for a bit"
+    - "chat with me for a bit"
+    - "let's have a nice chat"
+    - "can we chat for a while"
+    - "I want to chat with you"
+    - "let's have a proper chat"
+    - "can we just talk"
+    - "I'd like to have a chat"
+    - "let's have a chat"
+    - "I need someone to talk to"
+    - "can we talk a little"
+    - "talk with me for a while"
+  conversation.end:
+    - "end the conversation"
+    - "end conversation"
+    - "finish the conversation"
+    - "let's end this conversation"
+    - "we're done talking"
+    - "I'm done talking"
+    - "no more chatting"
+    - "I'm finished talking"
+    - "leave conversation mode"
+    - "exit conversation mode"
+    - "I want to end our conversation"
+    - "the conversation is over"
+    - "let's stop the conversation"
+    - "that's the end of our chat"
+    - "I'd like to end this conversation"
+    - "end our chat"
+    - "I'm done with this conversation"
+    - "let's wrap up the conversation"
+    - "wrap up this chat"
+    - "finish our conversation"
 negatives:
   - how do I share my Google Calendar
   - sync my Outlook calendar with my phone
@@ -2342,6 +2384,15 @@ negatives:
   - extend my warranty
   - can I add more time to my parking meter
   - extend the deadline
+  # Conversation-mode-shaped but not a toggle: an ordinary request about
+  # ending something else, or a different kind of talk, must not start or end
+  # the mode by meaning (#499). "stop" and "cancel" are the shared Focus
+  # intents and are covered by the focus cases below, not as Fast path
+  # negatives. "stop the music" is a spotify.pause positive, not a negative.
+  - end the meeting
+  - leave a message
+  - no more coffee
+  - stop the printer
 
 # Compound requests ask for more than one thing. They are kept separate so
 # the evaluation can report compound handling on its own.

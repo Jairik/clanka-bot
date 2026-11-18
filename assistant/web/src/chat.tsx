@@ -295,6 +295,7 @@ export function RequestDetail({ r, showReply }: { r: Request; showReply?: boolea
     ["Response", r.Measured ? <span className="font-mono">{r.Response}</span> : <span className="text-muted">not measured</span>],
     ["Tokens", tokens === "unknown" ? <span className="text-muted">{tokens}</span> : <span className="font-mono">{tokens}</span>],
   ];
+  if (r.ConversationLabel) rows.push(["Conversation", r.ConversationLabel]);
   for (const c of r.Checkpoints ?? []) rows.push([c.Label, <span className="font-mono">{c.MS}</span>]);
   return (
     <div className="space-y-3 text-sm">

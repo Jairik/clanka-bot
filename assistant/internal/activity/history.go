@@ -152,14 +152,15 @@ func (h *History) Add(entry Entry) error {
 	const insertActivity = `
 		INSERT INTO activity (request_id, at, source, path, tool, outcome, error,
 		transcript, reply, local_only, response_ms, stages, checkpoints, calls, search,
-		prompt_tokens, completion_tokens, total_tokens, cached_tokens, agent_steps)
-	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		prompt_tokens, completion_tokens, total_tokens, cached_tokens, agent_steps, conversation)
+	VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 	haystack := searchText(entry)
 	insertArgs := []any{
 		entry.ID, at.UnixMilli(), entry.Source, entry.Path, entry.Tool, entry.Outcome,
 		entry.Error, entry.Transcript, entry.Reply, entry.LocalOnly, response,
 		string(stages), string(checkpoints), string(calls), haystack,
 		entry.PromptTokens, entry.CompletionTokens, entry.TotalTokens, entry.CachedTokens, entry.Steps,
+		entry.Conversation,
 	}
 	ctx := context.Background()
 	if err := h.ensureSearchIndex(ctx); err != nil {
@@ -705,7 +706,7 @@ func summarizeCalls(raw string) string {
 // exactly these columns in this order.
 const entryColumns = `id, request_id, at, source, path, tool, outcome, error,
 	transcript, reply, local_only, response_ms, stages, checkpoints, calls, summary,
-	prompt_tokens, completion_tokens, total_tokens, cached_tokens, agent_steps`
+	prompt_tokens, completion_tokens, total_tokens, cached_tokens, agent_steps, conversation`
 
 // scanResult is one scanned row: the integer id keys the windowed page's
 // ordered id list, the cursor is what the page hands the client, and the entry
@@ -733,7 +734,7 @@ func scanEntry(rows *sql.Rows) (scanResult, error) {
 	if err := rows.Scan(&id, &requestID, &at, &entry.Source, &entry.Path, &entry.Tool,
 		&entry.Outcome, &entry.Error, &entry.Transcript, &entry.Reply, &localOnly,
 		&response, &stages, &checkpoints, &calls, &summary,
-		&prompt, &completion, &total, &cached, &agentSteps); err != nil {
+		&prompt, &completion, &total, &cached, &agentSteps, &entry.Conversation); err != nil {
 		return scanResult{}, fmt.Errorf("activity history: scan: %w", err)
 	}
 	entry.ID = requestID

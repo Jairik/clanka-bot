@@ -66,8 +66,10 @@ type migration struct {
 // spoken confirmation per Persona and overridable Tool, with the shipped
 // terse default kept in code. Version 14 adds nullable per-turn model token
 // counts to Activity rows (#302): a row written before it reads NULL, which the
-// reader turns into zero ("unknown", never "free"). The versions stay
-// contiguous in either merge order.
+// reader turns into zero ("unknown", never "free"). Version 15 adds the
+// conversation budget kind to Activity rows (#499): "mode", "cue" or empty, so
+// the page can show how that turn was allowed to answer at length. The versions
+// stay contiguous in either merge order.
 var migrations = []migration{
 	{
 		version: 1,
@@ -339,6 +341,10 @@ var migrations = []migration{
 			state TEXT NOT NULL,
 			result TEXT NOT NULL DEFAULT ''
 		)`,
+	}},
+	{version: 16, name: "activity_conversation", statements: []string{
+		// "mode", "cue" or empty. Display-only metadata, never text.
+		`ALTER TABLE activity ADD COLUMN conversation TEXT NOT NULL DEFAULT ''`,
 	}},
 }
 

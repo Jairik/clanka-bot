@@ -1,17 +1,18 @@
 # Monster lights
 
-The Dashboard has two lighting surfaces:
+The Dashboard has one lighting page, **Lights** (`/lights`), with two sections:
 
-- **Bluetooth** controllers on **Lights** (`/lights`, see `docs/ble-lights.md`).
-- **Monster Smart Lighting** on **Monster lights** (`/monster`): the Wi-Fi
-  devices controlled by the Monster Smart Lighting app.
+- **Room lights**: the **Bluetooth** controllers, see `docs/ble-lights.md`.
+- **PC / desk lights**: the Wi-Fi devices controlled by the Monster Smart
+  Lighting app. The old `/monster` address still opens this page.
 
-They are separate because the hardware is separate. A Monster Duo+ monitor
-light bar (`MNW7-2027-ICW` or `MLB7-2027-WW`) is a **Wi-Fi + BLE** device. Its
-BLE radio exists only to hand the household Wi-Fi credentials to the bar during
-onboarding; every later command goes through the Monster/Ayla cloud. Scanning
-for it on the Bluetooth page will find nothing useful, and no GATT write can
-turn it on.
+The sections are separate because the hardware is separate. A Monster Duo+
+monitor light bar (`MNW7-2027-ICW` or `MLB7-2027-WW`) is a **Wi-Fi + BLE**
+device. Its BLE radio exists only to hand the household Wi-Fi credentials to the
+bar during onboarding; every later command goes through the Monster/Ayla cloud.
+Scanning for it in the Bluetooth section will find nothing useful, and no GATT
+write can turn it on. The two sections load independently: a cloud read that is
+slow or failing never hides the Bluetooth controls.
 
 ## Setup
 
@@ -24,8 +25,8 @@ the 2.4 GHz network. Then:
    and neither appears in a setting, log line or error. The password is kept
    exactly as entered, including leading and trailing spaces; only pasted line
    breaks and tabs are stripped.
-3. Open **Monster lights**. The account's devices are listed with their last
-   cloud state.
+3. Open **Lights** and find **PC / desk lights**. The account's devices are
+   listed with their last cloud state.
 
 `MONSTER_EMAIL` and `MONSTER_PASSWORD` can also be bootstrapped from `.env`,
 where they are used verbatim; a value stored on the Secrets page wins, matching
@@ -108,35 +109,49 @@ Voice control is exposed to both Fast and Agent paths through five Tools in `too
 | `monster.white` | `act` | `2000`–`7000` kelvin, or `warm`, `cool`, `daylight` | Writes `mode=white` then `color_temp`. |
 | `monster.scene` | `act` | scene name or slot ID | Resolves scene names through namematch over the device's own scenes. |
 
-All five Tools are `PermissionAct` and `LocalOnlyNo`. Spoken outputs are terse acknowledgements only (`"Done."`).
+All five Tools are `PermissionAct` and `LocalOnlyNo`. Spoken outputs are terse acknowledgements (`"Done."`, or the group line below).
+
+A general lighting command also reaches these lights. "Turn the lights off",
+"turn on all lights" and the omitted-device form of `lights.power`,
+`lights.brightness` and `lights.color` write every saved Bluetooth controller
+**and** every light on the Monster account. The two transports run at the same
+time and each keeps its own budget (fourteen seconds for the BLE batch, eight
+for the cloud), so slowness or failure on one side cannot block the other. A
+partial result is spoken, for example "Light command sent. The PC light did not
+answer."; an account that was never set up is skipped without a word. Modes stay
+Bluetooth-only, and white and scenes stay on the `monster.*` Tools.
 
 ### Device resolution
 
-Device resolution matches spoken device names case-insensitively and through `namematch` against the cloud device names on the account. To avoid adding an extra network round trip per voice command, `Service` caches the device list for 60 seconds. When exactly one device is configured on the account, the `device` parameter can be omitted.
+Device resolution matches spoken device names case-insensitively and through `namematch` against the cloud device names on the account. To avoid adding an extra network round trip per voice command, `Service` caches the device list for 60 seconds.
+
+A generic target — `"pc light"`, `"pc lights"`, `"monitor light"`, `"light bar"`, `"duo"` or an omitted device — resolves the account's one bar-like device by name or model when the account also holds strips or bulbs. When exactly one device is configured it is that device. Two bar-like devices stay ambiguous and ask which one, rather than guessing. The Fast path's name lookup for extraction gets its own two-second budget, so a cold sign-in cannot spend the Tool's deadline before the write starts.
 
 ### Routing separation
 
-Routing distinguishes between BLE controllers (`lights.*`) and Monster light bars (`monster.*`):
-- BLE `lights.*` Examples and eval phrases use plural `"lights"` (e.g. `"turn the lights on"`, `"dim the lights to 20 percent"`).
-- Monster `monster.*` Examples and eval phrases use `"monitor light"`, `"light bar"`, or the device name (e.g. `"turn the monitor light on"`, `"set light bar level to 50 percent"`).
+Routing distinguishes between the group and one specific light:
+- Plural `"lights"` phrases (e.g. `"turn the lights on"`, `"dim the lights to 20 percent"`) stay with `lights.*`, which fans a general command out to both transports.
+- PC phrasing (`"pc light"`, `"monitor light"`, `"light bar"`, `"duo"`, a cloud device name) and the operations only the bar has (`"warm white"`, a scene name) stay with `monster.*`.
 
-This phrasing separation ensures that a generic `"turn the lights on"` stays with the BLE `lights.*` tools without ambiguity.
-
-### Follow-up: unified lighting facade
-
-A single `lights.*` facade across BLE controllers and Monster Wi-Fi devices is a separate follow-up. Today the surfaces remain distinct in both the Dashboard (`/lights` vs `/monster`) and voice routing (`lights.*` vs `monster.*`) to keep transports and failure models isolated.
+`tools/lights` asks the Monster module through the small `internal/lighting`
+seam whether an utterance names the PC light, so the two transports cannot drift
+apart on who owns `"light bar"`. A saved Bluetooth controller literally called
+"Light Bar" still wins its exact name over that alias.
 
 ## Verification
 
 ```sh
 cd assistant
-go test ./internal/monster ./tools/monster ./internal/dashboard
+go test ./internal/lighting ./internal/monster ./tools/monster ./tools/lights ./internal/dashboard
 ```
 
 The tests drive the full sign-in chain against local fake hosts, prove token
 caching, the one-401 retry, the failure backoff, a sign-in that outlives its
 caller's deadline, and that a space-padded password is sent unchanged; they also
-map the device properties, and pin the dashboard's validation and error states.
+map the device properties, resolve the bar among strips, and pin the dashboard's
+validation and error states. `tools/lights` proves the group fan-out: both
+transports together, either transport alone when the other is absent or empty,
+partial batches, and the combined spoken reply.
 A manual reachability check of the real endpoints is a 401 without an account:
 
 ```sh

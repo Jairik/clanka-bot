@@ -1,6 +1,6 @@
 // What the service worker downloads at install. The shell, Home, icons and
 // fonts, never a lazy route chunk: a first visit should not pay for Settings,
-// Voice Samples or Monster, and an unvisited deep link is not promised offline.
+// Voice Samples or Health, and an unvisited deep link is not promised offline.
 // Shared by the Vite plugin and its unit test.
 
 /** Files that carry no content hash but are part of the shell. */

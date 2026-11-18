@@ -8,22 +8,33 @@ save. Forget removes only the saved selection; it never unpairs host devices.
 
 Monster Smart Lighting Wi-Fi devices (the Duo+ monitor light bar, RGBIC
 strips and bulbs) are not BLE-controlled: their Bluetooth radio only hands
-over Wi-Fi credentials during onboarding. They live on the separate Monster
-lights page; see `docs/monster-lights.md`.
+over Wi-Fi credentials during onboarding. They appear on the same Lights page
+under **PC / desk lights**, because one page owns every light; see
+`docs/monster-lights.md`.
 
 The four `lights.*` Tools accept a saved device name, an address, or `all`. An
-omitted device targets the only saved light, or every saved light when several
-are saved. Names resolve through the shared name matcher, so case, punctuation
-and mild speech-to-text slips need no exact spelling; an ambiguous name is
-refused rather than guessed. `lights.list` returns saved names and protocols
-(never addresses) so the Agent can choose a device. Fast path commands fill the
-device from the utterance: a saved name selects that light, plural "lights"
-targets all of them, and a singular unnamed light with several saved controllers
-stays on the Agent path. A batch shares one fourteen-second write budget, so the
-static Tool timeout does not grow with the device count; a partial failure
-reports "Done for 2 of 3 lights" and Health names the controller that did not
-answer. Colours accept #RRGGBB; voice extraction also knows red, green, blue and
-white. Modes are rainbow, red pulse and strobe.
+omitted device and `all` both mean every light, and for power, brightness and
+colour that includes the PC / desk Monster light: the two transports run at the
+same time, each under its own budget, so a slow cloud call cannot delay a BLE
+write. A mode is Bluetooth-only, and white and scenes stay on `monster.*`. A
+command that names the PC light ("pc light", "monitor light", "light bar", in
+singular or plural) never reaches a saved controller: it stays with the Monster
+Tools. Names resolve through the shared name matcher, so case, punctuation and
+mild speech-to-text slips need no exact spelling; an ambiguous name is refused
+rather than guessed. `lights.list` returns saved names and protocols (never
+addresses) so the Agent can choose a device; it does not list cloud lights,
+because they are not saved controllers. Fast path commands fill the device from
+the utterance: a saved name selects that light, plural "lights" targets the
+whole group, a singular "the light" with one saved controller names that
+controller (so it never touches the PC bar), and a singular unnamed light with
+several saved controllers stays on the Agent path. A batch shares one
+fourteen-second write budget, so the static Tool timeout does not grow with the
+device count; a partial failure reports "Done for 2 of 3 lights" and Health
+names the controller that did not answer. A group command says which side fell
+short ("Light command sent. The PC light did not answer."), and a Monster
+account that was never set up is skipped silently. Colours accept #RRGGBB; voice
+extraction also knows red, green, blue and white. Modes are rainbow, red pulse
+and strobe.
 
 ## Protocol references and limits
 

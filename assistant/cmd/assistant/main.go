@@ -672,6 +672,10 @@ func run() error {
 		modelDefault = defaultProvider.Model
 	}
 	defs = append(defs, agent.ModelDefinition(modelDefault, provider.Model))
+	// The spoken-length budget and completion-token cap are live: the Agent
+	// path reads them once per turn, so a Dashboard change or a conversation
+	// override applies to the next answer without a restart.
+	defs = append(defs, agent.LimitsDefinitions()...)
 	// Voice name and rate are live settings shared with the Dashboard and the
 	// voice Tools. The name's config layer is tts.voice; the library adds the
 	// custom .safetensors entries once Rescan runs.
@@ -912,7 +916,16 @@ func run() error {
 		Model: provider.Model,
 		// Read the live setting per request, so a Dashboard model change
 		// applies to the next turn without rebuilding the Agent path.
-		ModelFunc:        func() string { return settingsSvc.String(agent.ModelKey) },
+		ModelFunc: func() string { return settingsSvc.String(agent.ModelKey) },
+		// Brevity and cost bounds are live too, and read once per turn. This
+		// closure is the per-turn override seam conversation mode uses.
+		LimitsFunc: func() agent.Limits {
+			return agent.Limits{
+				SpokenMaxSentences:  settingsSvc.Int(agent.SpokenMaxSentencesKey),
+				SpokenMaxChars:      settingsSvc.Int(agent.SpokenMaxCharsKey),
+				MaxCompletionTokens: settingsSvc.Int(agent.MaxCompletionTokensKey),
+			}
+		},
 		Headers:          provider.Headers,
 		Routing:          provider.Routing,
 		SystemPrompt: cfg.Agent.SystemPrompt,

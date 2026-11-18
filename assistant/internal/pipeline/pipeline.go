@@ -943,6 +943,11 @@ func (p *Pipeline) callAgent(ctx context.Context, req tool.Request, transcript s
 	// The single provider retry, when it happened, is visible on the request
 	// line so a slow turn can be explained without reading the debug log.
 	latency.SetAttr(ctx, "agent_retries", result.Retries)
+	// The spoken-length budget cut this reply at a sentence boundary. It is a
+	// successful answer, but the raw request line says why it was short.
+	if result.Truncated {
+		latency.SetAttr(ctx, "agent_truncated", true)
+	}
 	// Per-turn model token counts, summed across steps by the Agent path.
 	// Counts and step count only: no prompt or reply text is logged here.
 	latency.SetTokens(ctx, result.PromptTokens, result.CompletionTokens, result.TotalTokens, result.CachedTokens, result.Steps)

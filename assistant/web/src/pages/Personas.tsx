@@ -206,10 +206,24 @@ function PersonaEditor({ form, actions }: { form: PersonaForm; actions: Actions<
     personality: form.Personality,
     filler: form.Filler,
     unavailable: form.Unavailable,
+    clarify: form.Clarify,
+    cue_words: form.CueWords,
+    start_phrases: form.StartPhrases,
+    end_phrases: form.EndPhrases,
   });
   const [f, setF] = useState(init);
   // Re-seed when the server's copy changes (after a save or a refused write).
-  const key = JSON.stringify([form.Name, form.Voice, form.Personality, form.Filler, form.Unavailable]);
+  const key = JSON.stringify([
+    form.Name,
+    form.Voice,
+    form.Personality,
+    form.Filler,
+    form.Unavailable,
+    form.Clarify,
+    form.CueWords,
+    form.StartPhrases,
+    form.EndPhrases,
+  ]);
   useEffect(() => setF(init()), [key]); // eslint-disable-line react-hooks/exhaustive-deps
   const up = (k: keyof typeof f) => (v: string) => setF((s) => ({ ...s, [k]: v }));
   const voices = form.Voices ?? [];
@@ -218,7 +232,16 @@ function PersonaEditor({ form, actions }: { form: PersonaForm; actions: Actions<
       className="space-y-3"
       onSubmit={(e) => {
         e.preventDefault();
-        const body: Record<string, string> = { voice: f.voice, personality: f.personality, filler: f.filler, unavailable: f.unavailable };
+        const body: Record<string, string> = {
+          voice: f.voice,
+          personality: f.personality,
+          filler: f.filler,
+          unavailable: f.unavailable,
+          clarify: f.clarify,
+          cue_words: f.cue_words,
+          start_phrases: f.start_phrases,
+          end_phrases: f.end_phrases,
+        };
         if (!form.NameLocked) body.name = f.name;
         void actions.run(form.Action, body);
       }}
@@ -244,6 +267,32 @@ function PersonaEditor({ form, actions }: { form: PersonaForm; actions: Actions<
         </Field>
         <Field label="Unavailable message">
           <TextField label="Unavailable message" value={f.unavailable} onChange={up("unavailable")} multiline rows={2} />
+        </Field>
+      </div>
+      <Field label="Clarify line" hint="Optional. Empty keeps the global agent.clarify_message.">
+        <TextField label="Clarify line" value={f.clarify} onChange={up("clarify")} />
+      </Field>
+      <Field label="Cue words" hint="Optional. One phrase per line. Empty keeps the global conversation.cue_words.">
+        <TextField label="Cue words" value={f.cue_words} onChange={up("cue_words")} multiline rows={3} />
+      </Field>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Field label="Conversation start phrases" hint="Optional. Added to the global Control phrases.">
+          <TextField
+            label="Conversation start phrases"
+            value={f.start_phrases}
+            onChange={up("start_phrases")}
+            multiline
+            rows={3}
+          />
+        </Field>
+        <Field label="Conversation end phrases" hint="Optional. Added to the global Control phrases.">
+          <TextField
+            label="Conversation end phrases"
+            value={f.end_phrases}
+            onChange={up("end_phrases")}
+            multiline
+            rows={3}
+          />
         </Field>
       </div>
       <Button size="sm" type="submit" isDisabled={!voices.length} isPending={actions.pending === form.Action}>

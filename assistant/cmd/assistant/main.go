@@ -26,6 +26,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/completion"
 	"github.com/Jairik/clanka-bot/assistant/internal/config"
 	"github.com/Jairik/clanka-bot/assistant/internal/connections"
+	"github.com/Jairik/clanka-bot/assistant/internal/conversation"
 	"github.com/Jairik/clanka-bot/assistant/internal/dashboard"
 	"github.com/Jairik/clanka-bot/assistant/internal/embed"
 	"github.com/Jairik/clanka-bot/assistant/internal/equalizer"
@@ -563,6 +564,13 @@ func run() error {
 	nameThreshold := namematch.NewThreshold(baseCfg.NameMatch.Threshold)
 	embedClient := embed.NewClient(cfg.Embed.URL, cfg.Embed.Model)
 	names := namematch.New(embedClient, namematch.Config{Threshold: nameThreshold.Get})
+	// Conversation mode is an in-memory latch shared by its Tools, the Agent
+	// path's per-turn budget and the Follow-up window. A restart ends it, like
+	// the Follow-up window itself; the idle window is read live.
+	conversationState := conversation.NewState(time.Now, func() time.Duration {
+		return time.Duration(settingsSvc.Int(conversation.ModeIdleSecondsKey)) * time.Second
+	})
+
 	deps := tool.Deps{
 		Logger:        logger,
 		Location:      locSvc.Current,
@@ -580,13 +588,14 @@ func run() error {
 		Embed: embedClient,
 		// The live settings service is created below; a module reads it per
 		// action through this late-bound closure and never snapshots it.
-		Settings:  func() *settings.Service { return settingsSvc },
-		Quiet:     quietSvc,
-		Voices:    voiceSvc,
-		Notify:    notifySvc,
-		LastReply: lastReplyStore,
-		Status:    systemStatus.Status,
-		History:   conversationHistory,
+		Settings:     func() *settings.Service { return settingsSvc },
+		Quiet:        quietSvc,
+		Voices:       voiceSvc,
+		Notify:       notifySvc,
+		LastReply:    lastReplyStore,
+		Status:       systemStatus.Status,
+		History:      conversationHistory,
+		Conversation: conversationState,
 	}
 	if speechSpeaker != nil {
 		deps.Speaker = speechSpeaker
@@ -672,6 +681,10 @@ func run() error {
 		modelDefault = defaultProvider.Model
 	}
 	defs = append(defs, agent.ModelDefinition(modelDefault, provider.Model))
+	// The spoken-length budget and completion-token cap are live: the Agent
+	// path reads them once per turn, so a Dashboard change or a conversation
+	// override applies to the next answer without a restart.
+	defs = append(defs, agent.LimitsDefinitions()...)
 	// Voice name and rate are live settings shared with the Dashboard and the
 	// voice Tools. The name's config layer is tts.voice; the library adds the
 	// custom .safetensors entries once Rescan runs.
@@ -694,6 +707,9 @@ func run() error {
 		}
 		return nil
 	})))
+	// Conversation mode's cue words and windows are live too, so a Dashboard
+	// change applies to the next turn.
+	defs = append(defs, conversation.Definitions()...)
 	defs = append(defs, equalizer.Definitions()...)
 	// The Hermes page's per-account grants are ordinary live settings, so they
 	// appear on Settings too and a reset revokes access.
@@ -872,6 +888,9 @@ func run() error {
 	// the spoken cue never keeps the old voice forever.
 	wordingMgr, err := wording.NewManager(settingsSvc, wordingSetup, filler, synthFiller, logger,
 		wording.WithFillerKeys(voicelib.KeyName, voicelib.KeyRate, speech.PronunciationKey),
+		// The active Persona's Conversation trigger phrases are extra Control
+		// phrases beside the global lists, so a selection adds to the defaults.
+		wording.WithPersonaPhrases(personaSvc.TriggerPhrases),
 		wording.WithFillerSignature(func() string {
 			ref, rate, ok := voiceSvc.ActiveSpeech()
 			if !ok {
@@ -912,9 +931,24 @@ func run() error {
 		Model: provider.Model,
 		// Read the live setting per request, so a Dashboard model change
 		// applies to the next turn without rebuilding the Agent path.
-		ModelFunc:        func() string { return settingsSvc.String(agent.ModelKey) },
-		Headers:          provider.Headers,
-		Routing:          provider.Routing,
+		ModelFunc: func() string { return settingsSvc.String(agent.ModelKey) },
+		// Brevity and cost bounds are live too, and read once per turn. This
+		// closure is the per-turn override seam conversation mode uses.
+		LimitsFunc: func() agent.Limits {
+			return agent.Limits{
+				SpokenMaxSentences:  settingsSvc.Int(agent.SpokenMaxSentencesKey),
+				SpokenMaxChars:      settingsSvc.Int(agent.SpokenMaxCharsKey),
+				MaxCompletionTokens: settingsSvc.Int(agent.MaxCompletionTokensKey),
+			}
+		},
+		// A cue word lifts the budget for one turn; conversation mode lifts it
+		// for every turn until it ends. The latch also restarts its idle clock
+		// on a mode turn, which is the only per-turn state it keeps.
+		ConversationFunc: func(utterance string) string {
+			return conversationState.Turn(utterance, settingsSvc.Strings(conversation.CueWordsKey))
+		},
+		Headers:      provider.Headers,
+		Routing:      provider.Routing,
 		SystemPrompt: cfg.Agent.SystemPrompt,
 		// The place line is appended to the base prompt. With no configured
 		// prompt the default is the base, so the brevity and ignore rules still
@@ -939,11 +973,11 @@ func run() error {
 		// The Clarify line is live wording read while the system part is built.
 		ClarifyMessage:     baseCfg.Agent.ClarifyMessage,
 		ClarifyMessageFunc: wordingMgr.ClarifyMessage,
-		FirstTokenTimeout:      cfg.Agent.FirstTokenTimeout.Duration(),
-		RequestTimeout:         cfg.Agent.RequestTimeout.Duration(),
-		MaxSteps:               cfg.Agent.MaxSteps,
-		HistoryTurns:           cfg.Agent.History.Turns,
-		HistoryQuiet:           cfg.Agent.History.Quiet.Duration(),
+		FirstTokenTimeout:  cfg.Agent.FirstTokenTimeout.Duration(),
+		RequestTimeout:     cfg.Agent.RequestTimeout.Duration(),
+		MaxSteps:           cfg.Agent.MaxSteps,
+		HistoryTurns:       cfg.Agent.History.Turns,
+		HistoryQuiet:       cfg.Agent.History.Quiet.Duration(),
 		// Use the same instance assistant.forget holds, built before Tools
 		// registered above, so a spoken forget clears the Agent path's context.
 		History: conversationHistory,
@@ -981,6 +1015,9 @@ func run() error {
 		// Keep the previous completed reply and its provenance so
 		// assistant.repeat and notify.phone can resolve it.
 		pipeline.WithLastReply(lastReplyStore),
+		// Every request counts as a turn for conversation mode's idle clock,
+		// not just an Agent turn.
+		pipeline.WithConversationTurn(conversationState.Touch),
 		// Morning briefing: one spoken reply composed above the Tool registry
 		// from the weather, alarms, timers, reminders and to-do list.
 		pipeline.WithBriefing(briefing.New(registry, time.Now, logger)),
@@ -1191,9 +1228,12 @@ func run() error {
 				}
 			})
 			// A standalone "stop" and the stop command model end the session,
-			// so the next wake word starts with a fresh history. Conversation
-			// mode (#499) will also be turned off here.
-			loop.BindSessionEnd(conversationHistory.Reset)
+			// so the next wake word starts with a fresh history and without
+			// conversation mode (#499).
+			loop.BindSessionEnd(func() {
+				conversationHistory.Reset()
+				conversationState.End()
+			})
 			// With music holding Focus, require a wake word instead of trusting unverified AEC.
 			loop.BindFollowUp(func() time.Duration {
 				if focusRegistry.Held(focus.Music) {
@@ -1207,6 +1247,12 @@ func run() error {
 					if err != nil || present {
 						return 0
 					}
+				}
+				// Conversation mode keeps the window open long enough for a
+				// reply without the wake word; the default window applies
+				// again as soon as the mode ends.
+				if conversationState.Active() {
+					return time.Duration(settingsSvc.Int(conversation.ModeFollowUpSecondsKey)) * time.Second
 				}
 				return time.Duration(settingsSvc.Int("conversation.follow_up_seconds")) * time.Second
 			})
@@ -1365,8 +1411,8 @@ func run() error {
 			},
 			// One recent-request ring and the text-only session; both share
 			// the pipeline, registry and settings of the voice path.
-			Activity: activityStore,
-			Typed:    typedSession,
+			Activity:  activityStore,
+			Typed:     typedSession,
 			Explainer: p,
 			// The live Focus registry and Announcement queue feed the Dashboard's
 			// "what holds Focus / what is waiting" view and its SSE delta (#217).

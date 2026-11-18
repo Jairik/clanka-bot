@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/agent"
+	conversationcore "github.com/Jairik/clanka-bot/assistant/internal/conversation"
 	"github.com/Jairik/clanka-bot/assistant/internal/embed"
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/lastreply"
@@ -43,6 +44,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/tools/calc"
 	"github.com/Jairik/clanka-bot/assistant/tools/calendar"
 	"github.com/Jairik/clanka-bot/assistant/tools/clock"
+	conversationtools "github.com/Jairik/clanka-bot/assistant/tools/conversation"
 	"github.com/Jairik/clanka-bot/assistant/tools/github"
 	lighttools "github.com/Jairik/clanka-bot/assistant/tools/lights"
 	listtools "github.com/Jairik/clanka-bot/assistant/tools/list"
@@ -98,6 +100,8 @@ var routingEvalTools = []string{
 	quiettools.DNDName,
 	quiettools.AwakeName,
 	quiettools.StatusName,
+	conversationtools.StartName,
+	conversationtools.EndName,
 	reminder.SetName,
 	reminder.ListName,
 	reminder.CancelName,
@@ -628,6 +632,13 @@ func evalRegistry(t *testing.T) (*tool.Registry, *timer.Manager, *alarm.Manager,
 	if err := voice.NewModule().Register(reg, tool.Deps{}); err != nil {
 		t.Fatalf("register voice: %v", err)
 	}
+	// Conversation mode is an in-memory latch; the Control phrases execute the
+	// real handlers, so the eval owns one instance.
+	if err := conversationtools.NewModule().Register(reg, tool.Deps{
+		Conversation: conversationcore.NewState(nil, nil),
+	}); err != nil {
+		t.Fatalf("register conversation: %v", err)
+	}
 	// Quiet hours needs a real settings service and store; the corpus executes
 	// the handlers, so the window and volume writes must be real.
 	st, err := store.Open(context.Background(), filepath.Join(t.TempDir(), "data", "assistant.db"))
@@ -825,6 +836,9 @@ func evalRegistry(t *testing.T) (*tool.Registry, *timer.Manager, *alarm.Manager,
 	if err := mm.Register(reg, tool.Deps{}); err != nil {
 		t.Fatalf("register monster: %v", err)
 	}
+	// General lighting commands reach the PC lights through the same seam
+	// production wires in tools.NewSet.
+	lm.PC = mm
 	if err := calendar.NewModule().Register(reg, tool.Deps{Clock: func() time.Time { return fixed }}); err != nil {
 		t.Fatalf("register calendar: %v", err)
 	}

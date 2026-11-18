@@ -370,7 +370,11 @@ The phrase configs are deliberately strict:
 `volume_up.yml` / `volume_down.yml` use 6k positive training clips, 30k steps
 and a `target_false_positives_per_hour` of 0.1. `evaluate.py` reports recall on
 held-out voices, near-miss false accepts and false accepts per hour of
-background. A synthetic-only model can be committed only if that number is
+background. Reported clip recall and clip false-accept rates use 1 second of
+silence before each clip and 2 seconds after, so short phrases can fill the
+detector window. Pass `--pad-before` and `--pad-after` to `evaluate.py` to
+set these durations in seconds. Continuous background is scored without padding.
+A synthetic-only model can be committed only if the background rate is
 sane; otherwise keep the configs and record the missing measurement.
 
 The command default threshold is 0.7 (`wakeword.commands.threshold`) for a

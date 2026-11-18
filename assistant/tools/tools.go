@@ -14,6 +14,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/tools/calc"
 	"github.com/Jairik/clanka-bot/assistant/tools/calendar"
 	"github.com/Jairik/clanka-bot/assistant/tools/clock"
+	"github.com/Jairik/clanka-bot/assistant/tools/conversation"
 	"github.com/Jairik/clanka-bot/assistant/tools/github"
 	"github.com/Jairik/clanka-bot/assistant/tools/lights"
 	"github.com/Jairik/clanka-bot/assistant/tools/list"
@@ -47,6 +48,14 @@ func NewSet() *Set {
 	timerModule := timer.NewModule()
 	alarmModule := alarm.NewModule()
 	reminderModule := reminder.NewModule()
+	// A general lighting command ("turn the lights off") also reaches the PC /
+	// desk lights: the BLE module owns that group and calls the Monster module
+	// through the lighting seam. One module pointer is both wired and
+	// registered, and the handler reads the seam per request, after Register
+	// has built the Monster service.
+	lightsModule := lights.NewModule()
+	monsterModule := monster.NewModule()
+	lightsModule.PC = monsterModule
 	return &Set{modules: []tool.Module{
 		clock.NewModule(),
 		weather.NewModule(),
@@ -55,6 +64,7 @@ func NewSet() *Set {
 		alarmModule,
 		quiet.NewModule(),
 		voice.NewModule(),
+		conversation.NewModule(),
 		reminderModule,
 		notify.NewModule(),
 		assistant.NewModule(),
@@ -68,8 +78,8 @@ func NewSet() *Set {
 		spotifytools.NewModule(),
 		note.NewModule(),
 		list.NewModule(),
-		lights.NewModule(),
-		monster.NewModule(),
+		lightsModule,
+		monsterModule,
 		alerts.NewModule(
 			alerts.TimerSource(timerModule.Manager),
 			alerts.AlarmSource(alarmModule.Manager),

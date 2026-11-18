@@ -24,7 +24,7 @@ says the Pi is unreachable; it is not an offline copy of the Dashboard.
   `theme.js`, the manifest, the icons, the fonts, and the JS/CSS that
   `index.html` itself references (the entry, the shell and Home). A lazy route
   chunk is never precached, so a first visit does not download Settings, Voice
-  Samples and Monster before the user opens them. The build fails if a route
+  Samples and Health before the user opens them. The build fails if a route
   chunk reappears in the list, and prints the list and its size.
 - **Navigations** stay network-first: the document comes from the Pi so a new
   build is picked up, and the last good copy opens when it is not reachable.

@@ -205,6 +205,13 @@ func WithLastReply(store *lastreply.Store) Option {
 	return func(p *Pipeline) { p.lastReply = store }
 }
 
+// WithConversationTurn records every request while conversation mode is on, so
+// its idle window measures all turns, not only Agent turns. touch must be a
+// no-op when the mode is off; a nil source keeps the pipeline unchanged.
+func WithConversationTurn(touch func()) Option {
+	return func(p *Pipeline) { p.conversationTurn = touch }
+}
+
 // WithBriefing wires the morning-briefing stage. When set, route matches a
 // normalised exact phrase against the composer before the deferred and chain
 // stages, and replies with one composed, Local-only reply.
@@ -241,6 +248,9 @@ type Pipeline struct {
 	chainEnabled func() bool
 	deferred     *DeferredQueue
 	briefing     *briefing.Composer
+	// conversationTurn records a request while conversation mode is on, so the
+	// mode's idle clock covers every turn rather than only Agent turns.
+	conversationTurn func()
 }
 
 // New builds a pipeline and rejects a Control phrase table that points at
@@ -330,6 +340,11 @@ func (p *Pipeline) Handle(ctx context.Context, req tool.Request, transcript stri
 // request. The callbacks are ignored on the Fast path.
 func (p *Pipeline) HandleEvents(ctx context.Context, req tool.Request, transcript string, events Events) Reply {
 	started := time.Now()
+	// Every request is a turn for conversation mode, whatever path it takes.
+	// The hook is a no-op while the mode is off.
+	if p.conversationTurn != nil {
+		p.conversationTurn()
+	}
 	record := routeLog{top: []ToolScore{}, extraction: "none", reason: reasonSemanticDisabled}
 
 	// Order matches #10. A pending Confirmation comes first. Smoke turns never
@@ -940,9 +955,18 @@ func (p *Pipeline) callAgent(ctx context.Context, req tool.Request, transcript s
 	reply.Unavailable = result.Unavailable
 	reply.TextNotStreamed = result.TextNotStreamed
 	reply.Ignored = result.Ignored
+	// The conversation kind is display-only, but Activity renders it per turn
+	// from the same completion as the route and the token counts.
+	latency.SetConversation(ctx, result.Conversation)
+	reply.Ignored = result.Ignored
 	// The single provider retry, when it happened, is visible on the request
 	// line so a slow turn can be explained without reading the debug log.
 	latency.SetAttr(ctx, "agent_retries", result.Retries)
+	// The spoken-length budget cut this reply at a sentence boundary. It is a
+	// successful answer, but the raw request line says why it was short.
+	if result.Truncated {
+		latency.SetAttr(ctx, "agent_truncated", true)
+	}
 	// Per-turn model token counts, summed across steps by the Agent path.
 	// Counts and step count only: no prompt or reply text is logged here.
 	latency.SetTokens(ctx, result.PromptTokens, result.CompletionTokens, result.TotalTokens, result.CachedTokens, result.Steps)

@@ -9,7 +9,6 @@ export const pageLoaders = {
   alerts: () => import("./pages/Alerts"),
   health: () => import("./pages/Health"),
   lights: () => import("./pages/Lights"),
-  monster: () => import("./pages/Monster"),
   notes: () => import("./pages/Notes"),
   personas: () => import("./pages/Personas"),
   routes: () => import("./pages/Routes"),
@@ -38,7 +37,6 @@ export const railOrder: PageId[] = [
   "sounds",
   "spotify",
   "lights",
-  "monster",
   "activity",
   "health",
   "routes",
@@ -70,7 +68,7 @@ export function cheapLink(net: Connection | undefined = connection()): boolean {
 /**
  * Warm the pages either side of this one after first paint. The old
  * prefetchAll() imported every route, so a phone on the tailnet downloaded
- * Settings, Voice Samples and Monster before the user asked for any of them.
+ * Settings, Voice Samples and Health before the user asked for any of them.
  */
 export function prefetchNear(current: PageId | null | undefined, load: (id: PageId) => void = prefetch) {
   if (!current || !cheapLink()) return;

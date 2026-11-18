@@ -23,7 +23,6 @@ const VIEWS: Record<PageId, React.ComponentType> = {
   notes: lazyPage("notes", "NotesPage"),
   health: lazyPage("health", "HealthPage"),
   lights: lazyPage("lights", "LightsPage"),
-  monster: lazyPage("monster", "MonsterPage"),
   sounds: lazyPage("sounds", "SoundsPage"),
   voices: lazyPage("voices", "VoicesPage"),
   personas: lazyPage("personas", "PersonasPage"),

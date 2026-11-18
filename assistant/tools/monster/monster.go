@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Jairik/clanka-bot/assistant/internal/lighting"
 	core "github.com/Jairik/clanka-bot/assistant/internal/monster"
 	"github.com/Jairik/clanka-bot/assistant/internal/namematch"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
@@ -46,16 +47,24 @@ type Out struct {
 }
 
 var (
-	monsterTarget = regexp.MustCompile(`(?i)(?:\b(?:monitor light|light bar|duo plus|duo)\b|duo\+)`)
+	// monsterTarget is the wording that names the PC / desk bar. The group
+	// owner in tools/lights asks Targets() about the same pattern, so the two
+	// transports cannot drift apart on who owns "pc light".
+	monsterTarget = regexp.MustCompile(`(?i)(?:\b(?:monitor light|monitor lights|light bar|light bars|duo plus|duo|pc light|pc lights)\b|duo\+)`)
 	powerPattern  = regexp.MustCompile(`(?i)\b(on|off)\b`)
 	brightPattern = regexp.MustCompile(`\b(100|[0-9]{1,2})\b`)
 	colorPattern  = regexp.MustCompile(`(?i)#[0-9a-f]{6}\b|\b(red|green|blue|white|yellow|orange|purple|pink|cyan|magenta)\b`)
 	whiteWords    = regexp.MustCompile(`(?i)\b(warm\s*white|cool\s*white|warm|cool|daylight)\b`)
 	kelvinPattern = regexp.MustCompile(`\b([2-6][0-9]{3}|7000)\s*(?:k|kelvin)?\b`)
 
+	// barPattern recognises the monitor bar by name or model, so a generic
+	// "pc light" resolves to the bar on an account that also holds strips. The
+	// two model numbers are the Duo+ bar the PC light means.
+	barPattern = regexp.MustCompile(`(?i)\b(?:duo|light\s*bar|monitor|mnw7-2027-icw|mlb7-2027-ww)\b`)
+
 	sceneToSuffix = regexp.MustCompile(`(?i)\b(?:to|scene)\s+([a-z0-9 _-]+?)\s+scene$`)
 	sceneToPrefix = regexp.MustCompile(`(?i)\bscene\s+to\s+([a-z0-9 _-]+)$`)
-	sceneDirect   = regexp.MustCompile(`(?i)(?:\b(?:monitor light|light bar|duo plus|duo)\b|duo\+)\s+([a-z0-9 _-]+?)\s+scene$`)
+	sceneDirect   = regexp.MustCompile(`(?i)(?:\b(?:monitor light|light bar|duo plus|duo|pc lights?)\b|duo\+)\s+([a-z0-9 _-]+?)\s+scene$`)
 	sceneTo       = regexp.MustCompile(`(?i)\bto\s+([a-z0-9 _-]+)$`)
 )
 
@@ -107,7 +116,7 @@ func (m *Module) tools() []tool.Tool[In, Out] {
 
 	powerTool := tool.Tool[In, Out]{
 		Name:        "monster.power",
-		Description: "Set a Monster light's power. Value: on or off. Device is a cloud device name; omit it when only one device is saved.",
+		Description: "Set the PC / Monster light's power. Value: on or off. Device is a cloud device name, \"pc light\", \"monitor light\" or \"light bar\"; omit it when only one device is saved.",
 		Permission:  tool.PermissionAct,
 		LocalOnly:   tool.LocalOnlyNo,
 		Timeout:     timeout,
@@ -153,7 +162,7 @@ func (m *Module) tools() []tool.Tool[In, Out] {
 
 	brightnessTool := tool.Tool[In, Out]{
 		Name:        "monster.brightness",
-		Description: "Set a Monster light's brightness. Value: 0–100. Device is a cloud device name; omit it when only one device is saved.",
+		Description: "Set the PC / Monster light's brightness. Value: 0–100. Device is a cloud device name, \"pc light\", \"monitor light\" or \"light bar\"; omit it when only one device is saved.",
 		Permission:  tool.PermissionAct,
 		LocalOnly:   tool.LocalOnlyNo,
 		Timeout:     timeout,
@@ -201,7 +210,7 @@ func (m *Module) tools() []tool.Tool[In, Out] {
 
 	colorTool := tool.Tool[In, Out]{
 		Name:        "monster.color",
-		Description: "Set a Monster light's color. Value: #RRGGBB or color name. Device is a cloud device name; omit it when only one device is saved.",
+		Description: "Set the PC / Monster light's color. Value: #RRGGBB or color name. Device is a cloud device name, \"pc light\", \"monitor light\" or \"light bar\"; omit it when only one device is saved.",
 		Permission:  tool.PermissionAct,
 		LocalOnly:   tool.LocalOnlyNo,
 		Timeout:     timeout,
@@ -247,7 +256,7 @@ func (m *Module) tools() []tool.Tool[In, Out] {
 
 	whiteTool := tool.Tool[In, Out]{
 		Name:        "monster.white",
-		Description: "Set a Monster light's white color temperature. Value: 2000–7000 kelvin, or warm, cool, daylight. Device is a cloud device name; omit it when only one device is saved.",
+		Description: "Set the PC / Monster light's white color temperature. Value: 2000–7000 kelvin, or warm, cool, daylight. Device is a cloud device name, \"pc light\", \"monitor light\" or \"light bar\"; omit it when only one device is saved.",
 		Permission:  tool.PermissionAct,
 		LocalOnly:   tool.LocalOnlyNo,
 		Timeout:     timeout,
@@ -301,7 +310,7 @@ func (m *Module) tools() []tool.Tool[In, Out] {
 
 	sceneTool := tool.Tool[In, Out]{
 		Name:        "monster.scene",
-		Description: "Set a Monster light's scene effect. Value: scene name. Device is a cloud device name; omit it when only one device is saved.",
+		Description: "Set the PC / Monster light's scene effect. Value: scene name. Device is a cloud device name, \"pc light\", \"monitor light\" or \"light bar\"; omit it when only one device is saved.",
 		Permission:  tool.PermissionAct,
 		LocalOnly:   tool.LocalOnlyNo,
 		Timeout:     timeout,
@@ -352,11 +361,58 @@ func (m *Module) tools() []tool.Tool[In, Out] {
 	return []tool.Tool[In, Out]{powerTool, brightnessTool, colorTool, whiteTool, sceneTool}
 }
 
+// Targets reports whether the words name the PC / desk light. The group owner
+// in tools/lights uses it so a BLE command never claims "pc light",
+// "monitor light" or "light bar".
+func (m *Module) Targets(text string) bool { return monsterTarget.MatchString(text) }
+
+// groupBudget bounds one general command's cloud fan-out. Both transports run
+// in parallel and the BLE batch budget is fourteen seconds, so the slower side
+// must still answer inside the Tool's own fifteen-second deadline.
+const groupBudget = 8 * time.Second
+
+// ApplyEvery applies op to every light on the account for a general lighting
+// command ("turn the lights off"). No account, or an account with no lights,
+// is zero lights and no error: a general command skips the PC side silently. A
+// rejected sign-in or an unreachable cloud is an error, so the reply can say
+// the PC light did not answer instead of pretending the bar was never there.
+func (m *Module) ApplyEvery(ctx context.Context, op, value string) lighting.Result {
+	if m == nil || m.Service == nil {
+		return lighting.Result{}
+	}
+	ctx, cancel := context.WithTimeout(ctx, groupBudget)
+	defer cancel()
+	devices, err := m.Service.Devices(ctx)
+	if err != nil {
+		if errors.Is(err, core.ErrNotConfigured) {
+			return lighting.Result{}
+		}
+		return lighting.Result{Err: toolError(err)}
+	}
+	out := lighting.Result{Total: len(devices)}
+	for _, d := range devices {
+		if err := m.Service.Apply(ctx, d.DSN, op, value); err != nil {
+			if out.Err == nil {
+				out.Err = toolError(err)
+			}
+			continue
+		}
+		out.Applied++
+	}
+	return out
+}
+
 // extractDevice resolves whether the text mentions a Monster target or specific device.
 func (m *Module) extractDevice(text string) (string, bool) {
-	// Check if text matches a known cloud device name from the 60s cache
+	// Check if text matches a known cloud device name from the 60s cache. The
+	// lookup gets its own short budget: a cold sign-in may run for the client's
+	// whole request timeout, and Extract runs before the Tool's deadline
+	// starts. A miss falls back to the static aliases below.
 	if m != nil && m.Service != nil {
-		if devs, err := m.Service.Devices(context.Background()); err == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		devs, err := m.Service.Devices(ctx)
+		cancel()
+		if err == nil {
 			for _, d := range devs {
 				if d.Name != "" && strings.Contains(strings.ToLower(text), strings.ToLower(d.Name)) {
 					return d.Name, true
@@ -369,6 +425,21 @@ func (m *Module) extractDevice(text string) (string, bool) {
 		return "", true
 	}
 	return "", false
+}
+
+// pcBar picks the account's monitor bar when exactly one device looks like it.
+// The Duo+ models (MNW7-2027-ICW, MLB7-2027-WW) are the PC light a general
+// command means; an account with two bars is ambiguous and stays unresolved.
+func pcBar(devices []core.Device) (core.Device, bool) {
+	var found core.Device
+	matches := 0
+	for _, d := range devices {
+		if barPattern.MatchString(d.Name) || barPattern.MatchString(d.Model) {
+			found = d
+			matches++
+		}
+	}
+	return found, matches == 1
 }
 
 // resolveDevice matches a spoken or requested device name against the account's devices.
@@ -388,6 +459,12 @@ func (m *Module) resolveDevice(ctx context.Context, spoken string) (core.Device,
 	if spoken == "" {
 		if len(devices) == 1 {
 			return devices[0], nil
+		}
+		// "The PC light" / "the monitor light" names the bar, not whichever
+		// device the account lists first: pick the one bar-like device when the
+		// account also holds strips or bulbs.
+		if bar, ok := pcBar(devices); ok {
+			return bar, nil
 		}
 		return core.Device{}, &tool.ToolError{Say: "Specify which Monster light to control."}
 	}

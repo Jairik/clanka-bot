@@ -25,6 +25,10 @@ const view = (over: Partial<PersonasView> = {}): PersonasView => ({
     Personality: "",
     Filler: "",
     Unavailable: "",
+    Clarify: "",
+    CueWords: "",
+    StartPhrases: "",
+    EndPhrases: "",
     Submit: "Save",
     Voices: null,
   },
@@ -37,7 +41,8 @@ const view = (over: Partial<PersonasView> = {}): PersonasView => ({
       SelectAction: "/personas/ada/select",
       Edit: {
         Action: "/personas/ada", Heading: "", FormID: "persona-ada", Name: "Ada", NameLocked: true,
-        Voice: "en-AU", Personality: "", Filler: "", Unavailable: "", Submit: "Save", Voices: null,
+        Voice: "en-AU", Personality: "", Filler: "", Unavailable: "",
+        Clarify: "", CueWords: "", StartPhrases: "", EndPhrases: "", Submit: "Save", Voices: null,
       },
     },
     {
@@ -48,7 +53,8 @@ const view = (over: Partial<PersonasView> = {}): PersonasView => ({
       SelectAction: "/personas/bo/select",
       Edit: {
         Action: "/personas/bo", Heading: "", FormID: "persona-bo", Name: "Bo", NameLocked: true,
-        Voice: "en-GB", Personality: "", Filler: "", Unavailable: "", Submit: "Save", Voices: null,
+        Voice: "en-GB", Personality: "", Filler: "", Unavailable: "",
+        Clarify: "", CueWords: "", StartPhrases: "", EndPhrases: "", Submit: "Save", Voices: null,
       },
     },
   ],

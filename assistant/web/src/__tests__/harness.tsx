@@ -76,6 +76,8 @@ export const req = (over: Partial<Request> & { ID: string }): Request => ({
   TotalTokens: 0,
   CachedTokens: 0,
   AgentSteps: 0,
+  Conversation: "",
+  ConversationLabel: "",
   ...over,
 });
 

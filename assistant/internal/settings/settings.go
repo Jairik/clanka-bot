@@ -485,7 +485,16 @@ func (s *Service) SetJSON(ctx context.Context, key string, raw json.RawMessage) 
 // SetMany validates every value, writes them in one transaction, then swaps
 // the in-memory snapshot. A batch is all or nothing.
 func (s *Service) SetMany(ctx context.Context, values map[string]any) error {
-	if len(values) == 0 {
+	return s.SetManyReset(ctx, values, nil)
+}
+
+// SetManyReset writes value overrides and deletes other keys in one
+// transaction, then swaps the in-memory snapshot. It is the batch an optional
+// bundle uses: the applied values and the fields it clears commit together, so
+// a switch cannot leave the new wording beside the old optional value. A key
+// may not appear in both values and reset.
+func (s *Service) SetManyReset(ctx context.Context, values map[string]any, reset []string) error {
+	if len(values) == 0 && len(reset) == 0 {
 		return nil
 	}
 	type write struct {
@@ -516,6 +525,10 @@ func (s *Service) SetMany(ctx context.Context, values map[string]any) error {
 		}
 		prepared = append(prepared, write{key: key, raw: string(raw), value: canonical})
 	}
+	resetKeys, err := s.prepareResets(values, reset)
+	if err != nil {
+		return err
+	}
 
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
@@ -533,13 +546,19 @@ func (s *Service) SetMany(ctx context.Context, values map[string]any) error {
 			return fmt.Errorf("settings: write %s: %w", w.key, err)
 		}
 	}
+	for _, key := range resetKeys {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM settings WHERE key = ?`, key); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("settings: reset %s: %w", key, err)
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("settings: commit write: %w", err)
 	}
 
 	// The database is the source of truth; the snapshot changes only after a
 	// successful commit, so a failed write cannot leak into a request.
-	keys := make([]string, 0, len(prepared))
+	keys := make([]string, 0, len(prepared)+len(resetKeys))
 	s.mu.Lock()
 	for _, w := range prepared {
 		s.overrides[w.key] = w.value
@@ -547,9 +566,41 @@ func (s *Service) SetMany(ctx context.Context, values map[string]any) error {
 		delete(s.ignored, w.key)
 		keys = append(keys, w.key)
 	}
+	for _, key := range resetKeys {
+		delete(s.overrides, key)
+		// Resetting an ignored key removes the row the owner was warned about.
+		delete(s.ignored, key)
+		keys = append(keys, key)
+	}
 	s.mu.Unlock()
 	s.notify(keys)
 	return nil
+}
+
+// prepareResets validates the keys to delete and rejects one that is also in
+// the same batch's writes. Duplicates are collapsed, as in ResetMany.
+func (s *Service) prepareResets(values map[string]any, reset []string) ([]string, error) {
+	if len(reset) == 0 {
+		return nil, nil
+	}
+	seen := make(map[string]bool, len(reset))
+	keys := make([]string, 0, len(reset))
+	for _, key := range reset {
+		if _, both := values[key]; both {
+			return nil, fmt.Errorf("settings: %s cannot be set and reset in one batch", key)
+		}
+		s.mu.RLock()
+		_, ok := s.defs[key]
+		s.mu.RUnlock()
+		if !ok {
+			return nil, fmt.Errorf("%w %q", ErrUnknownSetting, key)
+		}
+		if !seen[key] {
+			seen[key] = true
+			keys = append(keys, key)
+		}
+	}
+	return keys, nil
 }
 
 // Reset deletes one override and returns the value the lower layers apply.

@@ -378,6 +378,13 @@ export type PersonaForm = {
   Personality: string;
   Filler: string;
   Unavailable: string;
+  // Clarify, CueWords, StartPhrases and EndPhrases are optional: an empty
+  // field keeps the global wording or Control phrases. Lists are one phrase
+  // per line, as in every other wording form.
+  Clarify: string;
+  CueWords: string;
+  StartPhrases: string;
+  EndPhrases: string;
   Submit: string;
   Voices: PersonaVoiceOption[] | null;
 };
@@ -473,6 +480,10 @@ export type Request = {
   TotalTokens: number;
   CachedTokens: number;
   AgentSteps: number;
+  // ConversationLabel is how this turn used the longer budget, in plain
+  // words; empty for a default-budget turn.
+  Conversation: string;
+  ConversationLabel: string;
 };
 
 export type RingKind = {

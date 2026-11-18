@@ -102,6 +102,18 @@ type Deps struct {
 	// provider call. It is an interface rather than *agent.History because
 	// agent imports tool, and a nil value means there is no history to clear.
 	History HistoryResetter
+	// Conversation is the in-memory conversation-mode latch. The
+	// conversation.start and conversation.end Tools write through it, and main
+	// reads the same instance for the per-turn budget and the Follow-up window.
+	// Nil means the mode is unavailable.
+	Conversation Conversation
+}
+
+// Conversation is the in-memory conversation-mode seam. It is not persisted,
+// so a restart ends the mode.
+type Conversation interface {
+	Start()
+	End()
 }
 
 // HistoryResetter is the conversation-history seam. *agent.History satisfies

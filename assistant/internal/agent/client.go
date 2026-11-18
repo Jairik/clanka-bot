@@ -24,6 +24,9 @@ var (
 	errFirstTokenTimeout = errors.New("agent: first token timeout")
 	// errRequestTimeout means the stream stalled after it started.
 	errRequestTimeout = errors.New("agent: request timeout")
+	// errSpokenBudget ends a stream once the spoken-length budget is reached.
+	// It is not a failure: the deltas already delivered are the whole answer.
+	errSpokenBudget = errors.New("agent: spoken budget reached")
 )
 
 // providerError is a failed provider call, with the HTTP status when there was
@@ -94,6 +97,9 @@ func newProvider(settings Settings) *provider {
 type completion struct {
 	Content string
 	Calls   []CallRef
+	// Truncated marks a stream the spoken-length budget stopped early. Content
+	// is then incomplete by design and must not be treated as a failure.
+	Truncated bool
 	// Token counts come from the final usage chunk of the stream. They are
 	// zero when the provider ignores include_usage (unknown, not free).
 	PromptTokens     int64
@@ -102,15 +108,21 @@ type completion struct {
 	CachedTokens     int64
 }
 
-// stream sends one chat-completion request and streams the reply. onDelta, when
-// set, receives content deltas as they arrive (the hook #21's sentence
-// streaming uses).
-func (p *provider) stream(ctx context.Context, messages []openai.ChatCompletionMessageParamUnion, tools []openai.ChatCompletionToolUnionParam, onDelta func(string)) (completion, error) {
+// stream sends one chat-completion request and streams the reply. maxTokens
+// caps the completion when positive. onDelta, when set, receives content deltas
+// as they arrive; returning false cancels the stream, which is how the spoken
+// budget stops paying for text nobody will hear.
+func (p *provider) stream(ctx context.Context, messages []openai.ChatCompletionMessageParamUnion, tools []openai.ChatCompletionToolUnionParam, maxTokens int, onDelta func(string) bool) (completion, error) {
 	model := strings.TrimSpace(p.model())
 	if model == "" {
 		model = p.fallbackModel
 	}
 	params := openai.ChatCompletionNewParams{Model: model, Messages: messages}
+	// A cost backstop, not the spoken limit: the budget cancels the stream on
+	// its own, and this bounds a provider that ignores the stop signal.
+	if maxTokens > 0 {
+		params.MaxCompletionTokens = openai.Int(int64(maxTokens))
+	}
 	// Ask for the final usage chunk. Providers that ignore this option simply
 	// report zero, which the caller reads as unknown rather than free.
 	params.StreamOptions = openai.ChatCompletionStreamOptionsParam{IncludeUsage: openai.Bool(true)}
@@ -170,8 +182,10 @@ func (p *provider) stream(ctx context.Context, messages []openai.ChatCompletionM
 		}
 		if delta.Content != "" {
 			out.Content += delta.Content
-			if onDelta != nil {
-				onDelta(delta.Content)
+			if onDelta != nil && !onDelta(delta.Content) {
+				out.Truncated = true
+				cancel(errSpokenBudget)
+				break
 			}
 		}
 		for _, call := range delta.ToolCalls {
@@ -191,6 +205,11 @@ func (p *provider) stream(ctx context.Context, messages []openai.ChatCompletionM
 		}
 	}
 
+	// The spoken budget stopped the stream on purpose: the partial content is
+	// the answer, not a provider failure.
+	if errors.Is(context.Cause(runCtx), errSpokenBudget) {
+		return out, nil
+	}
 	if cause := context.Cause(runCtx); errors.Is(cause, errFirstTokenTimeout) || errors.Is(cause, errRequestTimeout) {
 		return completion{}, cause
 	}

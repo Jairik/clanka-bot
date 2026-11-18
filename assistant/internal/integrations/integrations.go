@@ -55,7 +55,8 @@ type Account struct {
 	Secrets  []string
 	Optional []string
 	// Tools names the voice Tools this account unlocks. An empty list means the
-	// account is Dashboard-only and has no Hermes surface.
+	// account has no Hermes surface, whatever voice Tools the assistant itself
+	// runs against it.
 	Tools []string
 	// Docs is one short sentence the page shows under the account.
 	Docs string
@@ -116,9 +117,9 @@ var Catalog = []Account{
 	{
 		ID:      "monster",
 		Name:    "Monster Smart Lighting",
-		Summary: "The cloud account behind the Monster lights page.",
+		Summary: "The cloud account behind the PC / desk lights on the Lights page.",
 		Secrets: []string{"MONSTER_EMAIL", "MONSTER_PASSWORD"},
-		Docs:    "Dashboard-only today: the Monster module has no voice Tools, so there is no Hermes surface to grant.",
+		Docs:    "The Monster voice Tools control the PC / desk light; this page verifies the account they read.",
 	},
 }
 

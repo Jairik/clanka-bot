@@ -34,6 +34,11 @@ Rules:
 // behind the live agent.clarify_message setting.
 const DefaultClarifyMessage = "Didn't catch that."
 
+// ConversationNote is added to the labelled system part for a turn that may
+// use the longer budget. It restates only the length change: speech cleanup
+// and the Agent path's other rules still apply.
+const ConversationNote = "Conversation: longer answers allowed, still no lists or markdown."
+
 // Persona is the active personality prompt. It is read once per turn and added
 // only to the labelled system part of the request, never to history or a Tool
 // result (ADR-0002).
@@ -93,12 +98,21 @@ func (b *PromptBuilder) WithClarify(source func() string) *PromptBuilder {
 	return b
 }
 
-// Messages builds the labelled parts of a request: the system prompt, the
-// shared history, and the current utterance. A turn that touched a Local-only
-// Tool is dropped whole, utterance included.
+// Messages builds the labelled parts of a request for a turn with the default
+// spoken budget: the system prompt, the shared history, and the current
+// utterance. A turn that touched a Local-only Tool is dropped whole, utterance
+// included.
 func (b *PromptBuilder) Messages(utterance string, history []Turn) []openai.ChatCompletionMessageParamUnion {
+	return b.MessagesFor(utterance, history, false)
+}
+
+// MessagesFor builds the labelled parts of a request: the system prompt, the
+// shared history, and the current utterance. conversation adds the mode line
+// to the same system part; it never adds a second instruction message. A turn
+// that touched a Local-only Tool is dropped whole, utterance included.
+func (b *PromptBuilder) MessagesFor(utterance string, history []Turn, conversation bool) []openai.ChatCompletionMessageParamUnion {
 	messages := make([]openai.ChatCompletionMessageParamUnion, 0, 1+2*len(history)+1)
-	messages = append(messages, openai.SystemMessage(b.systemPart()))
+	messages = append(messages, openai.SystemMessage(b.systemPart(conversation)))
 	for _, turn := range history {
 		if turn.localOnly() {
 			continue
@@ -110,28 +124,31 @@ func (b *PromptBuilder) Messages(utterance string, history []Turn) []openai.Chat
 	return messages
 }
 
-// systemPart builds the one system message. The base prompt, the Clarify rule
-// and the active Persona are resolved once here; the Persona is labelled so the
-// model can tell instructions from history and Tool output, and it is appended
-// last so the Clarify rule survives any Persona. An empty prompt adds nothing.
-func (b *PromptBuilder) systemPart() string {
+// systemPart builds the one system message. The base prompt, the Clarify rule,
+// the active Persona and the conversation note are resolved once here; the
+// Persona is labelled so the model can tell instructions from history and Tool
+// output, and it is appended after the Clarify rule so that rule survives any
+// Persona. An empty prompt adds nothing. The conversation note, when present,
+// stays inside this same labelled part.
+func (b *PromptBuilder) systemPart(conversation bool) string {
 	text := b.system()
 	if clause := b.clarifyClause(); clause != "" {
 		text += "\n\n" + clause
 	}
-	if b.persona == nil {
-		return text
+	if b.persona != nil {
+		snapshot := b.persona()
+		if prompt := strings.TrimSpace(snapshot.Prompt); prompt != "" {
+			if name := strings.TrimSpace(snapshot.Name); name == "" {
+				text += "\n\nPersona instructions:\n" + prompt
+			} else {
+				text += fmt.Sprintf("\n\nPersona instructions for %q:\n", name) + prompt
+			}
+		}
 	}
-	snapshot := b.persona()
-	prompt := strings.TrimSpace(snapshot.Prompt)
-	if prompt == "" {
-		return text
+	if conversation {
+		text += "\n\n" + ConversationNote
 	}
-	name := strings.TrimSpace(snapshot.Name)
-	if name == "" {
-		return text + "\n\nPersona instructions:\n" + prompt
-	}
-	return text + fmt.Sprintf("\n\nPersona instructions for %q:\n", name) + prompt
+	return text
 }
 
 // clarifyClause builds the one rule that depends on a live setting: the exact

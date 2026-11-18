@@ -66,6 +66,9 @@ positives:
     - "can you power on the lights"
     - "can you turn off the lights"
     - "can you lights on"
+    - "turn on all lights"
+    - "turn off all the lights"
+    - "turn on all the lights"
   lights.brightness:
     - "set lights brightness to 50 percent"
     - "dim the lights to 20 percent"
@@ -177,6 +180,9 @@ positives:
     - "monitor light off"
     - "turn off Duo+"
     - "switch on Duo+"
+    - "turn on the pc light"
+    - "turn off the pc light"
+    - "switch off the pc lights"
   monster.brightness:
     - "set light bar level to 50 percent"
     - "turn the monitor light brightness to 75"
@@ -1893,6 +1899,48 @@ positives:
     - "what is an algorithm"
     - "what is a black hole"
     - "what is a red fox"
+  conversation.start:
+    - "let's chat"
+    - "let's talk"
+    - "can we just chat"
+    - "can we talk for a bit"
+    - "I want to talk with you"
+    - "I want to have a chat"
+    - "I'd like to chat"
+    - "I'd like to talk"
+    - "talk with me for a bit"
+    - "chat with me for a bit"
+    - "let's have a nice chat"
+    - "can we chat for a while"
+    - "I want to chat with you"
+    - "let's have a proper chat"
+    - "can we just talk"
+    - "I'd like to have a chat"
+    - "let's have a chat"
+    - "I need someone to talk to"
+    - "can we talk a little"
+    - "talk with me for a while"
+  conversation.end:
+    - "end the conversation"
+    - "end conversation"
+    - "finish the conversation"
+    - "let's end this conversation"
+    - "we're done talking"
+    - "I'm done talking"
+    - "no more chatting"
+    - "I'm finished talking"
+    - "leave conversation mode"
+    - "exit conversation mode"
+    - "I want to end our conversation"
+    - "the conversation is over"
+    - "let's stop the conversation"
+    - "that's the end of our chat"
+    - "I'd like to end this conversation"
+    - "end our chat"
+    - "I'm done with this conversation"
+    - "let's wrap up the conversation"
+    - "wrap up this chat"
+    - "finish our conversation"
   calendar.today:
     - "what's on my calendar today"
     - "what is on my calendar today"
@@ -2320,6 +2368,15 @@ negatives:
   - what is the conversion rate from pounds to dollars
   - tell me the current value of bitcoin
   - how much would 20 cost in euros
+  # Conversation-mode-shaped but not a toggle: an ordinary request about
+  # ending something else, or a different kind of talk, must not start or end
+  # the mode by meaning (#499). "stop" and "cancel" are the shared Focus
+  # intents and are covered by the focus cases below, not as Fast path
+  # negatives. "stop the music" is a spotify.pause positive, not a negative.
+  - end the meeting
+  - leave a message
+  - no more coffee
+  - stop the printer
   # Announcement-making requests: asking to speak/broadcast an announcement, not
   # read back past announcements; these must not route to assistant.announcements.
   - make an announcement
@@ -2342,6 +2399,15 @@ negatives:
   - extend my warranty
   - can I add more time to my parking meter
   - extend the deadline
+  # Conversation-mode-shaped but not a toggle: an ordinary request about
+  # ending something else, or a different kind of talk, must not start or end
+  # the mode by meaning (#499). "stop" and "cancel" are the shared Focus
+  # intents and are covered by the focus cases below, not as Fast path
+  # negatives. "stop the music" is a spotify.pause positive, not a negative.
+  - end the meeting
+  - leave a message
+  - no more coffee
+  - stop the printer
 
 # Compound requests ask for more than one thing. They are kept separate so
 # the evaluation can report compound handling on its own.

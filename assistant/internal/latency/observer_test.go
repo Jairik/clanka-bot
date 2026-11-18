@@ -69,9 +69,16 @@ func TestObserverSeesOneCompletedRequestWithDisplayDetail(t *testing.T) {
 	// The structured request line still carries route and timings, but not the
 	// display-only reply or Local-only Tool result.
 	line := logs.String()
+	// Ignore the timestamp when scanning: its nanosecond digits can contain a
+	// short number from the payload by chance, which made this assert flake.
+	if i := strings.Index(line, `"time":`); i >= 0 {
+		if end := strings.Index(line[i:], ","); end >= 0 {
+			line = line[:i] + line[i+end+1:]
+		}
+	}
 	for _, unwanted := range []string{"launch code", "1234", "LocalOnly", "ToolCallDetail"} {
 		if strings.Contains(line, unwanted) {
-			t.Fatalf("request log leaked display detail %q:\n%s", unwanted, line)
+			t.Fatalf("request log leaked display detail %q:\n%s", unwanted, logs.String())
 		}
 	}
 	if !strings.Contains(line, `"path":"fast_path"`) || !strings.Contains(line, `"routing_ms":40`) {

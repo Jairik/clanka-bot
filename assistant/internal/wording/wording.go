@@ -338,6 +338,15 @@ func WithFillerKeys(keys ...string) Option {
 	return func(m *Manager) { m.fillerKeys = append([]string(nil), keys...) }
 }
 
+// WithPersonaPhrases adds the active Persona's extra Control phrases, keyed by
+// Tool name. They are claims beside the global lists, never replacements: the
+// shipped phrases keep working and a phrase claimed by two owners still falls
+// through. The source is read once per request, so a switch applies to the
+// next one.
+func WithPersonaPhrases(source func() map[string][]string) Option {
+	return func(m *Manager) { m.personaPhrases = source }
+}
+
 // WithRetryBackoff changes the bounded retry schedule for a failed Examples
 // rebuild or Filler synthesis. Production uses the defaults; tests shorten
 // them so a retry can be observed without sleeping for seconds.
@@ -387,6 +396,7 @@ type Manager struct {
 
 	fillerSignature func() string
 	fillerKeys      []string
+	personaPhrases  func() map[string][]string
 
 	// retryInitial and retryMax bound the background retry of a failed
 	// Examples rebuild or Filler synthesis. The worker owns the timer, so a
@@ -740,7 +750,29 @@ func (m *Manager) Routing() pipeline.RoutingWords {
 			}
 		}
 	}
-	phrases := make(map[string]string, len(claims))
+	// The active Persona's trigger phrases are extra claims, never a
+	// replacement. They are applied after the global table below, so a phrase
+	// the owner adds to a global Control phrase later still keeps routing
+	// there; the Persona phrase simply does not win.
+	var personaClaims map[string][]string
+	if m.personaPhrases != nil {
+		personaClaims = make(map[string][]string)
+		for name, list := range m.personaPhrases() {
+			for _, text := range list {
+				key := phrase.Normalize(text)
+				if key == "" {
+					continue
+				}
+				if len(claims[key]) > 0 {
+					continue
+				}
+				if !contains(personaClaims[key], name) {
+					personaClaims[key] = append(personaClaims[key], name)
+				}
+			}
+		}
+	}
+	phrases := make(map[string]string, len(claims)+len(personaClaims))
 	intentPhrases := make(map[string]string, len(claims))
 	for key, owners := range claims {
 		if len(owners) != 1 {
@@ -754,6 +786,13 @@ func (m *Manager) Routing() pipeline.RoutingWords {
 			continue
 		}
 		phrases[key] = owner
+	}
+	for key, owners := range personaClaims {
+		if len(owners) != 1 {
+			// Two Persona Tools claiming one phrase are ambiguous too.
+			continue
+		}
+		phrases[key] = owners[0]
 	}
 
 	words := pipeline.RoutingWords{ControlPhrases: phrases, IntentPhrases: intentPhrases}

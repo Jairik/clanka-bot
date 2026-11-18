@@ -963,11 +963,12 @@ spoken cue never keeps the old voice.
 #### Personas
 
 A **Persona** bundles a ready voice, a personality prompt and the Agent Filler
-and Unavailable wording under one spoken name. The **Personas** page at
-`/personas` creates and edits the bundle and selects it; `persona.switch`,
-`persona.list` and `persona.current` are Local-only voice Tools, and
-`persona.switch` resolves the spoken name through the shared name matcher. For
-example, after creating a Persona named GLaDOS:
+and Unavailable wording under one spoken name. It may also set an optional
+Clarify line, optional cue words and optional Conversation start and end
+phrases. The **Personas** page at `/personas` creates and edits the bundle and
+selects it; `persona.switch`, `persona.list` and `persona.current` are Local-only
+voice Tools, and `persona.switch` resolves the spoken name through the shared
+name matcher. For example, after creating a Persona named GLaDOS:
 
 ```sh
 curl -s -X POST localhost:8081/debug/transcript \
@@ -978,8 +979,14 @@ curl -s -X POST localhost:8081/debug/transcript \
 ```
 
 Selecting writes `voice.name`, `agent.filler`, `agent.unavailable_message` and
-`persona.active` in one settings transaction. Every field and the voice state
-are validated before that write, so a stale, unvalidated or missing voice
+`persona.active` in one settings transaction. When the bundle sets them, the
+optional `agent.clarify_message` and `conversation.cue_words` are written in the
+same batch; an empty field clears that override, so switching Personas restores
+the global value. The optional start and end phrases are kept on the Persona
+record and added to the global Control phrases at routing time, so the shipped
+"let's talk" and "that's all" always keep working and a phrase already owned by
+another Tool is refused when the Persona is saved. Every field and the voice
+state are validated before that write, so a stale, unvalidated or missing voice
 leaves the previous voice and wording untouched rather than applying half a
 Persona. The reply is synthesized after the write, so the spoken confirmation
 already uses the new voice.
@@ -1224,6 +1231,8 @@ There is no general hot-reload framework.
 | `agent.filler` | The phrase played while the Agent path waits. A change re-synthesizes the cached audio in the background; the old audio plays until the new clip is ready, and at most one Filler still plays per request. |
 | `agent.unavailable_message` | The phrase spoken when the model is unreachable. A change applies to the next failure. |
 | `agent.clarify_message` | The line the prompt tells the model to use when a request is addressed to the Assistant but unclear. A change applies to the next request. |
+| `conversation.cue_words` | Words or phrases that give one Agent turn the longer conversation budget. Matching is on normalised whole words; a change applies to the next turn. |
+| `sounds.ignore` | The soft Cue played when the Agent decides speech was not addressed to the Assistant. `none` makes that turn fully silent; a change applies to the next ignored turn. |
 | `agent.model` | The model name sent to the configured provider. A change applies to the next turn (the model is resolved per request); there is no automatic failover. |
 | `wakeword.threshold.<model>` | Detection threshold for one configured wake model (0 < t ≤ 1). A change reopens the idle detect stream with the new map, so it applies to the next detection. Reset returns to `WAKEWORD_THRESHOLDS` or `config.yaml`. The model list and address stay `restart_required`. |
 | `http.addr`, `debug.addr`, `dashboard.addr`, `tts.addr`, `wakeword.addr`, `stt.addr`, `embed.url`, `capture.source`, `playback.sink` | Connection-level settings, reported as `restart_required`. A stored override is applied on the next process start. |

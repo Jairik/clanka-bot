@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -24,13 +25,15 @@ import (
 // its one-speaker gate shut until Close returns, so an unbounded wait silences
 // every later reply, Filler, Cue, Ring and Announcement.
 //
-// pacat runs with --latency-msec=100 and Close follows the last Write, so a
-// healthy tail is milliseconds. The pipe itself holds at most 64 KiB, which is
-// 2.05 s of the 16 kHz mono PCM every Cue plays (cmd/assistant builds the Cue
-// sink at the capture rate) and 1.4 s at 24 kHz; drainTimeout covers the
-// former with headroom so a healthy long Cue is not killed mid-play.
+// Writes are not paced, so how far pacat runs ahead of the speaker is set by
+// the server, not by --latency-msec=100: PipeWire's pulse server has accepted
+// more than 5 s of a reply into a Bluetooth sink within half a second. Close
+// therefore allows the audio still unplayed at that moment (bytes written less
+// the time since the first Write) plus drainTimeout. The grace alone also
+// covers the 64 KiB pipe: 2.05 s of the 16 kHz mono PCM every Cue plays
+// (cmd/assistant builds the Cue sink at the capture rate), 1.4 s at 24 kHz.
 var (
-	// drainTimeout bounds the wait for the buffered tail to play out.
+	// drainTimeout is the grace on top of the unplayed audio.
 	drainTimeout = 4 * time.Second
 	// killTimeout bounds the wait after the stream context is cancelled and
 	// CommandContext has killed pacat.
@@ -88,7 +91,7 @@ func pactlFor(pacat string) string {
 }
 
 // Open starts pacat and returns a writer for raw PCM. Closing the writer waits
-// for the audio to drain, for at most drainTimeout; a sink that stopped
+// for the audio to drain, for at most the unplayed audio plus drainTimeout; a sink that stopped
 // accepting samples is killed instead of blocking the caller. Volume and stop
 // are handled by SetVolume, AdjustVolume and Stop below.
 func (s *PulseSink) Open(ctx context.Context, format Format) (io.WriteCloser, error) {
@@ -136,7 +139,10 @@ func (s *PulseSink) Open(ctx context.Context, format Format) (io.WriteCloser, er
 		cancel()
 		return nil, fmt.Errorf("audio: start pacat: %w", err)
 	}
-	w := &processWriter{ctx: streamCtx, cmd: cmd, stdin: stdin, stderr: stderr, cancel: cancel}
+	w := &processWriter{
+		ctx: streamCtx, cmd: cmd, stdin: stdin, stderr: stderr, cancel: cancel,
+		bytesPerSecond: int64(format.Rate) * int64(format.Width) * int64(format.Channels),
+	}
 	s.mu.Lock()
 	s.active[w] = struct{}{}
 	s.mu.Unlock()
@@ -345,6 +351,11 @@ type processWriter struct {
 	release   func()
 	closeOnce sync.Once
 	closeErr  error
+
+	// bytesPerSecond, written and firstWrite size the drain bound.
+	bytesPerSecond int64
+	written        atomic.Int64
+	firstWrite     atomic.Int64 // UnixNano of the first accepted byte; 0 before it
 }
 
 func (w *processWriter) Write(p []byte) (int, error) {
@@ -353,6 +364,10 @@ func (w *processWriter) Write(p []byte) (int, error) {
 		return 0, err
 	}
 	n, err := w.stdin.Write(p)
+	if n > 0 {
+		w.firstWrite.CompareAndSwap(0, time.Now().UnixNano())
+		w.written.Add(int64(n))
+	}
 	if err != nil {
 		if ctxErr := w.ctx.Err(); ctxErr != nil {
 			return n, ctxErr
@@ -390,9 +405,10 @@ func (w *processWriter) close() (err error) {
 	done := make(chan error, 1)
 	go func() { done <- w.cmd.Wait() }()
 
+	bound := w.drainBound(time.Now())
 	select {
 	case err = <-done:
-	case <-time.After(drainTimeout):
+	case <-time.After(bound):
 		// The drain stalled. Cancelling the stream is what makes CommandContext
 		// kill pacat, and only then can WaitDelay help. A caller that already
 		// cancelled (Stop, Barge-in) owns the reason.
@@ -410,7 +426,7 @@ func (w *processWriter) close() (err error) {
 		if callerStopped != nil {
 			return callerStopped
 		}
-		return fmt.Errorf("%w and was stopped after %s%s", errDrainTimeout, drainTimeout, w.stderrTail())
+		return fmt.Errorf("%w and was stopped after %s%s", errDrainTimeout, bound.Round(time.Millisecond), w.stderrTail())
 	}
 
 	if err != nil {
@@ -420,6 +436,22 @@ func (w *processWriter) close() (err error) {
 		return fmt.Errorf("audio: pacat: %w%s", err, w.stderrTail())
 	}
 	return nil
+}
+
+// drainBound is how long Close waits for pacat to exit: the audio it has
+// accepted but cannot have played by now, plus drainTimeout. A sink that
+// stalls is still stopped, just no earlier than a healthy one would finish.
+func (w *processWriter) drainBound(now time.Time) time.Duration {
+	bound := drainTimeout
+	first := w.firstWrite.Load()
+	if first == 0 || w.bytesPerSecond <= 0 {
+		return bound
+	}
+	audio := time.Duration(w.written.Load() * int64(time.Second) / w.bytesPerSecond)
+	if unplayed := audio - now.Sub(time.Unix(0, first)); unplayed > 0 {
+		bound += unplayed
+	}
+	return bound
 }
 
 func (w *processWriter) stderrTail() string {

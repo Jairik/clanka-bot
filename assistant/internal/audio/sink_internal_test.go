@@ -205,3 +205,48 @@ func TestDrainBoundCoversTheSixteenKilohertzCueTail(t *testing.T) {
 		t.Fatalf("drainTimeout %s does not cover the %s 16 kHz cue tail", drainTimeout, tail)
 	}
 }
+
+// TestCloseWaitsForATailLongerThanTheGrace is the 2026-11-18 field case: the
+// Pulse server took most of a 6 s reply at once, and the fixed 4 s bound killed
+// pacat while it was still honestly playing. The bound now counts the audio
+// that cannot have played yet, so a tail longer than drainTimeout survives.
+func TestCloseWaitsForATailLongerThanTheGrace(t *testing.T) {
+	shortDeadlines(t)
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "pacat")
+	// Swallow the PCM at once, then "play" it for longer than drainTimeout.
+	script := "#!/bin/sh\ncat > /dev/null\nsleep 0.6\n"
+	if err := os.WriteFile(binary, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake pacat: %v", err)
+	}
+	sink := NewPulseSink(binary, "")
+	format := Format{Rate: 16000, Width: 2, Channels: 1}
+	writer, err := sink.Open(context.Background(), format)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	// One second of audio, so the bound is about 1 s + 100 ms grace.
+	if _, err := writer.Write(make([]byte, 32000)); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("Close = %v, want the 600ms tail to play out", err)
+	}
+}
+
+func TestDrainBoundCountsUnplayedAudio(t *testing.T) {
+	w := &processWriter{bytesPerSecond: 48000}
+	now := time.Now()
+	if got := w.drainBound(now); got != drainTimeout {
+		t.Fatalf("bound before any write = %s, want %s", got, drainTimeout)
+	}
+	w.firstWrite.Store(now.Add(-time.Second).UnixNano())
+	w.written.Store(48000 * 6) // 6 s of audio, 1 s of it played
+	if got, want := w.drainBound(now), drainTimeout+5*time.Second; got != want {
+		t.Fatalf("bound = %s, want %s", got, want)
+	}
+	w.firstWrite.Store(now.Add(-10 * time.Second).UnixNano())
+	if got := w.drainBound(now); got != drainTimeout {
+		t.Fatalf("bound after the audio should have played = %s, want %s", got, drainTimeout)
+	}
+}

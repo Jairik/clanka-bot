@@ -73,6 +73,17 @@ type Service struct {
 	// read loads the rows already in the settings store.
 	colors map[string]string
 	Run    func(context.Context, ...string) ([]byte, error)
+
+	// startHelper builds the long-lived helper process. Nil starts python3
+	// with the embedded script and no arguments. Tests pass a fake process.
+	startHelper func() *exec.Cmd
+	// restartDelay is the first wait after the helper dies. Zero uses the default.
+	restartDelay time.Duration
+
+	helperMu     sync.Mutex
+	proc         *bleProc
+	helperFailed bool
+	backoff      time.Duration
 }
 
 func New(get func() *settings.Service) *Service {
@@ -100,7 +111,7 @@ func (s *Service) Failed() bool { s.mu.Lock(); defer s.mu.Unlock(); return s.fai
 // controller still fails inside this budget.
 const writeBudget = 14 * time.Second
 
-// run bounds queueing and subprocess execution together, including missing hardware.
+// run bounds queueing and one helper command together, including missing hardware.
 func (s *Service) run(ctx context.Context, args ...string) ([]byte, error) {
 	if !s.Enabled() {
 		return nil, errors.New("lights are disabled on the Lights page")
@@ -110,9 +121,10 @@ func (s *Service) run(ctx context.Context, args ...string) ([]byte, error) {
 	return s.runWithin(ctx, args...)
 }
 
-// runWithin runs one helper invocation under the caller's existing deadline.
+// runWithin runs one helper command under the caller's existing deadline.
 // A batch of lights shares one writeBudget through it, so the device count
-// cannot multiply the static Tool Timeout.
+// cannot multiply the static Tool Timeout. The long-lived helper is the
+// default; CLANKA_LIGHTS_BLE_ONESHOT selects a fresh python3 process per call.
 func (s *Service) runWithin(ctx context.Context, args ...string) ([]byte, error) {
 	select {
 	case s.gate <- struct{}{}:
@@ -123,6 +135,14 @@ func (s *Service) runWithin(ctx context.Context, args ...string) ([]byte, error)
 	if s.Run != nil {
 		return s.Run(ctx, args...)
 	}
+	if bleOneShot() {
+		return s.runOneShot(ctx, args...)
+	}
+	return s.runHelper(ctx, args...)
+}
+
+// runOneShot is the cold-start fallback: one python3 process, one command, then exit.
+func (s *Service) runOneShot(ctx context.Context, args ...string) ([]byte, error) {
 	out, err := exec.CommandContext(ctx, "python3", append([]string{"-c", helper}, args...)...).Output()
 	if err != nil && ctx.Err() != nil {
 		// The helper was killed by the shared budget; the deadline is the reason.

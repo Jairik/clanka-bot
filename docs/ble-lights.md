@@ -45,8 +45,13 @@ and strobe.
   a matching advertised name alone is no guarantee of compatibility.
 - HappyLighting: [Triones byte formats, FFD9 and built-in modes](https://github.com/madhead/saberlight/blob/master/protocols/Triones/protocol.md)
   and [Python implementation](https://github.com/DmitriyBukreev/trionesDevice).
-  Brightness sends grayscale RGB because this protocol has no independent RGB
-  brightness command; it replaces the selected colour and exits an effect.
+  Brightness has no command of its own, so it sends the last colour set on
+  that controller scaled by the percentage. Each channel is rounded, and a
+  non-zero channel stays at least 1 so 1% is not black. That colour is
+  remembered per controller in the settings store (not as a user setting)
+  and kept across a restart. With no remembered colour, brightness still
+  sends grayscale RGB. Setting a colour or a brightness replaces whatever
+  is showing and exits an effect.
 
 A Driver supplies command bytes and a characteristic. The transport is an
 embedded Python helper with pinned Bleak, using host BlueZ over D-Bus. Each

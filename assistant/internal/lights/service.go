@@ -69,6 +69,9 @@ type Service struct {
 	mu     sync.Mutex
 	last   string
 	failed bool
+	// colors is the last commanded #rrggbb per address. Nil until the first
+	// read loads the rows already in the settings store.
+	colors map[string]string
 	Run    func(context.Context, ...string) ([]byte, error)
 }
 
@@ -177,7 +180,16 @@ func (s *Service) Apply(ctx context.Context, device, op, value string) (Result, 
 	result := Result{Total: len(chosen)}
 	var failed []string
 	for i := range chosen {
-		d := BLEDriver{chosen[i].Protocol}
+		d := BLEDriver{Protocol: chosen[i].Protocol}
+		if op == "brightness" && chosen[i].Protocol == "happy" {
+			// HappyLighting brightness is an RGB write. Scale the last colour,
+			// or leave Color empty so the encoder sends grey.
+			colour, err := s.colorFor(batchCtx, chosen[i].Address)
+			if err != nil {
+				return result, err
+			}
+			d.Color = colour
+		}
 		payload, err := d.Encode(op, value)
 		if err != nil {
 			return result, err
@@ -190,6 +202,12 @@ func (s *Service) Apply(ctx context.Context, device, op, value string) (Result, 
 		if err != nil {
 			failed = append(failed, chosen[i].Name+": "+errText(err))
 			continue
+		}
+		if op == "color" {
+			// A failed write must not become the colour a later brightness scales.
+			if err := s.rememberColor(batchCtx, chosen[i].Address, value); err != nil {
+				return result, err
+			}
 		}
 		result.Done++
 	}
@@ -380,4 +398,87 @@ func trimDetail(s string, n int) string {
 		return s
 	}
 	return strings.TrimSpace(s[:n-1]) + "…"
+}
+
+// colorKeyPrefix is the settings-table prefix for one controller's last colour.
+// The address is appended, and the key is not a user setting.
+const colorKeyPrefix = "lights.color."
+
+// colorKey is the non-user settings key for one controller's last colour.
+func colorKey(address string) string {
+	return colorKeyPrefix + address
+}
+
+// colorFor returns the last commanded colour for address, or "" when none is known.
+func (s *Service) colorFor(ctx context.Context, address string) (string, error) {
+	if err := s.ensureColors(ctx); err != nil {
+		return "", err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.colors[address], nil
+}
+
+// ensureColors loads each saved controller's colour from the settings store once.
+func (s *Service) ensureColors(ctx context.Context) error {
+	s.mu.Lock()
+	if s.colors != nil {
+		s.mu.Unlock()
+		return nil
+	}
+	s.mu.Unlock()
+
+	loaded := map[string]string{}
+	if s.Settings != nil && s.Settings() != nil {
+		svc := s.Settings()
+		for _, d := range s.Devices() {
+			value, ok, err := svc.GetPrivate(ctx, colorKey(d.Address))
+			if err != nil {
+				return err
+			}
+			if ok {
+				loaded[d.Address] = value
+			}
+		}
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.colors == nil {
+		s.colors = loaded
+		return nil
+	}
+	// A colour write landed while the rows were being read. Keep that newer
+	// value and fill in any address it did not touch.
+	for address, colour := range loaded {
+		if _, exists := s.colors[address]; !exists {
+			s.colors[address] = colour
+		}
+	}
+	return nil
+}
+
+// rememberColor stores the colour after the controller accepted a color write.
+func (s *Service) rememberColor(ctx context.Context, address, value string) error {
+	colour, err := canonicalColor(value)
+	if err != nil {
+		return err
+	}
+	if err := s.ensureColors(ctx); err != nil {
+		return err
+	}
+	// Hold the lock across the row and the map so two color writes cannot
+	// leave memory remembering a colour the store no longer has.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.colors == nil {
+		s.colors = map[string]string{}
+	}
+	if s.Settings != nil && s.Settings() != nil {
+		if err := s.Settings().SetPrivate(ctx, colorKey(address), colour); err != nil {
+			return err
+		}
+	}
+	s.colors[address] = colour
+	return nil
 }

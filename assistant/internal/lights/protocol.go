@@ -15,7 +15,12 @@ type Driver interface {
 }
 
 // BLEDriver supports the Lotus Lantern and HappyLighting wire formats.
-type BLEDriver struct{ Protocol string }
+// Color is the last commanded #RRGGBB. HappyLighting brightness scales it;
+// empty means no colour is known, so brightness stays grey.
+type BLEDriver struct {
+	Protocol string
+	Color    string
+}
 
 func (d BLEDriver) Characteristic() string {
 	if d.Protocol == "happy" {
@@ -64,8 +69,8 @@ func (d BLEDriver) Encode(op, value string) ([]byte, error) {
 			break
 		}
 		if happy {
-			v := byte(n * 255 / 100)
-			return []byte{0x56, v, v, v, 0, 0xf0, 0xaa}, nil
+			// This protocol's only level control is another RGB write.
+			return happyBrightness(n, d.Color)
 		}
 		return []byte{0x7e, 0, 1, byte(n), 0xff, 0, 0xff, 0, 0xef}, nil
 	case "mode":
@@ -83,4 +88,49 @@ func (d BLEDriver) Encode(op, value string) ([]byte, error) {
 		return []byte{0x7e, 0, 3, v, 3, 0, 0, 0, 0xef}, nil
 	}
 	return nil, fmt.Errorf("invalid %s value", op)
+}
+
+// happyBrightness encodes a HappyLighting brightness level.
+// With no colour it sends grey, which is what the controller already did.
+// With a colour it sends that colour scaled by percent/100.
+func happyBrightness(percent int, colour string) ([]byte, error) {
+	if colour == "" {
+		v := byte(percent * 255 / 100)
+		return []byte{0x56, v, v, v, 0, 0xf0, 0xaa}, nil
+	}
+	rgb, err := hex.DecodeString(strings.TrimPrefix(colour, "#"))
+	if err != nil || len(rgb) != 3 {
+		return nil, fmt.Errorf("invalid color value")
+	}
+	for i, channel := range rgb {
+		rgb[i] = scaleColorChannel(channel, percent)
+	}
+	return []byte{0x56, rgb[0], rgb[1], rgb[2], 0, 0xf0, 0xaa}, nil
+}
+
+// scaleColorChannel rounds channel * percent / 100.
+// A non-zero channel stays at least 1 when the level is not zero, so 1% is not black.
+// Zero percent is black on every channel.
+func scaleColorChannel(channel byte, percent int) byte {
+	if percent == 0 || channel == 0 {
+		return 0
+	}
+	// Adding 50 before dividing rounds half up.
+	scaled := (int(channel)*percent + 50) / 100
+	if scaled < 1 {
+		scaled = 1
+	}
+	if scaled > 255 {
+		return 255
+	}
+	return byte(scaled)
+}
+
+// canonicalColor returns the colour as #rrggbb.
+func canonicalColor(value string) (string, error) {
+	rgb, err := hex.DecodeString(strings.TrimPrefix(strings.TrimSpace(value), "#"))
+	if err != nil || len(rgb) != 3 {
+		return "", fmt.Errorf("invalid color value")
+	}
+	return "#" + hex.EncodeToString(rgb), nil
 }

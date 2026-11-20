@@ -49,10 +49,16 @@ and strobe.
   brightness command; it replaces the selected colour and exits an effect.
 
 A Driver supplies command bytes and a characteristic. The transport is an
-embedded Python helper with pinned Bleak, using host BlueZ over D-Bus. Each
-write opens and closes its own connection and retries once. Queueing and the
-helper together have a fourteen-second deadline, long enough for a cold
-ELK-BLEDOM connect; discovery lasts three seconds.
+embedded Python helper with pinned Bleak, using host BlueZ over D-Bus. The
+assistant keeps that process running and sends it one JSON command per line.
+Each saved device stays connected for 60 seconds after its last command and
+is opened again after a dropped link. A command that hits its deadline closes
+that device's client and leaves the process up; if the process exits or stops
+speaking JSON, the next command starts a new one. `CLANKA_LIGHTS_BLE_ONESHOT=1`
+restores the previous path: one cold `python3` process per command, which
+connects, writes, disconnects and retries once. Queueing and one command
+together have a fourteen-second deadline, long enough for a cold ELK-BLEDOM
+connect; discovery lasts three seconds.
 Health reports opt-in and the last transport result for the named controller,
 including the helper's reason (for example
 `ELK-BLEDOB04: failed to discover services, device disconnected`), never
@@ -82,5 +88,9 @@ whole system bus policy to solve an access failure.
   requests, and recovery when it returns. Close the vendor phone app first.
 - Check the speaker keeps playing through discovery, writes and reconnects.
 - Disable lights and confirm neither scans nor writes reach BlueZ.
+- On the Pi, a warm second light command should complete in under 1 second.
+  This check is still open: it needs the Pi and a saved controller, it was
+  not run for this change, and no timing was measured.
 
 No hardware, speaker coexistence or Pi deployment was tested during implementation.
+The warm-command timing check above is still open.

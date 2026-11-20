@@ -1127,7 +1127,9 @@ preview what they match instead of how they sound, because a prefix is matched
 in what you say, never spoken by the assistant.
 
 The **Sounds** page at `/sounds` is the upload/library/role/preview surface
-described under Sound library and Cue roles below. Its Ring section renders the
+described under Sound library and Cue roles below. A public YouTube video link
+can be installed there as one library sound; that download is not the
+completion-audio stream. Its Ring section renders the
 per-kind Timer and Alarm definitions from the settings service, so a new key
 appears there without a page change.
 
@@ -1372,6 +1374,15 @@ Apache-2.0, pinned in `go.mod`; no runtime ffmpeg), downmixes
 to mono, resamples to the speaker/capture format, normalises loudness and stores
 one canonical PCM16 WAV in `data/sounds/`. A failed or undecodable upload leaves
 no file or index row. Neither uploads nor role assignments have a length limit.
+
+The same page accepts a public YouTube video link (`POST /sounds/youtube`).
+The assistant downloads that video's audio once with yt-dlp, refuses anything
+over the same 10 MB limit, and stores it through the ordinary import path as
+one library sound named from the video title (or the video id when the title
+is missing). Preview, On Pi, Cue roles and the per-Alarm sound list then play
+that local file. A failed download leaves the library unchanged. This is
+separate from timer completion audio, which streams a YouTube URL when the
+timer rings and does not add a library sound.
 
 Each role is a live setting named `sounds.<role>`:
 `GET /api/settings` lists them and `PUT` changes one. A value is a library name

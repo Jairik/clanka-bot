@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"errors"
 	"io"
 	"log/slog"
 	"math"
@@ -90,6 +91,13 @@ type soundsFixture struct {
 
 func newSoundsFixture(t *testing.T, previews dashboard.PreviewQueue) *soundsFixture {
 	t.Helper()
+	return newSoundsFixtureWith(t, previews, nil)
+}
+
+// newSoundsFixtureWith is newSoundsFixture with a replaceable YouTube downloader.
+// A nil fetcher is the production yt-dlp path, which these tests never call.
+func newSoundsFixtureWith(t *testing.T, previews dashboard.PreviewQueue, youtube dashboard.YouTubeFetcher) *soundsFixture {
+	t.Helper()
 	dir := t.TempDir()
 	ctx := context.Background()
 	st, err := store.Open(ctx, filepath.Join(dir, "dashboard.db"))
@@ -114,7 +122,7 @@ func newSoundsFixture(t *testing.T, previews dashboard.PreviewQueue) *soundsFixt
 	}
 	sink := newSoundsSink()
 	cues.Bind(svc, sink)
-	handler := newHandler(t, dashboard.Options{Settings: svc, Sounds: cues, PreviewQueue: previews})
+	handler := newHandler(t, dashboard.Options{Settings: svc, Sounds: cues, PreviewQueue: previews, YouTube: youtube})
 	return &soundsFixture{t: t, dir: dir, handler: handler, settings: svc, sounds: cues, sink: sink}
 }
 
@@ -779,4 +787,197 @@ func TestSoundsDeleteRemovesALibrarySoundAndRefusesAnAssignedOne(t *testing.T) {
 	if rec := f.post("/sounds/delete/missing", nil); rec.Code != http.StatusNotFound {
 		t.Fatalf("unknown delete status = %d, want 404", rec.Code)
 	}
+}
+
+// toneMP3 is a real short MP3 the importer accepts. Tests never download one.
+func toneMP3(t *testing.T) []byte {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "audio", "testdata", "tone.mp3"))
+	if err != nil {
+		t.Fatalf("open mp3 fixture: %v", err)
+	}
+	return data
+}
+
+// fakeYouTubeMP3 writes one temp MP3 the handler must delete after the request.
+func fakeYouTubeMP3(t *testing.T, data []byte) string {
+	t.Helper()
+	file, err := os.CreateTemp(t.TempDir(), "youtube-*.mp3")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Write(data); err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return file.Name()
+}
+
+// assertNoUploadedSounds fails when a rejected install left a library file or row.
+func assertNoUploadedSounds(t *testing.T, f *soundsFixture) {
+	t.Helper()
+	for _, entry := range f.sounds.List() {
+		if !entry.Builtin {
+			t.Fatalf("library gained %s", entry.Name)
+		}
+	}
+	entries, err := os.ReadDir(f.sounds.LibraryDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if strings.HasSuffix(strings.ToLower(name), ".wav") || strings.HasSuffix(strings.ToLower(name), ".mp3") || strings.HasPrefix(name, ".") {
+			t.Fatalf("library dir left %q behind", name)
+		}
+	}
+}
+
+func TestSoundsYouTubeInstallsAVideoAsALibrarySound(t *testing.T) {
+	mp3 := toneMP3(t)
+	var calls int
+	var lastPath string
+	f := newSoundsFixtureWith(t, nil, func(_ context.Context, videoURL string) (dashboard.YouTubeDownload, error) {
+		calls++
+		if videoURL != "https://www.youtube.com/watch?v=abc123" {
+			t.Errorf("downloader URL = %q", videoURL)
+		}
+		lastPath = fakeYouTubeMP3(t, mp3)
+		return dashboard.YouTubeDownload{Path: lastPath, Title: "Birds at Dawn"}, nil
+	})
+
+	rec := f.post("/sounds/youtube", url.Values{"url": {"https://www.youtube.com/watch?v=abc123"}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("install status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	installed := decodeSounds(t, rec)
+	if !strings.HasPrefix(installed.Flash, "Installed.") {
+		t.Fatalf("flash = %q", installed.Flash)
+	}
+	if !installed.hasSound("Birds-at-Dawn") {
+		t.Fatalf("library = %+v, want Birds-at-Dawn", installed.Sounds)
+	}
+	// Cue roles and the alarm sound dropdown both list library names.
+	// The new sound has to show up as an ordinary option, not a second store.
+	offered := false
+	for _, role := range installed.Roles {
+		if role.Role != "alarm_ring" {
+			continue
+		}
+		for _, option := range role.Options {
+			if option.Value == "Birds-at-Dawn" {
+				offered = true
+			}
+		}
+	}
+	if !offered {
+		t.Fatalf("alarm ring options do not include the install: %+v", installed.Roles)
+	}
+	if _, err := os.Stat(lastPath); !os.IsNotExist(err) {
+		t.Fatalf("source mp3 still present: %v", err)
+	}
+	entries, err := os.ReadDir(f.sounds.LibraryDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if strings.HasSuffix(strings.ToLower(entry.Name()), ".mp3") {
+			t.Fatalf("library kept a second mp3: %s", entry.Name())
+		}
+	}
+
+	// A second install of the same title uses Import's numeric suffix.
+	rec = f.post("/sounds/youtube", url.Values{"url": {"https://www.youtube.com/watch?v=abc123"}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("second install status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if v := decodeSounds(t, rec); !v.hasSound("Birds-at-Dawn-2") {
+		t.Fatalf("collision name missing: %+v", v.Sounds)
+	}
+	if calls != 2 {
+		t.Fatalf("downloader calls = %d, want 2", calls)
+	}
+}
+
+func TestSoundsYouTubeNamesAMissingTitleFromTheVideoID(t *testing.T) {
+	mp3 := toneMP3(t)
+	f := newSoundsFixtureWith(t, nil, func(_ context.Context, _ string) (dashboard.YouTubeDownload, error) {
+		return dashboard.YouTubeDownload{Path: fakeYouTubeMP3(t, mp3), Title: "  "}, nil
+	})
+	rec := f.post("/sounds/youtube", url.Values{"url": {"https://youtu.be/dQw4w9WgXcQ"}})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("install status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if v := decodeSounds(t, rec); !v.hasSound("dQw4w9WgXcQ") {
+		t.Fatalf("library = %+v, want the video id", v.Sounds)
+	}
+}
+
+func TestSoundsYouTubeRejectsANonVideoURLWithoutDownloading(t *testing.T) {
+	calls := 0
+	f := newSoundsFixtureWith(t, nil, func(context.Context, string) (dashboard.YouTubeDownload, error) {
+		calls++
+		return dashboard.YouTubeDownload{}, errors.New("downloader should not run")
+	})
+	for _, raw := range []string{
+		"",
+		"not a url",
+		"http://youtu.be/abc",
+		"https://example.com/watch?v=abc",
+		"https://www.youtube.com/playlist?list=PL123",
+		"https://user@youtube.com/watch?v=abc",
+	} {
+		rec := f.post("/sounds/youtube", url.Values{"url": {raw}})
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%q status = %d, want 400", raw, rec.Code)
+		}
+		if v := decodeSounds(t, rec); !strings.Contains(v.Error, "YouTube") {
+			t.Fatalf("%q error = %q", raw, v.Error)
+		}
+	}
+	if calls != 0 {
+		t.Fatalf("downloader calls = %d, want 0", calls)
+	}
+	assertNoUploadedSounds(t, f)
+}
+
+func TestSoundsYouTubeRejectsAnOversizedDownload(t *testing.T) {
+	var path string
+	f := newSoundsFixtureWith(t, nil, func(context.Context, string) (dashboard.YouTubeDownload, error) {
+		path = fakeYouTubeMP3(t, make([]byte, audio.MaxUploadBytes+1))
+		return dashboard.YouTubeDownload{Path: path, Title: "Too Big"}, nil
+	})
+	rec := f.post("/sounds/youtube", url.Values{"url": {"https://youtu.be/abc12345678"}})
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if v := decodeSounds(t, rec); !strings.Contains(v.Error, "10 MB limit") {
+		t.Fatalf("error = %q", v.Error)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("oversized temp file still present: %v", err)
+	}
+	assertNoUploadedSounds(t, f)
+}
+
+func TestSoundsYouTubeDownloadErrorLeavesTheLibraryEmpty(t *testing.T) {
+	var path string
+	f := newSoundsFixtureWith(t, nil, func(context.Context, string) (dashboard.YouTubeDownload, error) {
+		path = fakeYouTubeMP3(t, []byte("partial"))
+		return dashboard.YouTubeDownload{Path: path}, errors.New("yt-dlp failed")
+	})
+	rec := f.post("/sounds/youtube", url.Values{"url": {"https://www.youtube.com/watch?v=abc123"}})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if v := decodeSounds(t, rec); !strings.Contains(v.Error, "Could not download") || v.hasSound("abc123") {
+		t.Fatalf("view = error %q sounds %+v", v.Error, v.Sounds)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("failed download left %s: %v", path, err)
+	}
+	assertNoUploadedSounds(t, f)
 }

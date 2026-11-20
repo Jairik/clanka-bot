@@ -95,6 +95,9 @@ type Options struct {
 	// between turns; without one the handler plays synchronously.
 	Sounds       *sound.Service
 	PreviewQueue PreviewQueue
+	// YouTube downloads one public video's audio for POST /sounds/youtube.
+	// Nil uses yt-dlp. Tests replace it so the suite never contacts YouTube.
+	YouTube YouTubeFetcher
 	// VoiceSamples backs the wake-phrase recorder: takes on their own volume and
 	// submitted bundles in the host-visible export directory. The page is
 	// explanatory when it is nil.
@@ -222,15 +225,17 @@ type Options struct {
 // Handler is the authenticated Dashboard mux. Register extra pages before
 // serving; the auth and security middleware already wraps every route.
 type Handler struct {
-	owner          string
-	logger         *slog.Logger
-	healthStatus   *status.Source
-	examplesState  func() (tools int, lastErr error, lastAttempt time.Time)
-	settings       *settings.Service
-	tools          *toolpolicy.Policy
-	secrets        *secrets.Service
-	sounds         *sound.Service
-	previews       PreviewQueue
+	owner         string
+	logger        *slog.Logger
+	healthStatus  *status.Source
+	examplesState func() (tools int, lastErr error, lastAttempt time.Time)
+	settings      *settings.Service
+	tools         *toolpolicy.Policy
+	secrets       *secrets.Service
+	sounds        *sound.Service
+	previews      PreviewQueue
+	// youtube fetches audio for one Sounds-page install. Nil uses yt-dlp.
+	youtube        YouTubeFetcher
 	voices         *voicelib.Service
 	voiceProbe     voicelib.Probe
 	voicePreview   VoicePreview
@@ -404,6 +409,7 @@ func New(opts Options) (*Handler, error) {
 		secrets:        opts.Secrets,
 		sounds:         opts.Sounds,
 		previews:       opts.PreviewQueue,
+		youtube:        opts.YouTube,
 		voices:         opts.Voices,
 		voiceProbe:     opts.VoiceProbe,
 		voicePreview:   opts.VoicePreview,
@@ -524,6 +530,7 @@ func New(opts Options) (*Handler, error) {
 	// previews. Every write goes through Mutating for identity and same-origin.
 	h.Handle("/sounds/audio/{name}", h.soundsAudio)
 	h.Mutating("POST /sounds/upload", h.soundsUpload)
+	h.Mutating("POST /sounds/youtube", h.soundsYouTube)
 	h.Mutating("POST /sounds/roles/{role}", h.soundsRoleSave)
 	h.Mutating("POST /sounds/roles/{role}/reset", h.soundsRoleReset)
 	h.Mutating("POST /sounds/values/{key}", h.soundsValueSave)

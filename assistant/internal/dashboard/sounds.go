@@ -606,6 +606,8 @@ func soundsFlashMessage(flash string) string {
 	switch flash {
 	case flashUploaded:
 		return "Uploaded. The sound is in the library and ready to assign."
+	case flashInstalled:
+		return "Installed. The sound is in the library and ready to assign."
 	case flashDeleted:
 		return "Deleted. The sound is no longer in the library."
 	case flashQueued:
@@ -624,8 +626,9 @@ func soundsFlashMessage(flash string) string {
 }
 
 const (
-	flashUploaded = "uploaded"
-	flashDeleted  = "deleted"
-	flashQueued   = "queued"
-	flashPlayed   = "played"
+	flashUploaded  = "uploaded"
+	flashInstalled = "installed"
+	flashDeleted   = "deleted"
+	flashQueued    = "queued"
+	flashPlayed    = "played"
 )

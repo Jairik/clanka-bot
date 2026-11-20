@@ -225,7 +225,7 @@ A per-Alarm choice of Ring sound, volume or ramp that replaces the kind defaults
 _Avoid_: Custom alarm, alarm theme
 
 **Completion audio**:
-Media chosen for one Timer or Alarm: a Spotify song, album or shuffled playlist, or a YouTube video streamed to the local speaker. It replaces Ring speech, stops through Ring Focus, and is limited to ten minutes; a load failure uses the standard spoken alert.
+Media chosen for one Timer or Alarm: a Spotify song, album or shuffled playlist, or a YouTube video streamed to the local speaker. It replaces Ring speech, ducks music for the playback, and stops through Ring Focus. The Ring cue plays until the stream is audible; if that audio never arrives, the standard spoken alert is used. Playback is limited to ten minutes from when the media starts.
 _Avoid_: Alarm music mode, notification soundtrack
 
 **Snooze**:

@@ -19,6 +19,21 @@ import (
 // MaxRamp bounds a configured ramp so a very long ramp cannot outlive the Ring.
 const MaxRamp = time.Hour
 
+// Completion media has its own cap, measured from the start of the media call
+// rather than the fire time. The first-audio budget is how long that call may
+// stay silent before the Ring cancels it and speaks the fallback.
+const (
+	defaultMediaCap         = 10 * time.Minute
+	defaultFirstAudioBudget = 3 * time.Second
+)
+
+// mediaCap and firstAudioBudget are the limits the media path reads. Tests in
+// this package shorten them and restore the defaults; parallel tests must not.
+var (
+	mediaCap         = defaultMediaCap
+	firstAudioBudget = defaultFirstAudioBudget
+)
+
 // Outcome is how a Ring cycle ended.
 type Outcome string
 
@@ -108,7 +123,10 @@ type Speaker interface {
 type Deps struct {
 	// Completed observes a Ring after its playback and Focus have ended.
 	Completed func(Kind)
-	Media     func(context.Context, string) error // Media blocks until stopped or playback fails.
+	// Media blocks until it is stopped or playback fails. onFirstAudio runs
+	// once when the first sound is produced, so the Ring can stop its cue.
+	// A nil func is ignored. The callback must not wait for Media to return.
+	Media func(ctx context.Context, audio string, onFirstAudio func()) error
 	// Focus is where the active Ring claims Ring priority. The queue below
 	// claims only after it owns the speaker, so a queued Ring cannot replace
 	// the Focus of the Ring that is actually sounding.
@@ -146,7 +164,7 @@ type Deps struct {
 // Ring stays controllable and no older sound is orphaned by a newer claim.
 type Engine struct {
 	completed  func(Kind)
-	media      func(context.Context, string) error
+	media      func(context.Context, string, func()) error
 	focus      *focus.Registry
 	boundary   Boundary
 	music      Music
@@ -257,30 +275,10 @@ func (e *Engine) Ring(parent context.Context, req Request) Result {
 	}
 	defer release()
 
-	// Completion media keeps Ring Focus and replaces both Cues and speech.
+	// Completion media keeps Ring Focus and replaces speech. The cue covers the
+	// wait for the stream, and music stays ducked for the whole playback.
 	if req.Audio != "" {
-		mediaCtx, stop := context.WithTimeout(ctx, 10*time.Minute)
-		defer stop()
-		var mediaErr error
-		if e.media != nil {
-			mediaErr = e.media(mediaCtx, req.Audio)
-		} else {
-			mediaErr = errors.New("media unavailable")
-		}
-		if result, done := holder.interrupted(parent); done {
-			return result
-		}
-		if errors.Is(mediaCtx.Err(), context.DeadlineExceeded) {
-			return Result{Played: true, Outcome: OutcomeMissed, EndedBy: "timeout"}
-		}
-		if mediaErr == nil {
-			return Result{Played: true, Outcome: OutcomeStopped, EndedBy: "completed"}
-		}
-		e.logger.Warn("completion media failed; speaking fallback", "kind", req.Kind)
-		if restore := e.duck(ctx, req.Kind); restore != nil {
-			defer restore()
-		}
-		return e.speakFallback(ctx, parent, req, holder, settings)
+		return e.playCompletionMedia(ctx, parent, req, holder, settings, clip, hasClip)
 	}
 
 	// Duck music once for the whole Ring; restore on every exit path.
@@ -363,6 +361,142 @@ func (e *Engine) Ring(parent context.Context, req Request) Result {
 			return Result{Played: true, Outcome: OutcomeStopped, EndedBy: "cancelled"}
 		}
 	}
+}
+
+// playCompletionMedia ducks music, plays the kind cue until the stream is
+// audible, and speaks the fallback if that sound never arrives.
+func (e *Engine) playCompletionMedia(ctx, parent context.Context, req Request, holder *ringHolder, settings Settings, clip sound.Clip, hasClip bool) Result {
+	// One duck covers the media and the spoken fallback. held stops the
+	// failure path from taking a second one.
+	held := e.music != nil
+	var restore func()
+	if held {
+		restore = e.duck(ctx, req.Kind)
+	}
+	if restore != nil {
+		defer restore()
+	}
+
+	stopCue := e.startMediaCue(ctx, req.Kind, clip, hasClip, settings)
+	defer stopCue()
+
+	// The cap is the media's own lifetime, started here, after any wait for
+	// the current reply sentence.
+	mediaCtx, stopMedia := context.WithTimeout(ctx, mediaCap)
+	defer stopMedia()
+
+	started := make(chan struct{})
+	var startOnce sync.Once
+	onFirst := func() {
+		startOnce.Do(func() { close(started) })
+	}
+	errCh := make(chan error, 1)
+	go func() {
+		if e.media == nil {
+			errCh <- errors.New("media unavailable")
+			return
+		}
+		errCh <- e.media(mediaCtx, req.Audio, onFirst)
+	}()
+
+	timer := time.NewTimer(firstAudioBudget)
+	defer timer.Stop()
+
+	heard := false
+	gotErr := false
+	var mediaErr error
+	// The cue is already playing. Wait for the stream, for it to fail, or for
+	// the silence budget. Stop wins through ctx.
+	select {
+	case <-started:
+		heard = true
+	case mediaErr = <-errCh:
+		gotErr = true
+	case <-timer.C:
+	case <-ctx.Done():
+	}
+	// A chunk that arrives in the same moment as the timer still counts.
+	if !heard {
+		select {
+		case <-started:
+			heard = true
+		default:
+		}
+	}
+
+	if !heard {
+		// Remember a real load error before cancelling, or the cancel itself
+		// looks like the failure.
+		failedBeforeStop := gotErr
+		stopCue()
+		stopMedia()
+		if !gotErr {
+			mediaErr = <-errCh
+		}
+		if result, done := holder.interrupted(parent); done {
+			return result
+		}
+		if failedBeforeStop && mediaErr != nil {
+			e.logger.Warn("completion media failed; speaking fallback", "kind", req.Kind, "error", mediaErr.Error())
+		} else {
+			e.logger.Warn("completion media produced no audio; speaking fallback", "kind", req.Kind)
+		}
+		return e.speakMediaFallback(ctx, parent, req, holder, settings, held)
+	}
+
+	// The stream is audible. Drop the cue and let the media finish.
+	stopCue()
+	if !gotErr {
+		mediaErr = <-errCh
+	}
+	if result, done := holder.interrupted(parent); done {
+		return result
+	}
+	if errors.Is(mediaCtx.Err(), context.DeadlineExceeded) {
+		return Result{Played: true, Outcome: OutcomeMissed, EndedBy: "timeout"}
+	}
+	if mediaErr != nil {
+		e.logger.Warn("completion media failed; speaking fallback", "kind", req.Kind, "error", mediaErr.Error())
+		return e.speakMediaFallback(ctx, parent, req, holder, settings, held)
+	}
+	return Result{Played: true, Outcome: OutcomeStopped, EndedBy: "completed"}
+}
+
+// startMediaCue plays the kind's Ring cue once so the alert is audible while
+// media resolves. The returned stop cancels that play and waits until it has
+// left the speaker. Calling stop more than once is safe.
+func (e *Engine) startMediaCue(ctx context.Context, kind Kind, clip sound.Clip, hasClip bool, settings Settings) (stop func()) {
+	cueCtx, cancel := context.WithCancel(ctx)
+	if !hasClip || len(clip.PCM) == 0 || e.play == nil {
+		return cancel
+	}
+	// The tonal ramp starts at silence. This cue has to be heard immediately.
+	pass := scaleClip(clip, settings.Volume, 0, 0)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		if err := e.play(cueCtx, pass); err != nil && cueCtx.Err() == nil {
+			e.logger.Warn("ring media cue", "kind", kind, "error", err.Error())
+		}
+	}()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			cancel()
+			<-done
+		})
+	}
+}
+
+// speakMediaFallback speaks the alert after media fails. A duck this Ring
+// already holds is left in place so the fallback does not duck again.
+func (e *Engine) speakMediaFallback(ctx, parent context.Context, req Request, holder *ringHolder, settings Settings, held bool) Result {
+	if !held {
+		if restore := e.duck(ctx, req.Kind); restore != nil {
+			defer restore()
+		}
+	}
+	return e.speakFallback(ctx, parent, req, holder, settings)
 }
 
 // speakFallback handles a none/missing sound: the old single spoken line, kept

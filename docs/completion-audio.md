@@ -10,9 +10,12 @@ standard alert. Supported values:
   through the shared Name matcher. `my running playlist` works too.
 - An HTTPS YouTube video URL (`youtube.com/watch?v=…` or `youtu.be/…`).
 
-Playlists shuffle. Audio replaces TTS and the normal Cue, holds Ring Focus,
-and stops on stop, cancel, snooze, shutdown or the ten-minute limit. If media
-cannot load, the normal spoken alert is used. Spotify starts are checked after
+Playlists shuffle. Audio replaces TTS, holds Ring Focus, and ducks music for
+the whole playback. The Ring cue plays as soon as the media starts and stops
+when the stream is audible. YouTube that produces no audio within three
+seconds, or any media that fails to load, uses the normal spoken alert.
+Playback stops on stop, cancel, snooze, shutdown or the ten-minute limit,
+measured from when the media starts. Spotify starts are checked after
 two seconds because Web API acceptance alone does not prove receiver playback.
 The account-side failure tracked in #71 can still prevent live Spotify audio.
 

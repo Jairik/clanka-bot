@@ -16,13 +16,18 @@ func TestCompletionMediaStop(t *testing.T) {
 	started := make(chan struct{})
 	ended := make(chan ring.Result, 1)
 	speaker := &recordingSpeaker{}
-	engine := ring.New(ring.Deps{Focus: registry, Speaker: speaker, Media: func(ctx context.Context, audio string) error {
+	engine := ring.New(ring.Deps{Focus: registry, Speaker: speaker, Media: func(ctx context.Context, audio string, onFirstAudio func()) error {
 		if audio != "song" {
 			t.Errorf("audio=%q", audio)
 		}
 		deadline, ok := ctx.Deadline()
 		if !ok || time.Until(deadline) > 10*time.Minute {
 			t.Error("missing media deadline")
+		}
+		// The stream is audible, so the Ring waits for stop instead of the
+		// silence budget.
+		if onFirstAudio != nil {
+			onFirstAudio()
 		}
 		close(started)
 		<-ctx.Done()
@@ -51,7 +56,7 @@ func TestCompletionMediaStop(t *testing.T) {
 // A media load failure speaks the standard alert even when a Cue is configured.
 func TestCompletionMediaFallback(t *testing.T) {
 	speaker := &recordingSpeaker{}
-	engine := ring.New(ring.Deps{Speaker: speaker, Media: func(context.Context, string) error { return errors.New("load failed") }})
+	engine := ring.New(ring.Deps{Speaker: speaker, Media: func(context.Context, string, func()) error { return errors.New("load failed") }})
 	result := engine.Ring(t.Context(), ring.Request{Kind: ring.Timer, Audio: "missing"})
 	if !result.Played || len(speaker.all()) != 1 || speaker.all()[0] != "Your timer is done." {
 		t.Fatalf("result=%+v speech=%v", result, speaker.all())

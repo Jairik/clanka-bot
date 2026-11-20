@@ -545,9 +545,14 @@ func run() error {
 	if speechSpeaker != nil {
 		ringDeps.Speaker = speechSpeaker
 	}
-	ringDeps.Media = func(ctx context.Context, text string) error {
+	ringDeps.Media = func(ctx context.Context, text string, onFirstAudio func()) error {
 		if completion.IsYouTube(text) {
-			return completion.YouTube(ctx, text, cfg.Playback.Sink)
+			return completion.YouTube(ctx, text, cfg.Playback.Sink, onFirstAudio)
+		}
+		// Spotify has no PCM chunk to wait for. Signal now so the Ring's
+		// first-audio budget does not cancel a Connect handoff.
+		if onFirstAudio != nil {
+			onFirstAudio()
 		}
 		return spotifyModule.PlayCompletion(ctx, text)
 	}

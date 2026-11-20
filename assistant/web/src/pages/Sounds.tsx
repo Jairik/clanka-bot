@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { Button } from "@heroui/react";
 import { Play, Speaker, Trash2 } from "lucide-react";
 import { usePageData } from "../api";
-import { ResetButton, SelectField, SettingRow, useActions } from "../forms";
+import { Field, ResetButton, SelectField, SettingRow, TextField, useActions } from "../forms";
 import { PageFrame } from "../shell";
 import type { SoundsView } from "../types";
 import { UploadRow } from "../upload";
@@ -13,8 +13,21 @@ export function SoundsPage() {
   const actions = useActions<SoundsView>(set);
   const [playing, setPlaying] = useState("");
   const [confirming, setConfirming] = useState("");
+  const [youtube, setYoutube] = useState("");
   const audio = useRef<HTMLAudioElement | null>(null);
   useEffect(() => () => audio.current?.pause(), []);
+
+  // installYouTube posts one public video link. Success refreshes the library
+  // the same way an upload does and clears the field; a refusal keeps the link
+  // so it can be edited, and the page notice shows the server's error text.
+  const installYouTube = (event: FormEvent) => {
+    event.preventDefault();
+    const url = youtube.trim();
+    if (!url) return;
+    void actions.run("/sounds/youtube", { url }).then((ok) => {
+      if (ok) setYoutube("");
+    });
+  };
 
   const preview = (name: string, url: string) => {
     audio.current?.pause();
@@ -111,6 +124,21 @@ export function SoundsPage() {
               label="Upload a WAV or MP3"
               onView={(v) => set(v as SoundsView)}
             />
+            <form className="flex flex-col gap-2 border-t px-3.5 py-3 sm:flex-row sm:items-end" onSubmit={installYouTube}>
+              <Field label="YouTube URL" hint={`Downloads the audio once into this library, up to ${data.MaxUpload}.`} className="min-w-0 w-full sm:flex-1">
+                <TextField label="YouTube URL" value={youtube} onChange={setYoutube} placeholder="https://www.youtube.com/watch?v=…" autoComplete="off" />
+              </Field>
+              <Button
+                type="submit"
+                size="sm"
+                variant="secondary"
+                className="w-full sm:w-auto"
+                isDisabled={!youtube.trim() || actions.pending === "/sounds/youtube"}
+                isPending={actions.pending === "/sounds/youtube"}
+              >
+                Install from YouTube
+              </Button>
+            </form>
           </Section>
 
           <Section title="Cue roles" summary={`${data.Roles?.length ?? 0} roles`} flush>

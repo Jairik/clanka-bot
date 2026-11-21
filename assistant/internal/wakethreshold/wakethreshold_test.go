@@ -114,22 +114,41 @@ func TestThresholdValidationRefusesBadValues(t *testing.T) {
 	}
 }
 
-// TestCommandModelKeepsItsStricterDefault includes a configured but disabled
-// command model so the Settings page can tune it before the switch is on.
-func TestCommandModelKeepsItsStricterDefault(t *testing.T) {
+// TestStopModelHasAThresholdAndOnlyTheReplySourceSendsIt includes the
+// configured stop model so the Settings page can tune it, while the idle
+// source never carries it.
+func TestStopModelHasAThresholdAndOnlyTheReplySourceSendsIt(t *testing.T) {
 	cfg := config.Wakeword{
-		Models:   []string{"clanker"},
-		Commands: config.WakeCommands{Models: []string{"volume_up"}},
+		Models:     []string{"clanker"},
+		Stop:       "stop",
+		Thresholds: map[string]float64{"stop": 0.9},
 	}
 	service := openSettings(t, wakethreshold.Definitions(cfg)...)
 
-	value, ok := service.Get(wakethreshold.Key("volume_up"))
+	value, ok := service.Get(wakethreshold.Key("stop"))
 	if !ok {
-		t.Fatal("volume_up threshold is not defined while commands are configured but off")
+		t.Fatal("stop threshold is not defined while a stop model is configured")
 	}
-	if value.Value != config.DefaultCommandThreshold || value.Source != settings.SourceDefault {
-		t.Fatalf("volume_up = %v from %s, want the command default %v",
-			value.Value, value.Source, config.DefaultCommandThreshold)
+	if value.Value != 0.9 {
+		t.Fatalf("stop = %v from %s, want the configured 0.9", value.Value, value.Source)
+	}
+	if _, ok := wakethreshold.NewSource(service, cfg).Map()["stop"]; ok {
+		t.Error("the idle source sends a stop threshold")
+	}
+	if got := wakethreshold.NewReplySource(service, cfg).Map()["stop"]; got != 0.9 {
+		t.Errorf("reply source stop threshold = %v, want 0.9", got)
+	}
+}
+
+func TestStopModelDefaultsToTheStopThreshold(t *testing.T) {
+	cfg := config.Wakeword{Models: []string{"clanker"}, Stop: "stop"}
+	service := openSettings(t, wakethreshold.Definitions(cfg)...)
+
+	if got := wakethreshold.NewReplySource(service, cfg).Map()["stop"]; got != config.DefaultStopThreshold {
+		t.Errorf("reply source stop threshold = %v, want the stop default %v", got, config.DefaultStopThreshold)
+	}
+	if got := wakethreshold.NewSource(service, cfg).Map()["clanker"]; got != config.DefaultWakeThreshold {
+		t.Errorf("clanker threshold = %v, want the wake default %v", got, config.DefaultWakeThreshold)
 	}
 }
 

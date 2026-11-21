@@ -5,20 +5,26 @@ import { usePageData } from "../api";
 import { Field, TextField, useActions, type Actions } from "../forms";
 import { PageFrame } from "../shell";
 import type { NoteItem, NoteRow, NotesList, NotesView } from "../types";
-import { Empty, Lede, Notice, Section, cn, Tip } from "../ui";
+import { Empty, InitialRead, Lede, Notice, Section, cn, Tip } from "../ui";
 
 export function NotesPage() {
-  const { data, error, set } = usePageData("notes");
+  const { data, error, refreshing, reload, set } = usePageData("notes");
   const actions = useActions<NotesView>(set);
+  // An empty note list is meaningful only after the first read succeeds.
+  if (!data) return (
+    <PageFrame id="notes">
+      <InitialRead error={refreshing ? "" : error} retry={reload} />
+    </PageFrame>
+  );
   return (
     <PageFrame id="notes">
       <Notice error={error || actions.error} flash={actions.flash} onDismiss={actions.clear} />
-      {data && !data.HasStore && (
+      {!data.HasStore && (
         <Section title="Notes are not configured" defaultOpen>
           <Empty>This Dashboard was built without the Note and List modules, so there is nothing to show.</Empty>
         </Section>
       )}
-      {data?.HasStore && (
+      {data.HasStore && (
         <div className="space-y-2.5">
           {(data.Lists ?? []).map((list) => (
             <ListSection key={list.Key} list={list} actions={actions} />

@@ -3,7 +3,6 @@ package config_test
 import (
 	"reflect"
 	"testing"
-	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/config"
 )
@@ -200,210 +199,131 @@ func TestWakeThresholdEnvironmentRejectsMalformedValues(t *testing.T) {
 	}
 }
 
-func TestCommandModelsAreOffByDefault(t *testing.T) {
+func TestStopIsOffByDefault(t *testing.T) {
 	cfg, err := config.Load(writeConfig(t, voiceBody(`wakeword: {addr: "wakeword:10400"}
 `)))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Wakeword.Commands.Enabled {
-		t.Fatal("commands are enabled by default; they must ship off")
+	if got := cfg.Wakeword.StopModel(); got != "" {
+		t.Fatalf("stop model = %q, want none by default", got)
 	}
-	if got := cfg.Wakeword.CommandModels(); len(got) != 0 {
-		t.Fatalf("active command models = %v, want none while disabled", got)
-	}
-	if got, want := cfg.Wakeword.DetectModels(), []string{"clanker"}; !reflect.DeepEqual(got, want) {
+	want := []string{"clanker"}
+	if got := cfg.Wakeword.DetectModels(); !reflect.DeepEqual(got, want) {
 		t.Errorf("detect models = %v, want %v", got, want)
 	}
-	if !cfg.Wakeword.IsCommandModel("volume_up") || !cfg.Wakeword.IsCommandModel("volume_down") {
-		t.Error("the default command list must name volume_up and volume_down")
-	}
-	if got := cfg.Wakeword.ThresholdFor("volume_up"); got != config.DefaultCommandThreshold {
-		t.Errorf("volume_up threshold = %v, want the command default %v", got, config.DefaultCommandThreshold)
-	}
-	if got, want := cfg.Wakeword.ModelThresholds(), map[string]float64{"clanker": 0.5}; !reflect.DeepEqual(got, want) {
-		t.Errorf("thresholds = %v, want only the wake word while commands are off", got)
-	}
-	if cfg.Wakeword.Commands.Step != 10 || cfg.Wakeword.Commands.Cooldown.Duration() != 1500*time.Millisecond {
-		t.Errorf("command defaults = %+v, want step 10 and cooldown 1.5s", cfg.Wakeword.Commands)
+	if got := cfg.Wakeword.ReplyModels(); !reflect.DeepEqual(got, want) {
+		t.Errorf("reply models = %v, want %v", got, want)
 	}
 }
 
-func TestCommandModelsAreRequestedWhenEnabled(t *testing.T) {
+// TestStopJoinsOnlyTheReplyStream pins the #503 wiring: the stop model is
+// requested only by the stream opened while a reply plays, never while idle.
+func TestStopJoinsOnlyTheReplyStream(t *testing.T) {
 	cfg, err := config.Load(writeConfig(t, voiceBody(`wakeword:
   addr: "wakeword:10400"
-  models: ["clanker"]
-  thresholds: {volume_up: 0.8}
-  commands:
-    enabled: true
-    step: 5
-    cooldown: 2s
-`)))
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if got, want := cfg.Wakeword.CommandModels(), []string{"volume_up", "volume_down"}; !reflect.DeepEqual(got, want) {
-		t.Errorf("command models = %v, want %v", got, want)
-	}
-	if got, want := cfg.Wakeword.DetectModels(), []string{"clanker", "volume_up", "volume_down"}; !reflect.DeepEqual(got, want) {
-		t.Errorf("detect models = %v, want %v", got, want)
-	}
-	want := map[string]float64{"clanker": 0.5, "volume_up": 0.8, "volume_down": 0.7}
-	if got := cfg.Wakeword.ModelThresholds(); !reflect.DeepEqual(got, want) {
-		t.Errorf("thresholds = %v, want %v", got, want)
-	}
-	if cfg.Wakeword.Commands.Step != 5 || cfg.Wakeword.Commands.Cooldown.Duration() != 2*time.Second {
-		t.Errorf("commands = %+v, want step 5 and cooldown 2s", cfg.Wakeword.Commands)
-	}
-}
-
-// TestStopCommandJoinsTheCommandList pins the #503 wiring: the optional stop
-// model is requested beside the volume models, uses the same threshold rules,
-// and stays inert while commands are off.
-func TestStopCommandJoinsTheCommandList(t *testing.T) {
-	cfg, err := config.Load(writeConfig(t, voiceBody(`wakeword:
-  addr: "wakeword:10400"
-  models: ["clanker"]
+  models: ["clanker", "yo_dipshit"]
   thresholds: {stop: 0.9}
-  commands:
-    enabled: true
-    models: ["volume_up"]
-    stop: "stop"
+  stop: " stop "
 `)))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if got := cfg.Wakeword.StopCommand(); got != "stop" {
-		t.Errorf("stop command = %q, want stop", got)
+	if got := cfg.Wakeword.StopModel(); got != "stop" {
+		t.Errorf("stop model = %q, want stop", got)
 	}
-	if got, want := cfg.Wakeword.CommandModels(), []string{"volume_up", "stop"}; !reflect.DeepEqual(got, want) {
-		t.Errorf("command models = %v, want %v", got, want)
+	if got, want := cfg.Wakeword.DetectModels(), []string{"clanker", "yo_dipshit"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("detect models = %v, want %v (never stop)", got, want)
 	}
-	if got, want := cfg.Wakeword.DetectModels(), []string{"clanker", "volume_up", "stop"}; !reflect.DeepEqual(got, want) {
-		t.Errorf("detect models = %v, want %v", got, want)
+	if got, want := cfg.Wakeword.ReplyModels(), []string{"clanker", "yo_dipshit", "stop"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("reply models = %v, want %v", got, want)
 	}
 	if got := cfg.Wakeword.ThresholdFor("stop"); got != 0.9 {
 		t.Errorf("stop threshold = %v, want 0.9", got)
 	}
-
-	// A configured model is inert while the feature is switched off.
-	cfg, err = config.Load(writeConfig(t, voiceBody(`wakeword:
-  addr: "wakeword:10400"
-  commands: {stop: "stop"}
-`)))
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if got := cfg.Wakeword.StopCommand(); got != "" {
-		t.Errorf("stop command = %q, want none while commands are off", got)
-	}
-	if !cfg.Wakeword.IsCommandModel("stop") {
-		t.Error("a configured stop model must still resolve its threshold while commands are off")
+	want := map[string]float64{"clanker": 0.5, "yo_dipshit": 0.5, "stop": 0.9}
+	if got := cfg.Wakeword.ModelThresholds(); !reflect.DeepEqual(got, want) {
+		t.Errorf("thresholds = %v, want %v", got, want)
 	}
 }
 
-func TestCommandThresholdAcceptsAConfiguredModelWhileDisabled(t *testing.T) {
+// TestStopDefaultsStricterThanTheWakeThreshold keeps a false stop rarer than a
+// false wake: without an explicit entry, stop does not inherit the global
+// threshold.
+func TestStopDefaultsStricterThanTheWakeThreshold(t *testing.T) {
 	cfg, err := config.Load(writeConfig(t, voiceBody(`wakeword:
   addr: "wakeword:10400"
-  thresholds: {volume_up: 0.75}
+  threshold: 0.6
+  stop: "stop"
 `)))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if got := cfg.Wakeword.ThresholdFor("volume_up"); got != 0.75 {
-		t.Errorf("volume_up threshold = %v, want 0.75", got)
+	if got := cfg.Wakeword.ThresholdFor("stop"); got != config.DefaultStopThreshold {
+		t.Errorf("stop threshold = %v, want the stop default %v", got, config.DefaultStopThreshold)
+	}
+	if got := cfg.Wakeword.ThresholdFor("clanker"); got != 0.6 {
+		t.Errorf("clanker threshold = %v, want the wake default 0.6", got)
 	}
 }
 
-func TestWakeCommandsEnvironmentOverrides(t *testing.T) {
-	t.Setenv("ASSISTANT_WAKEWORD_COMMANDS_ENABLED", "true")
-	t.Setenv("ASSISTANT_WAKEWORD_COMMANDS", "volume_up")
-	t.Setenv("ASSISTANT_WAKEWORD_COMMAND_STEP", "7")
-	t.Setenv("ASSISTANT_WAKEWORD_COMMAND_COOLDOWN", "900ms")
-	t.Setenv("ASSISTANT_WAKEWORD_COMMAND_THRESHOLD", "0.85")
+func TestWakewordStopEnvironmentOverride(t *testing.T) {
+	t.Setenv("ASSISTANT_WAKEWORD_STOP", "stop")
 
 	cfg, err := config.Load(writeConfig(t, voiceBody(`wakeword: {addr: "wakeword:10400"}
 `)))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if got, want := cfg.Wakeword.CommandModels(), []string{"volume_up"}; !reflect.DeepEqual(got, want) {
-		t.Errorf("command models = %v, want %v", got, want)
+	if got := cfg.Wakeword.StopModel(); got != "stop" {
+		t.Errorf("stop model = %q, want stop", got)
 	}
-	if cfg.Wakeword.Commands.Step != 7 || cfg.Wakeword.Commands.Cooldown.Duration() != 900*time.Millisecond {
-		t.Errorf("commands = %+v, want step 7 and cooldown 900ms", cfg.Wakeword.Commands)
-	}
-	if got := cfg.Wakeword.ThresholdFor("volume_up"); got != 0.85 {
-		t.Errorf("volume_up threshold = %v, want 0.85", got)
+	if got, want := cfg.Wakeword.ReplyModels(), []string{"clanker", "stop"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("reply models = %v, want %v", got, want)
 	}
 }
 
-func TestWakeCommandsRejectInvalidSettings(t *testing.T) {
+func TestWakewordStopRejectsInvalidSettings(t *testing.T) {
 	tests := []struct {
 		name string
 		body string
 	}{
 		{
-			name: "enabled with no models",
+			name: "stop is also a wake model",
 			body: voiceBody(`wakeword:
   addr: "wakeword:10400"
-  commands: {enabled: true, models: []}
+  models: ["clanker", "stop"]
+  stop: "stop"
 `),
 		},
 		{
-			name: "stop duplicates a volume model",
+			name: "whitespace in the stop name",
 			body: voiceBody(`wakeword:
   addr: "wakeword:10400"
-  commands: {enabled: true, models: ["volume_up"], stop: "volume_up"}
-`),
-		},
-		{
-			name: "step zero",
-			body: voiceBody(`wakeword:
-  addr: "wakeword:10400"
-  commands: {step: 0}
-`),
-		},
-		{
-			name: "step above fifty",
-			body: voiceBody(`wakeword:
-  addr: "wakeword:10400"
-  commands: {step: 51}
-`),
-		},
-		{
-			name: "cooldown zero",
-			body: voiceBody(`wakeword:
-  addr: "wakeword:10400"
-  commands: {cooldown: 0s}
-`),
-		},
-		{
-			name: "threshold above one",
-			body: voiceBody(`wakeword:
-  addr: "wakeword:10400"
-  commands: {threshold: 1.1}
-`),
-		},
-		{
-			name: "command name is also a wake word",
-			body: voiceBody(`wakeword:
-  addr: "wakeword:10400"
-  commands: {models: ["clanker"]}
-`),
-		},
-		{
-			name: "whitespace in a command name",
-			body: voiceBody(`wakeword:
-  addr: "wakeword:10400"
-  commands: {models: ["volume up"]}
+  stop: "stop it"
 `),
 		},
 		{
 			name: "threshold for an unknown model",
 			body: voiceBody(`wakeword:
   addr: "wakeword:10400"
+  stop: "stop"
   thresholds: {volume_sideways: 0.7}
+`),
+		},
+		{
+			name: "threshold for stop when stop is not configured",
+			body: voiceBody(`wakeword:
+  addr: "wakeword:10400"
+  thresholds: {stop: 0.7}
+`),
+		},
+		{
+			name: "stop threshold above one",
+			body: voiceBody(`wakeword:
+  addr: "wakeword:10400"
+  stop: "stop"
+  thresholds: {stop: 1.1}
 `),
 		},
 	}
@@ -411,7 +331,7 @@ func TestWakeCommandsRejectInvalidSettings(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			if _, err := config.Load(writeConfig(t, test.body)); err == nil {
-				t.Fatal("Load accepted an invalid wakeword command config")
+				t.Fatal("Load accepted an invalid wakeword stop config")
 			}
 		})
 	}

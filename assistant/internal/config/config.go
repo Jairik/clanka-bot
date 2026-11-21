@@ -250,15 +250,15 @@ func (c Config) VoiceDir() string {
 // that omits wakeword.threshold keeps the deployed behaviour.
 const DefaultWakeThreshold = 0.5
 
-// DefaultCommandThreshold is the detection probability a command model uses
-// unless wakeword.thresholds names it. A wake-free command acts with no
-// confirmation, so it ships stricter than the wake word.
-const DefaultCommandThreshold = 0.7
+// DefaultStopThreshold applies to the stop model when wakeword.thresholds has
+// no entry for it. It is stricter than a wake word: a false stop cuts off a
+// reply with no confirmation, so it does not inherit the global threshold.
+const DefaultStopThreshold = 0.7
 
 // Wakeword is the wake word service config and its model allowlist. The
 // Assistant requests only these models, so a model that is not listed cannot
 // wake it. Every detection then carries the model name into the turn, which
-// the command models use for their wake-free actions.
+// the turn uses.
 type Wakeword struct {
 	Addr string `yaml:"addr"` // empty disables voice input
 	// Model is the legacy single-model form. WakeModels prefers Models, so an
@@ -270,42 +270,18 @@ type Wakeword struct {
 	// an entry in Thresholds. The service applies it per model.
 	Threshold float64 `yaml:"threshold"`
 	// Thresholds overrides Threshold by model name. Each name must be in the
-	// allowlist or the command list: a threshold for a model nobody listens
+	// allowlist or be the Stop model: a threshold for a model nobody listens
 	// for is a typo, not a setting.
 	Thresholds map[string]float64 `yaml:"thresholds"`
-	// Commands configures the wake-free command models. They are off by
-	// default until models trained on the owner's samples and a measured
-	// false-trigger rate exist.
-	Commands WakeCommands `yaml:"commands"`
-	Timeout  Duration     `yaml:"timeout"`
-	Chime    struct {
+	// Stop names the wake-free stop detector (#503). It is listened for only
+	// while a reply plays, never while idle: a detection cancels the reply and
+	// ends the session. Empty disables it. It must not also be a wake model, and
+	// its threshold comes from Thresholds or Threshold.
+	Stop    string   `yaml:"stop"`
+	Timeout Duration `yaml:"timeout"`
+	Chime   struct {
 		Enabled bool `yaml:"enabled"`
 	} `yaml:"chime"`
-}
-
-// WakeCommands is the config layer for the wake-free command models (#81).
-// They are detected by the same service as the wake word and handled without
-// STT or routing: one bounded volume step and a short Cue.
-type WakeCommands struct {
-	// Enabled asks the service for the command models and registers their
-	// handlers. A model that is not requested can never fire.
-	Enabled bool `yaml:"enabled"`
-	// Models is the ordered command-model list. Cross-checked against the wake
-	// allowlist so one name cannot be both.
-	Models []string `yaml:"models"`
-	// Step is the volume change per detection, in percent.
-	Step int `yaml:"step"`
-	// Cooldown is the minimum time between accepted detections, so one
-	// misheard word cannot walk the volume to zero.
-	Cooldown Duration `yaml:"cooldown"`
-	// Threshold is the default detection probability for a command model
-	// without an entry in wakeword.thresholds.
-	Threshold float64 `yaml:"threshold"`
-	// Stop names the wake-free model that suspends the session while a reply is
-	// in flight (#503). Empty disables it. The name joins Models, so the service
-	// is asked for it, and its threshold comes from wakeword.thresholds or
-	// Threshold like every other command model.
-	Stop string `yaml:"stop"`
 }
 
 // WakeModels is the resolved allowlist: Models when set, otherwise the legacy
@@ -318,60 +294,21 @@ func (w Wakeword) WakeModels() []string {
 	return normalizeModelNames(source)
 }
 
-// ModelNames is the configured command list, normalized, including the optional
-// Stop model. It is independent of Enabled so config validation and the
-// Dashboard can name a model even while the feature is switched off.
-func (c WakeCommands) ModelNames() []string {
-	names := append([]string(nil), c.Models...)
-	if stop := strings.TrimSpace(c.Stop); stop != "" {
-		names = append(names, stop)
+// StopModel is the configured stop model, trimmed, or "" when it is off.
+func (w Wakeword) StopModel() string { return strings.TrimSpace(w.Stop) }
+
+// DetectModels is every model the idle detect stream requests: the wake
+// allowlist only. The stop model is never listened for while idle.
+func (w Wakeword) DetectModels() []string { return w.WakeModels() }
+
+// ReplyModels is every model the stream opened during a reply requests: the
+// wake allowlist plus the stop model when one is configured.
+func (w Wakeword) ReplyModels() []string {
+	models := append([]string(nil), w.WakeModels()...)
+	if stop := w.StopModel(); stop != "" {
+		models = append(models, stop)
 	}
-	return normalizeModelNames(names)
-}
-
-// StopModel is the configured stop model, or "" when the stop command is off.
-func (c WakeCommands) StopModel() string { return strings.TrimSpace(c.Stop) }
-
-// CommandModels is the active command allowlist. It is empty unless commands
-// are enabled, so a configured-but-off list is never requested.
-func (w Wakeword) CommandModels() []string {
-	if !w.Commands.Enabled {
-		return nil
-	}
-	return w.Commands.ModelNames()
-}
-
-// StopCommand is the wake-free model that suspends a reply (#503), or "" when
-// commands or the model are off. Nothing changes without it.
-func (w Wakeword) StopCommand() string {
-	if !w.Commands.Enabled {
-		return ""
-	}
-	return w.Commands.StopModel()
-}
-
-// DetectModels is every model the Assistant requests from the service: the
-// wake allowlist plus the enabled command models. The loop still receives the
-// two lists separately, so a command name can never start a turn.
-func (w Wakeword) DetectModels() []string {
-	wake := w.WakeModels()
-	commands := w.CommandModels()
-	models := make([]string, 0, len(wake)+len(commands))
-	models = append(models, wake...)
-	models = append(models, commands...)
-	return models
-}
-
-// IsCommandModel reports whether name is configured as a command model, even
-// while commands are disabled. Threshold resolution and the Dashboard use it;
-// only CommandModels decides what is actually requested.
-func (w Wakeword) IsCommandModel(name string) bool {
-	for _, model := range w.Commands.ModelNames() {
-		if model == name {
-			return true
-		}
-	}
-	return false
+	return normalizeModelNames(models)
 }
 
 func normalizeModelNames(source []string) []string {
@@ -388,17 +325,14 @@ func normalizeModelNames(source []string) []string {
 	return models
 }
 
-// ThresholdFor is the effective detection threshold for one model. A command
-// model uses the stricter command default rather than the wake-word default.
+// ThresholdFor is the effective detection threshold for one model, the stop
+// model included.
 func (w Wakeword) ThresholdFor(name string) float64 {
 	if threshold, ok := w.Thresholds[name]; ok {
 		return threshold
 	}
-	if w.IsCommandModel(name) {
-		if w.Commands.Threshold > 0 {
-			return w.Commands.Threshold
-		}
-		return DefaultCommandThreshold
+	if stop := w.StopModel(); stop != "" && name == stop {
+		return DefaultStopThreshold
 	}
 	if w.Threshold > 0 {
 		return w.Threshold
@@ -406,11 +340,12 @@ func (w Wakeword) ThresholdFor(name string) float64 {
 	return DefaultWakeThreshold
 }
 
-// ModelThresholds is the complete map sent with every detect stream. It has
-// one entry per requested model, so no model can fall back, by accident, to
-// another model's threshold.
+// ModelThresholds is the complete map sent with the reply stream. It has one
+// entry per requested model (wake models and stop), so no model can fall back,
+// by accident, to another model's threshold. The idle stream sends the subset
+// for DetectModels.
 func (w Wakeword) ModelThresholds() map[string]float64 {
-	models := w.DetectModels()
+	models := w.ReplyModels()
 	if len(models) == 0 {
 		return nil
 	}
@@ -538,13 +473,6 @@ func Default() Config {
 	cfg.Capture.FrameMS = 32
 	cfg.Wakeword.Model = "clanker"
 	cfg.Wakeword.Threshold = DefaultWakeThreshold
-	cfg.Wakeword.Commands = WakeCommands{
-		Enabled:   false,
-		Models:    []string{"volume_up", "volume_down"},
-		Step:      10,
-		Cooldown:  Duration(1500 * time.Millisecond),
-		Threshold: DefaultCommandThreshold,
-	}
 	cfg.Wakeword.Timeout = Duration(10 * time.Second)
 	cfg.Wakeword.Chime.Enabled = true
 	cfg.STT.Model = "small-streaming"
@@ -761,36 +689,8 @@ func applyEnv(cfg *Config) error {
 		}
 		cfg.Wakeword.Thresholds = thresholds
 	}
-	if v := os.Getenv("ASSISTANT_WAKEWORD_COMMANDS_ENABLED"); v != "" {
-		enabled, err := strconv.ParseBool(v)
-		if err != nil {
-			return fmt.Errorf("config: ASSISTANT_WAKEWORD_COMMANDS_ENABLED=%q: %w", v, err)
-		}
-		cfg.Wakeword.Commands.Enabled = enabled
-	}
-	if v := os.Getenv("ASSISTANT_WAKEWORD_COMMANDS"); v != "" {
-		cfg.Wakeword.Commands.Models = splitList(v)
-	}
-	if v := os.Getenv("ASSISTANT_WAKEWORD_COMMAND_STEP"); v != "" {
-		step, err := strconv.Atoi(v)
-		if err != nil {
-			return fmt.Errorf("config: ASSISTANT_WAKEWORD_COMMAND_STEP=%q: %w", v, err)
-		}
-		cfg.Wakeword.Commands.Step = step
-	}
-	if v := os.Getenv("ASSISTANT_WAKEWORD_COMMAND_COOLDOWN"); v != "" {
-		cooldown, err := time.ParseDuration(v)
-		if err != nil {
-			return fmt.Errorf("config: ASSISTANT_WAKEWORD_COMMAND_COOLDOWN=%q: %w", v, err)
-		}
-		cfg.Wakeword.Commands.Cooldown = Duration(cooldown)
-	}
-	if v := os.Getenv("ASSISTANT_WAKEWORD_COMMAND_THRESHOLD"); v != "" {
-		threshold, err := strconv.ParseFloat(v, 64)
-		if err != nil {
-			return fmt.Errorf("config: ASSISTANT_WAKEWORD_COMMAND_THRESHOLD=%q: %w", v, err)
-		}
-		cfg.Wakeword.Commands.Threshold = threshold
+	if v := os.Getenv("ASSISTANT_WAKEWORD_STOP"); v != "" {
+		cfg.Wakeword.Stop = v
 	}
 	if v := os.Getenv("ASSISTANT_STT_ADDR"); v != "" {
 		cfg.STT.Addr = v
@@ -1062,69 +962,29 @@ func (c Config) validateWakeword() error {
 	if c.Wakeword.Threshold <= 0 || c.Wakeword.Threshold > 1 {
 		return fmt.Errorf("config: wakeword.threshold must be in (0, 1], got %v", c.Wakeword.Threshold)
 	}
-	if err := c.validateWakeCommands(models); err != nil {
-		return err
+	stop := c.Wakeword.StopModel()
+	if strings.ContainsAny(stop, " \t") {
+		return fmt.Errorf("config: wakeword.stop %q must not contain whitespace", stop)
+	}
+	for _, name := range models {
+		if name == stop {
+			return fmt.Errorf("config: wakeword.stop %q must not also be in wakeword.models", stop)
+		}
 	}
 
-	// A threshold is accepted for any configured model, including a command
-	// model while commands are switched off, so an operator can prepare the
-	// .env before enabling the feature. Anything else is a typo.
-	known := make(map[string]bool, len(models)+len(c.Wakeword.Commands.ModelNames()))
-	for _, name := range models {
-		known[name] = true
-	}
-	for _, name := range c.Wakeword.Commands.ModelNames() {
+	// A threshold is accepted for a wake model or the stop model. Anything else
+	// is a typo.
+	known := make(map[string]bool, len(models)+1)
+	for _, name := range c.Wakeword.ReplyModels() {
 		known[name] = true
 	}
 	for name, threshold := range c.Wakeword.Thresholds {
 		if !known[name] {
-			return fmt.Errorf("config: wakeword.thresholds.%q names a model that is not in wakeword.models or wakeword.commands.models", name)
+			return fmt.Errorf("config: wakeword.thresholds.%q names a model that is not in wakeword.models or wakeword.stop", name)
 		}
 		if threshold <= 0 || threshold > 1 {
 			return fmt.Errorf("config: wakeword.thresholds.%q must be in (0, 1], got %v", name, threshold)
 		}
-	}
-	return nil
-}
-
-// validateWakeCommands keeps the wake-free command list disjoint from the wake
-// list and bounds the step, cooldown and threshold. A configured model is
-// checked even while commands are disabled: enabling the feature later must
-// not turn a typo into a live model.
-func (c Config) validateWakeCommands(wakeModels []string) error {
-	commands := c.Wakeword.Commands.ModelNames()
-	wake := make(map[string]bool, len(wakeModels))
-	for _, name := range wakeModels {
-		wake[name] = true
-	}
-	for _, name := range commands {
-		if strings.ContainsAny(name, " \t") {
-			return fmt.Errorf("config: wakeword command model %q must not contain whitespace", name)
-		}
-		if wake[name] {
-			return fmt.Errorf("config: wakeword model %q cannot be both a wake word and a command", name)
-		}
-	}
-	// The stop model is not a volume command: a shared name would silently
-	// turn every volume detection into a session end, so refuse it.
-	if stop := c.Wakeword.Commands.StopModel(); stop != "" {
-		for _, name := range normalizeModelNames(c.Wakeword.Commands.Models) {
-			if name == stop {
-				return fmt.Errorf("config: wakeword.commands.stop %q must not also be in wakeword.commands.models", stop)
-			}
-		}
-	}
-	if c.Wakeword.Commands.Enabled && len(commands) == 0 {
-		return fmt.Errorf("config: wakeword.commands.models must name at least one model when commands are enabled")
-	}
-	if c.Wakeword.Commands.Step < 1 || c.Wakeword.Commands.Step > 50 {
-		return fmt.Errorf("config: wakeword.commands.step must be between 1 and 50, got %d", c.Wakeword.Commands.Step)
-	}
-	if c.Wakeword.Commands.Cooldown.Duration() <= 0 {
-		return fmt.Errorf("config: wakeword.commands.cooldown must be positive")
-	}
-	if c.Wakeword.Commands.Threshold <= 0 || c.Wakeword.Commands.Threshold > 1 {
-		return fmt.Errorf("config: wakeword.commands.threshold must be in (0, 1], got %v", c.Wakeword.Commands.Threshold)
 	}
 	return nil
 }

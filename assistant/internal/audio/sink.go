@@ -164,7 +164,7 @@ func (s *PulseSink) SetVolume(ctx context.Context, percent int) error {
 
 // AdjustVolume steps the sink volume by a relative percent. The target is
 // capped at 0-100 so "louder" cannot climb into PulseAudio's amplification
-// range, which the Dashboard and the wake-free command cannot express. A step
+// range, which the Dashboard cannot express. A step
 // that cannot change the level writes nothing and reports applied=false, so
 // callers can answer without claiming the volume moved.
 func (s *PulseSink) AdjustVolume(ctx context.Context, delta int) (bool, error) {

@@ -18,11 +18,10 @@ import (
 type WakewordModel struct {
 	Name      string
 	Threshold float64
-	// Command marks a wake-free command model. It acts without starting a
-	// turn, so the two kinds are shown separately.
+	// Command marks the wake-free stop model (#503). It is listened for only
+	// while a reply plays and never starts a turn, so it is shown separately.
 	Command bool
-	// Enabled is always true for a wake word. A command model can be
-	// configured but switched off, in which case it is never requested.
+	// Enabled is true for every configured model.
 	Enabled bool
 }
 
@@ -36,8 +35,7 @@ type WakewordInfo struct {
 
 // WakewordFromConfig resolves the allowlist and thresholds main gives the voice
 // loop, so the pages cannot show a different list from the one the Assistant
-// listens for. Command models are included even while disabled, so the page
-// shows the switch rather than hiding the feature.
+// listens for. The stop model is included when configured.
 func WakewordFromConfig(cfg config.Config) WakewordInfo {
 	info := WakewordInfo{Addr: strings.TrimSpace(cfg.Wakeword.Addr)}
 	for _, name := range cfg.Wakeword.WakeModels() {
@@ -47,12 +45,12 @@ func WakewordFromConfig(cfg config.Config) WakewordInfo {
 			Enabled:   true,
 		})
 	}
-	for _, name := range cfg.Wakeword.Commands.ModelNames() {
+	if stop := cfg.Wakeword.StopModel(); stop != "" {
 		info.Models = append(info.Models, WakewordModel{
-			Name:      name,
-			Threshold: cfg.Wakeword.ThresholdFor(name),
+			Name:      stop,
+			Threshold: cfg.Wakeword.ThresholdFor(stop),
 			Command:   true,
-			Enabled:   cfg.Wakeword.Commands.Enabled,
+			Enabled:   true,
 		})
 	}
 	return info
@@ -98,7 +96,7 @@ func (h *Handler) wakewordSettings() wakewordSettingsView {
 		view.Note = "Voice input is off: wakeword.addr is empty. Set the wakeword address and at least one model to enable it."
 		return view
 	}
-	view.Note = "The model list (WAKEWORD_MODELS) and address are connection settings: change them in .env or config.yaml and restart the assistant. Each threshold is live: save wakeword.threshold.<model> and it applies to the next detection, and Reset returns to WAKEWORD_THRESHOLDS or config.yaml. Wake-free commands are controlled by WAKEWORD_COMMANDS_ENABLED and are off by default."
+	view.Note = "The model list (WAKEWORD_MODELS) and address are connection settings: change them in .env or config.yaml and restart the assistant. Each threshold is live: save wakeword.threshold.<model> and it applies to the next detection, and Reset returns to WAKEWORD_THRESHOLDS or config.yaml. The optional stop model (WAKEWORD_STOP) is listened for only while a reply plays."
 	return view
 }
 
@@ -158,14 +156,7 @@ func (h *Handler) wakewordChecks(ctx context.Context) []checkView {
 			Detail: fmt.Sprintf("Threshold %.2f", model.Threshold),
 		}
 		if model.Command {
-			view.Detail = "Wake-free command · " + view.Detail
-			if !model.Enabled {
-				view.Status = string(tool.StatusNotConfigured)
-				view.StatusLabel = "off"
-				view.Detail += " · commands are disabled"
-				views = append(views, view)
-				continue
-			}
+			view.Detail = "Wake-free stop (reply only) · " + view.Detail
 		}
 		switch {
 		case probeErr != nil:

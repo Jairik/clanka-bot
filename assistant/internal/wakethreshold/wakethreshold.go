@@ -23,19 +23,12 @@ const Prefix = "wakeword.threshold."
 func Key(model string) string { return Prefix + model }
 
 // Models is every configured model: the wake allowlist the loop listens for
-// plus the configured command models. Command models are included even while
-// commands are disabled, because config.yaml already accepts a threshold for
-// one and the Settings page shows the switch rather than hiding the feature.
-func Models(cfg config.Wakeword) []string {
-	models := make([]string, 0, len(cfg.WakeModels())+len(cfg.Commands.ModelNames()))
-	models = append(models, cfg.WakeModels()...)
-	models = append(models, cfg.Commands.ModelNames()...)
-	return models
-}
+// plus the stop model when one is configured, so the Settings page lists its
+// threshold even though only the reply stream requests it.
+func Models(cfg config.Wakeword) []string { return cfg.ReplyModels() }
 
 // Definitions builds one Float setting per configured model. The code default
-// stays what it is today (openWakeWord's 0.5 for a wake model, the stricter
-// command default for a command model); an explicit environment or config.yaml
+// is openWakeWord's 0.5; an explicit environment or config.yaml
 // value becomes the config layer, so Reset returns to it rather than to the
 // code default.
 func Definitions(cfg config.Wakeword) []settings.Definition {
@@ -57,8 +50,8 @@ func Definitions(cfg config.Wakeword) []settings.Definition {
 // codeDefault is the value in code when neither an override nor an explicit
 // environment/config value applies.
 func codeDefault(cfg config.Wakeword, model string) float64 {
-	if cfg.IsCommandModel(model) {
-		return config.DefaultCommandThreshold
+	if stop := cfg.StopModel(); stop != "" && model == stop {
+		return config.DefaultStopThreshold
 	}
 	return config.DefaultWakeThreshold
 }
@@ -67,16 +60,7 @@ func codeDefault(cfg config.Wakeword, model string) float64 {
 // absent when the model inherits the code default. The environment is merged
 // into cfg.Thresholds by config.Load, so this is the deployed map either way.
 func configValue(cfg config.Wakeword, model string) (float64, bool) {
-	if value, ok := cfg.Thresholds[model]; ok {
-		return value, true
-	}
-	value := codeDefault(cfg, model)
-	switch {
-	case cfg.IsCommandModel(model) && cfg.Commands.Threshold > 0:
-		value = cfg.Commands.Threshold
-	case !cfg.IsCommandModel(model) && cfg.Threshold > 0:
-		value = cfg.Threshold
-	}
+	value := cfg.ThresholdFor(model)
 	// config.Default sets the global threshold to the code default, so an
 	// untouched deployment reports the code layer rather than a config one.
 	if value == codeDefault(cfg, model) {
@@ -109,9 +93,21 @@ type Source struct {
 	models []string
 }
 
-// NewSource binds the configured detect models to the live settings service.
+// NewSource binds the idle detect models (wake words only) to the live
+// settings service.
 func NewSource(service *settings.Service, cfg config.Wakeword) *Source {
-	models := cfg.DetectModels()
+	return newSource(service, cfg.DetectModels())
+}
+
+// NewReplySource binds the models the stream opened during a reply requests:
+// the wake words plus the stop model. It covers the stop threshold, which the
+// idle source never sends.
+func NewReplySource(service *settings.Service, cfg config.Wakeword) *Source {
+	return newSource(service, cfg.ReplyModels())
+}
+
+func newSource(service *settings.Service, models []string) *Source {
+	models = append([]string(nil), models...)
 	sort.Strings(models)
 	return &Source{service: service, models: models}
 }

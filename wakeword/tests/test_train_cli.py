@@ -265,15 +265,15 @@ class ImportTests(unittest.TestCase):
 
 
 class ConfigTests(unittest.TestCase):
-    def test_volume_up_uses_its_committed_config_and_lists(self):
-        config = train_cli.load_phrase_config("volume-up", None)
+    def test_stop_uses_its_committed_config_and_lists(self):
+        config = train_cli.load_phrase_config("stop", None)
         self.assertEqual(config["count"], 6000)
         self.assertEqual(config["test_count"], 1200)
         self.assertEqual(config["steps"], 30000)
-        lists = train_cli.phrase_lists("volume-up", config)
-        self.assertEqual(lists["positives"], ["volume up"])
-        self.assertIn("volume down", lists["negatives"])
-        self.assertIn("volume", lists["near_misses"])
+        lists = train_cli.phrase_lists("stop", config)
+        self.assertIn("stop", lists["positives"])
+        self.assertIn("top", lists["negatives"])
+        self.assertIn("top", lists["near_misses"])
         self.assertTrue(lists["ordinary"])
 
     def test_training_config_bounds_generation_to_the_existing_clips(self):
@@ -324,11 +324,32 @@ class ConfigTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp)
             write_wav(work / "real" / "positive" / "real_p_00001.wav")
-            first = train_cli.real_stamp(work, 1)
-            self.assertEqual(first, train_cli.real_stamp(work, 1))
-            self.assertNotEqual(first, train_cli.real_stamp(work, 2))
+            first = train_cli.real_stamp(work, "yo_dipshit", "explicit:1")
+            self.assertEqual(first, train_cli.real_stamp(work, "yo_dipshit", "explicit:1"))
+            self.assertNotEqual(first, train_cli.real_stamp(work, "yo_dipshit", "explicit:2"))
             write_wav(work / "real" / "positive" / "real_p_00002.wav", seconds=1.1)
-            self.assertNotEqual(first, train_cli.real_stamp(work, 1))
+            self.assertNotEqual(first, train_cli.real_stamp(work, "yo_dipshit", "explicit:1"))
+
+    def test_copies_for_share_lifts_a_handful_of_takes(self):
+        # 12 real clips against 10k synthetic ones are about 1% at 10 copies
+        # and about 40% once each real clip is repeated a few hundred times.
+        drowned = 12 * 10 / (10000 + 12 * 10)
+        self.assertLess(drowned, 0.02)
+        copies = train_cli.copies_for_share(12, 10000, 0.4)
+        share = 12 * copies / (10000 + 12 * copies)
+        self.assertAlmostEqual(share, 0.4, delta=0.02)
+        self.assertEqual(train_cli.copies_for_share(0, 10000, 0.4), 1)
+
+    def test_duplicate_real_does_not_copy_the_copies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            (directory / "realp_a.wav").write_bytes(b"a")
+            self.assertEqual(train_cli.duplicate_real(directory, "realp_", 3), 1)
+            names = sorted(path.name for path in directory.glob("*.wav"))
+            self.assertEqual(names, ["realp_a.wav", "realp_w3_2_a.wav", "realp_w3_3_a.wav"])
+            # A second pass must overwrite those copies, not treat them as new sources.
+            train_cli.duplicate_real(directory, "realp_", 3)
+            self.assertEqual(len(list(directory.glob("*.wav"))), 3)
 
 
 class DryRunTests(unittest.TestCase):

@@ -60,7 +60,6 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/toolpolicy"
 	"github.com/Jairik/clanka-bot/assistant/internal/tz"
 	"github.com/Jairik/clanka-bot/assistant/internal/voice"
-	"github.com/Jairik/clanka-bot/assistant/internal/voicecmd"
 	"github.com/Jairik/clanka-bot/assistant/internal/voicelib"
 	"github.com/Jairik/clanka-bot/assistant/internal/voicesample"
 	"github.com/Jairik/clanka-bot/assistant/internal/wakesample"
@@ -651,7 +650,7 @@ func run() error {
 	defs := append(connections.Definitions(config.Default(), baseCfg), wordingSetup.Definitions...)
 	defs = append(defs, toolDefs...)
 	// One live threshold per configured wake model (the wake allowlist plus
-	// the configured command models). The environment/config.yaml map is the
+	// the configured stop model). The environment/config.yaml map is the
 	// config layer, so Reset returns to it; the model allowlist itself stays
 	// restart-required.
 	defs = append(defs, wakethreshold.Definitions(baseCfg.Wakeword)...)
@@ -1158,61 +1157,16 @@ func run() error {
 			}
 			return clip.PCM, clip.Format, true
 		}
-		// Wake-free command models (#81): a detection runs the volume step and
-		// Cue with no STT and no routing. The handler reads Focus and the live
-		// music cap per detection, so a Dashboard change applies immediately.
-		// The optional stop model is not a volume command: the loop owns it
-		// (#503), so it is left out of the handler map below.
-		stopModel := cfg.Wakeword.StopCommand()
-		var wakeCommands map[string]voice.WakeCommand
-		if models := cfg.Wakeword.CommandModels(); len(models) > 0 {
-			handler, err := voicecmd.New(
-				voicecmd.Config{Step: cfg.Wakeword.Commands.Step, Cooldown: cfg.Wakeword.Commands.Cooldown.Duration()},
-				voicecmd.Deps{
-					Sink: sink,
-					Focus: func() (bool, bool) {
-						return focusRegistry.Held(focus.Reply), focusRegistry.Held(focus.Music)
-					},
-					MaxVolume: func() int { return spotify.MaxVolume(settingsSvc) },
-					// The wake Cue is the fixed short acknowledgement: the Cue
-					// role list is code, and adding a sixth role for one sound
-					// would widen the settings surface for no new choice.
-					Cue: func(cueCtx context.Context) {
-						go func() {
-							clip, ok := resolveWakeCue(cues, quietSvc, cfg.Wakeword.Chime.Enabled)
-							if !ok {
-								return
-							}
-							// Follow quiet.volume like every other spoken path.
-							if err := cues.PlayClip(cueCtx, clip); err != nil {
-								logger.Warn("voice command cue", "error", err.Error())
-							}
-						}()
-					},
-					Logger: logger,
-				},
-			)
-			if err != nil {
-				return fmt.Errorf("voice commands: %w", err)
-			}
-			wakeCommands = make(map[string]voice.WakeCommand, len(models))
-			for _, name := range models {
-				if name == stopModel {
-					continue
-				}
-				wakeCommands[name] = handler.Handle
-			}
-			logger.Info("wake-free commands enabled",
-				"models", models,
-				"step", cfg.Wakeword.Commands.Step,
-				"cooldown", cfg.Wakeword.Commands.Cooldown.Duration().String(),
-				"thresholds", cfg.Wakeword.ModelThresholds(),
-			)
-		}
+		// The optional wake-free stop model (#503) is listened for only while
+		// a reply plays; the loop owns it.
+		stopModel := cfg.Wakeword.StopModel()
 		// Resolve thresholds from the one live settings service, so a
 		// Dashboard save reaches the next detect stream without a restart.
+		// The reply stream also sends the stop model's threshold; the idle
+		// stream never does.
 		wakeThresholds := wakethreshold.NewSource(settingsSvc, cfg.Wakeword)
-		loop, err := newVoiceLoop(cfg, session, p, sink, announcements, wakeCue, voiceObserver, voiceStats, musicDucker, wakeCommands, wakeThresholds, func() bool { return focusRegistry.Held(focus.Ring) }, busySpeaker, logger)
+		replyThresholds := wakethreshold.NewReplySource(settingsSvc, cfg.Wakeword)
+		loop, err := newVoiceLoop(cfg, session, p, sink, announcements, wakeCue, voiceObserver, voiceStats, musicDucker, wakeThresholds, replyThresholds, func() bool { return focusRegistry.Held(focus.Ring) }, busySpeaker, logger)
 		if loop != nil {
 			loop.BindListening(func() bool {
 				active, _ := voice.ListeningState(settingsSvc, time.Now())
@@ -1232,7 +1186,7 @@ func run() error {
 					logger.Warn("voice stop cue", "error", err.Error())
 				}
 			})
-			// A standalone "stop" and the stop command model end the session,
+			// A standalone "stop" and the reply-only stop model end the session,
 			// so the next wake word starts with a fresh history and without
 			// conversation mode (#499).
 			loop.BindSessionEnd(func() {
@@ -1494,7 +1448,7 @@ func run() error {
 		"speech_enabled", cfg.VoiceEnabled(),
 		"wakeword_addr", cfg.Wakeword.Addr,
 		"wakeword_models", cfg.Wakeword.WakeModels(),
-		"wakeword_commands", cfg.Wakeword.CommandModels(),
+		"wakeword_stop", cfg.Wakeword.StopModel(),
 		"stt_addr", cfg.STT.Addr,
 		"agent_filler", settingsSvc.String(wording.FillerKey),
 		"tools", len(registry.Names()),
@@ -1522,7 +1476,7 @@ func run() error {
 // STT, the live wake Cue, and the shared reply Session. The pipeline is the
 // Barge-in seam that drops a waiting Confirmation, and the Announcement queue
 // stops unprompted speech as soon as a wake word starts a turn.
-func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingDropper, sink audio.Sink, announcements *announce.Queue, wakeCue func() ([]byte, audio.Format, bool), observer latency.Observer, stats *voice.Stats, ducker voice.Ducker, wakeCommands map[string]voice.WakeCommand, thresholds voice.Thresholds, ringActive func() bool, busySpeaker voice.Speaker, logger *slog.Logger) (*voice.Loop, error) {
+func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingDropper, sink audio.Sink, announcements *announce.Queue, wakeCue func() ([]byte, audio.Format, bool), observer latency.Observer, stats *voice.Stats, ducker voice.Ducker, thresholds, replyThresholds voice.Thresholds, ringActive func() bool, busySpeaker voice.Speaker, logger *slog.Logger) (*voice.Loop, error) {
 	captureFormat := audio.Format{Rate: cfg.Capture.Rate, Width: cfg.Capture.Width, Channels: cfg.Capture.Channels}
 	frameBytes := cfg.Capture.Rate * cfg.Capture.Width * cfg.Capture.Channels * cfg.Capture.FrameMS / 1000
 	if frameBytes <= 0 {
@@ -1531,9 +1485,9 @@ func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingD
 	wireFormat := wyoming.Format{Rate: captureFormat.Rate, Width: captureFormat.Width, Channels: captureFormat.Channels}
 
 	// The explicit allowlist is both what the service is asked to detect and
-	// what the loop accepts, so an unlisted model never starts a turn. The
-	// detect list also carries the enabled command models; the loop keeps the
-	// two lists apart, so a command never starts a turn.
+	// what the loop accepts, so an unlisted model never starts a turn. The idle
+	// detect list is the wake words only; the reply-time list adds the stop
+	// model (#503), so stop is never listened for while idle.
 	names := cfg.Wakeword.WakeModels()
 	detectModels := cfg.Wakeword.DetectModels()
 	wakeClient := wyoming.NewClient(cfg.Wakeword.Addr, wyoming.WithTimeout(cfg.Wakeword.Timeout.Duration()))
@@ -1558,7 +1512,7 @@ func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingD
 		"pulse_source", cfg.Capture.Source,
 		"wakeword_addr", cfg.Wakeword.Addr,
 		"wakeword_models", names,
-		"wakeword_commands", cfg.Wakeword.CommandModels(),
+		"wakeword_stop", cfg.Wakeword.StopModel(),
 		"wakeword_thresholds", cfg.Wakeword.ModelThresholds(),
 		"stt_addr", cfg.STT.Addr,
 		"stt_model", cfg.STT.Model,
@@ -1584,7 +1538,11 @@ func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingD
 		RingActive: ringActive,
 		Logger:     logger,
 	}
-	deps.WakeCommands = wakeCommands
+	// Only a configured stop model gets its own reply-time stream; otherwise
+	// the loop reuses Wake.
+	if cfg.Wakeword.StopModel() != "" {
+		deps.ReplyWake = voice.NewWyomingWake(wakeClient, cfg.Wakeword.ReplyModels(), wireFormat, replyThresholds)
+	}
 	// Leave the seam absent rather than storing a typed nil: a text-only setup
 	// has no speech to stop.
 	if announcements != nil {
@@ -1595,9 +1553,8 @@ func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingD
 
 // resolveWakeCue resolves the wake role and scales it for Quiet hours, so a
 // Quiet-hours change applies to the next wake. It returns ok=false when the
-// chime is disabled or no sound is assigned. Both wake paths (the spoken-wake
-// Cue and the wake-free command acknowledgement) resolve through it, so they
-// share the quiet.volume decision (#258).
+// chime is disabled or no sound is assigned. Every wake path resolves through it,
+// so they share the quiet.volume decision (#258).
 func resolveWakeCue(cues *sound.Service, quietSvc *quiet.Service, enabled bool) (sound.Clip, bool) {
 	if !enabled {
 		return sound.Clip{}, false

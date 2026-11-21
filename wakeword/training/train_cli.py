@@ -8,12 +8,12 @@ the model is openWakeWord, and the owner's takes are the same
 
 Usage:
   wakeword/train import bt.tar.gz | ./bundle-dir | rbpi@pi:path
-  wakeword/train synth --phrase "volume up" --count 5000
-  wakeword/train train --phrase "volume up" --steps 20000
-  wakeword/train eval --phrase "volume up"
-  wakeword/train install --phrase "volume up" [--to pi]
+  wakeword/train synth --phrase "yo dipshit" --count 5000
+  wakeword/train train --phrase "yo dipshit" --steps 20000
+  wakeword/train eval --phrase "yo dipshit"
+  wakeword/train install --phrase "yo dipshit" [--to pi]
   wakeword/train status
-  wakeword/train all --phrase "volume up" --from bt.tar.gz
+  wakeword/train all --phrase "yo dipshit" --from bt.tar.gz
 
 Every phrase has a work directory (default
 ``~/.cache/clanka/wakeword-<slug>``); nothing is uploaded and no recording is
@@ -88,7 +88,7 @@ def slug_for(phrase: str) -> str:
     if not valid_slug(slug):
         raise CLIError(
             "the phrase must be 1–4 words of letters and digits "
-            f"(for example 'clanker' or 'volume up'), got {phrase!r}"
+            f"(for example 'clanker' or 'yo dipshit'), got {phrase!r}"
         )
     return slug
 
@@ -167,7 +167,10 @@ def load_phrase_config(slug: str, path: str | None) -> dict:
     config.setdefault("speeds", "0.8-1.2")
     config.setdefault("speed_probability", 0.25)
     config.setdefault("steps", trained.get("steps", 50000))
-    config.setdefault("real_weight", 1)
+    # None means "repeat real takes until they are REAL_SHARE of the class".
+    # An explicit 1 keeps a synthetic-heavy run; the default used to be 1,
+    # which left a dozen real takes as about 1% of 10k clips.
+    config.setdefault("real_weight", None)
     config.setdefault("workers", 4)
     config.setdefault("seed", 1)
     return config
@@ -699,7 +702,7 @@ def invalidate_features(work: Path, key: str) -> None:
 def write_training_config(work: Path, key: str, phrase: str, counts: dict, steps: int) -> Path:
     """Write the per-run openWakeWord YAML.
 
-    When the phrase has a checked-in config (clanker, volume_up, volume_down)
+    When the phrase has a checked-in config (clanker, yo_dipshit, stop)
     it is the template: its negative weighting, target threshold and other
     tuned values stay, while n_samples/n_samples_val are aligned with the clips
     actually generated and steps with --steps. openWakeWord only synthesizes
@@ -786,7 +789,73 @@ def clip_counts(work: Path, key: str) -> dict:
     }
 
 
-def real_stamp(work: Path, weight: int) -> str:
+# Real takes are a few dozen clips beside 10k synthetic ones. openWakeWord
+# samples that directory uniformly and has no per-clip weight, so a 10× repeat
+# is still about 1% of the class: the model learns the TTS voice, scores the
+# owner's own takes near zero, and the loose boundary false-triggers. Repeat
+# until real audio is this fraction of its class.
+REAL_SHARE = 0.4
+REAL_WEIGHT_CAP = 2000
+
+
+def copies_for_share(n_real: int, n_synthetic: int, share: float = REAL_SHARE) -> int:
+    """How many copies of each real clip make real audio `share` of the class.
+
+    n_real * copies / (n_synthetic + n_real * copies) = share. No real clips,
+    or a share of zero, stays at one copy so the caller does not write files.
+    """
+    if n_real < 1 or n_synthetic < 1 or share <= 0:
+        return 1
+    # Leave the synthetic clips a majority so one room's noise cannot become
+    # the whole positive class.
+    share = min(share, 0.8)
+    copies = share * n_synthetic / (n_real * (1.0 - share))
+    return max(1, min(REAL_WEIGHT_CAP, int(round(copies))))
+
+
+def real_sources(directory: Path, prefix: str) -> list[Path]:
+    """The prep_real copies, not the weight copies this module writes later.
+
+    Weight copies are named `<prefix>w<N>_<i>_<rest>`. Including them in the
+    source list would duplicate the duplicates.
+    """
+    if not directory.is_dir():
+        return []
+    return sorted(
+        path for path in directory.glob(f"{prefix}*.wav") if not path.name.startswith(f"{prefix}w")
+    )
+
+
+def duplicate_real(directory: Path, prefix: str, copies: int) -> int:
+    """Write extra copies of each real clip so training samples them often.
+
+    Returns how many source clips were found. copies=1 leaves the directory
+    as prep_real wrote it.
+    """
+    sources = real_sources(directory, prefix)
+    if copies <= 1 or not sources:
+        return len(sources)
+    for source in sources:
+        data = source.read_bytes()
+        rest = source.name[len(prefix):]
+        for index in range(2, copies + 1):
+            (directory / f"{prefix}w{copies}_{index}_{rest}").write_bytes(data)
+    return len(sources)
+
+
+def synthetic_count(directory: Path, prefix: str) -> int:
+    """Clips in a train directory that are not real takes or weight copies."""
+    if not directory.is_dir():
+        return 0
+    return sum(1 for path in directory.glob("*.wav") if not path.name.startswith(prefix))
+
+
+def real_stamp(work: Path, key: str, weight_note: str) -> str:
+    """Identity of the real set plus how it will be repeated.
+
+    Synthetic counts are part of the stamp because the automatic repeat
+    depends on them: more TTS clips must pull the real copies up with them.
+    """
     pieces = []
     for kind in ("positive", "negative"):
         directory = work / "real" / kind
@@ -795,12 +864,39 @@ def real_stamp(work: Path, weight: int) -> str:
         for path in sorted(directory.glob("*.wav")):
             stat = path.stat()
             pieces.append(f"{kind}/{path.name}:{stat.st_size}:{stat.st_mtime_ns}")
-    pieces.append(f"weight:{weight}")
+    if not pieces:
+        return ""
+    base = work / "clips" / key
+    pieces.append(
+        "synth:"
+        + str(synthetic_count(base / "positive_train", "realp_"))
+        + ":"
+        + str(synthetic_count(base / "negative_train", "realn_"))
+    )
+    pieces.append(f"weight:{weight_note}")
     return hashlib.sha256("\n".join(pieces).encode()).hexdigest() if pieces else ""
 
 
-def prepare_real(work: Path, key: str, weight: int, log: Path, dry_run: bool) -> None:
-    stamp = real_stamp(work, weight)
+def class_copies(directory: Path, prefix: str, explicit: int | None) -> int:
+    """Copies per real clip. An explicit weight is used as-is; otherwise aim for REAL_SHARE."""
+    sources = real_sources(directory, prefix)
+    if not sources:
+        return 1
+    if explicit is not None:
+        return explicit
+    return copies_for_share(len(sources), synthetic_count(directory, prefix))
+
+
+def prepare_real(work: Path, key: str, explicit_weight: int | None, log: Path, dry_run: bool) -> None:
+    """Split real takes, then repeat them so they are not drowned by TTS.
+
+    explicit_weight repeats both classes that many times. None repeats each
+    class until real audio is REAL_SHARE of it. Real negatives are repeated
+    too: a positive-only repeat teaches the model that the owner's room is
+    the wake word.
+    """
+    note = f"explicit:{explicit_weight}" if explicit_weight is not None else f"auto:{REAL_SHARE}"
+    stamp = real_stamp(work, key, note)
     if not stamp:
         print("no real takes in the work directory; training stays synthetic-only")
         return
@@ -816,15 +912,30 @@ def prepare_real(work: Path, key: str, weight: int, log: Path, dry_run: bool) ->
             return
     if run_sh("real", work, key, log, dry_run) != 0:
         raise CLIError(f"the real take split failed; see {log}")
-    if weight > 1 and not dry_run:
-        for source in sorted((work / "clips" / key / "positive_train").glob("realp_*.wav")):
-            data = source.read_bytes()
-            for copy in range(2, weight + 1):
-                (source.parent / f"realp_w{weight}_{copy}_{source.name[len('realp_'):]}").write_bytes(data)
-        print(f"duplicated each real positive {weight}× in positive_train (openWakeWord has no per-clip weight)")
+    base = work / "clips" / key
+    # Count after the split: prep_real has removed the previous weight copies.
+    positive_copies = class_copies(base / "positive_train", "realp_", explicit_weight)
+    negative_copies = class_copies(base / "negative_train", "realn_", explicit_weight)
     if not dry_run:
+        n_pos = duplicate_real(base / "positive_train", "realp_", positive_copies)
+        n_neg = duplicate_real(base / "negative_train", "realn_", negative_copies)
+        print(
+            f"real takes repeated so they are not 1% of the class: "
+            f"{n_pos} positives × {positive_copies}, {n_neg} negatives × {negative_copies}"
+        )
         marker.parent.mkdir(parents=True, exist_ok=True)
-        marker.write_text(json.dumps({"stamp": stamp, "weight": weight, "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}, indent=2) + "\n")
+        marker.write_text(
+            json.dumps(
+                {
+                    "stamp": stamp,
+                    "positive_copies": positive_copies,
+                    "negative_copies": negative_copies,
+                    "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                },
+                indent=2,
+            )
+            + "\n"
+        )
 
 
 def train(args: argparse.Namespace, slug: str, config: dict, work: Path) -> None:
@@ -841,13 +952,21 @@ def train(args: argparse.Namespace, slug: str, config: dict, work: Path) -> None
     steps = args.steps if args.steps is not None else int(config["steps"])
     if steps < 1:
         raise CLIError("--steps must be positive")
-    weight = args.real_weight if args.real_weight is not None else int(config["real_weight"])
-    if weight < 1 or weight > 10:
-        raise CLIError("--real-weight must be between 1 and 10")
+    # None repeats real takes until they are REAL_SHARE of each class. An
+    # explicit --real-weight or phrase YAML value is used as the copy count.
+    weight = args.real_weight if args.real_weight is not None else config.get("real_weight")
+    if weight is not None:
+        weight = int(weight)
+        if weight < 1 or weight > REAL_WEIGHT_CAP:
+            raise CLIError(f"--real-weight must be between 1 and {REAL_WEIGHT_CAP}")
     log = work / "logs" / f"train-{time.strftime('%Y%m%d-%H%M%S')}.log"
+    how = "auto" if weight is None else str(weight)
     print(f"phrase {phrase_text(slug)!r}: {counts['positive_train']} positive and "
-          f"{counts['negative_train']} negative training clips, {steps} steps, real weight {weight}")
+          f"{counts['negative_train']} negative training clips, {steps} steps, real weight {how}")
     prepare_real(work, key, weight, log, args.dry_run)
+    # Recount after the repeat. n_samples has to match the clips on disk or
+    # openWakeWord asks the stub Piper generator for more.
+    counts = clip_counts(work, key)
     write_training_config(work, key, phrase_text(slug), counts, steps)
     if run_sh("train", work, key, log, args.dry_run) != 0:
         raise CLIError(f"training failed; see {log}")
@@ -1099,7 +1218,7 @@ def cmd_all(args: argparse.Namespace) -> int:
 
 
 def base_parser(sub: argparse.ArgumentParser) -> None:
-    sub.add_argument("--phrase", help="phrase text or slug, for example 'volume up' or volume-up")
+    sub.add_argument("--phrase", help="phrase text or slug, for example 'yo dipshit' or yo-dipshit")
     sub.add_argument("--work", help="work directory (default ~/.cache/clanka/wakeword-<slug>)")
     sub.add_argument("--dry-run", action="store_true", help="print the commands without running them")
 
@@ -1135,7 +1254,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     train = commands.add_parser("train", help="augment clips, train, and convert the ONNX to TFLite")
     train.add_argument("--steps", type=int, help="training steps (default 50000)")
-    train.add_argument("--real-weight", type=int, help="duplicate each real positive N times (default 1)")
+    train.add_argument(
+        "--real-weight",
+        type=int,
+        help="copy each real take N times (default: repeat until real audio is 40%% of that class)",
+    )
     train.add_argument("--config", help="per-phrase YAML (default wakeword/training/phrases/<slug>.yml)")
     base_parser(train)
     train.set_defaults(func=cmd_train)

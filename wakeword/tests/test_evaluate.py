@@ -17,7 +17,7 @@ import evaluate  # noqa: E402
 
 
 def short_positive(path):
-    source = WAKEWORD / "tests/fixtures/volume_up/positive/volume_up_00.wav"
+    source = WAKEWORD / "tests/fixtures/positive/clanker_02.wav"
     # Keep the spoken phrase in a 1.2 s clip, shorter than the detector window.
     with wave.open(str(source), "rb") as original, wave.open(str(path), "wb") as output:
         output.setparams(original.getparams())
@@ -76,8 +76,8 @@ class EvaluateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             positive = Path(directory) / "short.wav"
             short_positive(positive)
-            model = str(WAKEWORD / "models/volume_up.tflite")
+            model = str(WAKEWORD / "models/clanker.tflite")
             raw = evaluate.frame_scores([positive], model, 1)
             padded = evaluate.frame_scores([positive], model, 1, 1, 2)
-        self.assertLessEqual(max(raw[str(positive)]), 0.98)
-        self.assertGreater(max(padded[str(positive)]), 0.98)
+        self.assertLessEqual(max(raw[str(positive)]), 0.9)
+        self.assertGreater(max(padded[str(positive)]), 0.9)

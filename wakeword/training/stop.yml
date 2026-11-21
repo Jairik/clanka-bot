@@ -14,7 +14,7 @@
 # "stop talking") are deliberately in neither set: firing on them cancels the
 # reply, which is what the speaker wanted anyway.
 #
-# Music background: see volume_up.yml. Drop 16 kHz mono WAVs with vocals into
+# Music background: drop 16 kHz mono WAVs with vocals into
 # $WORK/background before `train` for a music-heavy run (keep them out of git).
 
 model_name: "stop"

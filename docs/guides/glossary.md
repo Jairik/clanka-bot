@@ -74,9 +74,9 @@ _Avoid_: Interrupt, cut-off
 One openWakeWord detector the Assistant listens for by name, such as `clanker` or `okay_nabu`. The configured list is an allowlist: a model that is not listed never starts a turn. Each model has its own detection threshold.
 _Avoid_: Hotword, keyword, phrase model
 
-**Command model**:
-A wake model whose detections are handled without speech-to-text, such as "volume up". It never starts a turn or opens STT.
-_Avoid_: Shortcut word, action word
+**Stop model**:
+The optional wake-free detector (`wakeword.stop`) that is listened for only while a reply plays. A detection ends the reply and the session; it never starts a turn or opens STT, and it is never requested while idle.
+_Avoid_: Command model, shortcut word
 
 **Response latency**:
 The time from the user's last spoken sound to the first sound of the Assistant's actual reply. Chimes and fillers played while waiting don't count as the reply.

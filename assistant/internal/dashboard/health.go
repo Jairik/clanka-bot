@@ -107,8 +107,8 @@ func checkViewOf(check tool.StatusCheck) checkView {
 // falseWakeRows maps the voice loop's in-memory counters onto one Health row
 // per configured wake model, in config order for stable rendering. The row is
 // omitted entirely when voice input is off (no Stats or no wakeword address):
-// a disabled loop has no measurement to show, not an error. Command models
-// never start a turn, so they are not false-wake candidates.
+// a disabled loop has no measurement to show, not an error. The stop model
+// never starts a turn, so they are not false-wake candidates.
 func (h *Handler) falseWakeRows() []falseWakeView {
 	if h.falseWakes == nil || strings.TrimSpace(h.wakeword.Addr) == "" {
 		return nil

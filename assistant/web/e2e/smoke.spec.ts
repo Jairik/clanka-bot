@@ -257,11 +257,24 @@ test("the phone layout opens the More sheet", async ({ page, isMobile }) => {
   test.skip(!isMobile, "phone layout only");
   await page.goto("/");
   const tabs = page.getByRole("navigation", { name: "Sections" });
-  await tabs.getByRole("button", { name: "More" }).click();
-  await expect(page.getByRole("heading", { name: "More" })).toBeVisible();
-  await page.getByRole("button", { name: "Settings" }).click();
+  const more = tabs.getByRole("button", { name: "More" });
+  await expect(tabs.getByRole("link", { name: "Chat" })).toHaveAttribute("aria-current", "page");
+  await more.click();
+  await expect(more).toHaveAttribute("aria-expanded", "true");
+  const drawer = page.getByRole("dialog", { name: "More" });
+  await expect(drawer).toHaveAttribute("id", (await more.getAttribute("aria-controls"))!);
+
+  // A keyboard route change moves focus beyond the closing sheet.
+  const settings = drawer.getByRole("link", { name: "Settings" });
+  await settings.focus();
+  await settings.press("Enter");
   await expect(page).toHaveURL(/\/settings$/);
   await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+  await expect(page.getByRole("main")).toBeFocused();
+
+  await expect(more).toHaveAttribute("aria-expanded", "false");
+  await more.click();
+  await expect(settings).toHaveAttribute("aria-current", "page");
 });
 
 test.describe("accessibility", () => {
@@ -293,6 +306,16 @@ test.describe("accessibility", () => {
     await expect(focused).toHaveText("Skip to content");
     await focused.press("Enter");
     await expect.poll(() => page.evaluate(() => document.activeElement?.id)).toBe("main");
+  });
+
+  test("keyboard navigation focuses the new page landmark", async ({ page, isMobile }) => {
+    test.skip(isMobile, "desktop rail route navigation");
+    await page.goto("/");
+    const notes = page.getByRole("navigation", { name: "Pages" }).getByRole("link", { name: "Notes" });
+    await notes.focus();
+    await notes.press("Enter");
+    await expect(page.getByRole("heading", { name: "Notes", level: 1 })).toBeVisible();
+    await expect(page.getByRole("main")).toBeFocused();
   });
 
   test("a collapsible section opens with the keyboard", async ({ page }) => {

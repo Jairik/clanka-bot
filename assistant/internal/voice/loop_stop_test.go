@@ -60,7 +60,8 @@ func TestStandaloneStopEndsTheSessionWithoutAFollowUp(t *testing.T) {
 // drops the pending Confirmation, ends the session, and starts no new turn.
 func TestStopCommandDuringAReplyCancelsItAndSuspendsTheSession(t *testing.T) {
 	source := &scriptSource{frames: repeat(loudFrame(), 600)}
-	wake := &fakeWake{afterWords: 4, names: []string{"clanker", "stop"}, maxFires: 2}
+	wake := &fakeWake{afterWords: 4, name: "clanker", maxFires: 1}
+	replyWake := &fakeWake{afterWords: 4, names: []string{"stop"}, maxFires: 1}
 	stt := &fakeSTT{text: "tell me a long story"}
 	dropper := &fakeDropper{pending: tool.PendingConfirmation{Tool: "mail.send"}}
 	responder := newBargeResponder()
@@ -69,7 +70,7 @@ func TestStopCommandDuringAReplyCancelsItAndSuspendsTheSession(t *testing.T) {
 
 	loop := newLoop(t, voice.Config{FrameBytes: frameBytes, Endpoint: endpointConfig(400 * time.Millisecond)},
 		voice.Deps{
-			Source: source, Wake: wake, STT: stt, Responder: responder,
+			Source: source, Wake: wake, ReplyWake: replyWake, STT: stt, Responder: responder,
 			Dropper:     dropper,
 			WakeWords:   []string{"clanker"},
 			StopCommand: "stop",
@@ -126,14 +127,15 @@ func TestStopCommandDuringAReplyCancelsItAndSuspendsTheSession(t *testing.T) {
 // and the reply carries on.
 func TestStopDetectionWithNoStopModelIsIgnored(t *testing.T) {
 	source := &scriptSource{frames: repeat(loudFrame(), 600)}
-	wake := &fakeWake{afterWords: 4, names: []string{"clanker", "stop"}, maxFires: 2}
+	wake := &fakeWake{afterWords: 4, name: "clanker", maxFires: 1}
+	replyWake := &fakeWake{afterWords: 4, names: []string{"stop"}, maxFires: 1}
 	stt := &fakeSTT{text: "hello"}
 	responder := &fakeResponder{block: 300 * time.Millisecond, calls: make(chan string, 1)}
 	ended := make(chan struct{}, 1)
 
 	loop := newLoop(t, voice.Config{FrameBytes: frameBytes, Endpoint: endpointConfig(400 * time.Millisecond)},
 		voice.Deps{
-			Source: source, Wake: wake, STT: stt, Responder: responder,
+			Source: source, Wake: wake, ReplyWake: replyWake, STT: stt, Responder: responder,
 			WakeWords: []string{"clanker"},
 		})
 	loop.BindSessionEnd(func() {
@@ -162,10 +164,10 @@ func TestStopDetectionWithNoStopModelIsIgnored(t *testing.T) {
 	}
 }
 
-// TestIdleStopCommandEndsTheSessionWithoutStartingATurn proves the stop model
-// is consumed while idle too: it never opens STT, and the next wake word still
-// starts an ordinary turn.
-func TestIdleStopCommandEndsTheSessionWithoutStartingATurn(t *testing.T) {
+// TestIdleStopDetectionIsIgnored proves the stop model is reply-only: a stop
+// detection on the idle stream (which production never requests) ends nothing,
+// plays no cue and opens no STT. The next wake word still starts a turn.
+func TestIdleStopDetectionIsIgnored(t *testing.T) {
 	source := &scriptSource{frames: repeat(loudFrame(), 600)}
 	wake := &fakeWake{afterWords: 3, names: []string{"stop", "clanker"}, maxFires: 2}
 	stt := &fakeSTT{text: "hello"}
@@ -190,13 +192,43 @@ func TestIdleStopCommandEndsTheSessionWithoutStartingATurn(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("the wake word after an idle stop did not start a turn")
 	}
-	if got := ends.Load(); got != 1 {
-		t.Fatalf("session ended %d times for one idle stop, want 1", got)
+	if got := ends.Load(); got != 0 {
+		t.Fatalf("session ended %d times for an idle stop, want 0", got)
 	}
-	if got := cues.Load(); got != 1 {
-		t.Fatalf("stop cue played %d times, want 1", got)
+	if got := cues.Load(); got != 0 {
+		t.Fatalf("stop cue played %d times for an idle stop, want 0", got)
 	}
 	if opens := stt.openCount(); opens != 1 {
 		t.Fatalf("STT opens = %d, want only the wake-word turn", opens)
+	}
+}
+
+// TestReplyWatchUsesReplyWake proves the reply-time stream comes from
+// ReplyWake, not Wake: the idle service is opened for the wake word only.
+func TestReplyWatchUsesReplyWake(t *testing.T) {
+	source := &scriptSource{frames: repeat(loudFrame(), 600)}
+	wake := &fakeWake{afterWords: 4, name: "clanker", maxFires: 1}
+	replyWake := &fakeWake{afterWords: 4, names: []string{"stop"}, maxFires: 1}
+	stt := &fakeSTT{text: "tell me a long story"}
+	responder := newBargeResponder()
+
+	loop := newLoop(t, voice.Config{FrameBytes: frameBytes, Endpoint: endpointConfig(400 * time.Millisecond)},
+		voice.Deps{
+			Source: source, Wake: wake, ReplyWake: replyWake, STT: stt, Responder: responder,
+			WakeWords:   []string{"clanker"},
+			StopCommand: "stop",
+		})
+	runLoop(t, loop)
+
+	select {
+	case <-responder.cancelled:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stop detection from ReplyWake did not cancel the reply")
+	}
+	if _, _, fires := wake.snapshot(); fires != 1 {
+		t.Fatalf("idle Wake fired %d times, want only the wake word", fires)
+	}
+	if streams, _, fires := replyWake.snapshot(); streams == 0 || fires != 1 {
+		t.Fatalf("ReplyWake streams=%d fires=%d, want it opened during the reply", streams, fires)
 	}
 }

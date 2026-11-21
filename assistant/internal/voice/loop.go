@@ -26,11 +26,6 @@ type Detection struct {
 	Name string
 }
 
-// WakeCommand handles one non-wake detection, such as #81's volume_up or
-// volume_down. It runs on the loop goroutine, so it must be quick; it never
-// opens STT and never starts a turn.
-type WakeCommand func(ctx context.Context, name string)
-
 // Source opens a continuous PCM stream from the microphone.
 type Source interface {
 	Open(ctx context.Context) (io.ReadCloser, error)
@@ -125,30 +120,29 @@ type Config struct {
 // the services without touching the mic.
 type Deps struct {
 	Source Source
-	Wake   WakeService
-	STT    STTService
-	Player Player
+	// Wake opens the idle detect stream: wake words only.
+	Wake WakeService
+	// ReplyWake opens the stream watched while a reply plays. It requests the
+	// wake words plus the wake-free stop model (#503), so stop is never
+	// listened for while idle. Nil falls back to Wake.
+	ReplyWake WakeService
+	STT       STTService
+	Player    Player
 	// Responder answers one utterance that followed a wake word.
 	Responder Responder
 	// WakeWords is the allowlist of detection names that may start a turn.
 	// Production always sets it from wakeword.models. Empty accepts any name,
 	// which keeps a minimal test setup (or a service-only deployment) working;
-	// it is never the configured path. A name that also has a WakeCommands
-	// entry is dispatched as a command, not a wake word.
+	// it is never the configured path.
 	WakeWords []string
 	// Thresholds, when set, is the live per-model threshold source. Its
 	// signature is checked as frames arrive; a change closes the open stream
 	// without firing and the loop reopens it with the new map. Nil keeps a
 	// direct WakeService fixture unchanged.
 	Thresholds Thresholds
-	// WakeCommands handles non-wake detections such as #81's volume_up. A name
-	// in this map is dispatched and the loop keeps listening; it never starts
-	// an STT turn. A command model must also be requested from the service, so
-	// main adds these names to the detect allowlist.
-	WakeCommands map[string]WakeCommand
-	// StopCommand names the wake-free command model that suspends the session
+	// StopCommand names the wake-free stop model that suspends the session
 	// while a reply is in flight (#503). Empty disables it, so a detection
-	// behaves as it does today.
+	// behaves as it does today. Only the ReplyWake stream requests it.
 	StopCommand string
 	// StopCue, when set, plays the optional soft Cue after a stop command. It
 	// runs on the loop context, so the reply that was cancelled cannot cut the
@@ -159,7 +153,7 @@ type Deps struct {
 	Dropper PendingDropper
 	// SessionEnd is optional: it clears the shared Agent history and turns
 	// conversation mode off when the session ends. endSession calls it for a
-	// standalone "stop" (#501) and the stop command model (#503).
+	// standalone "stop" (#501) and the reply-only stop model (#503).
 	SessionEnd func()
 	// Announcer is optional: when set, a wake word stops unprompted speech
 	// before capture starts.
@@ -360,8 +354,8 @@ func (l *Loop) listen(ctx context.Context) error {
 }
 
 // waitForWake feeds mic frames to the wake word service until a wake word
-// fires. Command detections are dispatched and the stream is reopened; an
-// unlisted name is logged and ignored. The stream is closed on return: the
+// fires. The idle stream requests wake words only; any other name is logged
+// and ignored. The stream is closed on return: the
 // session opens its own stream for playback, so a detection from the question
 // itself cannot interrupt the reply.
 func (l *Loop) waitForWake(ctx context.Context) (string, bool, error) {
@@ -406,17 +400,6 @@ func (l *Loop) waitForWake(ctx context.Context) (string, bool, error) {
 		sampling := l.sampling
 		l.sampleMu.Unlock()
 		if sampling {
-			continue
-		}
-		// An idle stop command ends the session and keeps listening; it never
-		// opens STT or starts a turn (#503).
-		if l.isStopCommand(name) {
-			l.deps.Logger.Info("voice: stop command", "model", name)
-			l.endSession(nil)
-			l.playStopCue(ctx)
-			continue
-		}
-		if l.dispatchCommand(ctx, name) {
 			continue
 		}
 		if !l.isWakeWord(name) {
@@ -480,19 +463,6 @@ func (l *Loop) playStopCue(ctx context.Context) {
 	if l.deps.StopCue != nil {
 		l.deps.StopCue(ctx)
 	}
-}
-
-// dispatchCommand runs a non-wake handler and reports whether it owned the
-// detection. The loop keeps listening either way; #81's handler owns the
-// volume step, cue and cooldown.
-func (l *Loop) dispatchCommand(ctx context.Context, name string) bool {
-	command, ok := l.deps.WakeCommands[name]
-	if !ok {
-		return false
-	}
-	l.deps.Logger.Info("voice: command", "model", name)
-	command(ctx, name)
-	return true
 }
 
 // isWakeWord applies the explicit allowlist. Empty accepts any name; the
@@ -818,13 +788,6 @@ func (l *Loop) session(ctx context.Context, wakeWord string) (bool, string, erro
 				l.deps.Logger.Info("voice: stop command ended the session", "stop_ms", time.Since(detected).Milliseconds())
 				return false, "", nil
 			}
-			// A command model (#81) acts without interrupting the reply. The
-			// stream is single-shot, so reopen it to keep watching.
-			if l.dispatchCommand(ctx, detection.Name) {
-				_ = watch.Close()
-				watch, detections = l.watch(ctx)
-				continue
-			}
 			if !l.isWakeWord(detection.Name) {
 				l.deps.Logger.Warn("voice: detection ignored", "model", detection.Name)
 				_ = watch.Close()
@@ -859,13 +822,17 @@ func (l *Loop) speakBusy(ctx context.Context) {
 	}
 }
 
-// watch opens the playback-time wake stream. A failure is logged, not fatal:
+// watch opens the playback-time wake stream from ReplyWake (or Wake). A failure is logged, not fatal:
 // the reply still plays, just without the ability to interrupt it.
 func (l *Loop) watch(ctx context.Context) (WakeStream, <-chan Detection) {
-	if l.deps.Wake == nil || !l.isListening() {
+	service := l.deps.ReplyWake
+	if service == nil {
+		service = l.deps.Wake
+	}
+	if service == nil || !l.isListening() {
 		return nil, nil
 	}
-	wake, err := l.deps.Wake.Open(ctx)
+	wake, err := service.Open(ctx)
 	if err != nil {
 		l.deps.Logger.Warn("voice: barge-in watch unavailable", "error", err.Error())
 		return nil, nil
@@ -875,7 +842,7 @@ func (l *Loop) watch(ctx context.Context) (WakeStream, <-chan Detection) {
 
 // endSession suspends the session: in-flight work is cancelled, the follow-up
 // window closes, and the shared Agent history is cleared so the loop waits for
-// the next wake word. A standalone "stop" (#501), the stop command model (#503)
+// the next wake word. A standalone "stop" (#501), the reply-only stop model (#503)
 // and conversation mode all use it, so there is one way to end a session.
 // cancel may be nil when there is no live turn.
 func (l *Loop) endSession(cancel context.CancelFunc) {
@@ -975,7 +942,7 @@ func (l *Loop) BindListening(source func() bool) { l.deps.Listening = source }
 // clears the history and, later, conversation mode will turn itself off here.
 func (l *Loop) BindSessionEnd(end func()) { l.deps.SessionEnd = end }
 
-// BindStopCommand installs the wake-free stop model and its optional Cue before
+// BindStopCommand installs the reply-only wake-free stop model and its optional Cue before
 // Run starts. An empty model leaves the feature off.
 func (l *Loop) BindStopCommand(model string, cue func(ctx context.Context)) {
 	l.deps.StopCommand = model

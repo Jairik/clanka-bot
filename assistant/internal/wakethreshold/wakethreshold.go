@@ -49,7 +49,12 @@ func Definitions(cfg config.Wakeword) []settings.Definition {
 
 // codeDefault is the value in code when neither an override nor an explicit
 // environment/config value applies.
-func codeDefault(config.Wakeword, string) float64 { return config.DefaultWakeThreshold }
+func codeDefault(cfg config.Wakeword, model string) float64 {
+	if stop := cfg.StopModel(); stop != "" && model == stop {
+		return config.DefaultStopThreshold
+	}
+	return config.DefaultWakeThreshold
+}
 
 // configValue is the environment/config.yaml layer for one model, reported
 // absent when the model inherits the code default. The environment is merged

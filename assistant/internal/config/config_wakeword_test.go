@@ -247,7 +247,10 @@ func TestStopJoinsOnlyTheReplyStream(t *testing.T) {
 	}
 }
 
-func TestStopFallsBackToTheWakeThreshold(t *testing.T) {
+// TestStopDefaultsStricterThanTheWakeThreshold keeps a false stop rarer than a
+// false wake: without an explicit entry, stop does not inherit the global
+// threshold.
+func TestStopDefaultsStricterThanTheWakeThreshold(t *testing.T) {
 	cfg, err := config.Load(writeConfig(t, voiceBody(`wakeword:
   addr: "wakeword:10400"
   threshold: 0.6
@@ -256,8 +259,11 @@ func TestStopFallsBackToTheWakeThreshold(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if got := cfg.Wakeword.ThresholdFor("stop"); got != 0.6 {
-		t.Errorf("stop threshold = %v, want the wake default 0.6", got)
+	if got := cfg.Wakeword.ThresholdFor("stop"); got != config.DefaultStopThreshold {
+		t.Errorf("stop threshold = %v, want the stop default %v", got, config.DefaultStopThreshold)
+	}
+	if got := cfg.Wakeword.ThresholdFor("clanker"); got != 0.6 {
+		t.Errorf("clanker threshold = %v, want the wake default 0.6", got)
 	}
 }
 

@@ -250,10 +250,15 @@ func (c Config) VoiceDir() string {
 // that omits wakeword.threshold keeps the deployed behaviour.
 const DefaultWakeThreshold = 0.5
 
+// DefaultStopThreshold applies to the stop model when wakeword.thresholds has
+// no entry for it. It is stricter than a wake word: a false stop cuts off a
+// reply with no confirmation, so it does not inherit the global threshold.
+const DefaultStopThreshold = 0.7
+
 // Wakeword is the wake word service config and its model allowlist. The
 // Assistant requests only these models, so a model that is not listed cannot
 // wake it. Every detection then carries the model name into the turn, which
-// the command models use for their wake-free actions.
+// the turn uses.
 type Wakeword struct {
 	Addr string `yaml:"addr"` // empty disables voice input
 	// Model is the legacy single-model form. WakeModels prefers Models, so an
@@ -325,6 +330,9 @@ func normalizeModelNames(source []string) []string {
 func (w Wakeword) ThresholdFor(name string) float64 {
 	if threshold, ok := w.Thresholds[name]; ok {
 		return threshold
+	}
+	if stop := w.StopModel(); stop != "" && name == stop {
+		return DefaultStopThreshold
 	}
 	if w.Threshold > 0 {
 		return w.Threshold

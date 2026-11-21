@@ -354,8 +354,8 @@ func (l *Loop) listen(ctx context.Context) error {
 }
 
 // waitForWake feeds mic frames to the wake word service until a wake word
-// fires. Command detections are dispatched and the stream is reopened; an
-// unlisted name is logged and ignored. The stream is closed on return: the
+// fires. The idle stream requests wake words only; any other name is logged
+// and ignored. The stream is closed on return: the
 // session opens its own stream for playback, so a detection from the question
 // itself cannot interrupt the reply.
 func (l *Loop) waitForWake(ctx context.Context) (string, bool, error) {

@@ -140,6 +140,18 @@ func TestStopModelHasAThresholdAndOnlyTheReplySourceSendsIt(t *testing.T) {
 	}
 }
 
+func TestStopModelDefaultsToTheStopThreshold(t *testing.T) {
+	cfg := config.Wakeword{Models: []string{"clanker"}, Stop: "stop"}
+	service := openSettings(t, wakethreshold.Definitions(cfg)...)
+
+	if got := wakethreshold.NewReplySource(service, cfg).Map()["stop"]; got != config.DefaultStopThreshold {
+		t.Errorf("reply source stop threshold = %v, want the stop default %v", got, config.DefaultStopThreshold)
+	}
+	if got := wakethreshold.NewSource(service, cfg).Map()["clanker"]; got != config.DefaultWakeThreshold {
+		t.Errorf("clanker threshold = %v, want the wake default %v", got, config.DefaultWakeThreshold)
+	}
+}
+
 // TestSignatureTracksTheEffectiveMap keeps the reopen check honest: the
 // signature changes with a stored write, is stable across reads, and is sorted
 // so config order does not look like an edit.

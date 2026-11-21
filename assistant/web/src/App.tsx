@@ -7,6 +7,7 @@ import { Home } from "./pages/Home";
 import { pageLoaders, prefetchNear, type LazyPageId } from "./routes";
 import { SessionProvider, Shell, pageFor, type PageId } from "./shell";
 import { SpeakProvider } from "./speak";
+import { InitialRead } from "./ui";
 
 const lazyPage = <K extends LazyPageId>(id: K, name: string) =>
   lazy(async () => {
@@ -67,7 +68,7 @@ export function App() {
         {/* The chat store lives above the router so a pending request survives page changes. */}
         <ChatProvider>
           <Shell>
-            <Suspense fallback={<div className="p-8 text-sm text-muted">Loading…</div>}>
+            <Suspense fallback={<InitialRead className="p-8" />}>
               {/* The shell must survive a broken page: show what failed and offer a reload. */}
               {/* The page id key remounts PageBoundary on route navigation, resetting any render error. */}
               <PageBoundary key={page?.id} page={page?.id ?? "?"} title={page?.title}>

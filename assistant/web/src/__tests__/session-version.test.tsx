@@ -1,10 +1,23 @@
 // The UI and the assistant ship separately: a view-shape mismatch must be a
 // visible refusal, never a half-rendered page.
 import { render, screen } from "@testing-library/react";
+import { userEvent } from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { Providers, json, session, stubFetch } from "./harness";
 
 describe("session API version", () => {
+  it("announces loading and lets a failed session read recover", async () => {
+    // Use one failed response so retry must mount the application.
+    let attempts = 0;
+    stubFetch({ "/api/ui/session": () => ++attempts === 1 ? json({}, 503) : json(session()) });
+    render(<Providers><p>app content</p></Providers>);
+
+    expect(screen.getByRole("status").textContent).toMatch(/Loading/);
+    expect((await screen.findByRole("alert")).textContent).toMatch(/Could not reach the assistant/);
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByText("app content")).toBeTruthy();
+  });
+
   it("refuses a payload whose response header names another view shape", async () => {
     // An open tab survives an assistant upgrade; the body may still parse, but
     // the header says the shape moved. The session is the first request, so the

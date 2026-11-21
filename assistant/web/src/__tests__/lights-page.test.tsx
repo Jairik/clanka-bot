@@ -2,7 +2,7 @@
 // controllers ("lights") and the Monster cloud lights ("monster"). Each half
 // reads its own view, so this suite stubs both endpoints on every render and
 // checks that neither half can hide the other.
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, expect, it } from "vitest";
 import { LightsPage } from "../pages/Lights";
@@ -47,6 +47,22 @@ const stub = (over: Record<string, Route> = {}) =>
 beforeEach(() => {
   posts = [];
   stub();
+});
+
+it("shows the empty list only after a successful read", async () => {
+  // A failed initial read must not imply that the user has no saved lights.
+  let attempts = 0;
+  stub({ "/api/ui/lights": () => (++attempts === 1 ? json({}, 503) : json({ ...lights, devices: [] })) });
+  render(<LightsPage />);
+
+  const room = within(screen.getByRole("region", { name: "Room lights" }));
+  expect(room.getByRole("status").textContent).toMatch(/Loading/);
+  expect(room.queryByText(/No lights saved/)).toBeNull();
+  expect(await room.findByRole("alert")).toBeTruthy();
+  expect(room.queryByText(/No lights saved/)).toBeNull();
+
+  await userEvent.click(room.getByRole("button", { name: "Retry" }));
+  expect(await room.findByText(/No lights saved/)).toBeTruthy();
 });
 
 it("shows a saved light and sends power", async () => {

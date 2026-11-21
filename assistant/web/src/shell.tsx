@@ -1,6 +1,6 @@
 // App frame: icon rail (desktop) / bottom tabs (mobile), a search-first top bar
 // with the speaker volume, and the page area. Home (/) is the chat.
-import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useCallback, useContext, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Button, Drawer, Popover, SearchField } from "@heroui/react";
 import {
   Activity, AlarmClock, Bell, Bot, HeartPulse, KeyRound, Lightbulb, MessageSquare, Mic, MicOff, Minus, MoreHorizontal, Music, PanelLeftClose, PanelLeftOpen, Plus,
@@ -10,7 +10,7 @@ import { APIVersionMismatch, getJSON, navigate, postForm, restoreKey, useHash, u
 import { API_VERSION } from "./api-version";
 import { latestDelta, piUnreachableAfter, useLive, usePiStatus } from "./events";
 import type { HealthView, Listening, Session, Volume as VolumeState } from "./types";
-import { Badge, Dot, Range, Tip, cn } from "./ui";
+import { Badge, Dot, InitialRead, Range, Tip, cn } from "./ui";
 import { SpeakToggle } from "./speak";
 import { prefetch } from "./routes";
 import { snapVolume, VOL_STEP } from "./volume";
@@ -89,7 +89,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
   const [s, setS] = useState<Session | null>(null);
   const [err, setErr] = useState("");
   const [mismatch, setMismatch] = useState(0);
-  useEffect(() => {
+  // Retrying a failed session read leaves version mismatch handling intact.
+  const load = useCallback(() => {
+    setErr("");
     getJSON<Session>("/api/ui/session").then(setS, (e) => {
       // The response header is checked before the body, so this is the first
       // place a mismatched assistant is caught.
@@ -97,9 +99,9 @@ export function SessionProvider({ children }: { children: ReactNode }) {
       else setErr(String(e?.message ?? e));
     });
   }, []);
+  useEffect(load, [load]);
   if (mismatch) return <VersionMismatch served={mismatch} />;
-  if (err) return <div className="p-8 text-sm text-danger">Could not reach the assistant: {err}</div>;
-  if (!s) return null;
+  if (!s) return <InitialRead className="p-8" error={err && `Could not reach the assistant: ${err}`} retry={load} />;
   if (s.APIVersion !== API_VERSION) return <VersionMismatch served={s.APIVersion} />;
   return <SessionCtx.Provider value={s}>{children}</SessionCtx.Provider>;
 }
@@ -164,6 +166,32 @@ function PiUnreachableStrip({ lastUpdate, downSince }: { lastUpdate: number; dow
 export function Shell({ children }: { children: ReactNode }) {
   const { path } = useLocation();
   const page = pageFor(path)?.id;
+  const main = useRef<HTMLElement>(null);
+  const previousPath = useRef(path);
+  const drawerId = useId();
+  useEffect(() => {
+    if (previousPath.current === path) return;
+    previousPath.current = path;
+    if (location.hash || restoreKey() === location.pathname + location.search) return;
+
+    // A closing modal still owns focus until its dialog leaves the DOM.
+    const focusMain = () => main.current?.focus({ preventScroll: true });
+    if (!document.getElementById(drawerId)) {
+      focusMain();
+      return;
+    }
+    let frame = 0;
+    const observer = new MutationObserver(() => {
+      if (document.getElementById(drawerId)) return;
+      observer.disconnect();
+      frame = requestAnimationFrame(focusMain);
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    return () => {
+      observer.disconnect();
+      cancelAnimationFrame(frame);
+    };
+  }, [drawerId, path]);
   const healthBad = useHealthAlarm();
   const { live } = useLive();
   const { lastUpdate, downSince } = usePiStatus();
@@ -195,7 +223,7 @@ export function Shell({ children }: { children: ReactNode }) {
             <SearchField aria-label="Search activity" name="q" className="max-w-md">
               <SearchField.Group className="border-0 bg-transparent shadow-none">
                 <SearchField.SearchIcon />
-                <SearchField.Input placeholder="Find anything" />
+                <SearchField.Input placeholder="Search activity" />
               </SearchField.Group>
             </SearchField>
           </form>
@@ -204,10 +232,10 @@ export function Shell({ children }: { children: ReactNode }) {
           <VolumeControl />
         </header>
         <PiUnreachableStrip lastUpdate={lastUpdate} downSince={downSince} />
-        <main id="main" tabIndex={-1} className="min-h-0 flex-1 outline-none">
+        <main ref={main} id="main" tabIndex={-1} className="min-h-0 flex-1 outline-none">
           {children}
         </main>
-        <BottomTabs page={page} healthBad={healthBad} />
+        <BottomTabs page={page} healthBad={healthBad} drawerId={drawerId} />
       </div>
     </div>
   );
@@ -836,37 +864,52 @@ export function VolumeControl() {
 
 const TABS: PageId[] = ["home", "activity", "alerts"];
 
-function BottomTabs({ page, healthBad }: { page?: PageId; healthBad: boolean }) {
+function BottomTabs({ page, healthBad, drawerId }: { page?: PageId; healthBad: boolean; drawerId: string }) {
   const [more, setMore] = useState(false);
   const inMore = !!page && !TABS.includes(page);
-  const current = PAGES.find((p) => p.id === page);
-  const tab = (key: string, Icon: LucideIcon, label: string, active: boolean, onClick: () => void, dot?: boolean) => (
-    <button
-      key={key}
-      onClick={onClick}
-      aria-current={active ? "page" : undefined}
-      className={cn("flex flex-1 flex-col items-center justify-center gap-0.5 pt-2 pb-1.5 text-[11px]", active ? "text-foreground" : "text-muted")}
-    >
-      <span className={cn("relative flex h-7 w-12 items-center justify-center rounded-full transition-colors", active && "bg-default")}>
-        <Icon className="size-5" strokeWidth={1.5} />
-        {dot && <span className="absolute top-0.5 right-3 size-1.5 rounded-full bg-danger" />}
-      </span>
-      {label}
-    </button>
+  const itemClass = "flex min-w-0 flex-1 flex-col items-center justify-center gap-0.5 pt-2 pb-1.5 text-[11px]";
+  // Share the active marker so the four bottom items keep the same footprint.
+  const renderIcon = (Icon: LucideIcon, active: boolean, dot = false) => (
+    <span className={cn("relative flex h-7 w-12 items-center justify-center rounded-full transition-colors", active && "bg-default")}>
+      <Icon className="size-5" strokeWidth={1.5} />
+      {dot && <span className="absolute top-0.5 right-3 size-1.5 rounded-full bg-danger" />}
+    </span>
   );
   return (
     <>
       <nav className="pb-safe flex border-t bg-surface/95 backdrop-blur md:hidden" aria-label="Sections">
         {TABS.map((id) => {
           const p = PAGES.find((x) => x.id === id)!;
-          return tab(id, p.icon, p.title, page === id, () => navigate(p.path));
+          const current = page === id;
+          return (
+            <a
+              key={id}
+              href={p.path}
+              onClick={link(p.path)}
+              aria-current={current ? "page" : undefined}
+              className={cn(itemClass, current ? "text-foreground" : "text-muted")}
+            >
+              {renderIcon(p.icon, current)}
+              {p.title}
+            </a>
+          );
         })}
-        {tab("more", MoreHorizontal, inMore && current ? current.title : "More", inMore, () => setMore(true), healthBad && page !== "health")}
+        <button
+          type="button"
+          aria-haspopup="dialog"
+          aria-expanded={more}
+          aria-controls={more ? drawerId : undefined}
+          className={cn(itemClass, inMore ? "text-foreground" : "text-muted")}
+          onClick={() => setMore(true)}
+        >
+          {renderIcon(MoreHorizontal, inMore, healthBad && page !== "health")}
+          More
+        </button>
       </nav>
       <Drawer>
         <Drawer.Backdrop isOpen={more} onOpenChange={setMore}>
           <Drawer.Content placement="bottom">
-            <Drawer.Dialog className="pb-safe">
+            <Drawer.Dialog id={drawerId} className="pb-safe">
               <Drawer.Handle />
               <Drawer.Header>
                 <Drawer.Heading className="text-sm">More</Drawer.Heading>
@@ -874,11 +917,13 @@ function BottomTabs({ page, healthBad }: { page?: PageId; healthBad: boolean }) 
               <Drawer.Body>
                 <div className="grid grid-cols-3 gap-2">
                   {PAGES.filter((p) => !TABS.includes(p.id)).map(({ id, path: to, title, icon: I }) => (
-                    <button
+                    <a
                       key={id}
-                      onClick={() => {
-                        navigate(to);
-                        setMore(false);
+                      href={to}
+                      aria-current={page === id ? "page" : undefined}
+                      onClick={(event) => {
+                        link(to)(event);
+                        if (event.defaultPrevented) setMore(false);
                       }}
                       className={cn(
                         "relative flex flex-col items-center gap-1.5 border py-3.5 text-xs",
@@ -888,7 +933,7 @@ function BottomTabs({ page, healthBad }: { page?: PageId; healthBad: boolean }) 
                       <I className="size-5" strokeWidth={1.5} />
                       {title}
                       {id === "health" && healthBad && <span className="absolute top-2 right-2 size-1.5 rounded-full bg-danger" />}
-                    </button>
+                    </a>
                   ))}
                 </div>
               </Drawer.Body>

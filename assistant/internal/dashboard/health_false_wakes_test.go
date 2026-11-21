@@ -24,13 +24,13 @@ func voiceWakeword() dashboard.WakewordInfo {
 		Models: []dashboard.WakewordModel{
 			{Name: "okay_nabu", Enabled: true},
 			{Name: "clanker", Enabled: true},
-			{Name: "volume_up", Command: true, Enabled: true},
+			{Name: "stop", Command: true, Enabled: true},
 		},
 	}
 }
 
 // TestHealthViewFalseWakes renders the counters per wake model: numbers and a
-// rate only, in config order, with command models skipped. A model with no
+// rate only, in config order, with the stop model skipped. A model with no
 // wakes shows "unknown" rather than a fake 0% (the zero-denominator case).
 func TestHealthViewFalseWakes(t *testing.T) {
 	stats := voice.NewStats()

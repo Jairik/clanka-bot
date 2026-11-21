@@ -100,7 +100,7 @@ export function SettingsPage() {
                   <li key={model.Name} id={model.Setting?.Anchor} tabIndex={-1} className="px-3.5 py-3">
                     <div className="flex flex-wrap items-center gap-2">
                       <span className="font-mono text-sm">{model.Name}</span>
-                      {model.Command && <Badge tone={model.Enabled ? "neutral" : "warn"}>command{model.Enabled ? "" : " · off"}</Badge>}
+                      {model.Command && <Badge tone="neutral">stop · reply only</Badge>}
                       {!model.Setting && <span className="ml-auto text-xs text-muted">threshold {model.Threshold}</span>}
                     </div>
                     {model.Setting && <SettingRow s={model.Setting} actions={actions} />}

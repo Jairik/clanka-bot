@@ -375,8 +375,8 @@ per-model threshold (`wakeword.threshold.<model>`) is live and editable there;
 Reset returns to `WAKEWORD_THRESHOLD`/`WAKEWORD_THRESHOLDS` or `config.yaml`, and
 a change reopens the idle detect stream so it applies to the next detection.
 The Health page's Wake word rows show what the service advertises. The
-wake-free command models (#81) are shown there too, with `off` when
-`WAKEWORD_COMMANDS_ENABLED` is false.
+optional stop model (`WAKEWORD_STOP`, #503) is shown there too; it is requested
+only while a reply plays.
 
 The **Activity** page at `/activity` lists recent requests from a bounded
 in-memory ring plus the durable SQLite history fed by the same completion that

@@ -52,7 +52,7 @@ func TestSettingsShowsLiveWakeThresholds(t *testing.T) {
 	cfg := config.Wakeword{
 		Models:     []string{"clanker"},
 		Thresholds: map[string]float64{"clanker": 0.6},
-		Commands:   config.WakeCommands{Models: []string{"volume_up"}},
+		Stop:       "stop",
 	}
 	defs := wakethreshold.Definitions(cfg)
 	// The address is still a restart-required connection setting; the Wake
@@ -74,7 +74,7 @@ func TestSettingsShowsLiveWakeThresholds(t *testing.T) {
 		ToolPolicy: policy,
 		Wakeword: dashboard.WakewordInfo{Addr: "wakeword:10400", Models: []dashboard.WakewordModel{
 			{Name: "clanker", Threshold: 0.6, Enabled: true},
-			{Name: "volume_up", Threshold: 0.7, Command: true},
+			{Name: "stop", Threshold: 0.7, Command: true},
 		}},
 	})
 

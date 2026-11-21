@@ -167,7 +167,7 @@ func TestSettingsShowsTheWakeModelsAndThresholds(t *testing.T) {
 			Models: []dashboard.WakewordModel{
 				{Name: "clanker", Threshold: 0.6, Enabled: true},
 				{Name: "okay_nabu", Threshold: 0.5, Enabled: true},
-				{Name: "volume_up", Threshold: 0.7, Command: true, Enabled: false},
+				{Name: "stop", Threshold: 0.7, Command: true, Enabled: true},
 			},
 		},
 	})
@@ -193,8 +193,8 @@ func TestSettingsShowsTheWakeModelsAndThresholds(t *testing.T) {
 	if len(view.Wakeword.Models) != 3 || view.Wakeword.Models[0].Name != "clanker" || view.Wakeword.Models[0].Threshold != "0.60" {
 		t.Fatalf("models = %+v", view.Wakeword.Models)
 	}
-	if got := view.Wakeword.Models[2]; got.Name != "volume_up" || !got.Command || got.Enabled || got.Threshold != "0.70" {
-		t.Errorf("command row = %+v, want volume_up command/off at 0.70", got)
+	if got := view.Wakeword.Models[2]; got.Name != "stop" || !got.Command || !got.Enabled || got.Threshold != "0.70" {
+		t.Errorf("stop row = %+v, want stop at 0.70", got)
 	}
 	if !strings.Contains(view.Wakeword.Note, "WAKEWORD_THRESHOLDS") {
 		t.Errorf("note = %q, want the deployment knobs", view.Wakeword.Note)
@@ -212,8 +212,8 @@ func TestWakewordFromConfigResolvesTheSameListTheVoiceLoopUses(t *testing.T) {
 	if info.Addr != "wakeword:10400" {
 		t.Errorf("addr = %q", info.Addr)
 	}
-	if len(info.Models) != 4 {
-		t.Fatalf("models = %+v, want two wake and two command models", info.Models)
+	if len(info.Models) != 2 {
+		t.Fatalf("models = %+v, want the two wake models and no stop", info.Models)
 	}
 	if info.Models[0].Name != "clanker" || info.Models[0].Threshold != 0.6 || info.Models[0].Command || !info.Models[0].Enabled {
 		t.Errorf("clanker = %+v", info.Models[0])
@@ -221,62 +221,44 @@ func TestWakewordFromConfigResolvesTheSameListTheVoiceLoopUses(t *testing.T) {
 	if info.Models[1].Name != "okay_nabu" || info.Models[1].Threshold != 0.5 {
 		t.Errorf("okay_nabu = %+v", info.Models[1])
 	}
-	for _, model := range info.Models[2:] {
-		if !model.Command || model.Enabled || model.Threshold != config.DefaultCommandThreshold {
-			t.Errorf("command row = %+v, want disabled at the stricter default", model)
-		}
-	}
 }
 
-func TestWakewordFromConfigShowsEnabledCommandModels(t *testing.T) {
+func TestWakewordFromConfigShowsTheStopModel(t *testing.T) {
 	cfg := config.Default()
 	cfg.Wakeword.Addr = "wakeword:10400"
-	cfg.Wakeword.Commands.Enabled = true
-	cfg.Wakeword.Thresholds = map[string]float64{"volume_up": 0.8}
+	cfg.Wakeword.Stop = "stop"
+	cfg.Wakeword.Thresholds = map[string]float64{"stop": 0.8}
 
 	info := dashboard.WakewordFromConfig(cfg)
-	var up, down bool
-	for _, model := range info.Models {
-		switch model.Name {
-		case "volume_up":
-			up = model.Command && model.Enabled && model.Threshold == 0.8
-		case "volume_down":
-			down = model.Command && model.Enabled && model.Threshold == config.DefaultCommandThreshold
-		}
+	if len(info.Models) != 2 {
+		t.Fatalf("models = %+v, want clanker and stop", info.Models)
 	}
-	if !up || !down {
-		t.Fatalf("command rows = %+v, want both enabled with their thresholds", info.Models)
+	if got := info.Models[1]; got.Name != "stop" || !got.Command || !got.Enabled || got.Threshold != 0.8 {
+		t.Fatalf("stop row = %+v, want an enabled stop model at 0.8", got)
 	}
 }
 
-func TestHealthShowsCommandModelsAndTheirEnabledState(t *testing.T) {
-	addr := fakeWakewordServer(t, "clanker", "volume_up")
+func TestHealthShowsTheStopModel(t *testing.T) {
+	addr := fakeWakewordServer(t, "clanker", "stop")
 	handler := newHandler(t, dashboard.Options{
 		Wakeword: dashboard.WakewordInfo{
 			Addr: addr,
 			Models: []dashboard.WakewordModel{
 				{Name: "clanker", Threshold: 0.5, Enabled: true},
-				{Name: "volume_up", Threshold: 0.7, Command: true, Enabled: true},
-				{Name: "volume_down", Threshold: 0.7, Command: true, Enabled: false},
+				{Name: "stop", Threshold: 0.7, Command: true, Enabled: true},
 			},
 		},
 	})
 
 	rows := HealthWakewordRows(t, handler)
-	if len(rows) != 3 {
-		t.Fatalf("wakeword rows = %d, want 3: %+v", len(rows), rows)
+	if len(rows) != 2 {
+		t.Fatalf("wakeword rows = %d, want 2: %+v", len(rows), rows)
 	}
-	if rows[1].Status != "ok" || rows[1].StatusLabel != "served" || !strings.Contains(rows[1].Detail, "Wake-free command") {
-		t.Errorf("enabled command row = %+v, want served and labelled", rows[1])
-	}
-	if rows[2].Status != "not-configured" || rows[2].StatusLabel != "off" || !strings.Contains(rows[2].Detail, "disabled") {
-		t.Errorf("disabled command row = %+v, want off without a probe claim", rows[2])
+	if rows[1].Status != "ok" || rows[1].StatusLabel != "served" || !strings.Contains(rows[1].Detail, "Wake-free stop") {
+		t.Errorf("stop row = %+v, want served and labelled", rows[1])
 	}
 }
 
-// TestOneHealthRenderDescribesTheWakewordServiceOnce is the #208 acceptance
-// test: the Compose wakeword row and the model rows share one describe, so a
-// page render asks the service once instead of twice.
 func TestOneHealthRenderDescribesTheWakewordServiceOnce(t *testing.T) {
 	addr, describes, _ := countingWakewordServer(t, "clanker")
 	cfg := config.Default()

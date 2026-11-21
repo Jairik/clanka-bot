@@ -265,15 +265,15 @@ class ImportTests(unittest.TestCase):
 
 
 class ConfigTests(unittest.TestCase):
-    def test_volume_up_uses_its_committed_config_and_lists(self):
-        config = train_cli.load_phrase_config("volume-up", None)
+    def test_stop_uses_its_committed_config_and_lists(self):
+        config = train_cli.load_phrase_config("stop", None)
         self.assertEqual(config["count"], 6000)
         self.assertEqual(config["test_count"], 1200)
         self.assertEqual(config["steps"], 30000)
-        lists = train_cli.phrase_lists("volume-up", config)
-        self.assertEqual(lists["positives"], ["volume up"])
-        self.assertIn("volume down", lists["negatives"])
-        self.assertIn("volume", lists["near_misses"])
+        lists = train_cli.phrase_lists("stop", config)
+        self.assertIn("stop", lists["positives"])
+        self.assertIn("top", lists["negatives"])
+        self.assertIn("top", lists["near_misses"])
         self.assertTrue(lists["ordinary"])
 
     def test_training_config_bounds_generation_to_the_existing_clips(self):

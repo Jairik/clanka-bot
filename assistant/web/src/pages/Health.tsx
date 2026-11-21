@@ -22,7 +22,7 @@ export function HealthPage() {
         ["Compose services", data.Services ?? []],
         ["Pi (host) and data", data.Host ?? []],
         ["Semantic routing", data.Routing ? [data.Routing] : [], "The semantic Fast path is optional: a degraded index leaves Control phrases and the Agent path working. This is the in-memory build state, not a service probe."],
-        ["Wake word", data.Wakeword ?? [], "The wake and wake-free command models the Assistant listens for, with the detection threshold it applies to each one."],
+        ["Wake word", data.Wakeword ?? [], "The wake models the Assistant listens for, plus the optional stop model it watches for only while a reply plays,, with the detection threshold it applies to each one."],
         ["Location", data.Location ? [data.Location] : []],
         ["Tool modules", data.Modules ?? []],
         ["Spotify", data.Spotify ?? [], "Connect pairing and Web API auth are separate grants. One can be healthy while the other is not."],

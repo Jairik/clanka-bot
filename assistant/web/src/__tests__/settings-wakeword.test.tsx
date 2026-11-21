@@ -55,10 +55,10 @@ const view = (over: Partial<SettingsView> = {}): SettingsView => ({
         Setting: makeSetting("clanker", "0.6"),
       },
       {
-        Name: "volume_up",
+        Name: "stop",
         Threshold: "0.70",
         Command: true,
-        Enabled: false,
+        Enabled: true,
         Setting: null, // Read-only fallback
       },
     ],
@@ -80,16 +80,16 @@ it("renders wake word settings with address, live form, and read-only fallback",
   // Address
   expect(await screen.findByText("wakeword:10400")).toBeTruthy();
 
-  // Model names and command badge
+  // Model names and stop badge
   expect(screen.getByText("clanker")).toBeTruthy();
-  expect(screen.getByText("volume_up")).toBeTruthy();
-  expect(screen.getByText("command · off")).toBeTruthy();
+  expect(screen.getByText("stop")).toBeTruthy();
+  expect(screen.getByText("stop · reply only")).toBeTruthy();
 
   // clanker has a live Setting row with an input field
   const input = screen.getByLabelText("Threshold") as HTMLInputElement;
   expect(input).toBeTruthy();
   expect(input.value).toBe("0.6");
 
-  // volume_up has no live Setting, so it renders the read-only threshold
+  // stop has no live Setting, so it renders the read-only threshold
   expect(screen.getByText("threshold 0.70")).toBeTruthy();
 });

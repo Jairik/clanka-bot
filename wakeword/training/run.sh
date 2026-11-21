@@ -3,7 +3,7 @@
 # assets, Pocket TTS clips and (once recorded) the owner's own takes.
 #
 # Usage: wakeword/training/run.sh [setup|assets|clips|acceptance|real|train|convert|evaluate|fixtures|all]
-#        PHRASE=volume_up wakeword/training/run.sh all
+#        PHRASE=stop wakeword/training/run.sh all
 # PHRASE defaults to clanker. Everything lands in $WORK (default
 # ~/.cache/clanka/wakeword-clanker); nothing is uploaded.
 set -euo pipefail

@@ -71,11 +71,11 @@ this directory.
 ```sh
 wakeword/train status                       # phrases, real/synthetic counts, last eval
 wakeword/train import rbpi@pi:/home/rbpi/clanka-bot/exports/clanker-20261112-093000.tar.gz
-wakeword/train synth  --phrase "volume up" --count 6000
-wakeword/train train  --phrase "volume up" --steps 50000 --real-weight 3
-wakeword/train eval   --phrase "volume up"
-wakeword/train install --phrase "volume up" --to pi
-wakeword/train all    --phrase "volume up" --from ./volume-up-20261112-093000.tar.gz
+wakeword/train synth  --phrase "yo dipshit" --count 10000
+wakeword/train train  --phrase "yo dipshit" --steps 50000
+wakeword/train eval   --phrase "yo dipshit"
+wakeword/train install --phrase "yo dipshit" --to pi
+wakeword/train all    --phrase "yo dipshit" --from ./yo-dipshit-20261112-093000.tar.gz
 ```
 
 Each phrase has a work directory, default
@@ -85,7 +85,7 @@ and clips already there. A new phrase's directory needs its own second-stage
 setup once (the venvs and pinned assets are per work directory):
 
 ```sh
-WORK=~/.cache/clanka/wakeword-volume-up wakeword/training/run.sh setup assets
+WORK=~/.cache/clanka/wakeword-yo-dipshit wakeword/training/run.sh setup assets
 ```
 
 Nothing is uploaded, and takes copied into the work directory never enter the
@@ -104,8 +104,8 @@ absolute paths, `..`, links and unexpected entries.
 **synth** writes positive and negative clips with Pocket TTS, plus the
 held-out-voice acceptance set, into `$WORK/clips/<phrase>/` and
 `$WORK/clips/<phrase>/acceptance/` (`<phrase>` is the underscore model name,
-e.g. `volume_up`). The defaults come from the checked-in phrase config:
-`clanker` uses 10k/2k clips and 50k steps; `volume_up`/`volume_down` use
+e.g. `yo_dipshit`). The defaults come from the checked-in phrase config:
+`clanker` and `yo_dipshit` use 10k/2k clips and 50k steps; `stop` uses
 6k/1.2k and 30k. Flags override them: `--count`, `--test-count`,
 `--negative-count`, `--voices all|<list>`, `--held-out <list>`,
 `--speeds 0.8-1.2`, `--speed-probability`, `--workers`, `--seed`, `--device`.
@@ -115,7 +115,7 @@ is mapped onto those. An optional CLI config at
 plus curated text lists; it is separate from the openWakeWord `<phrase>.yml`
 and the `phrases/<phrase>/` list directories. Without one, a new phrase gets
 generated text variants and near misses and the shared ordinary-speech list.
-`clanker`, `volume_up` and `volume_down` keep their curated positives,
+`clanker`, `yo_dipshit` and `stop` keep their curated positives,
 negatives, near misses and ordinary speech. A `--dry-run` prints every command
 without touching the GPU.
 
@@ -123,19 +123,22 @@ without touching the GPU.
 requested `--steps` (the clip counts become `n_samples`, so openWakeWord never
 asks the stub Piper generator for more), splits the real takes 80/20 through
 `prep_real.py`, runs `run.sh train convert`, and logs to
-`$WORK/logs/train-<timestamp>.log`. `--real-weight N` duplicates each real
-positive N times in `positive_train`, which is the only weighting
-openWakeWord's per-clip generator exposes. The split is skipped, and the
-extracted features kept, when the real set and weight are unchanged, so an
-interrupted run resumes at feature extraction rather than starting over. A
-changed YAML `steps` retrains the model but reuses the features.
+`$WORK/logs/train-<timestamp>.log`. Real takes are repeated until they are
+about 40% of their class (positives and negatives). A 10× repeat against 10k
+synthetic clips is about 1% of the class, and that model learns the TTS voice
+instead of the owner's: the real takes then score near zero and the boundary
+false-triggers. `--real-weight N` sets the copy count explicitly. The split
+is skipped, and the extracted features kept, when the real set and the repeat
+are unchanged, so an interrupted run resumes at feature extraction rather
+than starting over. A changed YAML `steps` retrains the model but reuses the
+features.
 
 **eval** runs `run.sh evaluate` and reads `$WORK/logs/eval-<phrase>.json` to print, at
 the deployed threshold, recall on the held-out TTS voices and on the ~20% of
 real takes held out separately, near-miss and ordinary-speech false accepts,
 and false accepts per hour over the background set.
 
-**install** without `--to pi` verifies `wakeword/models/<phrase>.tflite` (the underscore model name, e.g. `volume_up.tflite`) and
+**install** without `--to pi` verifies `wakeword/models/<phrase>.tflite` (the underscore model name, e.g. `yo_dipshit.tflite`) and
 prints the commit and redeploy commands. `install --to pi` copies it to
 `~/clanka-bot/wakeword/models/local/` on `rbpi@pi` with `BatchMode=yes`. That
 directory is gitignored, and the wakeword container copies it in at start, so
@@ -317,48 +320,49 @@ trained word unless the second is earning its keep.
   ones (16x96 input, two 32-unit layers), so the per-frame cost should match,
   but nothing has measured it on the Pi 5.
 
-## Wake-free command models (#81)
+## Wake-free stop model (#503)
 
-`volume_up` and `volume_down` are the same kind of detector as `clanker`, but a
-detection does not start a turn. It runs one bounded volume step and a short Cue
-with no STT and no routing, and it only acts while music or a reply holds Focus.
-The feature ships **off** (`WAKEWORD_COMMANDS_ENABLED=false`) until models
-trained with the owner's takes and the measurement below exist.
+`stop` is the same kind of detector as `clanker`, but it never starts a turn.
+The Assistant requests it only on the detect stream it watches while a reply
+plays (`WAKEWORD_STOP=stop`, `wakeword.stop`). A detection cancels the reply and
+ends the session; while idle, stop is not requested at all, so it cannot
+false-trigger then. Outside a reply, a spoken "stop" after the wake word goes
+through the transcript instead.
 
-The pipeline is phrase-parameterized. `PHRASE=volume_up` selects
-`volume_up.yml` and the lists under `phrases/volume_up/`; `clanker` keeps the
-original top-level files:
+The wake-free volume commands (`volume_up` / `volume_down`, #81) were removed;
+their recipes, phrase lists and the `volume_up` starter's numbers are in git
+history.
+
+The pipeline is phrase-parameterized. `PHRASE=stop` selects `stop.yml` and the
+lists under `phrases/stop/`; `clanker` keeps the original top-level files:
 
 ```bash
 # Assets and the TTS venv are shared with the clanker work directory.
 wakeword/training/run.sh setup
 wakeword/training/run.sh assets
 
-# A smaller starter set is enough for a two-word phrase.
-PHRASE=volume_up N_TRAIN=6000 N_TEST=1200 wakeword/training/run.sh clips
-PHRASE=volume_up wakeword/training/run.sh acceptance
-PHRASE=volume_up wakeword/training/run.sh real       # only if takes exist
-PHRASE=volume_up wakeword/training/run.sh train
-PHRASE=volume_up wakeword/training/run.sh convert
-PHRASE=volume_up wakeword/training/run.sh evaluate
+# A smaller starter set is enough for a one-word phrase.
+PHRASE=stop N_TRAIN=6000 N_TEST=1200 wakeword/training/run.sh clips
+PHRASE=stop wakeword/training/run.sh acceptance
+PHRASE=stop wakeword/training/run.sh real       # only if takes exist
+PHRASE=stop wakeword/training/run.sh train
+PHRASE=stop wakeword/training/run.sh convert
+PHRASE=stop wakeword/training/run.sh evaluate
 ```
 
-Repeat with `PHRASE=volume_down`. Clips land in `$WORK/clips/<phrase>/`, the
-ONNX in `$WORK/clips/<phrase>.onnx`, the detector in
-`wakeword/models/<phrase>.tflite`, and the evaluation JSON in
+Clips land in `$WORK/clips/<phrase>/`, the ONNX in `$WORK/clips/<phrase>.onnx`,
+the detector in `wakeword/models/<phrase>.tflite`, and the evaluation JSON in
 `$WORK/logs/eval-<phrase>.json`. The `real` stage reads `$WORK/real/`, so give
-each phrase its own work directory (`WORK=~/.cache/clanka/wakeword-volume_up`)
-once real takes are involved, or import that phrase's takes before running it.
+each phrase its own work directory (`WORK=~/.cache/clanka/wakeword-stop`) once
+real takes are involved, or import that phrase's takes before running it.
 
 The phrase configs are deliberately strict:
 
 - **Only the bare phrase is positive** (`phrases/<phrase>/positives.txt`).
-  "turn the volume up" and "pump up the volume" are negatives; they are common
-  in lyrics and must not change the volume by themselves.
-- **The other command is a hard negative** (`volume_down` in the `volume_up`
-  set and vice versa), so one cannot masquerade as the other.
-- **Near misses** (`near_misses.txt`) are the held-out false-accept set:
-  "volume", "value up", "volume off", "column up", "volunteer", …
+  Longer sentences that contain the word are negatives, so speech and lyrics
+  do not cut a reply off.
+- **Near misses** (`near_misses.txt`) are the held-out false-accept set, such
+  as "top" for `stop`.
 - **Negative phrases** (`negative_phrases.txt`) combine the near misses, their
   variants, ordinary requests and lyric-like lines. They become the
   hard-negative set in training.
@@ -367,62 +371,17 @@ The phrase configs are deliberately strict:
   run, drop a few 16 kHz mono WAVs of representative songs with vocals into
   `$WORK/background` before `train`. Do not commit them.
 
-`volume_up.yml` / `volume_down.yml` use 6k positive training clips, 30k steps
-and a `target_false_positives_per_hour` of 0.1. `evaluate.py` reports recall on
+`stop.yml` uses 6k positive training clips, 30k steps and a
+`target_false_positives_per_hour` of 0.1. `evaluate.py` reports recall on
 held-out voices, near-miss false accepts and false accepts per hour of
 background. Reported clip recall and clip false-accept rates use 1 second of
 silence before each clip and 2 seconds after, so short phrases can fill the
 detector window. Pass `--pad-before` and `--pad-after` to `evaluate.py` to
 set these durations in seconds. Continuous background is scored without padding.
-A synthetic-only model can be committed only if the background rate is
-sane; otherwise keep the configs and record the missing measurement.
 
-The command default threshold is 0.7 (`wakeword.commands.threshold`) for a
-model without an override. The shipped synthetic `volume_up` starter is an
-exception: it needs **0.98** to meet the false-trigger budget, set per model in
-`assistant/config.yaml` (`wakeword.thresholds.volume_up`). Override any model
-with `WAKEWORD_THRESHOLDS=...`. The wakeword image copies every
-`wakeword/models/*.tflite`, so adding a committed model needs a rebuild, not a
-Dockerfile change. A model only this machine should run goes in
-`wakeword/models/local/` and is copied in on the next `wakeword` start. The false-trigger protocol for the command models is §5.2 of
-[`docs/spikes/wake-over-music.md`](../../docs/spikes/wake-over-music.md).
-
-### `volume_up` starter: provenance and numbers (2026-11-13)
-
-| | |
-| --- | --- |
-| File | `wakeword/models/volume_up.tflite` |
-| SHA256 | `f701c5316b6e4dbab8fac1e665d40a977a1c181b5fc2cc31d63f3fb000f910d3` |
-| Trained | 2026-11-13 on the desktop RTX 2070, nice 10 |
-| openWakeWord | `368c03716d1e92591906a84949bc477f3a834455` (pinned in `run.sh`) |
-| Positives | 6,000 train + 1,200 test clips, 25 Pocket TTS voices, "volume up" only |
-| Negatives | 6,000 train + 1,200 test clips from `phrases/volume_up/negative_phrases.txt` |
-| Training | 30,000 steps plus openWakeWord's refinement passes, dnn layer 32, target 0.1 FA/h |
-| Reproduce | `PHRASE=volume_up N_TRAIN=6000 N_TEST=1200 GEN_WORKERS=2 wakeword/training/run.sh ...` (`clips`, `acceptance`, `train`, `convert`) |
-
-Evaluation on 2026-11-13 (`evaluate.py --threshold 0.98 --background-max 2500`;
-2,500 AudioSet files = 413 min; held-out TTS voices):
-
-| Set | Result at 0.98 |
-| --- | ---: |
-| positives, training voices (1,200 clips) | 96.92% recall |
-| positives, held-out voices (60 clips) | 95.00% recall |
-| training negatives (1,200 clips) | 1.50% false accept |
-| held-out near misses (80 clips) | 5.00% false accept |
-| ordinary speech (40 clips) | 0.00% |
-| background audio (413 min) | 0.29 false accepts/hour (2 events) |
-
-The operating point is tight: at 0.97 the background rate is 2.47/h; only 0.98
-meets the ≤1/h budget with ≥80% held-out recall. The four held-out near-miss
-false accepts are "volume off" variants; "volume off" is the known confusion.
-The `.tflite` is synthetic-only: the owner's real takes and #70's music
-measurement are still required before enabling the feature.
-
-`volume_down` was trained with the same 6k/30k recipe and **not committed**: at
-0.98 it held 100% held-out recall but fired on 16.25% of held-out near misses
-and 5.52 background events/hour; 0.995 still gave 2.72/h, while 0.996 dropped
-held-out recall to 48.3%. No threshold met both ≥80% recall and ≤1/h, so the
-model and its SHA256 (`4c999d2caf19659aa556f0261bea2358d58a26d47b0880ec6bf56c2201993bed`)
-are recorded here only. A 50k-step hard-negative retrain of `volume_up` was
-also rejected: at 0.7 it produced 94 background events/hour. Retraining both
-with the owner's samples (#80/#77) is the next step.
+Without an entry in `WAKEWORD_THRESHOLDS`, the stop model uses 0.7, stricter
+than the wake default: a false stop cuts a reply off with no confirmation.
+Override it with `WAKEWORD_THRESHOLDS=...,stop:0.9`. The wakeword image copies
+every `wakeword/models/*.tflite`, so adding a committed model needs a rebuild,
+not a Dockerfile change. A model only this machine should run goes in
+`wakeword/models/local/` and is copied in on the next `wakeword` start.

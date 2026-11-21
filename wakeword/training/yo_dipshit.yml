@@ -2,10 +2,12 @@
 # Same shape as clanker.yml: 10k synthetic clips, 50k steps, dnn layer 32.
 # Paths are relative to the work directory run.sh creates.
 #
-# The owner asked for a bit more sensitivity and accepted more false wakes.
-# target_false_positives_per_hour is 0.5 (clanker uses 0.2) so training does
-# not push the boundary as hard. The detection threshold to deploy is 0.4,
-# under clanker's 0.5.
+# Same false-accept target as clanker (0.2 per hour). A looser 0.5 target
+# shipped a model that still missed the owner's voice and woke on background
+# about five times an hour. After real takes are a real share of training,
+# the model that hears those takes sits at a detection threshold of 0.9:
+# background false accepts drop to none in the measured hour, and the
+# held-out real takes still score above 0.95.
 
 model_name: "yo_dipshit"
 
@@ -56,4 +58,4 @@ layer_size: 32
 
 steps: 50000
 max_negative_weight: 1500
-target_false_positives_per_hour: 0.5
+target_false_positives_per_hour: 0.2

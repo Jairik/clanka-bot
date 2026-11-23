@@ -1,0 +1,115 @@
+{
+  "schema": "wake-audio-audit/v1",
+  "kind": "operator-measurement",
+  "issue": 521,
+  "measured_at": "2026-11-23T03:40:00Z",
+  "host": {
+    "device": "raspberrypi (Raspberry Pi 5, aarch64, kernel 6.12.115+rpt-rpi-2712)",
+    "pipewire": "1.2.7",
+    "pipewire_pulse": "PulseAudio (on PipeWire 1.2.7), protocol 35, pactl 16.1",
+    "compose_project": "clanka-bot",
+    "git": "abd79be",
+    "assistant_image": "clanka/assistant:ornith-local",
+    "wakeword_image": "clanka/wakeword:key-1139922a3f1291c8348a9162",
+    "stt_image": "clanka/stt:key-bdceefd03da230b873f6ef77"
+  },
+  "audio_path": {
+    "capture_source": "alsa_input.usb-Generalplus_OSM09-00.mono-fallback",
+    "capture_format_source": "s16le 1ch 48000Hz",
+    "capture_format_assistant": "s16le 1ch 16000Hz",
+    "capture_resample": "PipeWire",
+    "capture_client": "clanka-assistant / assistant-mic / pacat",
+    "capture_latency": "320/16000",
+    "pulse_source_volume": "100% / 0.00 dB, unmuted",
+    "hardware_mic_gain": "OSM09 USB mixer Mic 30/30 (100%, +33.00 dB), unmuted",
+    "hardware_agc": "off",
+    "hardware_aec": "none (generic USB audio 1b3f:2008, no DSP source in the graph)",
+    "idle_5s_capture": {
+      "rms_dbfs": -39.2,
+      "peak_dbfs": -28.2,
+      "clip_frac": 0.0,
+      "note": "wav deleted after stats; no clipping, analog gain already maxed"
+    },
+    "playback_sink_env": "bluez_output.5C_41_5A_94_78_A3.1",
+    "playback_codec": "A2DP SBC",
+    "equalizer": {
+      "preset": "Bass Boost",
+      "module": "module-ladspa-sink sink_name=clanka_eq_b plugin=caps label=Eq10X2",
+      "sink_state": "SUSPENDED",
+      "note": "assistant names the bluez sink, so speech does not enter clanka_eq_b"
+    },
+    "echo_cancel": {
+      "loaded": false,
+      "prior_run": "docs/evidence/wake-over-music-2026-11-13.json",
+      "this_run": "AEC-on recordings are ~20 dB quieter than raw and still produce 0 detections on room clips; digital-padded clanker still hits. AEC is not enabled."
+    }
+  },
+  "wake_runtime": {
+    "models": ["clanker", "yo_dipshit"],
+    "stop": "stop",
+    "follow_up_seconds": 0,
+    "before": {
+      "clanker_model": "baked 36762778 (image custom_models)",
+      "thresholds": {"clanker": 0.7, "yo_dipshit": 0.9, "stop": 0.9}
+    },
+    "after": {
+      "clanker_model": "personal overlay 2ed4f159 in wakeword/models/local/clanker.tflite (gitignored)",
+      "thresholds": {"clanker": 0.95, "yo_dipshit": 0.9, "stop": 0.7}
+    }
+  },
+  "replay": {
+    "method": "second Wyoming TCP connection to the existing wakeword container (172.18.0.3:10400); assistant did not wake",
+    "privacy": "owner WAVs stayed on the Pi and were deleted after counts",
+    "before": {
+      "clanker_owner_positive": {"0.5": "4/14", "0.7": "3/14", "0.9": "2/14"},
+      "clanker_owner_negative": {"0.5": "0/5", "0.7": "0/5", "0.9": "0/5"},
+      "clanker_synth_positive_0.7": "3/3",
+      "clanker_synth_negative_0.5_and_0.7": "0/4",
+      "yo_dipshit_owner_positive_0.5_to_0.9": "14/15",
+      "yo_dipshit_owner_negative_0.5_to_0.9": "0/7",
+      "cross_talk": "clanker on yo_dipshit positives 0/15; yo_dipshit on clanker positives 0/14",
+      "stop_owner_positive": {"0.7": "13/20", "0.9": "7/20", "0.95": "0/20"},
+      "stop_cross_talk": "0/14 clanker positives and 0/15 yo_dipshit positives at 0.9",
+      "detection_delay_s_mean": 1.17,
+      "room_aec_raw_and_cleaned": "0 hits on dry_nomusic and dryrun2; digital-padded clanker hit"
+    },
+    "after_overlay_and_thresholds": {
+      "clanker_owner_positive": {"0.7": "14/14", "0.9": "13/14", "0.95": "13/14"},
+      "clanker_owner_negative": {"0.7": "0/5", "0.9": "0/5", "0.95": "0/5"},
+      "clanker_synth_positive_0.7": "0/3",
+      "yo_dipshit_owner_positive_0.9": "14/15",
+      "yo_dipshit_owner_negative_0.9": "0/7",
+      "stop_owner_positive_0.7": "13/20",
+      "stop_on_clanker_positive_0.7": "0/14",
+      "survived_wakeword_restart": true
+    }
+  },
+  "activity_7d_voice": {
+    "n": 107,
+    "outcomes": {"ok": 61, "ignored": 26, "failed": 11, "cancelled": 5, "suspended": 4},
+    "note": "follow-up window was set to 0 at 2026-11-23T00:58:36Z after a 27-turn hour; false-wake counters reset on the later assistant restart"
+  },
+  "decision": {
+    "applied": [
+      "Install personal clanker TFLite as wakeword/models/local/clanker.tflite (not committed; owner-voice model)",
+      "Live wakeword.threshold.clanker = 0.95",
+      "Live wakeword.threshold.stop = 0.7",
+      "Pi .env WAKEWORD_THRESHOLDS=clanker:0.95,yo_dipshit:0.9,stop:0.7 (takes effect on the next assistant restart)",
+      "Keep conversation.follow_up_seconds = 0",
+      "Do not load PipeWire echo-cancel"
+    ],
+    "not_applied": [
+      "sherpa-onnx keyword spotting: skipped; openWakeWord plus the personal clanker overlay recovered owner recall without a new engine",
+      "Persistent AEC drop-in: room clips stay below a usable level on both raw and cleaned paths",
+      "Hardware AGC: skipped so transcription (#524) keeps the same capture path"
+    ],
+    "transcription_capture_path": "Benchmark STT on the current raw OSM09 source (16 kHz assistant stream, PipeWire resample from 48 kHz, Pulse 100%, hardware +33 dB, AGC off, no AEC). Do not switch STT to aec_mic_source.",
+    "rollback": [
+      "rm /home/rbpi/clanka-bot/wakeword/models/local/clanker.tflite",
+      "cd /home/rbpi/clanka-bot && docker compose restart wakeword",
+      "DELETE http://127.0.0.1:8081/api/settings/wakeword.threshold.clanker",
+      "DELETE http://127.0.0.1:8081/api/settings/wakeword.threshold.stop",
+      "restore /home/rbpi/clanka-bot/.env.bak-521 if the env thresholds must match the baked model"
+    ]
+  }
+}

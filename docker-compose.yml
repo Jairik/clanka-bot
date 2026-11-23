@@ -234,7 +234,6 @@ services:
       HERMES_LOCAL_BASE_URL: ${HERMES_LOCAL_BASE_URL:-}
       HERMES_LOCAL_MODEL: ${HERMES_LOCAL_MODEL:-}
       # Empty keeps the job tool-free. Sample MCP is for discovery benches only.
-      HERMES_TOOLSETS: ${HERMES_TOOLSETS:-}
       HERMES_TOOL_SEARCH: ${HERMES_TOOL_SEARCH:-}
       HERMES_SAMPLE_MCP: ${HERMES_SAMPLE_MCP:-}
       HERMES_SAMPLE_MCP_LAZY: ${HERMES_SAMPLE_MCP_LAZY:-}

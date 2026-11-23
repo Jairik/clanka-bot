@@ -24,6 +24,8 @@ CLOUD_BASE_URL = "https://opencode.ai/inference/go/openai/v1"
 CLOUD_MODEL = "deepseek-v4.1-flash"
 REPLY_INSTRUCTION = "Reply in plain language in one or two concise sentences."
 SAMPLE_TOOLSET = "clanka_sample"
+SAMPLE_NAMES = {"mcp__clanka_sample__sample_ping", "mcp__clanka_sample__sample_time"}
+TOOL_SEARCH_NAMES = {"tool_search", "tool_describe", "tool_call"}
 DEFAULT_SAMPLE_MCP = "/opt/clanka/sample_mcp.py"
 DEFAULT_SAMPLE_PYTHON = "/opt/hermes/.venv/bin/python"
 
@@ -37,7 +39,6 @@ WORKER_ENV_NAMES = (
     "HERMES_WRITE_SAFE_ROOT",
     "HERMES_LOCAL_BASE_URL",
     "HERMES_LOCAL_MODEL",
-    "HERMES_TOOLSETS",
     "HERMES_TOOL_SEARCH",
     "HERMES_SAMPLE_MCP",
     "HERMES_SAMPLE_MCP_LAZY",
@@ -83,16 +84,8 @@ def sample_mcp_lazy():
 
 
 def parse_toolsets():
-    """Return the enabled Hermes toolset allowlist.
-
-    Empty means zero tools. Turning on the sample MCP adds its toolset so the
-    two sample tools can register without enabling terminal, web, or files.
-    """
-    names = [part for part in env("HERMES_TOOLSETS").split(",") if part.strip()]
-    names = [part.strip() for part in names]
-    if sample_mcp_enabled() and SAMPLE_TOOLSET not in names:
-        names.append(SAMPLE_TOOLSET)
-    return names
+    """Keep the deployed runtime tool-free except for the explicit sample."""
+    return [SAMPLE_TOOLSET] if sample_mcp_enabled() else []
 
 
 def tool_search_enabled():
@@ -204,14 +197,16 @@ def system_message():
 
 
 def assert_tool_allowlist(agent):
-    """Fail closed if the live tool list does not match the configured allowlist."""
+    """Fail closed if unexpected tools reach the model."""
     tools = list(agent.tools or [])
-    if parse_toolsets():
-        if not tools:
-            raise RuntimeError("Hermes sample tools did not register")
+    if not sample_mcp_enabled():
+        if tools:
+            raise RuntimeError("Hermes initialized with tools")
         return
-    if tools:
-        raise RuntimeError("Hermes initialized with tools")
+    names = {entry.get("function", {}).get("name") for entry in tools}
+    if names == SAMPLE_NAMES or tool_search_enabled() and names == TOOL_SEARCH_NAMES:
+        return
+    raise RuntimeError("Hermes sample tools did not register exactly")
 
 
 def worker_env():
@@ -236,10 +231,10 @@ def model_turn():
 
     request = json.load(sys.stdin)
     write_runtime_config()
-    discover_configured_mcp()
     kwargs = agent_kwargs(request["key"])
     # Keep upstream diagnostics off the reply channel, including on model errors.
     with contextlib.redirect_stdout(io.StringIO()):
+        discover_configured_mcp()
         from run_agent import AIAgent
 
         agent = AIAgent(**kwargs)

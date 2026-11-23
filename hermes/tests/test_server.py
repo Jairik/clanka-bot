@@ -61,12 +61,9 @@ class HermesServerConfigTest(unittest.TestCase):
         self.assertIn("enabled: off", text)
         self.assertIn("lazy: false", text)
 
-    def test_named_toolsets_are_the_allowlist(self):
-        os.environ["HERMES_TOOLSETS"] = "todo, clanka_sample"
-        self.assertEqual(self.server.parse_toolsets(), ["todo", "clanka_sample"])
-        kwargs = self.server.agent_kwargs("key")
-        self.assertEqual(kwargs["enabled_toolsets"], ["todo", "clanka_sample"])
-        self.assertEqual(kwargs["max_iterations"], 4)
+    def test_arbitrary_toolsets_do_not_enable_built_ins(self):
+        os.environ["HERMES_TOOLSETS"] = "todo, terminal"
+        self.assertEqual(self.server.agent_kwargs("key")["enabled_toolsets"], [])
 
     def test_local_endpoint_uses_custom_provider(self):
         os.environ["HERMES_LOCAL_BASE_URL"] = "http://ornith.example/v1"
@@ -128,10 +125,15 @@ class HermesServerConfigTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "did not register"):
             self.server.assert_tool_allowlist(Empty())
 
-        class Ready:
-            tools = [{"name": "sample_ping"}]
-
-        self.server.assert_tool_allowlist(Ready())
+        for names in (
+            ("mcp__clanka_sample__sample_ping", "mcp__clanka_sample__sample_time"),
+            ("tool_search", "tool_describe", "tool_call"),
+        ):
+            ready = mock.Mock(tools=[{"function": {"name": name}} for name in names])
+            self.server.assert_tool_allowlist(ready)
+            ready.tools.append({"function": {"name": "terminal"}})
+            with self.assertRaisesRegex(RuntimeError, "did not register exactly"):
+                self.server.assert_tool_allowlist(ready)
 
     def test_dockerfile_pins_current_stable_digest(self):
         text = (ROOT / "Dockerfile").read_text()

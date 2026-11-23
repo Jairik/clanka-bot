@@ -4,7 +4,7 @@
 // and invoke a Tool, and the registry runs the handler here. Local-only Tools
 // and results, confirm Tools, disabled Tools, and Tools outside the allowlist
 // or without a live account grant fail closed. Final Hermes runtime wiring
-// belongs to the sidecar ticket; this package is the policy and HTTP seam.
+// uses this package's policy and HTTP seam.
 package hermesadapter
 
 import (
@@ -13,9 +13,11 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/integrations"
 	"github.com/Jairik/clanka-bot/assistant/internal/secrets"
+	"github.com/Jairik/clanka-bot/assistant/internal/settings"
 	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 )
 
@@ -93,6 +95,8 @@ type Adapter struct {
 	secrets   *secrets.Service
 	allowlist map[string]bool
 	order     []string
+	settings  *settings.Service
+	recipeMu  sync.Mutex
 }
 
 // Options wires the adapter. An empty Allowlist uses the shipped default.
@@ -101,6 +105,7 @@ type Options struct {
 	Grants    *integrations.Service
 	Secrets   *secrets.Service
 	Allowlist []string
+	Settings  *settings.Service
 }
 
 // New builds an adapter. A nil registry yields an empty, fail-closed surface.
@@ -124,12 +129,18 @@ func New(opts Options) *Adapter {
 		secrets:   opts.Secrets,
 		allowlist: allow,
 		order:     order,
+		settings:  opts.Settings,
 	}
 }
 
 // Surface reports the live allowlist split into callable and withheld Tools.
 // Listings never include input or output schemas.
 func (a *Adapter) Surface() Surface {
+	return a.surface(context.Background())
+}
+
+// surface shares lazy discovery between the Dashboard and runtime.
+func (a *Adapter) surface(ctx context.Context) Surface {
 	out := Surface{Allowed: []Descriptor{}, Withheld: []Descriptor{}}
 	if a == nil || a.registry == nil {
 		return out
@@ -139,11 +150,24 @@ func (a *Adapter) Surface() Surface {
 		if err != nil {
 			continue
 		}
-		if a.inspect(name) == nil {
+		if _, err := a.inspect(name); err == nil {
 			out.Allowed = append(out.Allowed, desc)
 			continue
 		}
 		out.Withheld = append(out.Withheld, desc)
+	}
+	recipes, _ := a.readRecipes(ctx)
+	for _, recipe := range recipes {
+		name := recipePrefix + recipe.Name
+		if !a.recipeDiscoverable(name, recipe) {
+			continue
+		}
+		desc := Descriptor{Name: name, Description: recipe.Description, Permission: string(tool.PermissionRead)}
+		if _, err := a.inspect(recipe.BaseTool); err == nil {
+			out.Allowed = append(out.Allowed, desc)
+		} else {
+			out.Withheld = append(out.Withheld, desc)
+		}
 	}
 	return out
 }
@@ -155,24 +179,34 @@ func (a *Adapter) List() []Descriptor {
 
 // Schema returns one Tool's schemas only when it is currently allowed.
 func (a *Adapter) Schema(name string) (Schema, error) {
+	return a.schema(context.Background(), name)
+}
+
+// schema resolves the live base and loads its contract on demand.
+func (a *Adapter) schema(ctx context.Context, name string) (Schema, error) {
 	canonical, err := a.canonical(name)
 	if err != nil {
 		return Schema{}, err
 	}
-	if err := a.inspect(canonical); err != nil {
+	info, recipe, err := a.resolve(ctx, canonical)
+	if err != nil {
 		return Schema{}, err
 	}
-	info, ok := a.registry.Info(canonical)
-	if !ok {
-		return Schema{}, deny(canonical, causeUnknown)
-	}
-	return Schema{
-		Name:         info.Name,
+	schema := Schema{
+		Name:         canonical,
 		Description:  info.Description,
 		Permission:   string(info.Permission),
 		InputSchema:  append(json.RawMessage(nil), info.InputSchema...),
 		OutputSchema: append(json.RawMessage(nil), info.OutputSchema...),
-	}, nil
+	}
+	if recipe != nil {
+		schema.Description = recipe.Description
+		schema.InputSchema, err = recipeInputSchema(info, recipe.Arguments)
+		if err != nil {
+			return Schema{}, deny(canonical, causeUnknown)
+		}
+	}
+	return schema, nil
 }
 
 // Invoke runs one Tool through the Go registry after the live policy check.
@@ -183,8 +217,15 @@ func (a *Adapter) Invoke(ctx context.Context, name string, args json.RawMessage)
 	if err != nil {
 		return nil, err
 	}
-	if err := a.inspect(canonical); err != nil {
+	base, recipe, err := a.resolve(ctx, canonical)
+	if err != nil {
 		return nil, err
+	}
+	if recipe != nil {
+		args, err = mergeRecipeArguments(args, recipe.Arguments)
+		if err != nil {
+			return nil, deny(canonical, causeUnknown)
+		}
 	}
 	if err := a.rejectSecrets(args); err != nil {
 		return nil, deny(canonical, causeSecret)
@@ -195,7 +236,7 @@ func (a *Adapter) Invoke(ctx context.Context, name string, args json.RawMessage)
 		Path:   tool.PathHermes,
 		Device: tool.DevicePi,
 	}
-	result, err := a.registry.Execute(tool.WithRequest(ctx, req), canonical, args)
+	result, err := a.registry.Execute(tool.WithRequest(ctx, req), base.Name, args)
 	if err != nil {
 		var toolErr *tool.ToolError
 		if errors.As(err, &toolErr) {
@@ -208,7 +249,7 @@ func (a *Adapter) Invoke(ctx context.Context, name string, args json.RawMessage)
 	}
 	// The static Local-only flag already blocked discovery; this catches a
 	// declared provenance hook reporting that this one result must stay here.
-	if a.registry.Provenance(canonical, result) {
+	if a.registry.Provenance(base.Name, result) {
 		return nil, deny(canonical, causeProvenance)
 	}
 	payload, err := json.Marshal(result)
@@ -223,33 +264,42 @@ func (a *Adapter) Invoke(ctx context.Context, name string, args json.RawMessage)
 
 // inspect applies every gate except secret scanning. It is used by List,
 // Schema and Invoke so a revoked grant disappears from the next listing.
-func (a *Adapter) inspect(name string) error {
+func (a *Adapter) inspect(name string) (tool.Info, error) {
+	info, err := a.inspectBase(name)
+	if err != nil {
+		return tool.Info{}, err
+	}
+	if account, ok := accountForTool(name); ok && !a.granted(account) {
+		return tool.Info{}, deny(name, causeGrant)
+	}
+	return info, nil
+}
+
+// inspectBase checks the live tool policy before account grants are considered.
+func (a *Adapter) inspectBase(name string) (tool.Info, error) {
 	if a == nil || a.registry == nil {
-		return deny(name, causeUnknown)
+		return tool.Info{}, deny(name, causeUnknown)
 	}
 	if !a.allowlist[name] {
-		return deny(name, causeAllowlist)
+		return tool.Info{}, deny(name, causeAllowlist)
 	}
 	info, ok := a.registry.Info(name)
 	if !ok {
-		return deny(name, causeUnknown)
+		return tool.Info{}, deny(name, causeUnknown)
 	}
 	if !info.Enabled {
-		return deny(name, causeDisabled)
+		return tool.Info{}, deny(name, causeDisabled)
 	}
 	if info.LocalOnly {
-		return deny(name, causeLocalOnly)
+		return tool.Info{}, deny(name, causeLocalOnly)
 	}
 	if info.Permission == tool.PermissionConfirm {
-		return deny(name, causeConfirm)
+		return tool.Info{}, deny(name, causeConfirm)
 	}
 	if info.Permission != tool.PermissionRead {
-		return deny(name, causePermission)
+		return tool.Info{}, deny(name, causePermission)
 	}
-	if account, ok := accountForTool(name); ok && !a.granted(account) {
-		return deny(name, causeGrant)
-	}
-	return nil
+	return info, nil
 }
 
 // granted reads the live setting. A missing integrations service fails closed.

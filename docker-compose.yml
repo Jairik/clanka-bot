@@ -83,6 +83,8 @@ services:
       HERMES_RUNTIME_TOKEN: ${HERMES_RUNTIME_TOKEN:-}
       HERMES_LOCAL_BASE_URL: ${HERMES_LOCAL_BASE_URL:-}
       HERMES_LOCAL_API_KEY: ${HERMES_LOCAL_API_KEY:-}
+      # Match the Hermes sidecar's job deadline.
+      HERMES_GO_TOOLS: ${HERMES_GO_TOOLS:-}
       ASSISTANT_TTS_ADDR: "tts:10200"
       # ADR-0003: the one SQLite database lives on the assistant-data volume.
       ASSISTANT_DATA_DIR: "/app/data"
@@ -233,7 +235,9 @@ services:
       HERMES_RUNTIME_TOKEN: ${HERMES_RUNTIME_TOKEN:-}
       HERMES_LOCAL_BASE_URL: ${HERMES_LOCAL_BASE_URL:-}
       HERMES_LOCAL_MODEL: ${HERMES_LOCAL_MODEL:-}
-      # Empty keeps the job tool-free. Sample MCP is for discovery benches only.
+      # Opt in to the Go read catalogue after the private adapter is deployed.
+      HERMES_GO_TOOLS: ${HERMES_GO_TOOLS:-}
+      # Sample MCP is for discovery benches and runs separately from Go Tools.
       HERMES_TOOL_SEARCH: ${HERMES_TOOL_SEARCH:-}
       HERMES_SAMPLE_MCP: ${HERMES_SAMPLE_MCP:-}
       HERMES_SAMPLE_MCP_LAZY: ${HERMES_SAMPLE_MCP_LAZY:-}

@@ -74,6 +74,7 @@ function stub(write: (path: string) => HermesView, get: () => HermesView = () =>
     return json(write(path));
   };
   stubFetch({
+    "/api/ui/hermes/tools": () => json({ available: [], recipes: [] }),
     "/api/ui/hermes": () => json(get()),
     "/hermes/integrations/github": route("/hermes/integrations/github"),
     "/hermes/integrations/github/unlink": route("/hermes/integrations/github/unlink"),
@@ -100,6 +101,7 @@ it("shows the setup required and the enforced allowlist", async () => {
 
 it("names withheld allowlisted tools until the grant is on", async () => {
   stubFetch({
+    "/api/ui/hermes/tools": () => json({ available: [], recipes: [] }),
     "/api/ui/hermes": () =>
       json(
         view([], {
@@ -180,7 +182,8 @@ it("unlinks an account that has stored secrets", async () => {
 });
 
 it("explains an unconfigured account registry", async () => {
-  stubFetch({ "/api/ui/hermes": () => json({ ...view([]), HasIntegrations: false }) });
+  stubFetch({
+    "/api/ui/hermes/tools": () => json({ available: [], recipes: [] }), "/api/ui/hermes": () => json({ ...view([]), HasIntegrations: false }) });
   render(<HermesPage />);
 
   expect(await screen.findByText(/built without the integrations or secrets service/)).toBeTruthy();
@@ -189,6 +192,7 @@ it("explains an unconfigured account registry", async () => {
 
 it("shows a refused link as an error", async () => {
   stubFetch({
+    "/api/ui/hermes/tools": () => json({ available: [], recipes: [] }),
     "/api/ui/hermes": () => json(view()),
     "/hermes/integrations/github": () =>
       json({ ...view(), Error: "Fill every required field before saving." }, 400),
@@ -212,6 +216,7 @@ it("keeps the link button enabled when a required secret is already stored but l
     return json(view());
   };
   stubFetch({
+    "/api/ui/hermes/tools": () => json({ available: [], recipes: [] }),
     "/api/ui/hermes": () => json(view()),
     "/hermes/integrations/openrouter": route("/hermes/integrations/openrouter"),
   });

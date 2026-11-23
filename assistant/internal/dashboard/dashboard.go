@@ -576,6 +576,10 @@ func New(opts Options) (*Handler, error) {
 	// Hermes may use; linking writes the same write-only secrets the Tools read.
 	h.Handle("GET /api/ui/routes", h.page("routes", h.routesPage))
 	h.Handle("GET /api/ui/hermes", h.page("hermes", h.hermesPage))
+	// Recipe writes use the same owner and Origin checks as account grants.
+	h.Handle("GET /api/ui/hermes/tools", h.page("hermes/tools", h.hermesTools))
+	h.Mutating("POST /api/ui/hermes/tools", h.hermesToolSave)
+	h.Mutating("POST /api/ui/hermes/tools/{name}/delete", h.hermesToolDelete)
 	h.Mutating("POST /hermes/integrations/{id}", h.hermesLink)
 	h.Mutating("POST /hermes/integrations/{id}/unlink", h.hermesUnlink)
 	h.Mutating("POST /hermes/integrations/{id}/grant", h.hermesGrant)

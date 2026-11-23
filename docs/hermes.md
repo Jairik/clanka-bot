@@ -1,6 +1,6 @@
 # Hermes setup and control panel
 
-Hermes can run explicit, model-only jobs on the Pi. The Dashboard shows whether
+Hermes runs explicit jobs on the Pi with an optional read-only tool catalogue. The Dashboard shows whether
 the runtime is configured, which Tools the Go adapter currently allows, and the accounts
 you can link today. Unmatched voice and typed requests still use the Go Agent path until
 [the cutover](specs/go-agent-cutover.md) ([#526](https://github.com/Jairik/clanka-bot/issues/526)).
@@ -36,7 +36,8 @@ To use a self-hosted OpenAI-compatible endpoint, set `HERMES_LOCAL_BASE_URL`
 (including `/v1`), `HERMES_LOCAL_MODEL`, and the endpoint's dedicated
 `HERMES_LOCAL_API_KEY` in the private Compose `.env`. Recreate both
 `assistant` and `hermes`. Explicit **Ask Hermes** jobs use that model. The
-default job still runs with zero tools and must finish within 45 seconds. Hermes
+tool-free job has a 45-second budget. Jobs may take up to four minutes when
+Go tools are enabled. Hermes
 requires the endpoint to serve a context window of at least 64,000 tokens.
 For desktop inference, use an authenticated endpoint reachable from the Pi's Hermes
 container over the tailnet. Token counts on that path are local latency cost,
@@ -79,12 +80,9 @@ wall time.
 | Desktop v0.23.3 | no-tool | 510 | 20.7 s | 202 MB | none |
 | Desktop v0.23.3 | eager sample MCP | 3,624 | 52.9 s | 240 MB | `sample_ping`, `sample_time` |
 
-For two sample tools the bridge's prompt cost is in the same band as eager
-schemas. Keep production jobs on the empty allowlist. Use Tool Search and lazy
-MCP when more servers are attached; the empty allowlist is the measured eager
-exception. v0.23.3 is pinned because the headless constructor, Ornith
-transport, and no-tool prompt size match v0.23.1 while picking up the current
-stable security fix.
+For the two sample tools, the bridge and eager schemas use similar prompt
+tokens. v0.23.3 kept the headless constructor, Ornith transport, and tool-free
+prompt size measured on v0.23.1.
 
 ## Private Tool adapter
 
@@ -93,10 +91,15 @@ adapter is a private HTTP surface on the assistant health listener
 (`GET/POST /hermes/adapter/tools…`), authenticated with the same
 `HERMES_RUNTIME_TOKEN` the sidecar already uses. Credentials never leave Go.
 
-The current allowlist is two read-only weather Tools:
+Set `HERMES_GO_TOOLS=1` in the Pi's private Compose `.env` and recreate the
+assistant and Hermes services to enable the bridge. Leave `HERMES_SAMPLE_MCP`
+off. Configured tools are read at the start of each job. The model sees the
+Tool Search bridge and loads a tool's schema when it requests it. The local MCP
+process starts on the first invocation.
 
-- `weather.current`
-- `weather.forecast`
+The initial read-only tools are `web.search` (through the existing SearXNG
+service), `weather.current`, and `weather.forecast`. Weather requires its
+account grant. Results sent to a cloud model follow that provider's terms.
 
 `spotify.now_playing` was considered as the second sample and stays off this
 surface: it is Local-only because it names the owner's listening
@@ -110,8 +113,17 @@ Every invocation re-checks:
 - stored secret values in arguments and results
 
 A listing returns names, descriptions and permission only. A job loads one
-Tool's schema when it asks to use that Tool. Headless Hermes is not yet wired
-to this adapter; that work is tracked in #525.
+tool's schema when it asks to use that tool.
+
+## Tool recipes
+
+Open **Hermes → Tool recipes** on the owner dashboard. Choose a vetted base tool,
+give it a name and description, and optionally fix arguments for a recurring
+query. For example, a `weather_home` recipe can fix the city for
+`weather.current`. Enabled recipes appear as `recipe.<name>` on the next job.
+A recipe inherits its base tool's account grant and permissions. Saved recipes
+can be edited, disabled or deleted, and the bridge checks the live policy at
+invocation.
 
 ## Capability inventory
 
@@ -119,7 +131,7 @@ Every Go Tool reachable from the Agent path is classified against this adapter:
 
 | Decision | Meaning |
 | --- | --- |
-| **allowlist** | On the current surface once the matching grant is on (`weather.current`, `weather.forecast`). |
+| **allowlist** | On the current surface once the matching grant is on (`web.search`, `weather.current`, `weather.forecast`). |
 | **later** | Other Agent-reachable Tools require individual review. The adapter currently accepts only read-only Tools. |
 | **local_only** | Results must stay on the Pi. Hermes never lists or calls them. Includes `spotify.now_playing`, timers/alarms that stay local, `assistant.repeat`. |
 | **confirm** | Outward writes. Go owns Confirmation; the adapter never proposes or runs them. Includes `github.issue_create` and `notify.phone`. |
@@ -158,10 +170,6 @@ and read/write scopes Hermes should have is the intended shape; do not paste a
 classic all-repo token.
 
 ## MCP and OpenCode delegation
-
-The sidecar still runs model-only jobs. Wiring this adapter into headless
-Hermes (lazy MCP / Tool Search, sample calls on Ornith) is a separate runtime
-ticket. Outward writes remain behind Go-owned Confirmation.
 
 The spike in `docs/spikes/hermes-opencode-attach.md` covers the transport
 (`opencode serve` over Tailscale), the auth findings and the measured latency.

@@ -4,6 +4,8 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"maps"
+	"slices"
 	"testing"
 	"time"
 
@@ -14,13 +16,12 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/tools"
 )
 
-// TestAllowlistIsTwoReadOnlyWeatherTools is the product call for #525: the
-// first Hermes surface is weather.current and weather.forecast. Spotify now
-// playing stays Local-only.
-func TestAllowlistIsTwoReadOnlyWeatherTools(t *testing.T) {
+// TestAllowlistIsVettedPublicReads verifies the shipped tools and their account grants.
+func TestAllowlistIsVettedPublicReads(t *testing.T) {
 	reg := productionRegistry(t)
-	if len(hermesadapter.Allowlist) != 2 {
-		t.Fatalf("allowlist = %v, want two Tools", hermesadapter.Allowlist)
+	accounts := map[string]string{"weather.current": "weather", "weather.forecast": "weather", "web.search": ""}
+	if want := slices.Sorted(maps.Keys(accounts)); !slices.Equal(want, slices.Sorted(slices.Values(hermesadapter.Allowlist))) {
+		t.Fatalf("allowlist = %v, want %v", hermesadapter.Allowlist, want)
 	}
 	for _, name := range hermesadapter.Allowlist {
 		info, ok := reg.Info(name)
@@ -37,8 +38,8 @@ func TestAllowlistIsTwoReadOnlyWeatherTools(t *testing.T) {
 			t.Errorf("%s classified as %s", name, hermesadapter.Classify(info))
 		}
 		account, ok := accountOf(name)
-		if !ok || account != "weather" {
-			t.Errorf("%s account = %q, want weather", name, account)
+		if want := accounts[name]; account != want || ok != (want != "") {
+			t.Errorf("%s account = %q, want %q", name, account, want)
 		}
 	}
 
@@ -71,8 +72,8 @@ func TestInventoryClassifiesEveryRegisteredTool(t *testing.T) {
 			t.Errorf("confirm %s is on the allowlist", name)
 		}
 	}
-	if counts[hermesadapter.DecisionAllowlist] != 2 {
-		t.Fatalf("allowlist count = %d, want 2; decisions = %v", counts[hermesadapter.DecisionAllowlist], counts)
+	if counts[hermesadapter.DecisionAllowlist] != len(hermesadapter.Allowlist) {
+		t.Fatalf("unexpected allowlist count; decisions = %v", counts)
 	}
 	if counts[hermesadapter.DecisionLocalOnly] == 0 || counts[hermesadapter.DecisionConfirm] == 0 || counts[hermesadapter.DecisionLater] == 0 {
 		t.Fatalf("inventory collapsed: %v", counts)

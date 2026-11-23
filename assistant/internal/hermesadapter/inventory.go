@@ -2,14 +2,12 @@ package hermesadapter
 
 import "github.com/Jairik/clanka-bot/assistant/internal/tool"
 
-// Allowlist is the smallest read-only Tool set Hermes may discover. Both are
-// weather reads: they have no side effects, they are not Local-only, and they
-// share the WeatherAPI account grant. spotify.now_playing was the other
-// suggested sample, but it is Local-only because it names the owner's
-// listening, so ADR-0002 keeps it off this surface.
+// Allowlist is the shipped set of public reads. Both weather Tools share the
+// weather account grant, while SearXNG search uses no account.
 var Allowlist = []string{
 	"weather.current",
 	"weather.forecast",
+	"web.search",
 }
 
 // Decision is the product call for one Go Tool relative to Hermes.
@@ -29,11 +27,10 @@ const (
 // Notes record explicit product calls that the default rule would not show.
 var Notes = map[string]string{
 	"spotify.now_playing":  "Suggested as a second sample; Local-only because it names the owner's listening, so it stays off Hermes.",
-	"github.pr_list":       "Read, not Local-only; later via this adapter, not the first two-tool allowlist.",
+	"github.pr_list":       "Read, not Local-only; later via this adapter.",
 	"github.issue_create":  "Outward write. Go-owned Confirmation; the adapter never proposes or runs it.",
 	"github.notifications": "Read, not Local-only; later via this adapter once the GitHub grant is in the allowlist.",
 	"github.checks":        "Read, not Local-only; later via this adapter. The account catalog still lists issue, PR and notifications.",
-	"web.search":           "Agent-only read; later via this adapter. No Hermes grant of its own.",
 	"web.fetch":            "Agent-only read; later via this adapter, still behind the public-URL provenance rule.",
 	"note.recall":          "Agent-visible by ADR-0005; later via this adapter, not the first allowlist.",
 	"list.read":            "Agent-visible by ADR-0005; later via this adapter, not the first allowlist.",
@@ -55,7 +52,7 @@ func Classify(info tool.Info) Decision {
 	return DecisionLater
 }
 
-// Allowlisted reports whether name is one of the two shipped samples.
+// Allowlisted reports whether name belongs to the shipped surface.
 func Allowlisted(name string) bool {
 	for _, allowed := range Allowlist {
 		if allowed == name {

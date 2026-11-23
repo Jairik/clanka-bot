@@ -5,6 +5,7 @@ import { ChevronDown } from "lucide-react";
 import { usePageData } from "../api";
 import { Field, TextField, useActions, type Actions } from "../forms";
 import { PageFrame } from "../shell";
+import { HermesToolsSection } from "./HermesTools";
 import type { HermesView, Integration, IntegrationSecret } from "../types";
 import { Badge, Dot, Empty, Fold, Lede, Notice, Section, cn, foldOpen, type Tone } from "../ui";
 
@@ -90,6 +91,8 @@ export function HermesPage() {
             </dl>
           </Section>
         )}
+
+        {data && <HermesToolsSection />}
 
         {data?.HasIntegrations ? (
           <Section title="Accounts" summary={`${linked} linked · ${data.Granted} allowed`} defaultOpen flush>

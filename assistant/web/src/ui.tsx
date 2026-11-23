@@ -161,7 +161,9 @@ export function Notice({ flash, error, onDismiss }: { flash?: string; error?: st
       role={error ? "alert" : "status"}
       className={cn(
         "mb-4 flex items-start gap-3 border px-3.5 py-2.5 text-sm",
-        error ? "border-danger/40 bg-danger/8 text-danger" : "bg-surface-secondary",
+        // Danger text on its own tint is ~3.9:1; the border, tint and dot carry the
+        // status and the message stays foreground so it clears 4.5:1.
+        error ? "border-danger/40 bg-danger/8 text-foreground" : "bg-surface-secondary",
       )}
     >
       <Dot tone={error ? "bad" : "ok"} />

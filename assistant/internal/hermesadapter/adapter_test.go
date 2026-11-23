@@ -35,6 +35,7 @@ type fixture struct {
 	secrets *secrets.Service
 	calls   map[string]int
 	pending *tool.Registry
+	path    string
 }
 
 // newFixture registers the two allowlisted weather Tools plus forbidden
@@ -42,7 +43,8 @@ type fixture struct {
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
 	ctx := context.Background()
-	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "assistant.db"))
+	path := filepath.Join(t.TempDir(), "assistant.db")
+	st, err := store.Open(ctx, path)
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
@@ -58,7 +60,7 @@ func newFixture(t *testing.T) *fixture {
 	grants := integrations.New(secretSvc, setSvc)
 	reg := tool.NewRegistry(time.Second)
 	calls := map[string]int{}
-	f := &fixture{grants: grants, secrets: secretSvc, calls: calls, pending: reg}
+	f := &fixture{grants: grants, secrets: secretSvc, calls: calls, pending: reg, path: path}
 
 	add := func(name string, perm tool.Permission, local tool.LocalOnly, handler func(context.Context, echoIn) (echoOut, error)) {
 		t.Helper()
@@ -96,6 +98,7 @@ func newFixture(t *testing.T) *fixture {
 		Registry: reg,
 		Grants:   grants,
 		Secrets:  secretSvc,
+		Settings: setSvc,
 	})
 	return f
 }
@@ -324,9 +327,15 @@ func TestDisabledToolIsWithheld(t *testing.T) {
 	}
 }
 
-type staticPolicy struct{ name string }
+type staticPolicy struct {
+	name       string
+	permission tool.Permission
+}
 
 func (p staticPolicy) Effective(name string, declared tool.Permission) tool.ToolSettings {
+	if name == p.name && p.permission != "" {
+		return tool.ToolSettings{Enabled: true, Permission: p.permission}
+	}
 	return tool.ToolSettings{Enabled: name != p.name, Permission: declared}
 }
 

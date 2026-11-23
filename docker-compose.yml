@@ -327,6 +327,8 @@ services:
       STT_ADDR: "tcp://127.0.0.1:10300"
       STT_MODEL: ${STT_MODEL:-small-streaming}
       STT_LANGUAGE: ${STT_LANGUAGE:-en}
+      # 0 disables post-decode vocabulary correction without a model rebuild.
+      STT_CORRECT: ${STT_CORRECT:-1}
       TZ: ${TZ:-UTC}
     expose:
       - "10300"

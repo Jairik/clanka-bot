@@ -1,0 +1,165 @@
+{
+  "schema": "stt-replay-fixtures/v1",
+  "notes": "Checked-in audio is synthetic PCM for endpointing. Put owner-voice WAVs in fixtures/private/<id>.wav. #521 selects the live capture path before Pi deployment comparison.",
+  "endpoint": {
+    "silence_ms": 500,
+    "threshold_dbfs": -38,
+    "min_speech_ms": 200,
+    "max_utterance_ms": 15000,
+    "rate": 16000
+  },
+  "clips": [
+    {
+      "id": "command-time",
+      "category": "command",
+      "expected_text": "what time is it",
+      "entities": {},
+      "synthetic": {"kind": "speech_then_silence", "lead_ms": 160, "speech_ms": 800, "silence_ms": 640},
+      "speech_start_ms": 160,
+      "speech_end_ms": 960
+    },
+    {
+      "id": "command-lights",
+      "category": "command",
+      "expected_text": "turn on the lights",
+      "entities": {},
+      "synthetic": {"kind": "speech_then_silence", "lead_ms": 160, "speech_ms": 900, "silence_ms": 640},
+      "speech_start_ms": 160,
+      "speech_end_ms": 1060
+    },
+    {
+      "id": "command-timer",
+      "category": "command",
+      "expected_text": "set a timer for five minutes",
+      "entities": {"duration_minutes": 5},
+      "synthetic": {"kind": "speech_then_silence", "lead_ms": 160, "speech_ms": 1200, "silence_ms": 640},
+      "speech_start_ms": 160,
+      "speech_end_ms": 1360
+    },
+    {
+      "id": "name-spotify",
+      "category": "proper_name",
+      "expected_text": "play music on Spotify",
+      "entities": {"name": "Spotify"},
+      "synthetic": {"kind": "speech_then_silence", "lead_ms": 160, "speech_ms": 1100, "silence_ms": 640},
+      "speech_start_ms": 160,
+      "speech_end_ms": 1260
+    },
+    {
+      "id": "name-hermes",
+      "category": "proper_name",
+      "expected_text": "ask Hermes to summarise this",
+      "entities": {"name": "Hermes"},
+      "synthetic": {"kind": "speech_then_silence", "lead_ms": 160, "speech_ms": 1200, "silence_ms": 640},
+      "speech_start_ms": 160,
+      "speech_end_ms": 1360
+    },
+    {
+      "id": "name-happylighting",
+      "category": "proper_name",
+      "expected_text": "set HappyLighting to blue",
+      "entities": {"name": "HappyLighting"},
+      "synthetic": {"kind": "speech_then_silence", "lead_ms": 160, "speech_ms": 1100, "silence_ms": 640},
+      "speech_start_ms": 160,
+      "speech_end_ms": 1260
+    },
+    {
+      "id": "name-duo",
+      "category": "proper_name",
+      "expected_text": "dim Duo+ to 30 percent",
+      "entities": {"name": "Duo+", "percent": 30},
+      "synthetic": {"kind": "speech_then_silence", "lead_ms": 160, "speech_ms": 1100, "silence_ms": 640},
+      "speech_start_ms": 160,
+      "speech_end_ms": 1260
+    },
+    {
+      "id": "numbers-brightness",
+      "category": "numbers",
+      "expected_text": "set lights brightness to 50 percent",
+      "entities": {"percent": 50},
+      "synthetic": {"kind": "speech_then_silence", "lead_ms": 160, "speech_ms": 1400, "silence_ms": 640},
+      "speech_start_ms": 160,
+      "speech_end_ms": 1560
+    },
+    {
+      "id": "numbers-timer-15",
+      "category": "numbers",
+      "expected_text": "set a timer for 15 minutes",
+      "entities": {"duration_minutes": 15},
+      "synthetic": {"kind": "speech_then_silence", "lead_ms": 160, "speech_ms": 1200, "silence_ms": 640},
+      "speech_start_ms": 160,
+      "speech_end_ms": 1360
+    },
+    {
+      "id": "negation-lights",
+      "category": "negation",
+      "expected_text": "don't turn on the lights",
+      "entities": {"negation": true},
+      "unsafe_if_rewritten_to": ["turn on the lights", "do turn on the lights"],
+      "synthetic": {"kind": "speech_then_silence", "lead_ms": 160, "speech_ms": 1100, "silence_ms": 640},
+      "speech_start_ms": 160,
+      "speech_end_ms": 1260
+    },
+    {
+      "id": "negation-timer",
+      "category": "negation",
+      "expected_text": "do not cancel the timer",
+      "entities": {"negation": true},
+      "unsafe_if_rewritten_to": ["cancel the timer", "do cancel the timer"],
+      "synthetic": {"kind": "speech_then_silence", "lead_ms": 160, "speech_ms": 1100, "silence_ms": 640},
+      "speech_start_ms": 160,
+      "speech_end_ms": 1260
+    },
+    {
+      "id": "dictation-reminder",
+      "category": "dictation",
+      "expected_text": "remind me to pick up milk after work",
+      "entities": {},
+      "synthetic": {"kind": "speech_then_silence", "lead_ms": 160, "speech_ms": 1600, "silence_ms": 640},
+      "speech_start_ms": 160,
+      "speech_end_ms": 1760
+    },
+    {
+      "id": "dictation-herman",
+      "category": "dictation",
+      "expected_text": "text Herman I am running late",
+      "entities": {"name": "Herman"},
+      "unsafe_if_rewritten_to": ["text Hermes I am running late"],
+      "synthetic": {"kind": "speech_then_silence", "lead_ms": 160, "speech_ms": 1400, "silence_ms": 640},
+      "speech_start_ms": 160,
+      "speech_end_ms": 1560
+    },
+    {
+      "id": "silence",
+      "category": "silence",
+      "expected_text": "",
+      "entities": {},
+      "synthetic": {"kind": "silence", "duration_ms": 2000}
+    },
+    {
+      "id": "noise-below-threshold",
+      "category": "noise",
+      "expected_text": "",
+      "entities": {},
+      "synthetic": {"kind": "noise", "duration_ms": 1500, "dbfs": -45}
+    },
+    {
+      "id": "clip-start",
+      "category": "command",
+      "expected_text": "what time is it",
+      "entities": {},
+      "synthetic": {"kind": "clipped_start", "speech_ms": 800, "silence_ms": 640},
+      "speech_start_ms": 0,
+      "speech_end_ms": 800
+    },
+    {
+      "id": "clip-end",
+      "category": "command",
+      "expected_text": "what time is it",
+      "entities": {},
+      "synthetic": {"kind": "clipped_end", "speech_ms": 800},
+      "speech_start_ms": 0,
+      "speech_end_ms": 800
+    }
+  ]
+}

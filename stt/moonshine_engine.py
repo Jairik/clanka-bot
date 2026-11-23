@@ -8,9 +8,14 @@ here touches the network; a fallback model is loaded on first use.
 from __future__ import annotations
 
 import json
+import logging
 import threading
 from importlib.metadata import PackageNotFoundError, version as package_version
 from pathlib import Path
+
+from correct import apply_keyterms
+
+_LOGGER = logging.getLogger("stt.engine")
 
 MODEL_ROOT = Path("/opt/moonshine")
 MANIFEST = MODEL_ROOT / "models.json"
@@ -82,10 +87,14 @@ class MoonshineEngine:
         model: str = "small-streaming",
         language: str = "en",
         manifest: Path = MANIFEST,
+        keyterms: list[str] | None = None,
     ) -> None:
         self.model = model
         self.language = language
         self.manifest_path = manifest
+        # Distinctive device and product names for Moonshine keyterm biasing.
+        # Empty keeps the stock decoder; STT_CORRECT still runs after decode.
+        self.keyterms = [term for term in (keyterms or []) if term and "," not in term]
         self.sample_rate = 16000
         self.version = _package_version()
         # Serialises stream work: one mic, one transcription at a time.
@@ -115,7 +124,11 @@ class MoonshineEngine:
                     f"model {name!r} is not baked into the image "
                     f"(available: {', '.join(sorted(manifest))})"
                 )
-            self._transcribers[name] = Transcriber(path, string_to_model_arch(name))
+            transcriber = Transcriber(path, string_to_model_arch(name))
+            # v0.1.2+ streaming models accept set_keyterms. Older wheels skip.
+            if self.keyterms and not apply_keyterms(transcriber, self.keyterms):
+                _LOGGER.info("moonshine Transcriber has no set_keyterms; skipping bias")
+            self._transcribers[name] = transcriber
 
     def create_stream(self, model: str | None = None):
         """Create a stream for model (or the configured default)."""

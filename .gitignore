@@ -29,6 +29,10 @@ wakeword/models/local/*
 # owner's voice and are copied off the Pi by hand, never committed.
 /exports/
 
+# Owner-voice STT replay clips. Checked-in fixtures are synthetic PCM.
+stt/fixtures/private/*
+!stt/fixtures/private/.gitkeep
+
 # Private Pi and tailnet details for agents; never committed.
 docs/agents/machines.md
 

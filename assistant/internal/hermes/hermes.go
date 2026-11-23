@@ -143,7 +143,10 @@ func (m *Manager) Handle(ctx context.Context, request string) string {
 	switch strings.ToLower(command) {
 	case "", "status", "result", "cancel":
 	default:
-		sidecar = m.sidecarForSelection(ctx)
+		// A request that is refused anyway doesn't wait on the probe.
+		if len(request) <= maxTaskBytes {
+			sidecar = m.sidecarForSelection(ctx)
+		}
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -170,15 +173,17 @@ func (m *Manager) Handle(ctx context.Context, request string) string {
 	if m.run == nil {
 		return "Hermes is disabled."
 	}
-	job, problem := m.job(request, sidecar)
-	if problem != "" {
-		return problem
-	}
+	// The cheap refusals come first; a too-long request or one during a
+	// running job skipped the probe.
 	if len(request) > maxTaskBytes {
 		return "That Hermes request is too long."
 	}
 	if m.active != 0 {
 		return fmt.Sprintf("Hermes is already working on job %d.", m.active)
+	}
+	job, problem := m.job(request, sidecar)
+	if problem != "" {
+		return problem
 	}
 	if m.ctx.Err() != nil || ctx.Err() != nil {
 		return "Hermes isn't accepting jobs right now."

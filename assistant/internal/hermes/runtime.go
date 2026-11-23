@@ -107,8 +107,8 @@ type sidecarStatus struct {
 // localProblem explains why Local can't run given the sidecar's status, or
 // returns "" when it can. Without a sidecar (no runtime token) only this
 // side's settings count, since no job can run anyway. An older sidecar image
-// without the fields keeps the previous config-only behaviour; it still
-// rejects a mismatched route itself.
+// without the fields fails closed: it would check only the model, not which
+// endpoint receives this side's key.
 func (m *Manager) localProblem(sidecar sidecarStatus) string {
 	switch {
 	case !m.config.localReady():
@@ -121,7 +121,7 @@ func (m *Manager) localProblem(sidecar sidecarStatus) string {
 	case !sidecar.reachable:
 		return "The Hermes sidecar isn't reachable right now."
 	case !sidecar.reports:
-		return ""
+		return "The Hermes sidecar image is out of date. Deploy matching assistant and hermes images."
 	case sidecar.model != strings.TrimSpace(m.config.LocalModel) || sidecar.baseURL != strings.TrimSpace(m.config.LocalBaseURL):
 		return "The Hermes sidecar has different local settings. Recreate assistant and hermes with the same settings."
 	}
@@ -141,7 +141,7 @@ func (m *Manager) sidecarStatus(ctx context.Context) sidecarStatus {
 // jobs never wait on the sidecar's health check.
 func (m *Manager) sidecarForSelection(ctx context.Context) sidecarStatus {
 	m.mu.Lock()
-	local := m.selection.Provider == localProvider && !m.closed
+	local := m.selection.Provider == localProvider && !m.closed && m.active == 0
 	m.mu.Unlock()
 	if !local {
 		return sidecarStatus{}

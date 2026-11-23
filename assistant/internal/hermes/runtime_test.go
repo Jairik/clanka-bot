@@ -249,10 +249,19 @@ func TestLocalReadinessFollowsTheSidecar(t *testing.T) {
 		t.Fatalf("sent %d jobs to a sidecar that can't take them", runs.Load())
 	}
 
-	// An older sidecar image answers without the fields: config-only readiness.
-	health.Store(body(`{"status":"ok"}`))
-	if !manager.Runtime().LocalReady || !manager.Configured() {
-		t.Fatal("an older sidecar should keep config-only readiness")
+	// An older sidecar image answers without the fields. It would check only
+	// the model, not the endpoint, so Local fails closed.
+	for _, old := range []string{`{"status":"ok"}`, `{"status":"ok","local_model":"ornith:9b"}`} {
+		health.Store(body(old))
+		if view := manager.Runtime(); view.LocalReady || !strings.Contains(view.LocalProblem, "out of date") {
+			t.Fatalf("older sidecar %s: view = %+v", old, view)
+		}
+		if got := manager.Handle(ctx, "Explicit task"); !strings.Contains(got, "out of date") {
+			t.Fatal(got)
+		}
+	}
+	if runs.Load() != 0 {
+		t.Fatalf("sent %d jobs to an older sidecar", runs.Load())
 	}
 
 	health.Store(body(match))

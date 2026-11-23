@@ -68,16 +68,18 @@ jobs are refused before the key is sent:
 - **Different local settings:** the sidecar was recreated with another model
   or endpoint, or without the local settings. Recreate `assistant` and
   `hermes` together.
+- **Out of date:** the `hermes` image predates this check. It would compare
+  only the model, not the endpoint that receives the key, so Local stays
+  unready until matching images are deployed.
 
-The check runs for new jobs only while Local is selected, and when the
-Dashboard loads or saves the runtime view; never for status, result or cancel. A `hermes` image from
-before this check answers `/healthz` without these fields, so Local falls back
-to the Assistant's own settings; the sidecar still rejects a mismatched route.
+The check runs for new jobs only while Local is selected and no job is
+running, and when the Dashboard loads or saves the runtime view. It never runs
+for status, result or cancel.
 
-OpenCode Go readiness requires its dedicated key in **Secrets**. You can save the cloud
-model preference while Local is selected, including before linking the cloud
-key. New jobs fail if the selected provider is unavailable. Deploy matching assistant and Hermes images together to
-enable provider switching.
+OpenCode Go readiness requires its dedicated key in **Secrets**. You can save
+the cloud model preference while Local is selected, including before linking
+the cloud key. New jobs fail if the selected provider is unavailable. Deploy
+matching assistant and Hermes images together to enable provider switching.
 
 The OpenCode Go choices are DeepSeek V4.1 Flash, DeepSeek V4 Pro, GLM-5.3 Flash
 and Kimi K3. They support tool calls on Go's Chat Completions endpoint and are

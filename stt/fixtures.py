@@ -37,7 +37,7 @@ def load_manifest(path: Path | None = None) -> list[dict]:
 
 
 def pcm_for(clip: dict, audio_dir: Path | None = None) -> bytes:
-    """Prefer a real WAV, then a private WAV, then the synthetic recipe."""
+    """Use the selected corpus, or private WAVs when no corpus was selected."""
     clip_id = str(clip.get("id") or "")
     audio_name = clip.get("audio")
     candidates = []
@@ -45,7 +45,7 @@ def pcm_for(clip: dict, audio_dir: Path | None = None) -> bytes:
         candidates.append(Path(audio_dir) / audio_name)
     if audio_dir is not None and clip_id:
         candidates.append(Path(audio_dir) / f"{clip_id}.wav")
-    if clip_id:
+    if audio_dir is None and clip_id:
         candidates.append(PRIVATE_DIR / f"{clip_id}.wav")
     if audio_name:
         candidates.append(DEFAULT_MANIFEST.parent / audio_name)

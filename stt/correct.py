@@ -328,8 +328,9 @@ def _word_runs(tokens: list[str], index: int) -> list[tuple[int, str]]:
     offset = 0
     while index + offset < len(tokens) and len(runs) < 8:
         token = tokens[index + offset]
-        if any(ch.isalnum() for ch in token):
-            runs.append((offset, token))
+        if not any(ch.isalnum() for ch in token):
+            break
+        runs.append((offset, token))
         offset += 1
         if offset > 12:
             break
@@ -337,7 +338,7 @@ def _word_runs(tokens: list[str], index: int) -> list[tuple[int, str]]:
 
 
 def _consume_words(tokens: list[str], index: int, word_count: int) -> tuple[int, str]:
-    """Take word_count word tokens, including the punctuation between them."""
+    """Take consecutive word tokens up to the next punctuation boundary."""
     seen = 0
     last = 0
     words: list[str] = []
@@ -348,7 +349,7 @@ def _consume_words(tokens: list[str], index: int, word_count: int) -> tuple[int,
             last = offset
             if seen == word_count:
                 return last + 1, " ".join(words)
-        elif seen == 0:
+        else:
             return 0, ""
     return 0, ""
 

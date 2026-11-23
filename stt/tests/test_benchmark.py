@@ -107,3 +107,15 @@ def test_benchmark_uses_public_read_event():
     assert "async_read_event" not in source
     assert "read_event" in source
     assert "transcript-stop" in source
+
+
+def test_explicit_corpus_never_falls_back_to_owner_audio(tmp_path, monkeypatch):
+    import fixtures
+
+    private = tmp_path / "private"
+    monkeypatch.setattr(fixtures, "PRIVATE_DIR", private)
+    clip = {"id": "owner", "synthetic": {"kind": "silence", "duration_ms": 100}}
+    owner_audio = b"\x01\x00" * 200
+    fixtures.write_wav(private / "owner.wav", owner_audio)
+    assert pcm_for(clip) == owner_audio
+    assert pcm_for(clip, tmp_path / "public") == synthesize(clip["synthetic"])

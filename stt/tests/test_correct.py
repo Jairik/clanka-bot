@@ -168,3 +168,9 @@ def test_correction_and_keyterms_are_off_by_default(monkeypatch):
     monkeypatch.setenv("STT_KEYTERMS", "true")
     assert correction_enabled() is True
     assert keyterm_bias_enabled() is True
+
+
+def test_correction_does_not_cross_a_punctuation_boundary():
+    corrector = VocabularyCorrector.from_path()
+    for text in ("I was happy. Lighting candles", "I was happy, lighting candles"):
+        assert corrector.apply(text).text == text

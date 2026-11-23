@@ -125,7 +125,7 @@ def is_private_audio_dir(audio_dir: Path | None) -> bool:
     """True when reports must not print owner-voice transcripts."""
     if audio_dir is None:
         return PRIVATE_DIR.is_dir() and any(PRIVATE_DIR.glob("*.wav"))
-    parts = {part.lower() for part in audio_dir.parts}
+    parts = {part.lower() for part in audio_dir.resolve().parts}
     return "private" in parts
 
 
@@ -380,8 +380,8 @@ def report_dict(
             "wer_raw": round(summary.wer_raw, 4),
             "wer_final": round(summary.wer_final, 4),
             "entity_accuracy": round(summary.entity_accuracy, 4),
-            "command_success": (
-                None if summary.command_success is None else round(summary.command_success, 4)
+            "exact_transcript_match": (
+                None if summary.exact_transcript_match is None else round(summary.exact_transcript_match, 4)
             ),
             "p50_finalize_ms": summary.p50_finalize_ms,
             "p95_finalize_ms": summary.p95_finalize_ms,

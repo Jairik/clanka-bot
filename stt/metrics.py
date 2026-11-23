@@ -49,7 +49,7 @@ class Summary:
     end_clipped: int
     recognizer_errors: int
     unsafe_rewrites: int
-    command_success: float | None = None
+    exact_transcript_match: float | None = None
 
 
 def tokenize(text: str) -> list[str]:
@@ -131,16 +131,15 @@ def summarize(scores: list[ClipScore]) -> Summary:
     entity_ok = sum(1 for score in scores if score.entity_ok) / len(scores)
     latencies = [score.finalize_ms for score in scores if score.finalize_ms is not None]
     success = None
-    command_clips = [score for score in scores if not math.isnan(score.wer)]
-    if command_clips:
-        # End-to-end command success here means: expected text matched after
-        # correction and no unsafe rewrite. Routing is out of scope for STT.
+    comparable_clips = [score for score in scores if not math.isnan(score.wer)]
+    if comparable_clips:
+        # Count exact transcript matches without drawing conclusions about routing.
         matched = [
             score
-            for score in command_clips
+            for score in comparable_clips
             if score.wer == 0.0 and not score.unsafe_rewrite
         ]
-        success = len(matched) / len(command_clips)
+        success = len(matched) / len(comparable_clips)
     return Summary(
         clips=len(scores),
         wer=wer,
@@ -153,7 +152,7 @@ def summarize(scores: list[ClipScore]) -> Summary:
         end_clipped=sum(1 for score in scores if score.end_clipped),
         recognizer_errors=sum(1 for score in scores if score.recognizer_error),
         unsafe_rewrites=sum(1 for score in scores if score.unsafe_rewrite),
-        command_success=success,
+        exact_transcript_match=success,
     )
 
 

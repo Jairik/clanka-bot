@@ -12,6 +12,8 @@ import time
 
 MAX_BODY = 16 * 1024
 RUN_TIMEOUT = 45
+LOCAL_BASE_URL = os.environ.get("HERMES_LOCAL_BASE_URL", "")
+LOCAL_MODEL = os.environ.get("HERMES_LOCAL_MODEL", "")
 
 
 def model_turn():
@@ -23,9 +25,9 @@ def model_turn():
         from run_agent import AIAgent
 
         agent = AIAgent(
-            provider="opencode-go",
-            model="deepseek-v4.1-flash",
-            base_url="https://opencode.ai/inference/go/openai/v1",
+            provider="custom" if LOCAL_BASE_URL else "opencode-go",
+            model=LOCAL_MODEL or "deepseek-v4.1-flash",
+            base_url=LOCAL_BASE_URL or "https://opencode.ai/inference/go/openai/v1",
             api_key=request["key"],
             enabled_toolsets=[],
             skip_context_files=True,
@@ -100,7 +102,8 @@ class Handler(BaseHTTPRequestHandler):
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             env={name: value for name, value in os.environ.items()
-                 if name in ("PATH", "HOME", "PYTHONPATH", "PYTHONDONTWRITEBYTECODE", "HERMES_HOME", "HERMES_WRITE_SAFE_ROOT")},
+                 if name in ("PATH", "HOME", "PYTHONPATH", "PYTHONDONTWRITEBYTECODE", "HERMES_HOME", "HERMES_WRITE_SAFE_ROOT",
+                             "HERMES_LOCAL_BASE_URL", "HERMES_LOCAL_MODEL")},
         )
         try:
             while time.monotonic() < deadline:
@@ -132,6 +135,9 @@ if __name__ == "__main__":
     if sys.argv[1:] == ["--worker"]:
         model_turn()
     else:
+        # Require both settings to avoid silently sending local jobs to the cloud.
+        if bool(LOCAL_BASE_URL) != bool(LOCAL_MODEL):
+            raise SystemExit("Hermes needs both a local model and base URL")
         token = os.environ["HERMES_RUNTIME_TOKEN"]
         if len(token) < 32:
             raise SystemExit("Hermes requires a private runtime token of at least 32 characters")

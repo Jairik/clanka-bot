@@ -26,6 +26,17 @@ job states and results in SQLite. It announces completion or failure on the Pi.
 After a restart an unfinished job is marked interrupted, so it won't run again
 without a fresh request.
 
+## Local inference
+
+To use a self-hosted OpenAI-compatible endpoint, set `HERMES_LOCAL_BASE_URL`
+(including `/v1`), `HERMES_LOCAL_MODEL`, and the endpoint's dedicated
+`HERMES_LOCAL_API_KEY` in the private Compose `.env`. Recreate both
+`assistant` and `hermes`. Explicit **Ask Hermes** jobs use that model. The
+job still runs with zero tools and must finish within 45 seconds. Hermes
+requires the endpoint to serve a context window of at least 64,000 tokens.
+For desktop inference, use an authenticated endpoint reachable from the Pi's Hermes
+container over the tailnet.
+
 ## What the page shows
 
 - **Surface.** Every registered Tool that is `read` or `act` and is **not**

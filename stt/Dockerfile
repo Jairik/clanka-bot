@@ -29,7 +29,7 @@ RUN python prefetch.py \
     && python prefetch.py --check \
     && rm -f prefetch.py
 
-COPY pcm16.py moonshine_engine.py stt_server.py healthcheck.py ./
+COPY pcm16.py moonshine_engine.py stt_server.py healthcheck.py correct.py vocab.json ./
 
 EXPOSE 10300
 

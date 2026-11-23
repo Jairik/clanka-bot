@@ -1,0 +1,20 @@
+{
+  "keyterms": [
+    "Clanker",
+    "Clanka",
+    "Spotify",
+    "Hermes",
+    "HappyLighting",
+    "YouTube",
+    "Duo+"
+  ],
+  "terms": [
+    {"canonical": "Clanker", "aliases": ["clanker"]},
+    {"canonical": "Clanka", "aliases": ["clanka"]},
+    {"canonical": "Spotify", "aliases": ["spotify", "spot ify"]},
+    {"canonical": "Hermes", "aliases": ["hermes"]},
+    {"canonical": "HappyLighting", "aliases": ["happylighting", "happy lighting"]},
+    {"canonical": "YouTube", "aliases": ["youtube", "you tube"]},
+    {"canonical": "Duo+", "aliases": ["duo+", "duo plus"]}
+  ]
+}

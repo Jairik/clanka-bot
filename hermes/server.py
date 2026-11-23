@@ -1,8 +1,6 @@
 """Serve one explicitly requested Hermes turn at a time.
 
-The default job is tool-free. Optional env knobs can attach a tiny sample MCP
-allowlist so Tool Search and lazy MCP can be measured without enabling Hermes
-built-ins. Production Go Tool integration stays on the linked ticket.
+Jobs can attach the current Go read catalogue or the sample MCP bench tools.
 """
 
 from __future__ import annotations
@@ -20,12 +18,15 @@ import time
 
 MAX_BODY = 16 * 1024
 RUN_TIMEOUT = 45
+RUN_BUDGET = RUN_TIMEOUT - 5
 CLOUD_BASE_URL = "https://opencode.ai/inference/go/openai/v1"
 CLOUD_MODEL = "deepseek-v4.1-flash"
 REPLY_INSTRUCTION = "Reply in plain language in one or two concise sentences."
 SAMPLE_TOOLSET = "clanka_sample"
 SAMPLE_NAMES = {"mcp__clanka_sample__sample_ping", "mcp__clanka_sample__sample_time"}
 TOOL_SEARCH_NAMES = {"tool_search", "tool_describe", "tool_call"}
+GO_TOOLSET = "clanka_go"
+BRIDGE_TOKEN_ENV = "CLANKA_ADAPTER_TOKEN"
 DEFAULT_SAMPLE_MCP = "/opt/clanka/sample_mcp.py"
 DEFAULT_SAMPLE_PYTHON = "/opt/hermes/.venv/bin/python"
 
@@ -40,6 +41,7 @@ WORKER_ENV_NAMES = (
     "HERMES_LOCAL_BASE_URL",
     "HERMES_LOCAL_MODEL",
     "HERMES_TOOL_SEARCH",
+    "HERMES_GO_TOOLS",
     "HERMES_SAMPLE_MCP",
     "HERMES_SAMPLE_MCP_LAZY",
     "HERMES_SAMPLE_MCP_PATH",
@@ -110,13 +112,13 @@ def sample_mcp_python():
     return env("HERMES_SAMPLE_MCP_PYTHON", DEFAULT_SAMPLE_PYTHON)
 
 
-def runtime_config_text():
+def runtime_config_text(go_names=()):
     """YAML for HERMES_HOME/config.yaml: Tool Search plus optional lazy MCP."""
     lines = [
         "# Written by the clanka Hermes sidecar. Do not store secrets here.",
         "tools:",
         "  tool_search:",
-        f"    enabled: {'on' if tool_search_enabled() else 'off'}",
+        f"    enabled: {'on' if go_names or tool_search_enabled() else 'off'}",
     ]
     if sample_mcp_enabled():
         lines.extend(
@@ -137,14 +139,14 @@ def hermes_home():
     return env("HERMES_HOME") or env("HOME") or "/opt/data"
 
 
-def write_runtime_config(home=None):
+def write_runtime_config(home=None, *, go_names=()):
     """Replace config.yaml in HERMES_HOME so workers see the slim-down settings."""
     root = home or hermes_home()
     os.makedirs(root, exist_ok=True)
     path = os.path.join(root, "config.yaml")
     tmp = path + ".tmp"
     with open(tmp, "w", encoding="utf-8") as handle:
-        handle.write(runtime_config_text())
+        handle.write(runtime_config_text(go_names))
     os.replace(tmp, path)
     return path
 
@@ -163,15 +165,16 @@ def discover_configured_mcp():
     return discover_mcp_tools(allowed_mcp_names=[SAMPLE_TOOLSET])
 
 
-def agent_kwargs(api_key):
+def agent_kwargs(api_key, go_names=()):
     """Keyword arguments for AIAgent that match this job's allowlist."""
-    toolsets = parse_toolsets()
+    toolsets = [GO_TOOLSET] if go_names else parse_toolsets()
     using_local = bool(local_base_url())
     return {
         "provider": "custom" if using_local else "opencode-go",
         "model": local_model() or CLOUD_MODEL,
         "base_url": local_base_url() or CLOUD_BASE_URL,
         "api_key": api_key,
+        "fallback_model": {},
         "enabled_toolsets": toolsets,
         "skip_context_files": True,
         "skip_memory": True,
@@ -179,15 +182,22 @@ def agent_kwargs(api_key):
         "load_soul_identity": False,
         "quiet_mode": True,
         "save_trajectories": False,
-        "max_iterations": 1 if not toolsets else 4,
+        # Budget search, describe, two calls, and a final reply under the outer deadline.
+        "max_iterations": 5 if go_names else 4 if toolsets else 1,
         "max_tokens": 768,
-        "run_budget_seconds": RUN_TIMEOUT - 5,
+        "run_budget_seconds": RUN_BUDGET,
         "ephemeral_system_prompt": REPLY_INSTRUCTION,
     }
 
 
-def system_message():
-    """Per-turn instruction. Sample-tool jobs may call the two sample tools."""
+def system_message(go_names=()):
+    """Give each turn the instructions for its configured Tool surface."""
+    if go_names:
+        return (
+            REPLY_INSTRUCTION
+            + " For live facts, search for a relevant tool, describe it to learn its arguments,"
+            " and call it. If the tool is unavailable, say so."
+        )
     if parse_toolsets():
         return (
             REPLY_INSTRUCTION
@@ -196,9 +206,18 @@ def system_message():
     return REPLY_INSTRUCTION
 
 
-def assert_tool_allowlist(agent):
+def assert_tool_allowlist(agent, go_names=()):
     """Fail closed if unexpected tools reach the model."""
     tools = list(agent.tools or [])
+    if go_names:
+        from model_tools import get_tool_definitions
+
+        # Check both model-visible wrappers and everything reachable via tool_call.
+        raw = get_tool_definitions(enabled_toolsets=[GO_TOOLSET], quiet_mode=True, skip_tool_search_assembly=True)
+        if ({entry["function"]["name"] for entry in tools} != TOOL_SEARCH_NAMES
+                or {entry["function"]["name"] for entry in raw} != go_names):
+            raise RuntimeError("Hermes Go Tool scope did not register exactly")
+        return
     if not sample_mcp_enabled():
         if tools:
             raise RuntimeError("Hermes initialized with tools")
@@ -211,13 +230,18 @@ def assert_tool_allowlist(agent):
 
 def worker_env():
     """Environment the per-job worker is allowed to see."""
-    return {name: value for name, value in os.environ.items() if name in WORKER_ENV_NAMES}
+    allowed = {name: value for name, value in os.environ.items() if name in WORKER_ENV_NAMES}
+    if truthy("HERMES_GO_TOOLS"):
+        allowed[BRIDGE_TOKEN_ENV] = env("HERMES_RUNTIME_TOKEN")
+    return allowed
 
 
 def validate_startup():
     """Refuse a half-configured local endpoint or a missing runtime token."""
     if bool(local_base_url()) != bool(local_model()):
         raise SystemExit("Hermes needs both a local model and base URL")
+    if truthy("HERMES_GO_TOOLS") and sample_mcp_enabled():
+        raise SystemExit("Choose Go Tools or sample MCP")
     token = env("HERMES_RUNTIME_TOKEN")
     if len(token) < 32:
         raise SystemExit("Hermes requires a private runtime token of at least 32 characters")
@@ -229,20 +253,37 @@ def model_turn():
     """Run one AIAgent job from a JSON {task, key} request on stdin."""
     import io
 
+    started = time.monotonic()
     request = json.load(sys.stdin)
-    write_runtime_config()
-    kwargs = agent_kwargs(request["key"])
     # Keep upstream diagnostics off the reply channel, including on model errors.
     with contextlib.redirect_stdout(io.StringIO()):
-        discover_configured_mcp()
+        go_names = set()
+        if truthy("HERMES_GO_TOOLS"):
+            from go_mcp import GoAdapter, discover
+
+            # The worker keeps the bearer in memory and passes it explicitly to the stdio child.
+            adapter = GoAdapter(os.environ.pop(BRIDGE_TOKEN_ENV, ""))
+            catalogue = adapter.catalogue()
+            write_runtime_config(go_names=catalogue)
+            if catalogue:
+                go_names = discover(adapter, catalogue)
+        else:
+            write_runtime_config()
+            discover_configured_mcp()
         from run_agent import AIAgent
 
-        agent = AIAgent(**kwargs)
+        agent = AIAgent(**agent_kwargs(request["key"], go_names))
         with contextlib.closing(agent):
-            assert_tool_allowlist(agent)
+            assert_tool_allowlist(agent, go_names)
+            if go_names:
+                # Hermes starts counting at run_conversation. Charge discovery and initialization too.
+                remaining = RUN_BUDGET - (time.monotonic() - started)
+                if remaining <= 0:
+                    raise RuntimeError("Go Tool setup exhausted the Hermes run budget")
+                agent.run_budget_seconds = remaining
             result = agent.run_conversation(
                 request["task"],
-                system_message=system_message(),
+                system_message=system_message(go_names),
             )
     text = (result.get("final_response") or "").strip()
     if not text or result.get("failed") or result.get("success") is False:

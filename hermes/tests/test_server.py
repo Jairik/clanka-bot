@@ -105,6 +105,37 @@ class HermesServerConfigTest(unittest.TestCase):
         self.assertNotIn("HERMES_LOCAL_API_KEY", forwarded)
         self.assertNotIn("OPENAI_API_KEY", forwarded)
         self.assertNotIn("HERMES_RUNTIME_TOKEN", forwarded)
+        self.assertNotIn("CLANKA_ADAPTER_TOKEN", forwarded)
+
+    def test_only_go_workers_receive_the_bridge_token(self):
+        # The HTTP runtime credential gets a single explicit route to the bridge.
+        os.environ["HERMES_GO_TOOLS"] = "1"
+        forwarded = self.server.worker_env()
+        self.assertEqual(forwarded["CLANKA_ADAPTER_TOKEN"], self.env["HERMES_RUNTIME_TOKEN"])
+        self.assertNotIn("HERMES_RUNTIME_TOKEN", forwarded)
+        self.assertNotIn(self.env["HERMES_RUNTIME_TOKEN"], self.server.runtime_config_text({"weather.current"}))
+
+    def test_go_catalogue_controls_search_and_the_iteration_budget(self):
+        # An empty grant set leaves the one-turn text-only path intact.
+        empty = self.server.agent_kwargs("key", set())
+        self.assertEqual(empty["enabled_toolsets"], [])
+        self.assertEqual(empty["max_iterations"], 1)
+        self.assertIn("enabled: off", self.server.runtime_config_text(set()))
+
+        names = {"mcp__clanka_go__weather_current"}
+        os.environ["HERMES_TOOL_SEARCH"] = "off"
+        self.assertIn("enabled: on", self.server.runtime_config_text(names))
+        ready = self.server.agent_kwargs("key", names)
+        self.assertEqual(ready["enabled_toolsets"], ["clanka_go"])
+        self.assertGreaterEqual(ready["max_iterations"], 4)
+        self.assertLess(ready["run_budget_seconds"], self.server.RUN_TIMEOUT)
+        self.assertEqual(ready["fallback_model"], {})
+
+    def test_go_and_sample_modes_are_mutually_exclusive(self):
+        # The sample server never contributes tools to the production catalogue.
+        os.environ.update(HERMES_GO_TOOLS="1", HERMES_SAMPLE_MCP="1")
+        with self.assertRaisesRegex(SystemExit, "Choose Go Tools or sample MCP"):
+            self.server.validate_startup()
 
     def test_mcp_discovery_is_skipped_without_the_sample_server(self):
         self.assertEqual(self.server.discover_configured_mcp(), [])

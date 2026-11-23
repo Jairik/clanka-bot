@@ -233,7 +233,9 @@ services:
       HERMES_RUNTIME_TOKEN: ${HERMES_RUNTIME_TOKEN:-}
       HERMES_LOCAL_BASE_URL: ${HERMES_LOCAL_BASE_URL:-}
       HERMES_LOCAL_MODEL: ${HERMES_LOCAL_MODEL:-}
-      # Empty keeps the job tool-free. Sample MCP is for discovery benches only.
+      # Opt in to the Go read catalogue after the private adapter is deployed.
+      HERMES_GO_TOOLS: ${HERMES_GO_TOOLS:-}
+      # Sample MCP is for discovery benches and runs separately from Go Tools.
       HERMES_TOOL_SEARCH: ${HERMES_TOOL_SEARCH:-}
       HERMES_SAMPLE_MCP: ${HERMES_SAMPLE_MCP:-}
       HERMES_SAMPLE_MCP_LAZY: ${HERMES_SAMPLE_MCP_LAZY:-}

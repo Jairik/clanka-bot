@@ -6,6 +6,8 @@ ENV HOME=/opt/data PYTHONPATH=/opt/hermes PYTHONDONTWRITEBYTECODE=1
 # Keep the historical entrypoint path so a live overlay can bind-mount over it.
 COPY server.py /opt/clanka/hermes_server.py
 COPY sample_mcp.py /opt/clanka/sample_mcp.py
+# Hermes starts the Go adapter client as a lazy stdio child.
+COPY go_mcp.py /opt/clanka/go_mcp.py
 WORKDIR /tmp
 USER 10000:10000
 ENTRYPOINT ["/opt/hermes/.venv/bin/python", "/opt/clanka/hermes_server.py"]

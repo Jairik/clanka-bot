@@ -51,7 +51,7 @@ def call_tool(name, _arguments):
     raise KeyError(name)
 
 
-def handle(message):
+def handle(message, list_tools=tool_list, invoke=call_tool, server_name="clanka-sample"):
     """Turn one JSON-RPC request into a response dict, or None for a notification."""
     method = message.get("method")
     msg_id = message.get("id")
@@ -69,12 +69,17 @@ def handle(message):
             "result": {
                 "protocolVersion": protocol,
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": "clanka-sample", "version": "1"},
+                "serverInfo": {"name": server_name, "version": "1"},
             },
         }
 
     if method == "tools/list":
-        return {"jsonrpc": "2.0", "id": msg_id, "result": {"tools": tool_list()}}
+        try:
+            tools = list_tools()
+        except ToolFailure as error:
+            # Report list failures without ending the stdio session.
+            return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32603, "message": str(error)}}
+        return {"jsonrpc": "2.0", "id": msg_id, "result": {"tools": tools}}
 
     if method == "ping":
         return {"jsonrpc": "2.0", "id": msg_id, "result": {}}
@@ -82,7 +87,14 @@ def handle(message):
     if method == "tools/call":
         name = params.get("name")
         try:
-            text = call_tool(name, params.get("arguments") or {})
+            text = invoke(name, params.get("arguments", {}))
+        except ToolFailure as error:
+            # Tool-level failures are visible to the model without transport details.
+            return {
+                "jsonrpc": "2.0",
+                "id": msg_id,
+                "result": {"content": [{"type": "text", "text": str(error)}], "isError": True},
+            }
         except KeyError:
             return {
                 "jsonrpc": "2.0",
@@ -102,7 +114,12 @@ def handle(message):
     }
 
 
-def serve(stdin, stdout):
+class ToolFailure(Exception):
+    # Only sanitized messages belong in MCP tool failures.
+    pass
+
+
+def serve(stdin, stdout, handler=handle):
     """Read NDJSON JSON-RPC from stdin and write responses to stdout."""
     for raw in stdin:
         line = raw.strip()
@@ -112,7 +129,7 @@ def serve(stdin, stdout):
             message = json.loads(line)
         except json.JSONDecodeError:
             continue
-        reply = handle(message)
+        reply = handler(message)
         if reply is None:
             continue
         stdout.write(json.dumps(reply, separators=(",", ":")) + "\n")

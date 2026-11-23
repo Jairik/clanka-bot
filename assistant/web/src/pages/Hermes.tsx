@@ -31,7 +31,7 @@ export function HermesPage() {
             {data?.RuntimeReady ? (
               <p>Start a job with “Ask Hermes” followed by a request. Say “Ask Hermes status”, “Ask Hermes result”, or “Ask Hermes cancel” to manage the latest job.</p>
             ) : (
-              <p>Enable the private sidecar on the Pi and add its OpenCode Go key in Secrets.</p>
+              <p>Enable the private sidecar on the Pi and make the selected provider ready: the local settings in the Pi’s <code>.env</code>, or the OpenCode Go key in Secrets.</p>
             )}
             <p className="text-muted">
               {data?.AdapterReady

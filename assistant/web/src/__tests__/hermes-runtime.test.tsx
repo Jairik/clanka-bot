@@ -151,3 +151,10 @@ it("asks for a new choice when the saved model is no longer offered", async () =
   render(<HermesRuntimeSection />);
   expect(await screen.findByText(/retired-model is no longer offered/)).toBeTruthy();
 });
+
+it("says why Local isn't ready when the server explains it", async () => {
+  stub(() => json(view({ local_ready: false, local_problem: "The Hermes sidecar has different local settings. Recreate assistant and hermes with the same settings." })));
+  render(<HermesRuntimeSection />);
+  expect(await screen.findByText(/different local settings/)).toBeTruthy();
+  expect(screen.queryByText("The local model is not reachable right now.")).toBeNull();
+});

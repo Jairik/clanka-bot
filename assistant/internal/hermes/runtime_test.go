@@ -1,6 +1,7 @@
 package hermes_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -42,7 +43,7 @@ func TestRuntimeSelection(t *testing.T) {
 	announcements := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/healthz" {
-			fmt.Fprint(w, `{"status":"ok","local_model":"ornith:9b"}`)
+			fmt.Fprint(w, `{"status":"ok","local_model":"ornith:9b","local_base_url":"http://ornith.test/v1"}`)
 			return
 		}
 		var input map[string]string
@@ -174,9 +175,10 @@ func TestIncompleteLocalConfiguration(t *testing.T) {
 	}
 }
 
-// TestLocalReadinessFollowsTheSidecar covers a sidecar whose own settings
-// differ from the Assistant's: Local must not look ready, and a local job is
-// refused before anything is sent, while the cloud selection keeps working.
+// TestLocalReadinessFollowsTheSidecar covers a sidecar whose own state differs
+// from the Assistant's: each failure gets its own message, Local isn't ready,
+// and no job is sent. An older sidecar without the fields keeps config-only
+// readiness. The cloud selection never waits on the probe.
 func TestLocalReadinessFollowsTheSidecar(t *testing.T) {
 	ctx := t.Context()
 	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "assistant.db"))
@@ -188,17 +190,22 @@ func TestLocalReadinessFollowsTheSidecar(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var reported atomic.Value
-	var runs atomic.Int32
+	const match = `{"status":"ok","local_model":"ornith:9b","local_base_url":"http://ornith.test/v1"}`
+	var health atomic.Value // func(http.ResponseWriter)
+	var probes, runs atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/healthz" {
-			fmt.Fprintf(w, `{"status":"ok","local_model":%q}`, reported.Load().(string))
+			probes.Add(1)
+			health.Load().(func(http.ResponseWriter))(w)
 			return
 		}
 		runs.Add(1)
 		fmt.Fprint(w, `{"text":"Done."}`)
 	}))
 	defer server.Close()
+	body := func(text string) func(http.ResponseWriter) {
+		return func(w http.ResponseWriter) { fmt.Fprint(w, text) }
+	}
 	config := hermes.RuntimeConfig{
 		Settings: svc, LocalBaseURL: "http://ornith.test/v1", LocalModel: "ornith:9b", LocalKey: "local-key",
 		OpenCodeKey: func() string { return "cloud-key" },
@@ -209,33 +216,122 @@ func TestLocalReadinessFollowsTheSidecar(t *testing.T) {
 	}
 	defer manager.Close()
 
-	for _, model := range []string{"", "other:7b"} {
-		reported.Store(model)
+	const unreachable = "isn't reachable"
+	const different = "different local settings"
+	for _, tc := range []struct {
+		name   string
+		health func(http.ResponseWriter)
+		want   string // substring of the refusal
+	}{
+		{"cloud-mode sidecar", body(`{"status":"ok","local_model":"","local_base_url":""}`), different},
+		{"other model", body(`{"status":"ok","local_model":"other:7b","local_base_url":"http://ornith.test/v1"}`), different},
+		{"old endpoint", body(`{"status":"ok","local_model":"ornith:9b","local_base_url":"http://old-host/v1"}`), different},
+		{"server error", func(w http.ResponseWriter) { w.WriteHeader(http.StatusServiceUnavailable) }, unreachable},
+		{"redirect", func(w http.ResponseWriter) {
+			w.Header().Set("Location", "/elsewhere")
+			w.WriteHeader(http.StatusFound)
+		}, unreachable},
+		{"not JSON", body("ok"), unreachable},
+		{"oversized", body(`{"status":"ok","local_model":"ornith:9b","pad":"` + strings.Repeat("x", 2048) + `","local_base_url":"http://ornith.test/v1"}`), unreachable},
+	} {
+		health.Store(tc.health)
 		if view := manager.Runtime(); view.Provider != "local" || view.LocalReady {
-			t.Fatalf("sidecar reporting %q: view = %+v", model, view)
+			t.Fatalf("%s: view = %+v", tc.name, view)
 		}
 		if manager.Configured() {
-			t.Fatalf("sidecar reporting %q should not be configured", model)
+			t.Fatalf("%s: should not be configured", tc.name)
 		}
-		if got := manager.Handle(ctx, "Explicit task"); !strings.Contains(got, "isn't running the configured local model") {
-			t.Fatal(got)
+		if got := manager.Handle(ctx, "Explicit task"); !strings.Contains(got, tc.want) {
+			t.Fatalf("%s: got %q, want %q", tc.name, got, tc.want)
 		}
 	}
 	if runs.Load() != 0 {
-		t.Fatalf("sent %d jobs to a mismatched sidecar", runs.Load())
+		t.Fatalf("sent %d jobs to a sidecar that can't take them", runs.Load())
 	}
 
-	reported.Store("ornith:9b")
+	// An older sidecar image answers without the fields: config-only readiness.
+	health.Store(body(`{"status":"ok"}`))
+	if !manager.Runtime().LocalReady || !manager.Configured() {
+		t.Fatal("an older sidecar should keep config-only readiness")
+	}
+
+	health.Store(body(match))
 	if !manager.Runtime().LocalReady || !manager.Configured() {
 		t.Fatal("a matching sidecar should make Local ready")
 	}
 
-	// The cloud selection does not depend on the sidecar's local settings.
-	reported.Store("")
+	// Status, result and cancel never probe.
+	before := probes.Load()
+	for _, command := range []string{"status", "result", "cancel", ""} {
+		manager.Handle(ctx, command)
+	}
+	if probes.Load() != before {
+		t.Fatal("status, result or cancel probed the sidecar")
+	}
+
+	// The cloud selection neither probes nor depends on the sidecar.
 	if _, err := manager.SetRuntime(ctx, hermes.Selection{Provider: "opencode-go", OpenCodeModel: "kimi-k3"}); err != nil {
 		t.Fatal(err)
 	}
+	health.Store(func(w http.ResponseWriter) { w.WriteHeader(http.StatusServiceUnavailable) })
+	before = probes.Load()
 	if !manager.Configured() {
 		t.Fatal("cloud selection should stay configured")
+	}
+	if probes.Load() != before {
+		t.Fatal("the cloud selection probed the sidecar")
+	}
+}
+
+// TestUnreachableSidecarTimesOutWithoutHoldingTheLock checks the probe gives
+// up and that status stays answerable while a probe hangs.
+func TestUnreachableSidecarTimesOutWithoutHoldingTheLock(t *testing.T) {
+	ctx := t.Context()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "assistant.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	defer server.Close()
+	defer close(release)
+	config := hermes.RuntimeConfig{LocalBaseURL: "http://ornith.test/v1", LocalModel: "ornith:9b", LocalKey: "local-key"}
+	manager, err := hermes.New(ctx, st.DB(), server.URL+"/run", strings.Repeat("t", 32), config, nil, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+
+	reply := make(chan string, 1)
+	started := time.Now()
+	go func() { reply <- manager.Handle(ctx, "Explicit task") }()
+	time.Sleep(100 * time.Millisecond)
+	statusDone := make(chan string, 1)
+	go func() { statusDone <- manager.Handle(ctx, "status") }()
+	select {
+	case <-statusDone:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("status blocked behind a hanging probe")
+	}
+	select {
+	case got := <-reply:
+		if !strings.Contains(got, "isn't reachable") || time.Since(started) > 3*time.Second {
+			t.Fatalf("got %q after %s", got, time.Since(started))
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("probe did not time out")
+	}
+
+	// A cancelled request stops waiting on the probe.
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if got := manager.Handle(cancelled, "Explicit task"); !strings.Contains(got, "isn't reachable") && !strings.Contains(got, "isn't accepting") {
+		t.Fatal(got)
 	}
 }

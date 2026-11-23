@@ -44,8 +44,8 @@ type Manager struct {
 	wait   sync.WaitGroup
 	// The job and dashboard use the same lock to snapshot the selection.
 	selection Selection
-	// probe reads the local model the sidecar routes; see sidecarModel.
-	probe func(context.Context) string
+	// probe reads the local route the sidecar reports; see sidecarStatus.
+	probe func(context.Context) sidecarStatus
 }
 
 // New recovers abandoned jobs without replaying a request across a restart.
@@ -75,30 +75,41 @@ func New(ctx context.Context, db *sql.DB, endpoint, token string, config Runtime
 		}
 		healthURL := strings.TrimSuffix(endpoint, "/run") + "/healthz"
 		healthClient := &http.Client{Timeout: healthTimeout, Transport: &http.Transport{}, CheckRedirect: client.CheckRedirect}
-		m.probe = func(ctx context.Context) string { return sidecarLocalModel(ctx, healthClient, healthURL) }
+		m.probe = func(ctx context.Context) sidecarStatus { return probeSidecar(ctx, healthClient, healthURL) }
 	}
 	return m, nil
 }
 
-// sidecarLocalModel returns the local model the sidecar reports on /healthz,
-// or "" when it is unreachable, in cloud mode, or answers something else.
-func sidecarLocalModel(ctx context.Context, client *http.Client, url string) string {
+// probeSidecar reads the local route the sidecar reports on /healthz. Any
+// transport error, timeout, redirect, non-200 or unreadable body counts as
+// unreachable. A sidecar image older than the local_model field answers
+// without it, which is reported separately so it is not mistaken for a
+// mismatch.
+func probeSidecar(ctx context.Context, client *http.Client, url string) sidecarStatus {
+	status := sidecarStatus{probed: true}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return ""
+		return status
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return ""
+		return status
 	}
 	defer resp.Body.Close()
 	var health struct {
-		LocalModel string `json:"local_model"`
+		LocalModel   *string `json:"local_model"`
+		LocalBaseURL *string `json:"local_base_url"`
 	}
 	if resp.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(resp.Body, 1024)).Decode(&health) != nil {
-		return ""
+		return status
 	}
-	return strings.TrimSpace(health.LocalModel)
+	status.reachable = true
+	if health.LocalModel == nil || health.LocalBaseURL == nil {
+		return status
+	}
+	status.reports = true
+	status.model, status.baseURL = strings.TrimSpace(*health.LocalModel), strings.TrimSpace(*health.LocalBaseURL)
+	return status
 }
 
 // Configured reports whether the sidecar and its provider key are configured.
@@ -106,7 +117,7 @@ func (m *Manager) Configured() bool {
 	if m == nil || m.run == nil {
 		return false
 	}
-	sidecar := m.sidecarModel()
+	sidecar := m.sidecarForSelection(m.ctx)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	_, problem := m.job("", sidecar)
@@ -127,12 +138,12 @@ func (m *Manager) Close() {
 // Handle receives a fresh explicit Hermes request, without prior turns or Tool data.
 func (m *Manager) Handle(ctx context.Context, request string) string {
 	command := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(request), "?.!,"))
-	// Probe the sidecar before taking the lock, and only for a new job.
-	sidecar := ""
+	// Probe the sidecar before taking the lock, and only for a new local job.
+	var sidecar sidecarStatus
 	switch strings.ToLower(command) {
 	case "", "status", "result", "cancel":
 	default:
-		sidecar = m.sidecarModel()
+		sidecar = m.sidecarForSelection(ctx)
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()

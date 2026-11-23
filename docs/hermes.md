@@ -60,11 +60,21 @@ job. Each job keeps the provider, model and matching key it had at submission,
 even if the selection or key changes during the job.
 
 Local readiness requires the endpoint, model and dedicated local key, and the
-running `hermes` container must report the same local model on `/healthz`. A
-sidecar recreated without the local settings, or with a different model,
-leaves Local unready and new local jobs are refused before anything is sent.
-OpenCode
-Go readiness requires its dedicated key in **Secrets**. You can save the cloud
+running `hermes` container must report the same local model and base URL on
+`/healthz`. Otherwise Local is unready, the Dashboard says why, and new local
+jobs are refused before the key is sent:
+
+- **Unreachable:** the sidecar is down, starting, or slower than 2 seconds.
+- **Different local settings:** the sidecar was recreated with another model
+  or endpoint, or without the local settings. Recreate `assistant` and
+  `hermes` together.
+
+The check runs for new jobs only while Local is selected, and when the
+Dashboard loads or saves the runtime view; never for status, result or cancel. A `hermes` image from
+before this check answers `/healthz` without these fields, so Local falls back
+to the Assistant's own settings; the sidecar still rejects a mismatched route.
+
+OpenCode Go readiness requires its dedicated key in **Secrets**. You can save the cloud
 model preference while Local is selected, including before linking the cloud
 key. New jobs fail if the selected provider is unavailable. Deploy matching assistant and Hermes images together to
 enable provider switching.

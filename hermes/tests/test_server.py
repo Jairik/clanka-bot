@@ -59,13 +59,18 @@ class HermesServerConfigTest(unittest.TestCase):
     def test_healthz_reports_the_local_model_it_routes(self):
         # The Assistant compares this with its own local model before it
         # reports Local as ready.
-        self.assertEqual(self.healthz()["local_model"], "")
+        self.assertEqual(self.healthz(), {"status": "ok", "local_model": "", "local_base_url": ""})
         os.environ["HERMES_LOCAL_MODEL"] = "ornith:9b"
         self.assertEqual(self.healthz()["local_model"], "", "a model without a URL is not routable")
         os.environ["HERMES_LOCAL_BASE_URL"] = " http://desk:8000/v1 "
         os.environ["HERMES_LOCAL_MODEL"] = " ornith:9b "
-        self.assertEqual(self.healthz()["local_model"], "ornith:9b")
-        self.assertNotIn("HERMES_LOCAL_API_KEY", json.dumps(self.healthz()))
+        os.environ["HERMES_LOCAL_API_KEY"] = "sentinel-local-key"
+        os.environ["HERMES_RUNTIME_TOKEN"] = self.env["HERMES_RUNTIME_TOKEN"]
+        health = self.healthz()
+        # Exactly the route and nothing else: no key, token or other settings.
+        self.assertEqual(health, {"status": "ok", "local_model": "ornith:9b", "local_base_url": "http://desk:8000/v1"})
+        self.assertNotIn("sentinel-local-key", json.dumps(health))
+        self.assertNotIn(self.env["HERMES_RUNTIME_TOKEN"], json.dumps(health))
 
     def test_empty_allowlist_is_tool_free_with_search_off(self):
         self.assertEqual(self.server.parse_toolsets(), [])

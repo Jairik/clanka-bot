@@ -45,8 +45,10 @@ type Selection struct {
 // RuntimeView exposes the selection and readiness without connection details.
 type RuntimeView struct {
 	Selection
-	LocalModel     string   `json:"local_model"`
-	LocalReady     bool     `json:"local_ready"`
+	LocalModel string `json:"local_model"`
+	LocalReady bool   `json:"local_ready"`
+	// LocalProblem says why Local isn't ready, without connection details.
+	LocalProblem   string   `json:"local_problem,omitempty"`
 	OpenCodeReady  bool     `json:"open_code_go_ready"`
 	OpenCodeModels []string `json:"open_code_go_models"`
 }
@@ -90,26 +92,61 @@ func (c RuntimeConfig) localReady() bool {
 	return strings.TrimSpace(c.LocalBaseURL) != "" && strings.TrimSpace(c.LocalModel) != "" && strings.TrimSpace(c.LocalKey) != ""
 }
 
-// localReady also needs the running sidecar to route the same local model.
-// The sidecar reads its own copy of the settings, so after a partial recreate
-// or a typo it can reject every local job while this side looks configured.
-// sidecarModel is what the sidecar reported; without a sidecar (no runtime
-// token) only this side's settings are checked, since no job can run anyway.
-func (m *Manager) localReady(sidecarModel string) bool {
-	if !m.config.localReady() {
-		return false
-	}
-	return m.run == nil || sidecarModel == strings.TrimSpace(m.config.LocalModel)
+// sidecarStatus is what the running sidecar says about its local route. The
+// sidecar reads its own copy of the settings, so after a partial recreate or a
+// typo it can reject every local job, or route this side's key to a different
+// endpoint, while this side looks configured.
+type sidecarStatus struct {
+	probed    bool   // a probe ran for this decision
+	reachable bool   // /healthz answered 200 with JSON
+	reports   bool   // the answer carries local_model and local_base_url
+	model     string // the local model the sidecar routes, or ""
+	baseURL   string // the local endpoint it sends this side's key to, or ""
 }
 
-// sidecarModel asks the sidecar which local model it routes, without holding
-// m.mu. It is empty when local inference isn't configured here, or when the
-// sidecar is down, in cloud mode, or unreadable.
-func (m *Manager) sidecarModel() string {
-	if m.probe == nil || !m.config.localReady() {
+// localProblem explains why Local can't run given the sidecar's status, or
+// returns "" when it can. Without a sidecar (no runtime token) only this
+// side's settings count, since no job can run anyway. An older sidecar image
+// without the fields keeps the previous config-only behaviour; it still
+// rejects a mismatched route itself.
+func (m *Manager) localProblem(sidecar sidecarStatus) string {
+	switch {
+	case !m.config.localReady():
+		return "Hermes needs its local endpoint, model, and key."
+	case m.run == nil:
 		return ""
+	case !sidecar.probed:
+		// The selection switched to Local after this request skipped the probe.
+		return "Hermes just switched providers. Try again."
+	case !sidecar.reachable:
+		return "The Hermes sidecar isn't reachable right now."
+	case !sidecar.reports:
+		return ""
+	case sidecar.model != strings.TrimSpace(m.config.LocalModel) || sidecar.baseURL != strings.TrimSpace(m.config.LocalBaseURL):
+		return "The Hermes sidecar has different local settings. Recreate assistant and hermes with the same settings."
 	}
-	return m.probe(m.ctx)
+	return ""
+}
+
+// sidecarStatus probes the sidecar without holding m.mu. It skips the probe
+// when local inference isn't configured on this side.
+func (m *Manager) sidecarStatus(ctx context.Context) sidecarStatus {
+	if m.probe == nil || !m.config.localReady() {
+		return sidecarStatus{}
+	}
+	return m.probe(ctx)
+}
+
+// sidecarForSelection probes only while Local is selected, so OpenCode Go
+// jobs never wait on the sidecar's health check.
+func (m *Manager) sidecarForSelection(ctx context.Context) sidecarStatus {
+	m.mu.Lock()
+	local := m.selection.Provider == localProvider && !m.closed
+	m.mu.Unlock()
+	if !local {
+		return sidecarStatus{}
+	}
+	return m.sidecarStatus(ctx)
 }
 
 // Runtime returns the live dashboard view, including for an unwired dashboard.
@@ -117,17 +154,18 @@ func (m *Manager) Runtime() RuntimeView {
 	if m == nil {
 		return RuntimeView{Selection: Selection{Provider: cloudProvider, OpenCodeModel: cloudModel}, OpenCodeModels: slices.Clone(cloudModels)}
 	}
-	sidecar := m.sidecarModel()
+	sidecar := m.sidecarStatus(m.ctx)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.runtimeView(sidecar)
 }
 
-func (m *Manager) runtimeView(sidecar string) RuntimeView {
+func (m *Manager) runtimeView(sidecar sidecarStatus) RuntimeView {
 	return RuntimeView{
 		Selection:      m.selection,
 		LocalModel:     strings.TrimSpace(m.config.LocalModel),
-		LocalReady:     m.localReady(sidecar),
+		LocalReady:     m.localProblem(sidecar) == "",
+		LocalProblem:   m.localProblem(sidecar),
 		OpenCodeReady:  m.config.cloudKey() != "",
 		OpenCodeModels: slices.Clone(cloudModels),
 	}
@@ -141,7 +179,7 @@ func (m *Manager) SetRuntime(ctx context.Context, selection Selection) (RuntimeV
 	if err := selection.validate(); err != nil {
 		return RuntimeView{}, err
 	}
-	sidecar := m.sidecarModel()
+	sidecar := m.sidecarStatus(ctx)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if selection.Provider == cloudProvider && m.config.cloudKey() == "" {
@@ -166,14 +204,11 @@ type jobRequest struct {
 	Key      string `json:"key"`
 }
 
-func (m *Manager) job(task, sidecar string) (jobRequest, string) {
+func (m *Manager) job(task string, sidecar sidecarStatus) (jobRequest, string) {
 	job := jobRequest{Task: task, Provider: m.selection.Provider}
 	if job.Provider == localProvider {
-		if !m.config.localReady() {
-			return jobRequest{}, "Hermes needs its local endpoint, model, and key."
-		}
-		if !m.localReady(sidecar) {
-			return jobRequest{}, "The Hermes sidecar isn't running the configured local model. Recreate assistant and hermes with the same settings."
+		if problem := m.localProblem(sidecar); problem != "" {
+			return jobRequest{}, problem
 		}
 		job.Model, job.Key = strings.TrimSpace(m.config.LocalModel), strings.TrimSpace(m.config.LocalKey)
 	} else {

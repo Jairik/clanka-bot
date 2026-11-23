@@ -29,7 +29,7 @@ export function HermesPage() {
             {data?.RuntimeReady ? (
               <p>Start a job with “Ask Hermes” followed by a request. Say “Ask Hermes status”, “Ask Hermes result”, or “Ask Hermes cancel” to manage the latest job.</p>
             ) : (
-              <p>Enable the private sidecar on the Pi and add its OpenCode Go key in Secrets.</p>
+              <p>Enable the private sidecar on the Pi and add its OpenCode Go key in Secrets, or configure local inference in the Pi’s <code>.env</code>.</p>
             )}
             <p className="text-muted">The model-only runtime uses the current request. Account grants apply when the MCP adapter is available.</p>
           </div>

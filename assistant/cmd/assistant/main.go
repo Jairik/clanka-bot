@@ -991,17 +991,20 @@ func run() error {
 	}
 
 	// The sidecar receives only the explicit request and its dedicated provider key.
+	// With local inference the sidecar holds the endpoint's key itself; the
+	// Assistant only needs to know not to require or send the OpenCode Go key.
+	var hermesOpts []hermes.Option
+	if os.Getenv("HERMES_LOCAL_BASE_URL") != "" {
+		hermesOpts = append(hermesOpts, hermes.WithLocalInference())
+	}
 	hermesJobs, err := hermes.New(ctx, st.DB(), "http://hermes:8642/run", os.Getenv("HERMES_RUNTIME_TOKEN"), func() string {
-		if os.Getenv("HERMES_LOCAL_BASE_URL") != "" {
-			return os.Getenv("HERMES_LOCAL_API_KEY")
-		}
 		key, _ := secretsSvc.Get(hermes.SecretName)
 		return key
 	}, func(text string) {
 		if announcements != nil {
 			announcements.Enqueue(text)
 		}
-	}, logger)
+	}, logger, hermesOpts...)
 	if err != nil {
 		return fmt.Errorf("restore Hermes jobs: %w", err)
 	}

@@ -32,6 +32,9 @@ type Manager struct {
 	key      func() string
 	announce func(string)
 	logger   *slog.Logger
+	// local means the sidecar holds its own key for a self-hosted endpoint, so
+	// no OpenCode Go key is needed or sent.
+	local bool
 
 	mu     sync.Mutex
 	closed bool
@@ -40,8 +43,17 @@ type Manager struct {
 	wait   sync.WaitGroup
 }
 
+// Option configures a Manager.
+type Option func(*Manager)
+
+// WithLocalInference marks the sidecar as configured for a self-hosted
+// endpoint. The sidecar keeps that endpoint's key, so the Manager sends none.
+func WithLocalInference() Option {
+	return func(m *Manager) { m.local = true }
+}
+
 // New recovers abandoned jobs without replaying a request across a restart.
-func New(ctx context.Context, db *sql.DB, endpoint, token string, key func() string, announce func(string), logger *slog.Logger) (*Manager, error) {
+func New(ctx context.Context, db *sql.DB, endpoint, token string, key func() string, announce func(string), logger *slog.Logger, opts ...Option) (*Manager, error) {
 	if _, err := db.ExecContext(ctx, "UPDATE hermes_jobs SET state = 'interrupted' WHERE state = 'running'"); err != nil {
 		return nil, err
 	}
@@ -51,6 +63,9 @@ func New(ctx context.Context, db *sql.DB, endpoint, token string, key func() str
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 	m := &Manager{ctx: ctx, db: db, key: key, announce: announce, logger: logger}
+	for _, opt := range opts {
+		opt(m)
+	}
 	if len(token) >= 32 {
 		m.run = func(ctx context.Context, task, key string) (string, error) {
 			return call(ctx, client, endpoint, token, task, key)
@@ -61,7 +76,7 @@ func New(ctx context.Context, db *sql.DB, endpoint, token string, key func() str
 
 // Configured reports whether the sidecar and its provider key are configured.
 func (m *Manager) Configured() bool {
-	return m.run != nil && strings.TrimSpace(m.key()) != ""
+	return m.run != nil && (m.local || strings.TrimSpace(m.key()) != "")
 }
 
 // Close waits for a cancelled in-flight request to release the database.
@@ -103,9 +118,12 @@ func (m *Manager) Handle(ctx context.Context, request string) string {
 	if m.run == nil {
 		return "Hermes is disabled."
 	}
-	key := strings.TrimSpace(m.key())
-	if key == "" {
-		return "Hermes needs its OpenCode Go key."
+	key := ""
+	if !m.local {
+		key = strings.TrimSpace(m.key())
+		if key == "" {
+			return "Hermes needs its OpenCode Go key."
+		}
 	}
 	if len(request) > maxTaskBytes {
 		return "That Hermes request is too long."

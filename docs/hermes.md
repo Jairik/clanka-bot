@@ -28,14 +28,26 @@ without a fresh request.
 
 ## Local inference
 
-To use a self-hosted OpenAI-compatible endpoint, set `HERMES_LOCAL_BASE_URL`
-(including `/v1`), `HERMES_LOCAL_MODEL`, and the endpoint's dedicated
-`HERMES_LOCAL_API_KEY` in the private Compose `.env`. Recreate both
-`assistant` and `hermes`. Explicit **Ask Hermes** jobs use that model. The
-job still runs with zero tools and must finish within 45 seconds. Hermes
-requires the endpoint to serve a context window of at least 64,000 tokens.
-For desktop inference, use an authenticated endpoint reachable from the Pi's Hermes
-container over the tailnet.
+To use a self-hosted OpenAI-compatible endpoint, set all three of
+`HERMES_LOCAL_BASE_URL` (including `/v1`), `HERMES_LOCAL_MODEL`, and the
+endpoint's dedicated `HERMES_LOCAL_API_KEY` in the private Compose `.env`, then
+recreate both `assistant` and `hermes`. Hermes refuses to start with only some
+of them set.
+
+Only the `hermes` container receives the local key, and it sends it only to
+the local endpoint. The Assistant sees just the base URL, which tells it not to
+ask for the OpenCode Go key. If the two containers disagree after a partial
+recreate, no key reaches the wrong endpoint: a local Hermes ignores the key the
+Assistant sends, and a cloud Hermes rejects the empty key a local Assistant
+sends, so the job fails instead.
+
+Explicit **Ask Hermes** jobs use that model. The job still runs with zero tools
+and must finish within 45 seconds. Hermes requires the endpoint to serve a
+context window of at least 64,000 tokens. For desktop inference, use an
+authenticated endpoint reachable from the Pi's Hermes container over the
+tailnet. Use the desktop's `100.x` tailnet IP, since MagicDNS names may not
+resolve inside the container, and allow the Pi to reach that port in the
+tailnet ACL.
 
 ## What the page shows
 

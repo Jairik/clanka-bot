@@ -14,6 +14,29 @@ MAX_BODY = 16 * 1024
 RUN_TIMEOUT = 45
 LOCAL_BASE_URL = os.environ.get("HERMES_LOCAL_BASE_URL", "")
 LOCAL_MODEL = os.environ.get("HERMES_LOCAL_MODEL", "")
+# The local endpoint's key stays in this container. It is never accepted from
+# the Assistant, so it can only reach LOCAL_BASE_URL, and the Assistant's
+# OpenCode Go key is never sent to the local endpoint.
+LOCAL_API_KEY = os.environ.get("HERMES_LOCAL_API_KEY", "")
+
+
+def local_config_error(base_url, model, api_key):
+    """Return why a partial local setup is refused, or None when it is usable."""
+    # All three or none, so a local job never silently falls back to the cloud.
+    if len({bool(base_url), bool(model), bool(api_key.strip())}) != 1:
+        return "Hermes local inference needs HERMES_LOCAL_BASE_URL, HERMES_LOCAL_MODEL and HERMES_LOCAL_API_KEY"
+    return None
+
+
+def job_key(sent_key, base_url, local_api_key):
+    """Choose the provider key for one job, or None to reject the request.
+
+    In local mode the container's own key is used and the Assistant's is
+    ignored, so neither key can reach the other endpoint.
+    """
+    if base_url:
+        return local_api_key
+    return sent_key if sent_key.strip() else None
 
 
 def model_turn():
@@ -86,9 +109,11 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError
             request = json.loads(self.rfile.read(size))
             if set(request) != {"task", "key"} or any(
-                not isinstance(request[name], str) or not request[name].strip()
-                for name in ("task", "key")
-            ):
+                not isinstance(request[name], str) for name in ("task", "key")
+            ) or not request["task"].strip():
+                raise ValueError
+            request["key"] = job_key(request["key"], LOCAL_BASE_URL, LOCAL_API_KEY)
+            if request["key"] is None:
                 raise ValueError
         except (ValueError, TypeError, OSError):
             self.send_error(400)
@@ -135,9 +160,9 @@ if __name__ == "__main__":
     if sys.argv[1:] == ["--worker"]:
         model_turn()
     else:
-        # Require both settings to avoid silently sending local jobs to the cloud.
-        if bool(LOCAL_BASE_URL) != bool(LOCAL_MODEL):
-            raise SystemExit("Hermes needs both a local model and base URL")
+        problem = local_config_error(LOCAL_BASE_URL, LOCAL_MODEL, LOCAL_API_KEY)
+        if problem:
+            raise SystemExit(problem)
         token = os.environ["HERMES_RUNTIME_TOKEN"]
         if len(token) < 32:
             raise SystemExit("Hermes requires a private runtime token of at least 32 characters")

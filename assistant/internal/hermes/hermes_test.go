@@ -104,3 +104,63 @@ func TestJobsFinishCancelAndRecover(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+// TestLocalInferenceSendsNoKey covers the self-hosted mode: the sidecar keeps
+// the endpoint's key, so the Assistant needs no OpenCode Go key and sends none.
+func TestLocalInferenceSendsNoKey(t *testing.T) {
+	st, err := store.Open(t.Context(), filepath.Join(t.TempDir(), "assistant.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	token := strings.Repeat("t", 32)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var input map[string]string
+		if json.NewDecoder(r.Body).Decode(&input) != nil || input["key"] != "" {
+			t.Errorf("local mode sent a key to the sidecar: %q", input["key"])
+		}
+		fmt.Fprint(w, `{"text":"Local reply."}`)
+	}))
+	defer server.Close()
+
+	announcement := make(chan string, 1)
+	// The stored OpenCode Go key must not be sent even when it exists.
+	m, err := hermes.New(t.Context(), st.DB(), server.URL, token, func() string { return "opencode-key" },
+		func(text string) { announcement <- text }, slog.Default(), hermes.WithLocalInference())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+	if !m.Configured() {
+		t.Fatal("local mode should be configured without an OpenCode Go key")
+	}
+	if got := m.Handle(t.Context(), "Explain HTTP"); got != "Hermes is working on job 1." {
+		t.Fatal(got)
+	}
+	select {
+	case <-announcement:
+	case <-time.After(3 * time.Second):
+		t.Fatal("job did not finish")
+	}
+
+	noKey, err := hermes.New(t.Context(), st.DB(), server.URL, token, func() string { return "" }, nil, slog.Default(), hermes.WithLocalInference())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer noKey.Close()
+	if !noKey.Configured() {
+		t.Fatal("local mode must not depend on the OpenCode Go secret")
+	}
+
+	cloud, err := hermes.New(t.Context(), st.DB(), server.URL, token, func() string { return "" }, nil, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cloud.Close()
+	if cloud.Configured() {
+		t.Fatal("cloud mode without a key should not be configured")
+	}
+	if got := cloud.Handle(t.Context(), "Explain HTTP"); got != "Hermes needs its OpenCode Go key." {
+		t.Fatal(got)
+	}
+}

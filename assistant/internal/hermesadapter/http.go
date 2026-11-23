@@ -45,6 +45,8 @@ type invokeRequest struct {
 // auth checks the bearer token before any listing or call.
 func (h *httpAPI) auth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Revoked grants and removed recipes must take effect on the next request.
+		w.Header().Set("Cache-Control", "no-store")
 		if !bearerOK(r.Header.Get("Authorization"), h.token) {
 			writeError(w, http.StatusUnauthorized, "unauthorized")
 			return
@@ -55,7 +57,7 @@ func (h *httpAPI) auth(next http.Handler) http.Handler {
 
 // list returns currently callable Tools with no per-tool schemas.
 func (h *httpAPI) list(w http.ResponseWriter, r *http.Request) {
-	tools := h.adapter.List()
+	tools := h.adapter.surface(r.Context()).Allowed
 	items := make([]map[string]string, 0, len(tools))
 	for _, item := range tools {
 		items = append(items, map[string]string{
@@ -69,7 +71,7 @@ func (h *httpAPI) list(w http.ResponseWriter, r *http.Request) {
 
 // schema loads one Tool's contract only after the caller names it.
 func (h *httpAPI) schema(w http.ResponseWriter, r *http.Request) {
-	schema, err := h.adapter.Schema(r.PathValue("name"))
+	schema, err := h.adapter.schema(r.Context(), r.PathValue("name"))
 	if err != nil {
 		writeDenied(w, err)
 		return

@@ -1256,13 +1256,12 @@ func run() error {
 		return reasons
 	}
 
-	// The private adapter lists and runs the allowlisted Go Tools. Hermes
-	// runtime wiring stays with the sidecar ticket; this only publishes the
-	// Go-side policy seam when the shared runtime token is long enough.
+	// The adapter publishes vetted Go tools and saved recipes to the authenticated Hermes runtime.
 	hermesAdapter := hermesadapter.New(hermesadapter.Options{
 		Registry: registry,
 		Grants:   integrationSvc,
 		Secrets:  secretsSvc,
+		Settings: settingsSvc,
 	})
 	healthOpts := []api.Option{api.WithBusy(busy)}
 	if adapterHTTP := hermesadapter.NewHandler(hermesAdapter, os.Getenv("HERMES_RUNTIME_TOKEN")); adapterHTTP != nil {

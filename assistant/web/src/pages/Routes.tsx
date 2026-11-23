@@ -29,7 +29,7 @@ const LEGEND = [
   ["Fast path", "Deterministic: a matching control phrase answers without the model."],
   ["Agent only", "The Fast path never chooses it; only the Agent calls it."],
   ["Pi only", "Runs on the Pi; the request and its data never leave the house."],
-  ["Hermes", "Read or act, not Pi-only, not Confirm: part of the surface Hermes would get."],
+  ["Hermes", "Read or act, not Pi-only, not Confirm: eligible for Hermes. The Hermes page shows the enforced allowlist."],
 ];
 
 const STEPS = [

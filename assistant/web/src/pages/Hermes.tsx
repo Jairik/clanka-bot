@@ -1,4 +1,4 @@
-// Hermes offers model-only jobs while account grants remain stored intent.
+// Hermes offers model-only jobs. Account grants are enforced on the allowlist.
 import { useState } from "react";
 import { Button, Switch } from "@heroui/react";
 import { ChevronDown } from "lucide-react";
@@ -31,7 +31,11 @@ export function HermesPage() {
             ) : (
               <p>Enable the private sidecar on the Pi and add its OpenCode Go key in Secrets.</p>
             )}
-            <p className="text-muted">The model-only runtime uses the current request. Account grants apply when the MCP adapter is available.</p>
+            <p className="text-muted">
+              {data?.AdapterReady
+                ? "The private adapter enforces the allowlist and live account grants on every call. A job lists Tool names only and loads a schema when it asks to use one."
+                : "The model-only runtime uses the current request. The Tool adapter is not wired in this process."}
+            </p>
           </div>
         </Section>
 
@@ -42,9 +46,11 @@ export function HermesPage() {
         )}
 
         {data?.HasRegistry && (
-          <Section title="What Hermes would see" summary={`${data.SurfaceCount} tools`} defaultOpen flush>
+          <Section title="What Hermes can call" summary={`${data.SurfaceCount} tools`} defaultOpen flush>
             <Lede>
-              Every Tool that may leave the Pi, is not Pi-only and does not need a spoken Confirmation. Hermes would call these over MCP.
+              {data.AdapterReady
+                ? "The enforced allowlist after live grants. Names are listed without schemas; a selected Tool loads its schema when requested."
+                : "The adapter is not installed, so the enforced surface is empty."}
             </Lede>
             {data.Surface?.length ? (
               <ul className="divide-y divide-separator">
@@ -56,7 +62,13 @@ export function HermesPage() {
                 ))}
               </ul>
             ) : (
-              <Empty>No Tool qualifies, so Hermes would get an empty surface.</Empty>
+              <Empty>No Tool is currently allowed. Grant an allowlisted account, or wait until a Tool is on the allowlist.</Empty>
+            )}
+            {!!data.WithheldCount && (
+              <div className="border-t px-3.5 py-2.5 text-[11px] text-muted">
+                {data.WithheldCount} allowlisted {data.WithheldCount === 1 ? "Tool is" : "Tools are"} withheld until the matching account grant is on
+                {data.Withheld?.length ? `: ${data.Withheld.map((tool) => tool.Name).join(", ")}` : "."}
+              </div>
             )}
             <dl className="grid gap-px border-t bg-separator sm:grid-cols-2">
               <div className="bg-surface px-3.5 py-2.5">
@@ -258,7 +270,7 @@ function IntegrationEditor({ row, actions }: { row: Integration; actions: Action
                 <span className="block text-sm">Allow Hermes</span>
                 <span className="mt-0.5 block text-[11px] text-muted">
                   {ready
-                    ? "Applies when the MCP adapter is available."
+                    ? "Enforced on every adapter call for Tools on the current allowlist."
                     : "Link the account before granting access."}
                 </span>
               </span>

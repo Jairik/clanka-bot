@@ -111,7 +111,7 @@ var Catalog = []Account{
 		Name:    "WeatherAPI",
 		Summary: "Current conditions and forecasts for the weather Tool.",
 		Secrets: []string{"WEATHERAPI_API_KEY"},
-		Tools:   []string{"weather.current"},
+		Tools:   []string{"weather.current", "weather.forecast"},
 		Docs:    "An optional key; without it the weather Tool reports that it is not configured.",
 	},
 	{
@@ -138,7 +138,7 @@ func Find(id string) (Account, bool) {
 func Definitions() []settings.Definition {
 	out := make([]settings.Definition, 0, len(Catalog))
 	for _, account := range Catalog {
-		desc := fmt.Sprintf("Allow Hermes to use the %s account. This stores intent only; Hermes can use an account once it is installed and the MCP adapter serves the matching Tools.", account.Name)
+		desc := fmt.Sprintf("Allow Hermes to use the %s account. The private adapter enforces this grant on every call for Tools on the current allowlist.", account.Name)
 		out = append(out, settings.Bool(GrantKey(account.ID), false, settings.WithDescription(desc)))
 	}
 	return out

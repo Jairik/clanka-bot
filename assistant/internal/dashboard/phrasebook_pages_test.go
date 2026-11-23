@@ -25,11 +25,12 @@ import (
 )
 
 type phraseFixture struct {
-	handler  *dashboard.Handler
-	personas *persona.Service
-	phrases  *phrasebook.Service
-	settings *settings.Service
-	secrets  *secrets.Service
+	handler      *dashboard.Handler
+	personas     *persona.Service
+	phrases      *phrasebook.Service
+	settings     *settings.Service
+	secrets      *secrets.Service
+	integrations *integrations.Service
 }
 
 type fakePhraseGen struct {
@@ -107,7 +108,7 @@ func newPhraseFixture(t *testing.T, gen phrasebook.Completer) *phraseFixture {
 		PhraseGen:    gen,
 		Integrations: integrationsSvc,
 	})
-	return &phraseFixture{handler: handler, personas: personas, phrases: phrases, settings: svc, secrets: secretSvc}
+	return &phraseFixture{handler: handler, personas: personas, phrases: phrases, settings: svc, secrets: secretSvc, integrations: integrationsSvc}
 }
 
 type phraseResp struct {
@@ -245,8 +246,12 @@ type hermesResp struct {
 	Error           string
 	HasRegistry     bool
 	HasIntegrations bool
+	AdapterReady    bool
+	SchemasDeferred bool
 	Surface         []struct{ Name, Description, Permission string }
 	SurfaceCount    int
+	Withheld        []struct{ Name, Description, Permission string }
+	WithheldCount   int
 	LocalOnlyCount  int
 	ConfirmCount    int
 	Granted         int

@@ -1,9 +1,8 @@
 # Hermes setup and control panel
 
 Hermes can run explicit, model-only jobs on the Pi. The Dashboard shows whether
-the runtime is configured, the candidate Tool surface for the future MCP
-adapter, and the accounts you can link today. Unmatched voice and typed
-requests still use the Go Agent path until
+the runtime is configured, which Tools the Go adapter currently allows, and the accounts
+you can link today. Unmatched voice and typed requests still use the Go Agent path until
 [the cutover](specs/go-agent-cutover.md) ([#526](https://github.com/Jairik/clanka-bot/issues/526)).
 
 ## Pi setup
@@ -63,7 +62,7 @@ prompt characters, usage tokens, wall time, RSS) without printing credentials.
 Re-run it from a private `HERMES_HOME` so a live sidecar config is not replaced.
 
 Measured 2026-11-23 against the desktop Ornith 9B endpoint
-(`100.115.149.100:11435`, 64k context). These are local token and latency
+(64k context). These are local token and latency
 costs, not a billed provider invoice. Hermes also probes the local endpoint
 several times before the chat turn; those extra HTTP calls are included in
 wall time.
@@ -87,21 +86,61 @@ exception. v0.23.3 is pinned because the headless constructor, Ornith
 transport, and no-tool prompt size match v0.23.1 while picking up the current
 stable security fix.
 
+## Private Tool adapter
+
+Go owns Tool execution, grants, Confirmation and Local-only filtering. The
+adapter is a private HTTP surface on the assistant health listener
+(`GET/POST /hermes/adapter/tools…`), authenticated with the same
+`HERMES_RUNTIME_TOKEN` the sidecar already uses. Credentials never leave Go.
+
+The current allowlist is two read-only weather Tools:
+
+- `weather.current`
+- `weather.forecast`
+
+`spotify.now_playing` was considered as the second sample and stays off this
+surface: it is Local-only because it names the owner's listening
+([ADR-0002](adr/0002-single-prompt-builder-is-the-only-egress.md)).
+
+Every invocation re-checks:
+
+- the allowlist
+- the live `hermes.integrations.<id>` grant for the account that unlocks the Tool
+- enabled, read-only and eligible for egress
+- stored secret values in arguments and results
+
+A listing returns names, descriptions and permission only. A job loads one
+Tool's schema when it asks to use that Tool. Headless Hermes is not yet wired
+to this adapter; that work is tracked in #525.
+
+## Capability inventory
+
+Every Go Tool reachable from the Agent path is classified against this adapter:
+
+| Decision | Meaning |
+| --- | --- |
+| **allowlist** | On the current surface once the matching grant is on (`weather.current`, `weather.forecast`). |
+| **later** | Other Agent-reachable Tools require individual review. The adapter currently accepts only read-only Tools. |
+| **local_only** | Results must stay on the Pi. Hermes never lists or calls them. Includes `spotify.now_playing`, timers/alarms that stay local, `assistant.repeat`. |
+| **confirm** | Outward writes. Go owns Confirmation; the adapter never proposes or runs them. Includes `github.issue_create` and `notify.phone`. |
+
+New account or provider integrations stay out of this adapter unless a later
+ticket adds them to the allowlist.
+
 ## What the page shows
 
-- **Surface.** Every registered Tool that is `read` or `act` and is **not**
-  Local-only. Confirm Tools are excluded, because Hermes may never execute an
-  outward write without the owner's spoken Confirmation; Local-only Tools are
-  excluded because their results must never leave the Pi. The counts of the
-  excluded Tools are shown beside the list.
+- **Surface.** The enforced allowlist after live grants, listed without
+  schemas. Allowlisted Tools whose grant is off are named as withheld. Confirm
+  Tools and Local-only Tools are counted beside the list and are never callable
+  here.
 - **Accounts.** GitHub, the Agent model, Spotify, ntfy, WeatherAPI and Monster
   Smart Lighting. Each row names the write-only secrets it needs, the current
   status (`Linked`, `From environment`, `Partly linked`, `Not linked`), the
   Tools it unlocks, and one short note.
 - **Allow Hermes.** A live setting per account
-  (`hermes.integrations.<id>`). It records intent only until the adapter
-  exists; the page says so. Settings also shows the same keys, and a reset
-  revokes the grant.
+  (`hermes.integrations.<id>`). The adapter enforces it on the next list,
+  schema or invoke. Settings also shows the same keys, and a reset revokes the
+  grant.
 
 ## Linking
 
@@ -120,20 +159,18 @@ classic all-repo token.
 
 ## MCP and OpenCode delegation
 
-The Map 2 phase 6 backlog includes the MCP server, Agent-callable job Tools, and
-the desktop OpenCode adapter. Account grants are stored intent until the
-adapter enforces them at execution. Outward writes also require spoken
-Confirmation at delegation.
+The sidecar still runs model-only jobs. Wiring this adapter into headless
+Hermes (lazy MCP / Tool Search, sample calls on Ornith) is a separate runtime
+ticket. Outward writes remain behind Go-owned Confirmation.
 
 The spike in `docs/spikes/hermes-opencode-attach.md` covers the transport
 (`opencode serve` over Tailscale), the auth findings and the measured latency.
-Accounts and grants are durable, so a future adapter can use the existing
-services and keep credentials with the Tool modules that need them.
 
 ## Security notes
 
 - Secrets are declared by the Tool modules and the Agent provider; the link
   form can only write those names.
-- A grant never exposes a secret value. The adapter is expected to read the
-  same secret service and pass only the credentials a granted Tool needs.
+- A grant never exposes a secret value. The adapter reads the same secret
+  service only to refuse payloads that echo a stored value; Tool handlers still
+  resolve their own credentials in-process.
 - Nothing on this page starts a job, opens a port or installs a package.

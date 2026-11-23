@@ -14,12 +14,11 @@ least 32 characters. Keep any existing profiles. Deploy normally so Compose
 recreates the assistant with the token and starts the private sidecar.
 
 Use secure entry or Dashboard **Secrets** to store a separately authorized Pi
-key as `HERMES_OPENCODE_GO_API_KEY`. The key and explicit task go to the sidecar
-over the authenticated private Compose network. The assistant sends no history,
-Tool results or linked-account secrets. Hermes uses OpenCode Go's
-DeepSeek V4.1 Flash model unless a local endpoint is configured, and has zero
-enabled tools by default. The sidecar publishes no host port and keeps its
-per-job runtime files in temporary storage. The image pins Hermes Agent
+key as `HERMES_OPENCODE_GO_API_KEY`. The selected model, its dedicated key and
+the explicit task go to the sidecar over the authenticated private Compose
+network. The assistant sends no history, Tool results or linked-account secrets.
+Hermes starts with zero enabled tools by default. The sidecar publishes no host
+port and keeps its per-job runtime files in temporary storage. The image pins Hermes Agent
 **v0.23.3** (`nousresearch/hermes-agent:v0.23.3@sha256:3e9fe4c6ef36490f43aa0d0d80f9df64e9c92a576eee3042f1a97c8813c05355`),
 the current stable arm64/amd64 release.
 
@@ -35,13 +34,35 @@ without a fresh request.
 To use a self-hosted OpenAI-compatible endpoint, set `HERMES_LOCAL_BASE_URL`
 (including `/v1`), `HERMES_LOCAL_MODEL`, and the endpoint's dedicated
 `HERMES_LOCAL_API_KEY` in the private Compose `.env`. Recreate both
-`assistant` and `hermes`. Explicit **Ask Hermes** jobs use that model. The
+`assistant` and `hermes`. Explicit **Ask Hermes** jobs use that model when Local is selected. The
 tool-free job has a 45-second budget. Jobs may take up to four minutes when
 Go tools are enabled. Hermes
 requires the endpoint to serve a context window of at least 64,000 tokens.
 For desktop inference, use an authenticated endpoint reachable from the Pi's Hermes
 container over the tailnet. Token counts on that path are local latency cost,
 not a billed provider invoice.
+
+## Provider and model selection
+
+In the owner Dashboard, open **Hermes** and save a runtime selection. With no
+saved selection, Hermes uses the configured local endpoint or, when the local
+endpoint is unset, OpenCode Go with DeepSeek V4.1 Flash. The selected provider
+and preferred OpenCode Go model persist across restarts and apply to the next
+job. Each job keeps the provider, model and matching key it had at submission,
+even if the selection or key changes during the job.
+
+Local readiness requires the endpoint, model and dedicated local key. OpenCode
+Go readiness requires its dedicated key in **Secrets**. You can save the cloud
+model preference while Local is selected, including before linking the cloud
+key. New jobs fail if the selected provider is unavailable. Deploy matching assistant and Hermes images together to
+enable provider switching.
+
+The OpenCode Go choices are DeepSeek V4.1 Flash, DeepSeek V4 Pro, GLM-5.3 Flash
+and Kimi K3. They support tool calls on Go's Chat Completions endpoint and are
+listed with zero-day request retention as of November 23, 2026. Go's DeepSeek
+agreement renews monthly, and the workspace may need to enable **Global**
+regions for DeepSeek. See [OpenCode Go’s privacy terms](https://opencode.ai/docs/console/go#privacy)
+and [model catalog](https://opencode.ai/inference/go/v1/models).
 
 ## Headless runtime
 

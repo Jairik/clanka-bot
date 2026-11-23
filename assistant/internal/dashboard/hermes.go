@@ -325,7 +325,7 @@ func (h *Handler) buildHermesView(flash, problem string) hermesView {
 		Error:           problem,
 		HasRegistry:     h.registry != nil,
 		HasIntegrations: h.integrations != nil,
-		RuntimeReady:    h.hermesReady != nil && h.hermesReady(),
+		RuntimeReady:    h.hermesRuntime.Configured(),
 		AdapterReady:    h.hermesAdapter != nil,
 		SchemasDeferred: h.hermesAdapter != nil,
 		Surface:         []hermesToolView{},

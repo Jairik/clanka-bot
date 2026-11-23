@@ -28,7 +28,8 @@ func TestJobsFinishCancelAndRecover(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var input map[string]string
 		if r.Header.Get("Authorization") != "Bearer "+token ||
-			json.NewDecoder(r.Body).Decode(&input) != nil || input["key"] != "test-key" || len(input) != 2 {
+			json.NewDecoder(r.Body).Decode(&input) != nil || input["key"] != "test-key" ||
+			input["provider"] != "opencode-go" || input["model"] != "deepseek-v4.1-flash" || len(input) != 4 {
 			t.Error("sidecar received an unexpected request")
 			w.WriteHeader(http.StatusBadRequest)
 			return
@@ -51,7 +52,8 @@ func TestJobsFinishCancelAndRecover(t *testing.T) {
 	defer server.Close()
 
 	announcement := make(chan string, 1)
-	m, err := hermes.New(t.Context(), st.DB(), server.URL, token, func() string { return "test-key" },
+	config := hermes.RuntimeConfig{OpenCodeKey: func() string { return "test-key" }}
+	m, err := hermes.New(t.Context(), st.DB(), server.URL, token, config,
 		func(text string) { announcement <- text }, slog.Default())
 	if err != nil {
 		t.Fatal(err)
@@ -93,7 +95,7 @@ func TestJobsFinishCancelAndRecover(t *testing.T) {
 	if _, err := st.DB().ExecContext(t.Context(), "INSERT INTO hermes_jobs (state) VALUES ('running')"); err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := hermes.New(t.Context(), st.DB(), server.URL, "", nil, nil, slog.Default())
+	reopened, err := hermes.New(t.Context(), st.DB(), server.URL, "", hermes.RuntimeConfig{}, nil, slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +133,8 @@ func TestJobRetriesOnlyExplicitBusyAdmission(t *testing.T) {
 
 	announcement := make(chan string, 1)
 	m, err := hermes.New(t.Context(), st.DB(), server.URL, strings.Repeat("t", 32),
-		func() string { return "test-key" }, func(text string) { announcement <- text }, slog.Default())
+		hermes.RuntimeConfig{OpenCodeKey: func() string { return "test-key" }},
+		func(text string) { announcement <- text }, slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}

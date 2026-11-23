@@ -36,12 +36,8 @@ func cutoverClockPipeline(t *testing.T, runner pipeline.AgentRunner, hermes func
 	return p
 }
 
-// TestCutoverEntryPointsShareAgentFallback is the pre-cutover contract for
-// #526: voice and typed Dashboard turns use the same pipeline, so a miss and
-// an explicit Agent request both reach the Go loop today. After Hermes is the
-// fallback these still share one seam; only the runner behind PathAgent
-// changes.
-func TestCutoverEntryPointsShareAgentFallback(t *testing.T) {
+// TestCutoverFallbackIgnoresRequestSource checks the shared pipeline seam.
+func TestCutoverFallbackIgnoresRequestSource(t *testing.T) {
 	runner := newFakeRunner()
 	runner.result = agent.Result{Text: "Here is an answer."}
 	p := cutoverClockPipeline(t, runner, nil)

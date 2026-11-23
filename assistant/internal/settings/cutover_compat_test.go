@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Jairik/clanka-bot/assistant/internal/agent"
 	"github.com/Jairik/clanka-bot/assistant/internal/integrations"
 	"github.com/Jairik/clanka-bot/assistant/internal/settings"
+	"github.com/Jairik/clanka-bot/assistant/internal/tool"
 	"github.com/Jairik/clanka-bot/assistant/internal/wording"
 )
 
@@ -17,52 +19,18 @@ import (
 // cutover must keep loading under the same key, or through an explicit alias.
 // YAML-only agent.providers / timeouts are not in this list because they are
 // not SQLite rows.
-func liveAgentKeys() []settings.Definition {
-	return append([]settings.Definition{
-		agent.ModelDefinition("code/model", "config/model"),
-		settings.Strings(wording.PrefixesKey, []string{"ask the agent"},
-			settings.WithConfig([]string{"ask the agent", "agent", "hey agent"}),
-			settings.WithValidator(func(value any) error {
-				list, ok := value.([]string)
-				if !ok {
-					return fmt.Errorf("want a list of prefixes, got %T", value)
-				}
-				for _, text := range list {
-					if strings.TrimSpace(text) == "" {
-						return fmt.Errorf("a prefix must not be blank")
-					}
-				}
-				return nil
-			}),
-		),
-		settings.String(wording.FillerKey, wording.DefaultFiller,
-			settings.WithConfig("One moment."),
-			settings.WithValidator(func(value any) error {
-				if strings.TrimSpace(value.(string)) == "" {
-					return fmt.Errorf("must not be blank")
-				}
-				return nil
-			}),
-		),
-		settings.String(wording.UnavailableKey, wording.DefaultUnavailableMessage,
-			settings.WithConfig("Sorry, I can't answer that right now."),
-			settings.WithValidator(func(value any) error {
-				if strings.TrimSpace(value.(string)) == "" {
-					return fmt.Errorf("must not be blank")
-				}
-				return nil
-			}),
-		),
-		settings.String(wording.ClarifyKey, agent.DefaultClarifyMessage,
-			settings.WithConfig(agent.DefaultClarifyMessage),
-			settings.WithValidator(func(value any) error {
-				if strings.TrimSpace(value.(string)) == "" {
-					return fmt.Errorf("must not be blank")
-				}
-				return nil
-			}),
-		),
-	}, agent.LimitsDefinitions()...)
+func liveAgentKeys(t *testing.T) []settings.Definition {
+	t.Helper()
+	setup, err := wording.Build(tool.NewRegistry(time.Second), wording.Config{
+		RequestPrefixes:    []string{"ask the agent", "agent", "hey agent"},
+		Filler:             wording.DefaultFiller,
+		UnavailableMessage: wording.DefaultUnavailableMessage,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	definitions := append(setup.Definitions, agent.ModelDefinition("code/model", "config/model"))
+	return append(definitions, agent.LimitsDefinitions()...)
 }
 
 // TestCutoverKeepsStoredAgentOverrides is the settings-migration contract for
@@ -71,7 +39,8 @@ func liveAgentKeys() []settings.Definition {
 // as the Definitions remain.
 func TestCutoverKeepsStoredAgentOverrides(t *testing.T) {
 	ctx := context.Background()
-	svc, _, _ := openSettings(t, liveAgentKeys()...)
+	defs := liveAgentKeys(t)
+	svc, st, _ := openSettings(t, defs...)
 
 	want := map[string]any{
 		agent.ModelKey:               "openrouter/cutover-model",
@@ -87,8 +56,12 @@ func TestCutoverKeepsStoredAgentOverrides(t *testing.T) {
 		t.Fatalf("SetMany: %v", err)
 	}
 
+	reopened, err := settings.New(ctx, st, defs...)
+	if err != nil {
+		t.Fatal(err)
+	}
 	for key, stored := range want {
-		value, ok := svc.Get(key)
+		value, ok := reopened.Get(key)
 		if !ok {
 			t.Fatalf("%s is not defined", key)
 		}
@@ -115,17 +88,18 @@ func TestCutoverKeepsStoredAgentOverrides(t *testing.T) {
 // spoken-budget overrides.
 func TestCutoverDroppingUnusedAgentModelLeavesOtherOverrides(t *testing.T) {
 	ctx := context.Background()
-	svc, st, _ := openSettings(t, liveAgentKeys()...)
+	svc, st, _ := openSettings(t, liveAgentKeys(t)...)
 	if err := svc.SetMany(ctx, map[string]any{
-		agent.ModelKey:      "openrouter/old-model",
-		wording.FillerKey:   "Hold on.",
-		wording.PrefixesKey: []string{"ask the agent"},
+		agent.ModelKey:          "openrouter/old-model",
+		wording.FillerKey:       "Hold on.",
+		wording.PrefixesKey:     []string{"ask the agent"},
+		agent.SpokenMaxCharsKey: 180,
 	}); err != nil {
 		t.Fatalf("seed overrides: %v", err)
 	}
 
-	surviving := make([]settings.Definition, 0, len(liveAgentKeys())-1)
-	for _, def := range liveAgentKeys() {
+	surviving := make([]settings.Definition, 0, len(liveAgentKeys(t))-1)
+	for _, def := range liveAgentKeys(t) {
 		if def.Key == agent.ModelKey {
 			continue
 		}
@@ -145,6 +119,10 @@ func TestCutoverDroppingUnusedAgentModelLeavesOtherOverrides(t *testing.T) {
 	list, _ := prefixes.Value.([]string)
 	if len(list) != 1 || list[0] != "ask the agent" {
 		t.Errorf("prefixes = %#v, want the stored override", prefixes.Value)
+	}
+
+	if got := reopened.Int(agent.SpokenMaxCharsKey); got != 180 {
+		t.Errorf("spoken max chars = %d, want 180", got)
 	}
 
 	var leftover string
@@ -212,7 +190,7 @@ func TestCutoverTightenedPrefixValidatorIgnoresTheStoredRow(t *testing.T) {
 func TestCutoverLeavesHermesGrantsAlone(t *testing.T) {
 	ctx := context.Background()
 	grant := integrations.GrantKey("github")
-	defs := append(liveAgentKeys(), integrations.Definitions()...)
+	defs := append(liveAgentKeys(t), integrations.Definitions()...)
 	svc, st, _ := openSettings(t, defs...)
 	if _, err := svc.Set(ctx, grant, true); err != nil {
 		t.Fatalf("seed grant: %v", err)

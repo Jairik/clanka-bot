@@ -12,18 +12,19 @@ import time
 
 MAX_BODY = 16 * 1024
 RUN_TIMEOUT = 45
-LOCAL_BASE_URL = os.environ.get("HERMES_LOCAL_BASE_URL", "")
-LOCAL_MODEL = os.environ.get("HERMES_LOCAL_MODEL", "")
+# Whitespace-only values count as unset, matching the Assistant's TrimSpace.
+LOCAL_BASE_URL = os.environ.get("HERMES_LOCAL_BASE_URL", "").strip()
+LOCAL_MODEL = os.environ.get("HERMES_LOCAL_MODEL", "").strip()
 # The local endpoint's key stays in this container. It is never accepted from
 # the Assistant, so it can only reach LOCAL_BASE_URL, and the Assistant's
 # OpenCode Go key is never sent to the local endpoint.
-LOCAL_API_KEY = os.environ.get("HERMES_LOCAL_API_KEY", "")
+LOCAL_API_KEY = os.environ.get("HERMES_LOCAL_API_KEY", "").strip()
 
 
 def local_config_error(base_url, model, api_key):
     """Return why a partial local setup is refused, or None when it is usable."""
     # All three or none, so a local job never silently falls back to the cloud.
-    if len({bool(base_url), bool(model), bool(api_key.strip())}) != 1:
+    if len({bool(base_url.strip()), bool(model.strip()), bool(api_key.strip())}) != 1:
         return "Hermes local inference needs HERMES_LOCAL_BASE_URL, HERMES_LOCAL_MODEL and HERMES_LOCAL_API_KEY"
     return None
 
@@ -34,8 +35,8 @@ def job_key(sent_key, base_url, local_api_key):
     In local mode the container's own key is used and the Assistant's is
     ignored, so neither key can reach the other endpoint.
     """
-    if base_url:
-        return local_api_key
+    if base_url.strip():
+        return local_api_key.strip()
     return sent_key if sent_key.strip() else None
 
 

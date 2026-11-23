@@ -31,12 +31,21 @@ class LocalConfigTest(unittest.TestCase):
         for partial in [("http://x/v1", "m", ""), ("http://x/v1", "", "k"), ("", "m", "k"), ("", "", "k"), ("http://x/v1", "m", "  ")]:
             self.assertIsNotNone(server.local_config_error(*partial), partial)
 
+    def test_whitespace_only_settings_count_as_unset(self):
+        server = load({"HERMES_LOCAL_BASE_URL": "   ", "HERMES_LOCAL_MODEL": "m", "HERMES_LOCAL_API_KEY": "k"})
+        self.assertEqual(server.LOCAL_BASE_URL, "")
+        self.assertIsNotNone(server.local_config_error(server.LOCAL_BASE_URL, server.LOCAL_MODEL, server.LOCAL_API_KEY))
+        server = load({"HERMES_LOCAL_BASE_URL": " ", "HERMES_LOCAL_MODEL": " ", "HERMES_LOCAL_API_KEY": " "})
+        self.assertIsNone(server.local_config_error(server.LOCAL_BASE_URL, server.LOCAL_MODEL, server.LOCAL_API_KEY))
+        self.assertEqual(server.LOCAL_BASE_URL, "")
+
 
 class JobKeyTest(unittest.TestCase):
     def test_local_mode_ignores_the_sent_key(self):
         server = load({})
         self.assertEqual(server.job_key("opencode-key", "http://x/v1", "local-key"), "local-key")
         self.assertEqual(server.job_key("", "http://x/v1", "local-key"), "local-key")
+        self.assertEqual(server.job_key("", "http://x/v1", " local-key\n"), "local-key")
 
     def test_cloud_mode_needs_the_sent_key(self):
         server = load({})
@@ -82,7 +91,10 @@ class HandlerTest(unittest.TestCase):
             data=json.dumps({"task": "Explain HTTP", "key": sent_key}).encode(),
             headers={"Authorization": "Bearer " + TOKEN, "Content-Type": "application/json"},
         )
-        with mock.patch.object(server.subprocess, "Popen", Worker):
+        # Keep the environment in place for the request: the handler builds the
+        # worker's environment from os.environ when /run arrives.
+        with mock.patch.dict("os.environ", env, clear=True), \
+                mock.patch.object(server.subprocess, "Popen", Worker):
             try:
                 with urllib.request.urlopen(request, timeout=5) as response:
                     return response.status, sent
@@ -98,6 +110,11 @@ class HandlerTest(unittest.TestCase):
         self.assertEqual(sent["payload"]["key"], "local-key")
         # The key travels on stdin, never in the worker's environment.
         self.assertNotIn("HERMES_LOCAL_API_KEY", sent["env"])
+        self.assertNotIn("local-key", sent["env"].values())
+        # The worker must see the local URL and model, or it would pair the
+        # local key with its default OpenCode Go URL.
+        self.assertEqual(sent["env"].get("HERMES_LOCAL_BASE_URL"), "http://desk:8000/v1")
+        self.assertEqual(sent["env"].get("HERMES_LOCAL_MODEL"), "m")
 
     def test_cloud_mode_rejects_an_empty_key(self):
         status, sent = self.run_job({}, "")
@@ -108,6 +125,7 @@ class HandlerTest(unittest.TestCase):
         status, sent = self.run_job({}, "opencode-key")
         self.assertEqual(status, 200)
         self.assertEqual(sent["payload"]["key"], "opencode-key")
+        self.assertNotIn("HERMES_LOCAL_BASE_URL", sent["env"])
 
 
 if __name__ == "__main__":

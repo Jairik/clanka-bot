@@ -34,12 +34,23 @@ endpoint's dedicated `HERMES_LOCAL_API_KEY` in the private Compose `.env`, then
 recreate both `assistant` and `hermes`. Hermes refuses to start with only some
 of them set.
 
-Only the `hermes` container receives the local key, and it sends it only to
-the local endpoint. The Assistant sees just the base URL, which tells it not to
-ask for the OpenCode Go key. If the two containers disagree after a partial
-recreate, no key reaches the wrong endpoint: a local Hermes ignores the key the
-Assistant sends, and a cloud Hermes rejects the empty key a local Assistant
-sends, so the job fails instead.
+Only the `hermes` container receives the local key. The Assistant sees just
+the base URL, which tells it not to ask for or send the OpenCode Go key.
+Whitespace-only values count as unset on both sides. If the two containers
+disagree after a partial recreate, neither key reaches the other provider:
+
+- Assistant local, Hermes cloud: the Assistant sends no key, Hermes rejects
+  the request, and the job fails.
+- Assistant cloud, Hermes local: Hermes drops the OpenCode Go key the
+  Assistant sends and runs the job on the local endpoint with its own key.
+  The job succeeds there, so recreate both containers when switching modes.
+
+Give the endpoint a dedicated origin (scheme, host and port). Besides the
+configured `/v1` path, the pinned hermes-agent probes the same origin for
+server type and context length (`/api/v1/models`, `/api/tags`, `/props`,
+`/v1/props`, `/version`) and sends the key with those requests. Don't put the
+inference server behind a reverse proxy that routes other paths on that origin
+to a different service.
 
 Explicit **Ask Hermes** jobs use that model. The job still runs with zero tools
 and must finish within 45 seconds. Hermes requires the endpoint to serve a

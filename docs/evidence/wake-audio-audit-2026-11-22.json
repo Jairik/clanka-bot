@@ -1,0 +1,210 @@
+{
+  "schema": "wake-audio-audit/v1",
+  "kind": "operator-measurement",
+  "issue": 521,
+  "measured_at": "2026-11-23T03:40:00Z",
+  "verified_at": "2026-11-23T04:09:34Z",
+  "acceptance": "not_met",
+  "host": {
+    "device": "raspberrypi (Raspberry Pi 5, aarch64, kernel 6.12.115+rpt-rpi-2712)",
+    "pipewire": "1.2.7",
+    "pipewire_pulse": "PulseAudio (on PipeWire 1.2.7), protocol 35, pactl 16.1",
+    "compose_project": "clanka-bot",
+    "git": "abd79be",
+    "assistant_image": "clanka/assistant:ornith-local",
+    "wakeword_image": "clanka/wakeword:key-1139922a3f1291c8348a9162",
+    "stt_image": "clanka/stt:key-bdceefd03da230b873f6ef77"
+  },
+  "audio_path": {
+    "capture_source": "alsa_input.usb-Generalplus_OSM09-00.mono-fallback",
+    "capture_format_source": "s16le 1ch 48000Hz",
+    "capture_format_assistant": "s16le 1ch 16000Hz",
+    "capture_resample": "PipeWire",
+    "capture_client": "clanka-assistant / assistant-mic / pacat",
+    "capture_latency": "320/16000",
+    "pulse_source_volume": "100% / 0.00 dB, unmuted",
+    "hardware_mic_gain": "OSM09 USB mixer Mic 30/30 (100%, +33.00 dB), unmuted",
+    "hardware_agc": "off",
+    "hardware_aec": "none (generic USB audio 1b3f:2008, no DSP source in the graph)",
+    "idle_5s_capture": {
+      "rms_dbfs": -39.2,
+      "peak_dbfs": -28.2,
+      "clip_frac": 0.0,
+      "note": "wav deleted after stats; no clipping, analog gain already maxed"
+    },
+    "playback_sink_env": "bluez_output.<redacted>.1",
+    "playback_codec": "A2DP SBC",
+    "equalizer": {
+      "preset": "Bass Boost",
+      "module": "module-ladspa-sink sink_name=clanka_eq_b plugin=caps label=Eq10X2",
+      "sink_state": "SUSPENDED",
+      "note": "assistant names the bluez sink, so speech does not enter clanka_eq_b"
+    },
+    "echo_cancel": {
+      "loaded": false,
+      "prior_run": "docs/evidence/wake-over-music-2026-11-13.json",
+      "this_run": "AEC stays off. Room recordings still produce 0 detections on the live overlay at clanker=0.95. A digital-padded clanker fixture that previously hit the baked model does not hit the personal overlay at 0.95."
+    }
+  },
+  "wake_runtime": {
+    "models": ["clanker", "yo_dipshit"],
+    "stop": "stop",
+    "follow_up_seconds": 0,
+    "before": {
+      "clanker_model": "baked 36762778 (image custom_models)",
+      "thresholds": {"clanker": 0.7, "yo_dipshit": 0.9, "stop": 0.9}
+    },
+    "after": {
+      "clanker_model": "personal overlay 2ed4f159 in wakeword/models/local/clanker.tflite (gitignored)",
+      "thresholds": {"clanker": 0.95, "yo_dipshit": 0.9, "stop": 0.7},
+      "note": "Live settings overrides are clanker=0.95 and stop=0.7. Health still prints the wakeword service advertised defaults (clanker 0.70, stop 0.90); the detect stream uses the live map."
+    }
+  },
+  "replay": {
+    "method": "second Wyoming TCP connection to the existing wakeword Compose service on port 10400; no new containers; speakers untouched",
+    "privacy": "owner WAVs stayed on the Pi; published numbers are counts only",
+    "before": {
+      "clanker_owner_positive": {"0.5": "4/14", "0.7": "3/14", "0.9": "2/14"},
+      "clanker_owner_negative": {"0.5": "0/5", "0.7": "0/5", "0.9": "0/5"},
+      "clanker_synth_positive_0.7": "3/3",
+      "clanker_synth_negative_0.5_and_0.7": "0/4",
+      "yo_dipshit_owner_positive_0.5_to_0.9": "14/15",
+      "yo_dipshit_owner_negative_0.5_to_0.9": "0/7",
+      "cross_talk": "clanker on yo_dipshit positives 0/15; yo_dipshit on clanker positives 0/14",
+      "stop_owner_positive": {"0.7": "13/20", "0.9": "7/20", "0.95": "0/20"},
+      "stop_cross_talk": "0/14 clanker positives and 0/15 yo_dipshit positives at 0.9",
+      "detection_delay_s_mean": 1.17,
+      "room_aec_raw_and_cleaned": "0 hits on dry_nomusic and dryrun2; digital-padded clanker hit the baked model"
+    },
+    "after_overlay_and_thresholds": {
+      "clanker_owner_positive": {"0.7": "14/14", "0.9": "13/14", "0.95": "13/14"},
+      "clanker_owner_negative": {"0.7": "0/5", "0.9": "0/5", "0.95": "0/5"},
+      "clanker_synth_positive_0.7": "0/3",
+      "yo_dipshit_owner_positive_0.9": "14/15",
+      "yo_dipshit_owner_negative_0.9": "0/7",
+      "stop_owner_positive_0.7": "13/20",
+      "stop_on_clanker_positive_0.7": "0/14",
+      "survived_wakeword_restart": true,
+      "note": "The 14/5 owner clips are the dashboard sample set. They are not the training-cache holdout (see train_test_separation)."
+    }
+  },
+  "train_test_separation": {
+    "training_cache": {
+      "real_positives": 25,
+      "real_negatives": 15,
+      "holdout_rule": "every 5th file by name (20%)",
+      "holdout_positives": 5,
+      "holdout_negatives": 3,
+      "train_positives": 20,
+      "train_negatives": 12
+    },
+    "dashboard_replay_set": {
+      "positives": 14,
+      "negatives": 5,
+      "pcm_identity_with_training_cache": 0,
+      "frame_count_overlap_with_holdout": 0
+    },
+    "holdout_replay_live_overlay_0.95": {
+      "positives": "2/5",
+      "negatives_false_accepts": "1/3",
+      "delay_s_mean_on_hits": 1.5,
+      "speakers": ["owner"],
+      "note": "Counts only; clips never left the Pi. Holdout positives that hit: real_p_00006, real_p_00016. Holdout negative that fired: real_n_00001."
+    },
+    "conclusion": "The published 13/14 owner recall is not a held-out score for the 25-take cache split. The cache holdout at the live 0.95 overlay is 2/5 recall with 1/3 false accepts."
+  },
+  "verification_2026_11_23": {
+    "constraints": "existing clanka-bot Compose project; second Wyoming connection to the running wakeword service; no audio-path changes, no setting writes, no restarts, no new containers",
+    "speakers": {
+      "owner": "dashboard 14/5 clips and training-cache 25/15 takes (one person)",
+      "held_out_pocket_tts": "wakeword/tests/fixtures 3 positive + 4 negative clanker clips",
+      "room_loudspeaker": "Pocket TTS clanker/volume_up played from the Echo position into the OSM09 (wake-over-music 2026-11-13 recordings)",
+      "device_tts": "one existing 2.16 s TTS sample, resampled 24 kHz -> 16 kHz for replay"
+    },
+    "quiet": {
+      "owner_dashboard_0.95": "13/14 pos, 0/5 neg (not holdout)",
+      "owner_holdout_0.95": "2/5 pos, 1/3 neg false accepts",
+      "synth_fixtures_0.95": "0/3 pos, 0/4 neg",
+      "room_dry_nomusic_raw": "0 detections on 14.45 s, 2 clanker trials",
+      "room_dryrun2_raw": "0 detections on 21.45 s, 2 clanker + 1 volume_up trials"
+    },
+    "tv_music": {
+      "source": "existing wake-over-music raw OSM09 recordings, live overlay clanker=0.95 yo_dipshit=0.9",
+      "cells": [
+        {"volume": 35, "trials": 24, "hits": 0, "false_wakes": 0, "exposure_min": 3.861, "false_wakes_per_hour": 0.0},
+        {"volume": 65, "trials": 24, "hits": 0, "false_wakes": 0, "exposure_min": 3.862, "false_wakes_per_hour": 0.0},
+        {"volume": 100, "trials": 24, "hits": 0, "false_wakes": 0, "exposure_min": 3.862, "false_wakes_per_hour": 0.0}
+      ],
+      "combined": {
+        "clanker_hits": "0/72",
+        "false_wakes": 0,
+        "exposure_min": 11.585,
+        "false_wakes_per_hour_point": 0.0,
+        "limit": "Zero events over 11.585 music-only minutes cannot support a 1/hour claim; a 95% upper bound is about 15 false wakes/hour."
+      },
+      "digital_padded_control_0.95": "0/1 (personal overlay; expected miss for a non-owner voice at 0.95)"
+    },
+    "device_tts": {
+      "clips": 1,
+      "hits_on_tts_only": "0/1",
+      "limitation": "One short clip with no wake phrase is not a miss rate and is not an hourly false-wake rate. Missing: owner saying the wake word over device TTS, and a timed TTS-only exposure."
+    },
+    "false_wakes_per_hour": {
+      "health_since_assistant_start": {
+        "window": "assistant up since 2026-11-23T01:03:00Z; overlay live since wakeword start 2026-11-23T03:39:04Z",
+        "clanker": {"wakes": 6, "no_speech": 3, "unroutable": 0, "rate": "50% of wakes, not per listening hour"},
+        "yo_dipshit": {"wakes": 1, "no_speech": 1, "unroutable": 0, "rate": "100% of wakes, not per listening hour"}
+      },
+      "live_logs": {
+        "pre_overlay_idle": "0 voice:wake lines from assistant start 20:03 to overlay work 22:36 local (~2.55 h), baked model, mixed thresholds",
+        "overlay_cluster": "7 clanker + 1 yo_dipshit wakes between 22:36 and 22:50 local, several no-speech; clustered during overlay/threshold work so not an idle rate",
+        "stop_command_lines": 0
+      },
+      "owner_clip_negatives": "dashboard 0/5; cache holdout 1/3; these are clip trials, not hours",
+      "music_only": "0 false wakes / 11.585 min (see tv_music.combined.limit)"
+    },
+    "reply_only_stop": {
+      "code": "Idle detect stream requests wake models only; ReplyWake adds stop. Covered by loop_stop_test.go and wakethreshold_test.go.",
+      "wyoming_detector": "owner stop 13/20 at 0.7; 0/14 on clanker positives (stop requested on the test stream, which production idle does not do)",
+      "live_logs_4h": "no voice: stop command lines",
+      "missing": "in-room spoken stop while a reply is playing, and confirmation that a spoken stop while idle does not fire"
+    },
+    "missing_measurements": [
+      "Owner-in-room timed hour on the live overlay, with exposure minutes as the false-wake denominator, split quiet / TV-or-music / device TTS",
+      "Owner wake-word hits in those same three conditions using phrases held out of training",
+      "Live reply-only stop: hits during a playing reply, non-hits while idle",
+      "Hourly false-wake bound tight enough for 1/hour (needs hours of labelled idle, not 11.6 music minutes)",
+      "yo_dipshit and stop train/holdout split (no matching training cache on the Pi)"
+    ]
+  },
+  "activity_7d_voice": {
+    "n": 117,
+    "outcomes": {"ok": 68, "ignored": 29, "failed": 11, "cancelled": 5, "suspended": 4},
+    "since_assistant_start": {"n": 3, "outcomes": {"ignored": 3}},
+    "note": "follow-up window was set to 0 at 2026-11-23T00:58:36Z after a 27-turn hour; false-wake counters reset on the later assistant restart. Seven-day n includes history before this process."
+  },
+  "decision": {
+    "applied": [
+      "Install personal clanker TFLite as wakeword/models/local/clanker.tflite (not committed; owner-voice model)",
+      "Live wakeword.threshold.clanker = 0.95",
+      "Live wakeword.threshold.stop = 0.7",
+      "Pi .env WAKEWORD_THRESHOLDS=clanker:0.95,yo_dipshit:0.9,stop:0.7 (takes effect on the next assistant restart)",
+      "Keep conversation.follow_up_seconds = 0",
+      "Do not load PipeWire echo-cancel"
+    ],
+    "not_applied": [
+      "sherpa-onnx keyword spotting: skipped in the first pass; holdout 2/5 and 0/72 room-music hits mean engine choice is still open",
+      "Persistent AEC drop-in: room clips stay below a usable level on the current raw path; AEC stays off",
+      "Hardware AGC: skipped so transcription (#524) keeps the same capture path"
+    ],
+    "transcription_capture_path": "Benchmark STT on the current raw OSM09 source (16 kHz assistant stream, PipeWire resample from 48 kHz, Pulse 100%, hardware +33 dB, AGC off, no AEC). Do not switch STT to aec_mic_source.",
+    "rollback": [
+      "rm /home/rbpi/clanka-bot/wakeword/models/local/clanker.tflite",
+      "cd /home/rbpi/clanka-bot && docker compose restart wakeword",
+      "DELETE http://127.0.0.1:8081/api/settings/wakeword.threshold.clanker",
+      "DELETE http://127.0.0.1:8081/api/settings/wakeword.threshold.stop",
+      "restore /home/rbpi/clanka-bot/.env.bak-521 if the env thresholds must match the baked model"
+    ],
+    "next_measurement": "Keep #521 open. Next: a labelled in-room hour on this exact raw OSM09 path and live overlay (quiet / TV-or-music / device TTS) with exposure minutes as the false-wake denominator, plus owner holdout phrases and a live reply-only stop trial. Do not treat the dashboard 13/14 as held-out."
+  }
+}

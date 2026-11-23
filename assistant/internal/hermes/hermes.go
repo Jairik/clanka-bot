@@ -11,17 +11,19 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
 )
 
 const (
-	SecretName       = "HERMES_OPENCODE_GO_API_KEY"
-	maxTaskBytes     = 4096
-	maxResponseBytes = 8192
-	jobTimeout       = 50 * time.Second
-	keepJobs         = 50
+	SecretName        = "HERMES_OPENCODE_GO_API_KEY"
+	maxTaskBytes      = 4096
+	maxResponseBytes  = 8192
+	jobTimeout        = 50 * time.Second
+	goToolsJobTimeout = 250 * time.Second
+	keepJobs          = 50
 )
 
 // Manager owns the job lifecycle; the sidecar operates on one request at a time.
@@ -32,6 +34,7 @@ type Manager struct {
 	key      func() string
 	announce func(string)
 	logger   *slog.Logger
+	timeout  time.Duration
 
 	mu     sync.Mutex
 	closed bool
@@ -45,12 +48,18 @@ func New(ctx context.Context, db *sql.DB, endpoint, token string, key func() str
 	if _, err := db.ExecContext(ctx, "UPDATE hermes_jobs SET state = 'interrupted' WHERE state = 'running'"); err != nil {
 		return nil, err
 	}
+	// Match the sidecar flag and leave time for its worker cleanup.
+	timeout := jobTimeout
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("HERMES_GO_TOOLS"))) {
+	case "1", "true", "yes", "on":
+		timeout = goToolsJobTimeout
+	}
 	client := &http.Client{
-		Timeout:       jobTimeout,
+		Timeout:       timeout,
 		Transport:     &http.Transport{},
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
-	m := &Manager{ctx: ctx, db: db, key: key, announce: announce, logger: logger}
+	m := &Manager{ctx: ctx, db: db, key: key, announce: announce, logger: logger, timeout: timeout}
 	if len(token) >= 32 {
 		m.run = func(ctx context.Context, task, key string) (string, error) {
 			return call(ctx, client, endpoint, token, task, key)
@@ -122,7 +131,7 @@ func (m *Manager) Handle(ctx context.Context, request string) string {
 		m.logger.Error("could not start Hermes job", "error", err)
 		return "I couldn't start a Hermes job."
 	}
-	jobCtx, cancel := context.WithTimeout(m.ctx, jobTimeout)
+	jobCtx, cancel := context.WithTimeout(m.ctx, m.timeout)
 	m.active, m.cancel = id, cancel
 	m.wait.Add(1)
 	go m.execute(jobCtx, id, request, key)

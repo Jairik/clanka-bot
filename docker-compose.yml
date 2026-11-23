@@ -83,6 +83,8 @@ services:
       HERMES_RUNTIME_TOKEN: ${HERMES_RUNTIME_TOKEN:-}
       HERMES_LOCAL_BASE_URL: ${HERMES_LOCAL_BASE_URL:-}
       HERMES_LOCAL_API_KEY: ${HERMES_LOCAL_API_KEY:-}
+      # Match the Hermes sidecar's job deadline.
+      HERMES_GO_TOOLS: ${HERMES_GO_TOOLS:-}
       ASSISTANT_TTS_ADDR: "tts:10200"
       # ADR-0003: the one SQLite database lives on the assistant-data volume.
       ASSISTANT_DATA_DIR: "/app/data"

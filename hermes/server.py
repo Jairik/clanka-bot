@@ -7,18 +7,19 @@ from __future__ import annotations
 
 import contextlib
 import hmac
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 import select
 import subprocess
 import sys
+import threading
 import time
 
 
 MAX_BODY = 16 * 1024
 RUN_TIMEOUT = 45
-RUN_BUDGET = RUN_TIMEOUT - 5
+GO_TOOLS_RUN_TIMEOUT = 240
 CLOUD_BASE_URL = "https://opencode.ai/inference/go/openai/v1"
 CLOUD_MODEL = "deepseek-v4.1-flash"
 REPLY_INSTRUCTION = "Reply in plain language in one or two concise sentences."
@@ -60,6 +61,11 @@ def env(name, default=""):
 def truthy(name):
     """True when the named env var is a common on-flag."""
     return env(name).lower() in ("1", "true", "yes", "on")
+
+
+def run_timeout():
+    # Deferred tool discovery and calls add model round trips to a Go job.
+    return GO_TOOLS_RUN_TIMEOUT if truthy("HERMES_GO_TOOLS") else RUN_TIMEOUT
 
 
 def local_base_url():
@@ -185,7 +191,7 @@ def agent_kwargs(api_key, go_names=()):
         # Budget search, describe, two calls, and a final reply under the outer deadline.
         "max_iterations": 5 if go_names else 4 if toolsets else 1,
         "max_tokens": 768,
-        "run_budget_seconds": RUN_BUDGET,
+        "run_budget_seconds": run_timeout() - 5,
         "ephemeral_system_prompt": REPLY_INSTRUCTION,
     }
 
@@ -195,8 +201,8 @@ def system_message(go_names=()):
     if go_names:
         return (
             REPLY_INSTRUCTION
-            + " For live facts, search for a relevant tool, describe it to learn its arguments,"
-            " and call it. If the tool is unavailable, say so."
+            + " For live facts, find, describe, and call a relevant tool. If unavailable, say so."
+            " For web searches, prefer at most three results and cite the sources you use."
         )
     if parse_toolsets():
         return (
@@ -277,7 +283,7 @@ def model_turn():
             assert_tool_allowlist(agent, go_names)
             if go_names:
                 # Hermes starts counting at run_conversation. Charge discovery and initialization too.
-                remaining = RUN_BUDGET - (time.monotonic() - started)
+                remaining = agent.run_budget_seconds - (time.monotonic() - started)
                 if remaining <= 0:
                     raise RuntimeError("Go Tool setup exhausted the Hermes run budget")
                 agent.run_budget_seconds = remaining
@@ -289,6 +295,14 @@ def model_turn():
     if not text or result.get("failed") or result.get("success") is False:
         raise RuntimeError("Hermes did not return a reply")
     print(json.dumps({"text": text[:1000]}))
+
+
+class RuntimeServer(ThreadingHTTPServer):
+    def __init__(self, address, token):
+        self.authorization = ("Bearer " + token).encode()
+        # Health checks can run concurrently without allowing overlapping jobs.
+        self.job_lock = threading.Lock()
+        super().__init__(address, Handler)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -334,8 +348,17 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error(400)
             return
 
+        if not self.server.job_lock.acquire(blocking=False):
+            self.send_error(503)
+            return
+        try:
+            self.run_worker(request)
+        finally:
+            self.server.job_lock.release()
+
+    def run_worker(self, request):
         payload = json.dumps(request).encode()
-        deadline = time.monotonic() + RUN_TIMEOUT
+        deadline = time.monotonic() + run_timeout()
         worker = subprocess.Popen(
             [sys.executable, __file__, "--worker"],
             stdin=subprocess.PIPE,
@@ -374,6 +397,5 @@ if __name__ == "__main__":
         model_turn()
     else:
         token = validate_startup()
-        with HTTPServer(("0.0.0.0", 8642), Handler) as server:
-            server.authorization = ("Bearer " + token).encode()
+        with RuntimeServer(("0.0.0.0", 8642), token) as server:
             server.serve_forever()

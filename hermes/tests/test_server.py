@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+from http.client import HTTPConnection
 import importlib.util
 import os
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
+import threading
 import unittest
 from unittest import mock
 
@@ -120,16 +124,61 @@ class HermesServerConfigTest(unittest.TestCase):
         empty = self.server.agent_kwargs("key", set())
         self.assertEqual(empty["enabled_toolsets"], [])
         self.assertEqual(empty["max_iterations"], 1)
+        self.assertEqual(self.server.run_timeout(), 45)
+        self.assertEqual(empty["run_budget_seconds"], 40)
         self.assertIn("enabled: off", self.server.runtime_config_text(set()))
 
         names = {"mcp__clanka_go__weather_current"}
-        os.environ["HERMES_TOOL_SEARCH"] = "off"
+        os.environ.update(HERMES_TOOL_SEARCH="off", HERMES_GO_TOOLS="1")
         self.assertIn("enabled: on", self.server.runtime_config_text(names))
         ready = self.server.agent_kwargs("key", names)
         self.assertEqual(ready["enabled_toolsets"], ["clanka_go"])
         self.assertGreaterEqual(ready["max_iterations"], 4)
-        self.assertLess(ready["run_budget_seconds"], self.server.RUN_TIMEOUT)
+        self.assertEqual(self.server.run_timeout(), 240)
+        self.assertEqual(ready["run_budget_seconds"], 235)
         self.assertEqual(ready["fallback_model"], {})
+
+    def test_health_and_busy_responses_while_worker_runs(self):
+        started = threading.Event()
+        popen = subprocess.Popen
+        workers = []
+
+        def start_worker(_command, **kwargs):
+            # A real child exercises the disconnect cleanup without an upstream model.
+            worker = popen([sys.executable, "-c", "import time; time.sleep(10)"], **kwargs)
+            workers.append(worker)
+            started.set()
+            return worker
+
+        token = self.env["HERMES_RUNTIME_TOKEN"]
+        with self.server.RuntimeServer(("127.0.0.1", 0), token) as server:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            address = server.server_address
+            running = HTTPConnection(*address, timeout=2)
+            probe = HTTPConnection(*address, timeout=2)
+            headers = {"Authorization": "Bearer " + token}
+            payload = '{"task":"test","key":"key"}'
+            try:
+                with mock.patch.object(self.server.subprocess, "Popen", side_effect=start_worker):
+                    running.request("POST", "/run", payload, headers)
+                    self.assertTrue(started.wait(2))
+                    probe.request("GET", "/healthz")
+                    response = probe.getresponse()
+                    self.assertEqual(response.status, 200)
+                    response.read()
+                    probe.request("POST", "/run", payload, headers)
+                    response = probe.getresponse()
+                    self.assertEqual(response.status, 503)
+                    response.read()
+                    self.assertEqual(len(workers), 1)
+                    running.close()
+                    self.assertLess(workers[0].wait(timeout=2), 0)
+            finally:
+                running.close()
+                probe.close()
+                server.shutdown()
+                thread.join(timeout=2)
 
     def test_go_and_sample_modes_are_mutually_exclusive(self):
         # The sample server never contributes tools to the production catalogue.

@@ -349,7 +349,10 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if not self.server.job_lock.acquire(blocking=False):
-            self.send_error(503)
+            self.send_response(503)
+            self.send_header("Retry-After", "1")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
             return
         try:
             self.run_worker(request)

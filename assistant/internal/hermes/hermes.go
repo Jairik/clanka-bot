@@ -213,15 +213,30 @@ func call(ctx context.Context, client *http.Client, endpoint, token, task, key s
 	if err != nil {
 		return "", err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
+	var resp *http.Response
+	for attempt := 0; ; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+		if err != nil {
+			return "", err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err = client.Do(req)
+		if err != nil {
+			return "", err
+		}
+		if attempt != 0 || resp.StatusCode != http.StatusServiceUnavailable || resp.Header.Get("Retry-After") != "1" {
+			break
+		}
+		resp.Body.Close()
+		// The sidecar refused before starting work, so a brief retry is safe.
+		delay := time.NewTimer(time.Second)
+		select {
+		case <-ctx.Done():
+			delay.Stop()
+			return "", ctx.Err()
+		case <-delay.C:
+		}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {

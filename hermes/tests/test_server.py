@@ -170,6 +170,7 @@ class HermesServerConfigTest(unittest.TestCase):
                     probe.request("POST", "/run", payload, headers)
                     response = probe.getresponse()
                     self.assertEqual(response.status, 503)
+                    self.assertEqual(response.getheader("Retry-After"), "1")
                     response.read()
                     self.assertEqual(len(workers), 1)
                     running.close()

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -102,5 +103,46 @@ func TestJobsFinishCancelAndRecover(t *testing.T) {
 	}
 	if got := reopened.Handle(t.Context(), "Explain HTTP"); got != "Hermes is disabled." {
 		t.Fatal(got)
+	}
+}
+
+func TestJobRetriesOnlyExplicitBusyAdmission(t *testing.T) {
+	st, err := store.Open(t.Context(), filepath.Join(t.TempDir(), "assistant.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var input map[string]string
+		if json.NewDecoder(r.Body).Decode(&input) != nil || input["task"] != "Replacement request" {
+			t.Error("sidecar did not receive the replacement task")
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if requests.Add(1) == 1 {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		fmt.Fprint(w, `{"text":"Replacement accepted."}`)
+	}))
+	defer server.Close()
+
+	announcement := make(chan string, 1)
+	m, err := hermes.New(t.Context(), st.DB(), server.URL, strings.Repeat("t", 32),
+		func() string { return "test-key" }, func(text string) { announcement <- text }, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer m.Close()
+	m.Handle(t.Context(), "Replacement request")
+	select {
+	case got := <-announcement:
+		if got != "Hermes finished." || requests.Load() != 2 {
+			t.Fatalf("got %q after %d requests", got, requests.Load())
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("replacement request did not finish")
 	}
 }

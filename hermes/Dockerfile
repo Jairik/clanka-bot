@@ -1,8 +1,11 @@
-# Pin both supported architectures to the same upstream release.
-FROM nousresearch/hermes-agent:v0.23.1@sha256:276d44685c65c0cb2a25f190b63c65c8906f9dc76486fb1c05ae71b5826bda08
+# Pin both supported architectures to the current stable release.
+# v0.23.3 matches :stable and includes the v0.23.2 security fix.
+FROM nousresearch/hermes-agent:v0.23.3@sha256:3e9fe4c6ef36490f43aa0d0d80f9df64e9c92a576eee3042f1a97c8813c05355
 
 ENV HOME=/opt/data PYTHONPATH=/opt/hermes PYTHONDONTWRITEBYTECODE=1
+# Keep the historical entrypoint path so a live overlay can bind-mount over it.
 COPY server.py /opt/clanka/hermes_server.py
+COPY sample_mcp.py /opt/clanka/sample_mcp.py
 WORKDIR /tmp
 USER 10000:10000
 ENTRYPOINT ["/opt/hermes/.venv/bin/python", "/opt/clanka/hermes_server.py"]

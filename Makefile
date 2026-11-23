@@ -99,6 +99,7 @@ test: ## Run the assistant, deployment, auto-deploy, wakeword-CLI, STT, prototyp
 	python3 -m unittest discover -s scripts/tests -p 'test_*.py' -v
 	python3 -m unittest discover -s scripts/prototype-run/tests -p 'test_*.py' -v
 	python3 -m unittest discover -s wakeword/tests -p 'test_*.py' -v
+	python3 -m unittest discover -s hermes/tests -p 'test_*.py' -v
 	python3 -m pytest tts/tests stt/tests -q
 	bash scripts/check-compose.sh
 

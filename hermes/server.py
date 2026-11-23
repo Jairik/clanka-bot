@@ -1,4 +1,11 @@
-"""Serve one explicitly requested, tool-free Hermes turn at a time."""
+"""Serve one explicitly requested Hermes turn at a time.
+
+The default job is tool-free. Optional env knobs can attach a tiny sample MCP
+allowlist so Tool Search and lazy MCP can be measured without enabling Hermes
+built-ins. Production Go Tool integration stays on the linked ticket.
+"""
+
+from __future__ import annotations
 
 import contextlib
 import hmac
@@ -10,38 +17,237 @@ import subprocess
 import sys
 import time
 
+
 MAX_BODY = 16 * 1024
 RUN_TIMEOUT = 45
+CLOUD_BASE_URL = "https://opencode.ai/inference/go/openai/v1"
+CLOUD_MODEL = "deepseek-v4.1-flash"
+REPLY_INSTRUCTION = "Reply in plain language in one or two concise sentences."
+SAMPLE_TOOLSET = "clanka_sample"
+DEFAULT_SAMPLE_MCP = "/opt/clanka/sample_mcp.py"
+DEFAULT_SAMPLE_PYTHON = "/opt/hermes/.venv/bin/python"
+
+# Worker processes only inherit the names they need to reach the model and tools.
+WORKER_ENV_NAMES = (
+    "PATH",
+    "HOME",
+    "PYTHONPATH",
+    "PYTHONDONTWRITEBYTECODE",
+    "HERMES_HOME",
+    "HERMES_WRITE_SAFE_ROOT",
+    "HERMES_LOCAL_BASE_URL",
+    "HERMES_LOCAL_MODEL",
+    "HERMES_TOOLSETS",
+    "HERMES_TOOL_SEARCH",
+    "HERMES_SAMPLE_MCP",
+    "HERMES_SAMPLE_MCP_LAZY",
+    "HERMES_SAMPLE_MCP_PATH",
+    "HERMES_SAMPLE_MCP_PYTHON",
+)
+
+
+def env(name, default=""):
+    """Read a stripped environment value, treating unset as the default."""
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip()
+
+
+def truthy(name):
+    """True when the named env var is a common on-flag."""
+    return env(name).lower() in ("1", "true", "yes", "on")
+
+
+def local_base_url():
+    """OpenAI-compatible base URL for a self-hosted endpoint, or empty."""
+    return env("HERMES_LOCAL_BASE_URL")
+
+
+def local_model():
+    """Model id for the self-hosted endpoint, or empty."""
+    return env("HERMES_LOCAL_MODEL")
+
+
+def sample_mcp_enabled():
+    """True when the sidecar should attach the two-tool sample MCP server."""
+    return truthy("HERMES_SAMPLE_MCP")
+
+
+def sample_mcp_lazy():
+    """True when the sample MCP server should connect on first tool use."""
+    raw = env("HERMES_SAMPLE_MCP_LAZY")
+    if raw == "":
+        return True
+    return raw.lower() in ("1", "true", "yes", "on")
+
+
+def parse_toolsets():
+    """Return the enabled Hermes toolset allowlist.
+
+    Empty means zero tools. Turning on the sample MCP adds its toolset so the
+    two sample tools can register without enabling terminal, web, or files.
+    """
+    names = [part for part in env("HERMES_TOOLSETS").split(",") if part.strip()]
+    names = [part.strip() for part in names]
+    if sample_mcp_enabled() and SAMPLE_TOOLSET not in names:
+        names.append(SAMPLE_TOOLSET)
+    return names
+
+
+def tool_search_enabled():
+    """Whether Tool Search should wrap deferred tools.
+
+    Default is on only when an allowlist exists, so a no-tool job never pays
+    for the three bridge schemas. An explicit on/off flag wins.
+    """
+    raw = env("HERMES_TOOL_SEARCH").lower()
+    if raw in ("on", "off"):
+        return raw == "on"
+    return bool(parse_toolsets())
+
+
+def sample_mcp_path():
+    """Path to the sample MCP script inside the container (overridable in tests)."""
+    return env("HERMES_SAMPLE_MCP_PATH", DEFAULT_SAMPLE_MCP)
+
+
+def sample_mcp_python():
+    """Interpreter used to spawn the sample MCP server."""
+    return env("HERMES_SAMPLE_MCP_PYTHON", DEFAULT_SAMPLE_PYTHON)
+
+
+def runtime_config_text():
+    """YAML for HERMES_HOME/config.yaml: Tool Search plus optional lazy MCP."""
+    lines = [
+        "# Written by the clanka Hermes sidecar. Do not store secrets here.",
+        "tools:",
+        "  tool_search:",
+        f"    enabled: {'on' if tool_search_enabled() else 'off'}",
+    ]
+    if sample_mcp_enabled():
+        lines.extend(
+            [
+                "mcp_servers:",
+                f"  {SAMPLE_TOOLSET}:",
+                f"    command: {sample_mcp_python()}",
+                "    args:",
+                f"      - {sample_mcp_path()}",
+                f"    lazy: {'true' if sample_mcp_lazy() else 'false'}",
+            ]
+        )
+    return "\n".join(lines) + "\n"
+
+
+def hermes_home():
+    """Directory Hermes reads config.yaml from."""
+    return env("HERMES_HOME") or env("HOME") or "/opt/data"
+
+
+def write_runtime_config(home=None):
+    """Replace config.yaml in HERMES_HOME so workers see the slim-down settings."""
+    root = home or hermes_home()
+    os.makedirs(root, exist_ok=True)
+    path = os.path.join(root, "config.yaml")
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as handle:
+        handle.write(runtime_config_text())
+    os.replace(tmp, path)
+    return path
+
+
+def discover_configured_mcp():
+    """Load the sample MCP server into Hermes before the agent snapshots tools.
+
+    AIAgent does not discover MCP on its own; the CLI and gateway do. The
+    sidecar has to call this so lazy schema registration and first-use connect
+    actually run on the headless path.
+    """
+    if not sample_mcp_enabled():
+        return []
+    from tools.mcp_tool_discovery import discover_mcp_tools
+
+    return discover_mcp_tools(allowed_mcp_names=[SAMPLE_TOOLSET])
+
+
+def agent_kwargs(api_key):
+    """Keyword arguments for AIAgent that match this job's allowlist."""
+    toolsets = parse_toolsets()
+    using_local = bool(local_base_url())
+    return {
+        "provider": "custom" if using_local else "opencode-go",
+        "model": local_model() or CLOUD_MODEL,
+        "base_url": local_base_url() or CLOUD_BASE_URL,
+        "api_key": api_key,
+        "enabled_toolsets": toolsets,
+        "skip_context_files": True,
+        "skip_memory": True,
+        "skip_background_review": True,
+        "load_soul_identity": False,
+        "quiet_mode": True,
+        "save_trajectories": False,
+        "max_iterations": 1 if not toolsets else 4,
+        "max_tokens": 768,
+        "run_budget_seconds": RUN_TIMEOUT - 5,
+        "ephemeral_system_prompt": REPLY_INSTRUCTION,
+    }
+
+
+def system_message():
+    """Per-turn instruction. Sample-tool jobs may call the two sample tools."""
+    if parse_toolsets():
+        return (
+            REPLY_INSTRUCTION
+            + " When asked to ping or tell the time, call the matching sample tool."
+        )
+    return REPLY_INSTRUCTION
+
+
+def assert_tool_allowlist(agent):
+    """Fail closed if the live tool list does not match the configured allowlist."""
+    tools = list(agent.tools or [])
+    if parse_toolsets():
+        if not tools:
+            raise RuntimeError("Hermes sample tools did not register")
+        return
+    if tools:
+        raise RuntimeError("Hermes initialized with tools")
+
+
+def worker_env():
+    """Environment the per-job worker is allowed to see."""
+    return {name: value for name, value in os.environ.items() if name in WORKER_ENV_NAMES}
+
+
+def validate_startup():
+    """Refuse a half-configured local endpoint or a missing runtime token."""
+    if bool(local_base_url()) != bool(local_model()):
+        raise SystemExit("Hermes needs both a local model and base URL")
+    token = env("HERMES_RUNTIME_TOKEN")
+    if len(token) < 32:
+        raise SystemExit("Hermes requires a private runtime token of at least 32 characters")
+    write_runtime_config()
+    return token
 
 
 def model_turn():
+    """Run one AIAgent job from a JSON {task, key} request on stdin."""
     import io
 
     request = json.load(sys.stdin)
+    write_runtime_config()
+    discover_configured_mcp()
+    kwargs = agent_kwargs(request["key"])
     # Keep upstream diagnostics off the reply channel, including on model errors.
     with contextlib.redirect_stdout(io.StringIO()):
         from run_agent import AIAgent
 
-        agent = AIAgent(
-            provider="opencode-go",
-            model="deepseek-v4.1-flash",
-            base_url="https://opencode.ai/inference/go/openai/v1",
-            api_key=request["key"],
-            enabled_toolsets=[],
-            skip_context_files=True,
-            skip_memory=True,
-            skip_background_review=True,
-            quiet_mode=True,
-            max_iterations=1,
-            max_tokens=768,
-            run_budget_seconds=RUN_TIMEOUT - 5,
-        )
+        agent = AIAgent(**kwargs)
         with contextlib.closing(agent):
-            if agent.tools:
-                raise RuntimeError("Hermes initialized with tools")
+            assert_tool_allowlist(agent)
             result = agent.run_conversation(
                 request["task"],
-                system_message="Reply in plain language in one or two concise sentences.",
+                system_message=system_message(),
             )
     text = (result.get("final_response") or "").strip()
     if not text or result.get("failed") or result.get("success") is False:
@@ -99,8 +305,7 @@ class Handler(BaseHTTPRequestHandler):
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
-            env={name: value for name, value in os.environ.items()
-                 if name in ("PATH", "HOME", "PYTHONPATH", "PYTHONDONTWRITEBYTECODE", "HERMES_HOME", "HERMES_WRITE_SAFE_ROOT")},
+            env=worker_env(),
         )
         try:
             while time.monotonic() < deadline:
@@ -132,9 +337,7 @@ if __name__ == "__main__":
     if sys.argv[1:] == ["--worker"]:
         model_turn()
     else:
-        token = os.environ["HERMES_RUNTIME_TOKEN"]
-        if len(token) < 32:
-            raise SystemExit("Hermes requires a private runtime token of at least 32 characters")
+        token = validate_startup()
         with HTTPServer(("0.0.0.0", 8642), Handler) as server:
             server.authorization = ("Bearer " + token).encode()
             server.serve_forever()

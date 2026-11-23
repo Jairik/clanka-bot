@@ -40,6 +40,33 @@ class HermesServerConfigTest(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
+    def healthz(self):
+        token = self.env["HERMES_RUNTIME_TOKEN"]
+        with self.server.RuntimeServer(("127.0.0.1", 0), token) as server:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            probe = HTTPConnection(*server.server_address, timeout=2)
+            try:
+                probe.request("GET", "/healthz")
+                response = probe.getresponse()
+                self.assertEqual(response.status, 200)
+                return json.loads(response.read())
+            finally:
+                probe.close()
+                server.shutdown()
+                thread.join(timeout=2)
+
+    def test_healthz_reports_the_local_model_it_routes(self):
+        # The Assistant compares this with its own local model before it
+        # reports Local as ready.
+        self.assertEqual(self.healthz()["local_model"], "")
+        os.environ["HERMES_LOCAL_MODEL"] = "ornith:9b"
+        self.assertEqual(self.healthz()["local_model"], "", "a model without a URL is not routable")
+        os.environ["HERMES_LOCAL_BASE_URL"] = " http://desk:8000/v1 "
+        os.environ["HERMES_LOCAL_MODEL"] = " ornith:9b "
+        self.assertEqual(self.healthz()["local_model"], "ornith:9b")
+        self.assertNotIn("HERMES_LOCAL_API_KEY", json.dumps(self.healthz()))
+
     def test_empty_allowlist_is_tool_free_with_search_off(self):
         self.assertEqual(self.server.parse_toolsets(), [])
         self.assertFalse(self.server.tool_search_enabled())

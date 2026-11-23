@@ -90,21 +90,44 @@ func (c RuntimeConfig) localReady() bool {
 	return strings.TrimSpace(c.LocalBaseURL) != "" && strings.TrimSpace(c.LocalModel) != "" && strings.TrimSpace(c.LocalKey) != ""
 }
 
+// localReady also needs the running sidecar to route the same local model.
+// The sidecar reads its own copy of the settings, so after a partial recreate
+// or a typo it can reject every local job while this side looks configured.
+// sidecarModel is what the sidecar reported; without a sidecar (no runtime
+// token) only this side's settings are checked, since no job can run anyway.
+func (m *Manager) localReady(sidecarModel string) bool {
+	if !m.config.localReady() {
+		return false
+	}
+	return m.run == nil || sidecarModel == strings.TrimSpace(m.config.LocalModel)
+}
+
+// sidecarModel asks the sidecar which local model it routes, without holding
+// m.mu. It is empty when local inference isn't configured here, or when the
+// sidecar is down, in cloud mode, or unreadable.
+func (m *Manager) sidecarModel() string {
+	if m.probe == nil || !m.config.localReady() {
+		return ""
+	}
+	return m.probe(m.ctx)
+}
+
 // Runtime returns the live dashboard view, including for an unwired dashboard.
 func (m *Manager) Runtime() RuntimeView {
 	if m == nil {
 		return RuntimeView{Selection: Selection{Provider: cloudProvider, OpenCodeModel: cloudModel}, OpenCodeModels: slices.Clone(cloudModels)}
 	}
+	sidecar := m.sidecarModel()
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.runtimeView()
+	return m.runtimeView(sidecar)
 }
 
-func (m *Manager) runtimeView() RuntimeView {
+func (m *Manager) runtimeView(sidecar string) RuntimeView {
 	return RuntimeView{
 		Selection:      m.selection,
 		LocalModel:     strings.TrimSpace(m.config.LocalModel),
-		LocalReady:     m.config.localReady(),
+		LocalReady:     m.localReady(sidecar),
 		OpenCodeReady:  m.config.cloudKey() != "",
 		OpenCodeModels: slices.Clone(cloudModels),
 	}
@@ -118,6 +141,7 @@ func (m *Manager) SetRuntime(ctx context.Context, selection Selection) (RuntimeV
 	if err := selection.validate(); err != nil {
 		return RuntimeView{}, err
 	}
+	sidecar := m.sidecarModel()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if selection.Provider == cloudProvider && m.config.cloudKey() == "" {
@@ -131,7 +155,7 @@ func (m *Manager) SetRuntime(ctx context.Context, selection Selection) (RuntimeV
 		return RuntimeView{}, err
 	}
 	m.selection = selection
-	return m.runtimeView(), nil
+	return m.runtimeView(sidecar), nil
 }
 
 // jobRequest carries only the submitted task and the selected model credential.
@@ -142,11 +166,14 @@ type jobRequest struct {
 	Key      string `json:"key"`
 }
 
-func (m *Manager) job(task string) (jobRequest, string) {
+func (m *Manager) job(task, sidecar string) (jobRequest, string) {
 	job := jobRequest{Task: task, Provider: m.selection.Provider}
 	if job.Provider == localProvider {
 		if !m.config.localReady() {
 			return jobRequest{}, "Hermes needs its local endpoint, model, and key."
+		}
+		if !m.localReady(sidecar) {
+			return jobRequest{}, "The Hermes sidecar isn't running the configured local model. Recreate assistant and hermes with the same settings."
 		}
 		job.Model, job.Key = strings.TrimSpace(m.config.LocalModel), strings.TrimSpace(m.config.LocalKey)
 	} else {

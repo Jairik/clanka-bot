@@ -22,6 +22,7 @@ const (
 	maxTaskBytes      = 4096
 	maxResponseBytes  = 8192
 	jobTimeout        = 50 * time.Second
+	healthTimeout     = 2 * time.Second
 	goToolsJobTimeout = 250 * time.Second
 	keepJobs          = 50
 )
@@ -43,6 +44,8 @@ type Manager struct {
 	wait   sync.WaitGroup
 	// The job and dashboard use the same lock to snapshot the selection.
 	selection Selection
+	// probe reads the local model the sidecar routes; see sidecarModel.
+	probe func(context.Context) string
 }
 
 // New recovers abandoned jobs without replaying a request across a restart.
@@ -70,8 +73,32 @@ func New(ctx context.Context, db *sql.DB, endpoint, token string, config Runtime
 		m.run = func(ctx context.Context, job jobRequest) (string, error) {
 			return call(ctx, client, endpoint, token, job)
 		}
+		healthURL := strings.TrimSuffix(endpoint, "/run") + "/healthz"
+		healthClient := &http.Client{Timeout: healthTimeout, Transport: &http.Transport{}, CheckRedirect: client.CheckRedirect}
+		m.probe = func(ctx context.Context) string { return sidecarLocalModel(ctx, healthClient, healthURL) }
 	}
 	return m, nil
+}
+
+// sidecarLocalModel returns the local model the sidecar reports on /healthz,
+// or "" when it is unreachable, in cloud mode, or answers something else.
+func sidecarLocalModel(ctx context.Context, client *http.Client, url string) string {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return ""
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return ""
+	}
+	defer resp.Body.Close()
+	var health struct {
+		LocalModel string `json:"local_model"`
+	}
+	if resp.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(resp.Body, 1024)).Decode(&health) != nil {
+		return ""
+	}
+	return strings.TrimSpace(health.LocalModel)
 }
 
 // Configured reports whether the sidecar and its provider key are configured.
@@ -79,9 +106,10 @@ func (m *Manager) Configured() bool {
 	if m == nil || m.run == nil {
 		return false
 	}
+	sidecar := m.sidecarModel()
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	_, problem := m.job("")
+	_, problem := m.job("", sidecar)
 	return problem == ""
 }
 
@@ -98,12 +126,19 @@ func (m *Manager) Close() {
 
 // Handle receives a fresh explicit Hermes request, without prior turns or Tool data.
 func (m *Manager) Handle(ctx context.Context, request string) string {
+	command := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(request), "?.!,"))
+	// Probe the sidecar before taking the lock, and only for a new job.
+	sidecar := ""
+	switch strings.ToLower(command) {
+	case "", "status", "result", "cancel":
+	default:
+		sidecar = m.sidecarModel()
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
 		return "Hermes isn't accepting jobs right now."
 	}
-	command := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(request), "?.!,"))
 	switch strings.ToLower(command) {
 	case "":
 		return "What should I ask Hermes?"
@@ -124,7 +159,7 @@ func (m *Manager) Handle(ctx context.Context, request string) string {
 	if m.run == nil {
 		return "Hermes is disabled."
 	}
-	job, problem := m.job(request)
+	job, problem := m.job(request, sidecar)
 	if problem != "" {
 		return problem
 	}

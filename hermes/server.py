@@ -338,7 +338,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/healthz":
-            self.send_json(200, {"status": "ok"})
+            # The Assistant compares this with its own local model before it
+            # reports Local as ready, so a sidecar recreated without the local
+            # settings (or with another model) doesn't look usable.
+            self.send_json(200, {"status": "ok", "local_model": local_model() if local_base_url() else ""})
         else:
             self.send_error(404)
 

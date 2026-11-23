@@ -41,6 +41,10 @@ func TestRuntimeSelection(t *testing.T) {
 	release := make(chan struct{})
 	announcements := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			fmt.Fprint(w, `{"status":"ok","local_model":"ornith:9b"}`)
+			return
+		}
 		var input map[string]string
 		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 			t.Error(err)
@@ -167,5 +171,71 @@ func TestIncompleteLocalConfiguration(t *testing.T) {
 		if got := manager.Handle(t.Context(), "Explicit task"); got != "Hermes needs its local endpoint, model, and key." {
 			t.Fatal(got)
 		}
+	}
+}
+
+// TestLocalReadinessFollowsTheSidecar covers a sidecar whose own settings
+// differ from the Assistant's: Local must not look ready, and a local job is
+// refused before anything is sent, while the cloud selection keeps working.
+func TestLocalReadinessFollowsTheSidecar(t *testing.T) {
+	ctx := t.Context()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "assistant.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	svc, err := settings.New(ctx, st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reported atomic.Value
+	var runs atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			fmt.Fprintf(w, `{"status":"ok","local_model":%q}`, reported.Load().(string))
+			return
+		}
+		runs.Add(1)
+		fmt.Fprint(w, `{"text":"Done."}`)
+	}))
+	defer server.Close()
+	config := hermes.RuntimeConfig{
+		Settings: svc, LocalBaseURL: "http://ornith.test/v1", LocalModel: "ornith:9b", LocalKey: "local-key",
+		OpenCodeKey: func() string { return "cloud-key" },
+	}
+	manager, err := hermes.New(ctx, st.DB(), server.URL+"/run", strings.Repeat("t", 32), config, nil, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+
+	for _, model := range []string{"", "other:7b"} {
+		reported.Store(model)
+		if view := manager.Runtime(); view.Provider != "local" || view.LocalReady {
+			t.Fatalf("sidecar reporting %q: view = %+v", model, view)
+		}
+		if manager.Configured() {
+			t.Fatalf("sidecar reporting %q should not be configured", model)
+		}
+		if got := manager.Handle(ctx, "Explicit task"); !strings.Contains(got, "isn't running the configured local model") {
+			t.Fatal(got)
+		}
+	}
+	if runs.Load() != 0 {
+		t.Fatalf("sent %d jobs to a mismatched sidecar", runs.Load())
+	}
+
+	reported.Store("ornith:9b")
+	if !manager.Runtime().LocalReady || !manager.Configured() {
+		t.Fatal("a matching sidecar should make Local ready")
+	}
+
+	// The cloud selection does not depend on the sidecar's local settings.
+	reported.Store("")
+	if _, err := manager.SetRuntime(ctx, hermes.Selection{Provider: "opencode-go", OpenCodeModel: "kimi-k3"}); err != nil {
+		t.Fatal(err)
+	}
+	if !manager.Configured() {
+		t.Fatal("cloud selection should stay configured")
 	}
 }

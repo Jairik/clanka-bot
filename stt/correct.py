@@ -6,8 +6,9 @@ device and product names after decode. It never touches numbers, negation,
 short common words or free-form dictation, and it keeps the raw string so a
 bad rewrite can be diagnosed without logging the utterance.
 
-Enable with STT_CORRECT=1 (default). Set STT_CORRECT=0 to roll back without
-changing the model.
+Both features stay off until a measured corpus says they help. Set
+STT_CORRECT=1 for post-decode rewrites and STT_KEYTERMS=1 for decoder
+bias. Empty, missing, or any other value leaves production text unchanged.
 """
 
 from __future__ import annotations
@@ -137,10 +138,27 @@ def load_keyterms(path: Path | None = None) -> list[str]:
     return [term.canonical for term in load_vocab(path) if "," not in term.canonical]
 
 
+# Only these strings turn a gate on. Default, empty, and anything else stay off
+# so a half-set env cannot enable rewrites before the corpus is measured.
+_ON_VALUES = frozenset({"1", "true", "on", "yes"})
+
+
+def _env_flag(name: str, default: str = "0") -> bool:
+    """True only for an explicit on-value. Default and empty are off."""
+    raw = os.environ.get(name, default)
+    if raw is None:
+        return False
+    return raw.strip().lower() in _ON_VALUES
+
+
 def correction_enabled() -> bool:
-    """STT_CORRECT=0/false/off is the rollback switch."""
-    raw = os.environ.get("STT_CORRECT", "1").strip().lower()
-    return raw not in {"0", "false", "off", "no"}
+    """STT_CORRECT=1 enables post-decode rewrites. Off by default."""
+    return _env_flag("STT_CORRECT")
+
+
+def keyterm_bias_enabled() -> bool:
+    """STT_KEYTERMS=1 enables Moonshine set_keyterms. Off by default."""
+    return _env_flag("STT_KEYTERMS")
 
 
 class VocabularyCorrector:
@@ -164,36 +182,55 @@ class VocabularyCorrector:
         return cls(load_vocab(path))
 
     def apply(self, raw: str) -> Correction:
-        """Return a corrected transcript, or the original when nothing is safe."""
-        text = (raw or "").strip()
-        if not text or not self.terms:
+        """Return a corrected transcript, or the original when nothing is safe.
+
+        Matches replace only their original character span. Punctuation,
+        decimals, times, and unmatched dictation are copied byte-for-byte so
+        a pass that changes "spot ify" cannot turn "1.5" into "1. 5" or
+        rewrite commas in a reminder.
+        """
+        text = raw or ""
+        if not text.strip() or not self.terms:
             return Correction(raw=raw, text=raw, replacements=[])
 
-        tokens = TOKEN_RE.findall(text)
+        # finditer keeps the offsets TOKEN_RE.findall would throw away.
+        spans = list(TOKEN_RE.finditer(text))
+        tokens = [match.group(0) for match in spans]
         replacements: list[Replacement] = []
-        out: list[str] = []
+        pieces: list[str] = []
+        cursor = 0
         index = 0
         while index < len(tokens):
-            # Punctuation and whitespace-only tokens pass through untouched.
-            if not tokens[index].isalnum() and not any(ch.isalnum() for ch in tokens[index]):
-                out.append(tokens[index])
+            # Punctuation-only tokens are never match starts; they stay in the
+            # unmatched gap and are copied from the original string.
+            if not any(ch.isalnum() for ch in tokens[index]):
                 index += 1
                 continue
 
             matched, consumed, kind = self._match(tokens, index)
-            if matched is not None:
-                source = "".join(tokens[index : index + consumed])
-                out.append(matched.canonical)
-                replacements.append(Replacement(source=source, canonical=matched.canonical, kind=kind))
+            if matched is not None and consumed > 0:
+                start = spans[index].start()
+                end = spans[index + consumed - 1].end()
+                pieces.append(text[cursor:start])
+                pieces.append(matched.canonical)
+                replacements.append(
+                    Replacement(
+                        source=text[start:end],
+                        canonical=matched.canonical,
+                        kind=kind,
+                    )
+                )
+                cursor = end
                 index += consumed
                 continue
-            out.append(tokens[index])
             index += 1
 
-        # TOKEN_RE splits off punctuation, so joining without extra spaces would
-        # glue "don't" back together and leave "Spotify." intact.
-        corrected = _join_tokens(out)
-        return Correction(raw=raw, text=corrected, replacements=replacements)
+        if not replacements:
+            # No safe rewrite: keep the model text, including its punctuation.
+            return Correction(raw=raw, text=raw, replacements=[])
+
+        pieces.append(text[cursor:])
+        return Correction(raw=raw, text="".join(pieces), replacements=replacements)
 
     def _match(self, tokens: list[str], index: int) -> tuple[VocabTerm | None, int, str]:
         """Longest exact phrase, then a unique fuzzy single-token match."""
@@ -314,27 +351,6 @@ def _consume_words(tokens: list[str], index: int, word_count: int) -> tuple[int,
         elif seen == 0:
             return 0, ""
     return 0, ""
-
-
-def _join_tokens(tokens: list[str]) -> str:
-    """Put spaces between words, but not before punctuation."""
-    parts: list[str] = []
-    for token in tokens:
-        if not parts:
-            parts.append(token)
-            continue
-        if token and not any(ch.isalnum() for ch in token) and token not in {"+", "'"}:
-            parts.append(token)
-        elif parts[-1] and not any(ch.isalnum() for ch in parts[-1]):
-            # After punctuation: "Spotify, play" needs a space if the mark
-            # is a sentence separator, but "don't" is already one token.
-            if parts[-1] in {"'", "+"}:
-                parts.append(token)
-            else:
-                parts.append(" " + token if not parts[-1].endswith(" ") else token)
-        else:
-            parts.append(" " + token)
-    return "".join(parts).strip()
 
 
 def _edit_distance(left: str, right: str) -> int:

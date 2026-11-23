@@ -24,6 +24,7 @@ class ClipScore:
     hypothesis: str
     raw: str
     wer: float
+    raw_wer: float
     entity_ok: bool
     start_clipped: bool
     end_clipped: bool
@@ -39,6 +40,8 @@ class Summary:
 
     clips: int
     wer: float
+    wer_raw: float
+    wer_final: float
     entity_accuracy: float
     p50_finalize_ms: float | None
     p95_finalize_ms: float | None
@@ -111,6 +114,8 @@ def summarize(scores: list[ClipScore]) -> Summary:
         return Summary(
             clips=0,
             wer=0.0,
+            wer_raw=0.0,
+            wer_final=0.0,
             entity_accuracy=1.0,
             p50_finalize_ms=None,
             p95_finalize_ms=None,
@@ -119,7 +124,10 @@ def summarize(scores: list[ClipScore]) -> Summary:
             recognizer_errors=0,
             unsafe_rewrites=0,
         )
-    wer = sum(score.wer for score in scores) / len(scores)
+    # Final WER is what routing would see; raw WER is the model before rewrite.
+    wer_final = sum(score.wer for score in scores) / len(scores)
+    wer_raw = sum(score.raw_wer for score in scores) / len(scores)
+    wer = wer_final
     entity_ok = sum(1 for score in scores if score.entity_ok) / len(scores)
     latencies = [score.finalize_ms for score in scores if score.finalize_ms is not None]
     success = None
@@ -136,6 +144,8 @@ def summarize(scores: list[ClipScore]) -> Summary:
     return Summary(
         clips=len(scores),
         wer=wer,
+        wer_raw=wer_raw,
+        wer_final=wer_final,
         entity_accuracy=entity_ok,
         p50_finalize_ms=percentile(latencies, 0.50),
         p95_finalize_ms=percentile(latencies, 0.95),
@@ -161,19 +171,21 @@ def score_clip(
 ) -> ClipScore:
     """Tag a clip as clipped, a recognizer miss, an unsafe rewrite, or clean."""
     wer = word_error_rate(expected, hypothesis)
+    raw_wer = word_error_rate(expected, raw)
     unsafe = False
     folded_hyp = (hypothesis or "").casefold()
     for banned in unsafe_if or []:
         if banned.casefold() == folded_hyp:
             unsafe = True
-    # A mismatch that is not explained by a clipped edge is a recognizer error.
-    recognizer_error = wer > 0.0 and not start_clipped and not end_clipped
+    # Recognizer error is the model text, not the post-decode rewrite.
+    recognizer_error = raw_wer > 0.0 and not start_clipped and not end_clipped
     return ClipScore(
         clip_id=clip_id,
         expected=expected,
         hypothesis=hypothesis,
         raw=raw,
         wer=wer,
+        raw_wer=raw_wer,
         entity_ok=entity_match(entities, hypothesis),
         start_clipped=start_clipped,
         end_clipped=end_clipped,

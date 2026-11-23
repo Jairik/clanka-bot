@@ -79,6 +79,27 @@ def test_unsafe_rewrite_is_flagged():
     assert score.entity_ok is False
 
 
+def test_raw_and_final_wer_are_scored_separately():
+    score = score_clip(
+        clip_id="name-spotify",
+        expected="play music on Spotify",
+        hypothesis="play music on Spotify",
+        raw="play music on spot ify",
+        entities={"name": "Spotify"},
+        start_clipped=False,
+        end_clipped=False,
+        finalize_ms=30.0,
+        replacements=1,
+        unsafe_if=None,
+    )
+    assert score.wer == 0.0
+    assert score.raw_wer > 0.0
+    assert score.recognizer_error is True
+    summary = summarize([score])
+    assert summary.wer_final == 0.0
+    assert summary.wer_raw > 0.0
+
+
 def test_summarize_splits_clipping_from_recognizer_errors():
     scores = [
         score_clip("a", "one two", "one two", "one two", {}, False, False, 10, 0, None),

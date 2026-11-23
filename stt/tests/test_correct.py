@@ -7,6 +7,8 @@ from correct import (
     VocabTerm,
     VocabularyCorrector,
     apply_keyterms,
+    correction_enabled,
+    keyterm_bias_enabled,
     load_keyterms,
     load_vocab,
 )
@@ -73,6 +75,30 @@ def test_numbers_are_not_rewritten():
     assert result.text == "set lights brightness to 50 percent"
 
 
+def test_decimal_and_time_punctuation_stay_glued():
+    # Tokenising 1.5 / 1:30 used to rejoin them as "1. 5" and "1: 30".
+    result = corrector().apply("set a timer for 1.5 hours")
+    assert result.text == "set a timer for 1.5 hours"
+    result = corrector().apply("wake me at 1:30")
+    assert result.text == "wake me at 1:30"
+    result = corrector().apply("1.5")
+    assert result.text == "1.5"
+    result = corrector().apply("1:30")
+    assert result.text == "1:30"
+
+
+def test_dictation_commas_are_preserved():
+    spoken = "remind me to pick up milk, eggs, and bread"
+    result = corrector().apply(spoken)
+    assert result.text == spoken
+    assert result.changed is False
+
+
+def test_rewrite_keeps_surrounding_punctuation():
+    result = corrector().apply("play spotify at 1.5, then stop")
+    assert result.text == "play Spotify at 1.5, then stop"
+
+
 def test_herman_is_not_rewritten_to_hermes():
     result = corrector().apply("text Herman I am running late")
     assert result.text == "text Herman I am running late"
@@ -127,3 +153,18 @@ def test_custom_terms_do_not_rewrite_unlisted_jargon():
     small = VocabularyCorrector([VocabTerm(canonical="Spotify", aliases=("spotify",))])
     result = small.apply("ask Hermes to summarise this")
     assert result.text == "ask Hermes to summarise this"
+
+
+def test_correction_and_keyterms_are_off_by_default(monkeypatch):
+    monkeypatch.delenv("STT_CORRECT", raising=False)
+    monkeypatch.delenv("STT_KEYTERMS", raising=False)
+    assert correction_enabled() is False
+    assert keyterm_bias_enabled() is False
+    monkeypatch.setenv("STT_CORRECT", "")
+    monkeypatch.setenv("STT_KEYTERMS", "0")
+    assert correction_enabled() is False
+    assert keyterm_bias_enabled() is False
+    monkeypatch.setenv("STT_CORRECT", "1")
+    monkeypatch.setenv("STT_KEYTERMS", "true")
+    assert correction_enabled() is True
+    assert keyterm_bias_enabled() is True

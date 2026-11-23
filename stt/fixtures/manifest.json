@@ -1,6 +1,6 @@
 {
   "schema": "stt-replay-fixtures/v1",
-  "notes": "Checked-in audio is synthetic PCM for endpointing. Put owner-voice WAVs in fixtures/private/<id>.wav. #521 selects the live capture path before Pi deployment comparison.",
+  "notes": "Checked-in audio is synthetic PCM for endpointing, not a WER measurement. Put owner-voice WAVs in fixtures/private/<id>.wav. Capture path is the raw OSM09 USB source named by #521; that issue stays the deploy blocker.",
   "endpoint": {
     "silence_ms": 500,
     "threshold_dbfs": -38,
@@ -91,6 +91,24 @@
       "speech_end_ms": 1360
     },
     {
+      "id": "numbers-decimal",
+      "category": "numbers",
+      "expected_text": "set a timer for 1.5 hours",
+      "entities": {"hours": 1.5},
+      "synthetic": {"kind": "speech_then_silence", "lead_ms": 160, "speech_ms": 1200, "silence_ms": 640},
+      "speech_start_ms": 160,
+      "speech_end_ms": 1360
+    },
+    {
+      "id": "numbers-time",
+      "category": "numbers",
+      "expected_text": "wake me at 1:30",
+      "entities": {"time": "1:30"},
+      "synthetic": {"kind": "speech_then_silence", "lead_ms": 160, "speech_ms": 900, "silence_ms": 640},
+      "speech_start_ms": 160,
+      "speech_end_ms": 1060
+    },
+    {
       "id": "negation-lights",
       "category": "negation",
       "expected_text": "don't turn on the lights",
@@ -118,6 +136,15 @@
       "synthetic": {"kind": "speech_then_silence", "lead_ms": 160, "speech_ms": 1600, "silence_ms": 640},
       "speech_start_ms": 160,
       "speech_end_ms": 1760
+    },
+    {
+      "id": "dictation-commas",
+      "category": "dictation",
+      "expected_text": "remind me to pick up milk, eggs, and bread",
+      "entities": {},
+      "synthetic": {"kind": "speech_then_silence", "lead_ms": 160, "speech_ms": 1800, "silence_ms": 640},
+      "speech_start_ms": 160,
+      "speech_end_ms": 1960
     },
     {
       "id": "dictation-herman",

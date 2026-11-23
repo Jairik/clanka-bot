@@ -69,6 +69,8 @@ class Endpointer:
     heard: bool = False
     silent_ms: float = 0.0
     total_ms: float = 0.0
+    # Stream offset of the last above-threshold frame. Go stores a wall clock
+    # here for latency; replay only needs the offset to tag clipped edges.
     last_speech_ms: int = 0
     hit_max: bool = False
 

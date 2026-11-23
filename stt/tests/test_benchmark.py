@@ -64,11 +64,46 @@ def test_offline_benchmark_does_not_rewrite_negation_or_herman():
     assert by_id["silence"].start_clipped is False
 
 
-def test_report_marks_capture_path_unselected():
+def test_report_defaults_to_aggregates_on_the_osm09_path():
     clips = load_manifest()[:1]
     scores = run_offline(clips, EndpointConfig(), None, {}, None)
     report = report_dict(scores, "small-streaming", "", None)
     assert report["schema"] == "stt-replay-benchmark/v1"
-    assert report["capture_path"] == "unselected"
+    assert report["capture_path"] == "alsa_input.usb-Generalplus_OSM09-00.mono-fallback"
     assert "521" in report["blocked_by"]
+    assert report["transcripts"] == "aggregates"
+    assert "expected" not in report["clips"][0]
+    assert "hypothesis" not in report["clips"][0]
+    assert "raw" not in report["clips"][0]
+    assert "wer_raw" in report["summary"]
+    assert "wer_final" in report["summary"]
     json.dumps(report)  # must be serialisable
+
+
+def test_include_transcripts_adds_text_except_for_private_dirs(tmp_path):
+    clips = load_manifest()[:1]
+    scores = run_offline(clips, EndpointConfig(), None, {}, None)
+    tts_dir = tmp_path / "tts"
+    shown = report_dict(
+        scores, "small-streaming", "", tts_dir, include_transcripts=True
+    )
+    assert shown["transcripts"] == "included"
+    assert "expected" in shown["clips"][0]
+    private = tmp_path / "private"
+    private.mkdir()
+    hidden = report_dict(
+        scores,
+        "small-streaming",
+        "",
+        private,
+        include_transcripts=True,
+    )
+    assert hidden["transcripts"] == "aggregates"
+    assert "hypothesis" not in hidden["clips"][0]
+
+
+def test_benchmark_uses_public_read_event():
+    source = Path(__file__).resolve().parent.parent.joinpath("benchmark.py").read_text()
+    assert "async_read_event" not in source
+    assert "read_event" in source
+    assert "transcript-stop" in source

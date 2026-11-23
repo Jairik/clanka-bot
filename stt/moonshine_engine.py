@@ -93,7 +93,8 @@ class MoonshineEngine:
         self.language = language
         self.manifest_path = manifest
         # Distinctive device and product names for Moonshine keyterm biasing.
-        # Empty keeps the stock decoder; STT_CORRECT still runs after decode.
+        # Empty keeps the stock decoder. Bias and STT_CORRECT are independent
+        # opt-in gates; neither runs unless the caller passed terms / a corrector.
         self.keyterms = [term for term in (keyterms or []) if term and "," not in term]
         self.sample_rate = 16000
         self.version = _package_version()

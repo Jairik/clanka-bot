@@ -25,7 +25,12 @@ from wyoming.audio import AudioChunk, AudioStart, AudioStop
 from wyoming.event import Event, async_read_event, async_write_event
 from wyoming.info import AsrModel, AsrProgram, Attribution, Describe, Info
 
-from correct import VocabularyCorrector, correction_enabled, load_keyterms
+from correct import (
+    VocabularyCorrector,
+    correction_enabled,
+    keyterm_bias_enabled,
+    load_keyterms,
+)
 from moonshine_engine import MoonshineEngine
 from pcm16 import to_floats
 
@@ -303,7 +308,9 @@ def main() -> None:
     port = int(os.environ.get("STT_PORT", "10300"))
     model = os.environ.get("STT_MODEL", "small-streaming")
     language = os.environ.get("STT_LANGUAGE", "en")
-    keyterms = load_keyterms()
+    # Both gates are off unless the env is an explicit on-value. Measured
+    # evidence from the replay corpus must land before either is enabled.
+    keyterms = load_keyterms() if keyterm_bias_enabled() else []
 
     engine = MoonshineEngine(model=model, language=language, keyterms=keyterms)
     started = time.monotonic()

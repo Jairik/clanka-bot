@@ -81,6 +81,8 @@ services:
       ASSISTANT_EMBED_URL: "http://embed:8085"
       # Shared only with the optional Hermes sidecar.
       HERMES_RUNTIME_TOKEN: ${HERMES_RUNTIME_TOKEN:-}
+      HERMES_LOCAL_BASE_URL: ${HERMES_LOCAL_BASE_URL:-}
+      HERMES_LOCAL_API_KEY: ${HERMES_LOCAL_API_KEY:-}
       ASSISTANT_TTS_ADDR: "tts:10200"
       # ADR-0003: the one SQLite database lives on the assistant-data volume.
       ASSISTANT_DATA_DIR: "/app/data"
@@ -229,6 +231,12 @@ services:
     networks: [hermes-private, hermes-egress]
     environment:
       HERMES_RUNTIME_TOKEN: ${HERMES_RUNTIME_TOKEN:-}
+      HERMES_LOCAL_BASE_URL: ${HERMES_LOCAL_BASE_URL:-}
+      HERMES_LOCAL_MODEL: ${HERMES_LOCAL_MODEL:-}
+      # Empty keeps the job tool-free. Sample MCP is for discovery benches only.
+      HERMES_TOOL_SEARCH: ${HERMES_TOOL_SEARCH:-}
+      HERMES_SAMPLE_MCP: ${HERMES_SAMPLE_MCP:-}
+      HERMES_SAMPLE_MCP_LAZY: ${HERMES_SAMPLE_MCP_LAZY:-}
     healthcheck:
       test: ["CMD", "/opt/hermes/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8642/healthz', timeout=2)"]
       interval: 10s

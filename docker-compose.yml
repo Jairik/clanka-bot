@@ -82,6 +82,7 @@ services:
       # Shared only with the optional Hermes sidecar.
       HERMES_RUNTIME_TOKEN: ${HERMES_RUNTIME_TOKEN:-}
       HERMES_LOCAL_BASE_URL: ${HERMES_LOCAL_BASE_URL:-}
+      HERMES_LOCAL_MODEL: ${HERMES_LOCAL_MODEL:-}
       HERMES_LOCAL_API_KEY: ${HERMES_LOCAL_API_KEY:-}
       # Match the Hermes sidecar's job deadline.
       HERMES_GO_TOOLS: ${HERMES_GO_TOOLS:-}

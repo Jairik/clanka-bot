@@ -991,13 +991,16 @@ func run() error {
 		return err
 	}
 
-	// The sidecar receives only the explicit request and its dedicated provider key.
-	hermesJobs, err := hermes.New(ctx, st.DB(), "http://hermes:8642/run", os.Getenv("HERMES_RUNTIME_TOKEN"), func() string {
-		if os.Getenv("HERMES_LOCAL_BASE_URL") != "" {
-			return os.Getenv("HERMES_LOCAL_API_KEY")
-		}
-		key, _ := secretsSvc.Get(hermes.SecretName)
-		return key
+	// Resolve the dedicated Go key live, so adding or removing it affects the next job.
+	hermesJobs, err := hermes.New(ctx, st.DB(), "http://hermes:8642/run", os.Getenv("HERMES_RUNTIME_TOKEN"), hermes.RuntimeConfig{
+		Settings:     settingsSvc,
+		LocalBaseURL: os.Getenv("HERMES_LOCAL_BASE_URL"),
+		LocalModel:   os.Getenv("HERMES_LOCAL_MODEL"),
+		LocalKey:     os.Getenv("HERMES_LOCAL_API_KEY"),
+		OpenCodeKey: func() string {
+			key, _ := secretsSvc.Get(hermes.SecretName)
+			return key
+		},
 	}, func(text string) {
 		if announcements != nil {
 			announcements.Enqueue(text)
@@ -1376,7 +1379,7 @@ func run() error {
 			// The Routes page reads live Tool metadata; the Hermes page reads the
 			// same registry and the account registry.
 			Registry:      registry,
-			HermesReady:   hermesJobs.Configured,
+			HermesRuntime: hermesJobs,
 			HermesAdapter: hermesAdapter,
 			Integrations:  integrationSvc,
 			Verifier:      integrationVerifier,

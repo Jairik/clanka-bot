@@ -20,6 +20,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/activity"
 	"github.com/Jairik/clanka-bot/assistant/internal/announce"
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
+	"github.com/Jairik/clanka-bot/assistant/internal/hermes"
 	"github.com/Jairik/clanka-bot/assistant/internal/hermesadapter"
 	"github.com/Jairik/clanka-bot/assistant/internal/httpguard"
 	"github.com/Jairik/clanka-bot/assistant/internal/integrations"
@@ -143,8 +144,8 @@ type Options struct {
 	// its metadata to show what is deterministic, what only the Agent may call,
 	// and what stays on the Pi. Nil makes those pages explanatory.
 	Registry *tool.Registry
-	// HermesReady reports whether the model-only sidecar has its credential.
-	HermesReady func() bool
+	// HermesRuntime provides the live selection and readiness for new jobs.
+	HermesRuntime *hermes.Manager
 	// HermesAdapter is the private allowlist adapter. The Hermes page shows
 	// its enforced surface. Nil leaves the surface empty.
 	HermesAdapter *hermesadapter.Adapter
@@ -259,7 +260,7 @@ type Handler struct {
 	phraseGenReady func() bool
 	registry       *tool.Registry
 	integrations   *integrations.Service
-	hermesReady    func() bool
+	hermesRuntime  *hermes.Manager
 	hermesAdapter  *hermesadapter.Adapter
 	verifier       *integrations.Verifier
 	// focusReg and announceQueue feed the focus view and its live delta. Either
@@ -432,7 +433,7 @@ func New(opts Options) (*Handler, error) {
 		phraseGenReady: opts.PhraseGenReady,
 		registry:       opts.Registry,
 		integrations:   opts.Integrations,
-		hermesReady:    opts.HermesReady,
+		hermesRuntime:  opts.HermesRuntime,
 		hermesAdapter:  opts.HermesAdapter,
 		verifier:       opts.Verifier,
 		focusReg:       opts.Focus,
@@ -578,6 +579,8 @@ func New(opts Options) (*Handler, error) {
 	h.Handle("GET /api/ui/hermes", h.page("hermes", h.hermesPage))
 	// Recipe writes use the same owner and Origin checks as account grants.
 	h.Handle("GET /api/ui/hermes/tools", h.page("hermes/tools", h.hermesTools))
+	h.Handle("GET /api/ui/hermes/runtime", h.page("hermes/runtime", h.hermesRuntimeGet))
+	h.Mutating("POST /api/ui/hermes/runtime", h.hermesRuntimeSave)
 	h.Mutating("POST /api/ui/hermes/tools", h.hermesToolSave)
 	h.Mutating("POST /api/ui/hermes/tools/{name}/delete", h.hermesToolDelete)
 	h.Mutating("POST /hermes/integrations/{id}", h.hermesLink)

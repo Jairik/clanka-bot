@@ -62,16 +62,17 @@ func main() {
 		UIVersion:   *uiVersion,
 		API:         api,
 	}
-	// The populated mode only swaps the page reads for fixtures; the shell
-	// (session, activity, volume, transcriber, typed) stays exactly as the
-	// first-run mode, so both modes share one stub implementation.
+	// Page fixtures stand in for production services while shared shell handlers
+	// run against the same stubs in both smoke modes.
+	fixtureDir := "fixtures/first-run"
 	if *fixtures {
-		sub, err := fs.Sub(fixturesFS, "fixtures")
-		if err != nil {
-			log.Fatalf("dashsmoke fixtures: %v", err)
-		}
-		opts.Fixtures = sub
+		fixtureDir = "fixtures"
 	}
+	sub, err := fs.Sub(fixturesFS, fixtureDir)
+	if err != nil {
+		log.Fatalf("dashsmoke fixtures: %v", err)
+	}
+	opts.Fixtures = sub
 	handler, err := dashboard.New(opts)
 	if err != nil {
 		log.Fatalf("dashboard: %v", err)

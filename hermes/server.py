@@ -22,6 +22,8 @@ RUN_TIMEOUT = 45
 GO_TOOLS_RUN_TIMEOUT = 240
 CLOUD_BASE_URL = "https://opencode.ai/inference/go/openai/v1"
 CLOUD_MODEL = "deepseek-v4.1-flash"
+# Match the Go dashboard allowlist at the authenticated worker boundary.
+CLOUD_MODELS = {CLOUD_MODEL, "deepseek-v4-pro", "glm-5.3-flash", "kimi-k3"}
 REPLY_INSTRUCTION = "Reply in plain language in one or two concise sentences."
 SAMPLE_TOOLSET = "clanka_sample"
 SAMPLE_NAMES = {"mcp__clanka_sample__sample_ping", "mcp__clanka_sample__sample_time"}
@@ -171,14 +173,28 @@ def discover_configured_mcp():
     return discover_mcp_tools(allowed_mcp_names=[SAMPLE_TOOLSET])
 
 
-def agent_kwargs(api_key, go_names=()):
+def model_route(provider=None, model=None):
+    """Resolve a submitted model against fixed routes, including legacy probes."""
+    url = local_base_url()
+    configured_model = local_model()
+    if provider is None and model is None:
+        provider, model = ("local", configured_model) if url else ("opencode-go", CLOUD_MODEL)
+    if provider == "local" and url and configured_model and model == configured_model:
+        return "custom", model, url
+    if provider == "opencode-go" and model in CLOUD_MODELS:
+        return provider, model, CLOUD_BASE_URL
+    raise ValueError("invalid Hermes provider or model")
+
+
+def agent_kwargs(api_key, go_names=(), *, provider=None, model=None):
     """Keyword arguments for AIAgent that match this job's allowlist."""
     toolsets = [GO_TOOLSET] if go_names else parse_toolsets()
-    using_local = bool(local_base_url())
+    provider, model, base_url = model_route(provider, model)
     return {
-        "provider": "custom" if using_local else "opencode-go",
-        "model": local_model() or CLOUD_MODEL,
-        "base_url": local_base_url() or CLOUD_BASE_URL,
+        "provider": provider,
+        "model": model,
+        "base_url": base_url,
+        "api_mode": "chat_completions",
         "api_key": api_key,
         "fallback_model": {},
         "enabled_toolsets": toolsets,
@@ -243,9 +259,7 @@ def worker_env():
 
 
 def validate_startup():
-    """Refuse a half-configured local endpoint or a missing runtime token."""
-    if bool(local_base_url()) != bool(local_model()):
-        raise SystemExit("Hermes needs both a local model and base URL")
+    """Validate the runtime token and initialize the per-job configuration."""
     if truthy("HERMES_GO_TOOLS") and sample_mcp_enabled():
         raise SystemExit("Choose Go Tools or sample MCP")
     token = env("HERMES_RUNTIME_TOKEN")
@@ -256,7 +270,7 @@ def validate_startup():
 
 
 def model_turn():
-    """Run one AIAgent job from a JSON {task, key} request on stdin."""
+    """Run one AIAgent job from an authenticated request on stdin."""
     import io
 
     started = time.monotonic()
@@ -278,7 +292,9 @@ def model_turn():
             discover_configured_mcp()
         from run_agent import AIAgent
 
-        agent = AIAgent(**agent_kwargs(request["key"], go_names))
+        agent = AIAgent(**agent_kwargs(
+            request["key"], go_names, provider=request.get("provider"), model=request.get("model"),
+        ))
         with contextlib.closing(agent):
             assert_tool_allowlist(agent, go_names)
             if go_names:
@@ -339,11 +355,14 @@ class Handler(BaseHTTPRequestHandler):
             if not 0 < size <= MAX_BODY:
                 raise ValueError
             request = json.loads(self.rfile.read(size))
-            if set(request) != {"task", "key"} or any(
-                not isinstance(request[name], str) or not request[name].strip()
-                for name in ("task", "key")
-            ):
+            if not isinstance(request, dict) or set(request) not in (
+                {"task", "key"}, {"task", "key", "provider", "model"},
+            ) or any(not isinstance(value, str) or not value.strip() for value in request.values()):
                 raise ValueError
+            if "provider" not in request:
+                # Legacy local probes must never send an unclassified key to the cloud.
+                request.update(provider="local", model=local_model())
+            model_route(request.get("provider"), request.get("model"))
         except (ValueError, TypeError, OSError):
             self.send_error(400)
             return

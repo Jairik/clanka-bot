@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from http.client import HTTPConnection
 import importlib.util
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -88,10 +89,71 @@ class HermesServerConfigTest(unittest.TestCase):
         self.assertEqual(kwargs["base_url"], self.server.CLOUD_BASE_URL)
         self.assertEqual(kwargs["model"], self.server.CLOUD_MODEL)
 
-    def test_startup_rejects_a_half_configured_local_endpoint(self):
+    def test_incomplete_local_route_never_falls_back(self):
         os.environ["HERMES_LOCAL_BASE_URL"] = "http://ornith.example/v1"
-        with self.assertRaises(SystemExit):
-            self.server.validate_startup()
+        self.assertEqual(self.server.validate_startup(), self.env["HERMES_RUNTIME_TOKEN"])
+        with self.assertRaises(ValueError):
+            self.server.agent_kwargs("local-key")
+        self.assertEqual(
+            self.server.agent_kwargs("cloud-key", provider="opencode-go", model="glm-5.3-flash")["base_url"],
+            self.server.CLOUD_BASE_URL,
+        )
+
+    def test_explicit_cloud_models_ignore_the_local_configuration(self):
+        os.environ.update(HERMES_LOCAL_BASE_URL="http://ornith.example/v1", HERMES_LOCAL_MODEL="ornith:9b")
+        for model in ("deepseek-v4.1-flash", "deepseek-v4-pro", "glm-5.3-flash", "kimi-k3"):
+            with self.subTest(model=model):
+                kwargs = self.server.agent_kwargs("cloud-key", provider="opencode-go", model=model)
+                self.assertEqual(kwargs["base_url"], self.server.CLOUD_BASE_URL)
+                self.assertEqual(kwargs["model"], model)
+                self.assertEqual(kwargs["provider"], "opencode-go")
+                self.assertEqual(kwargs["api_mode"], "chat_completions")
+                self.assertEqual(kwargs["api_key"], "cloud-key")
+                self.assertEqual(kwargs["fallback_model"], {})
+
+    def test_run_validates_route_before_starting_any_worker(self):
+        os.environ.update(HERMES_LOCAL_BASE_URL="http://ornith.example/v1", HERMES_LOCAL_MODEL="ornith:9b")
+        token = self.env["HERMES_RUNTIME_TOKEN"]
+        cloud = {"task": "test", "key": "cloud-key", "provider": "opencode-go", "model": "kimi-k3"}
+        local = {"task": "test", "key": "local-key", "provider": "local", "model": "ornith:9b"}
+        legacy = {"task": "test", "key": "local-key"}
+
+        def run_worker(handler, _request):
+            handler.send_json(200, {"text": "accepted"})
+
+        with self.server.RuntimeServer(("127.0.0.1", 0), token) as server:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            connection = HTTPConnection(*server.server_address, timeout=2)
+            try:
+                with mock.patch.object(self.server.Handler, "run_worker", autospec=True, side_effect=run_worker) as worker:
+                    for payload, bearer, expected in (
+                        (cloud, "", 401),
+                        (dict(cloud, base_url="https://other.example"), token, 400),
+                        (dict(cloud, provider="auto"), token, 400),
+                        (dict(cloud, model="any"), token, 400),
+                        (dict(cloud, model=None), token, 400),
+                        (dict(cloud, key=" "), token, 400),
+                        (dict(local, model="any"), token, 400),
+                        (cloud, token, 200),
+                        (local, token, 200),
+                        (legacy, token, 200),
+                    ):
+                        connection.request("POST", "/run", json.dumps(payload), {"Authorization": "Bearer " + bearer})
+                        response = connection.getresponse()
+                        self.assertEqual(response.status, expected)
+                        response.read()
+                    self.assertEqual([call.args[1] for call in worker.call_args_list], [cloud, local, local])
+                    os.environ.pop("HERMES_LOCAL_BASE_URL")
+                    connection.request("POST", "/run", json.dumps(legacy), {"Authorization": "Bearer " + token})
+                    response = connection.getresponse()
+                    self.assertEqual(response.status, 400)
+                    response.read()
+                    self.assertEqual(worker.call_count, 3)
+            finally:
+                connection.close()
+                server.shutdown()
+                thread.join(timeout=2)
 
     def test_startup_writes_config_and_returns_the_token(self):
         token = self.server.validate_startup()
@@ -158,7 +220,7 @@ class HermesServerConfigTest(unittest.TestCase):
             running = HTTPConnection(*address, timeout=2)
             probe = HTTPConnection(*address, timeout=2)
             headers = {"Authorization": "Bearer " + token}
-            payload = '{"task":"test","key":"key"}'
+            payload = '{"task":"test","key":"key","provider":"opencode-go","model":"deepseek-v4.1-flash"}'
             try:
                 with mock.patch.object(self.server.subprocess, "Popen", side_effect=start_worker):
                     running.request("POST", "/run", payload, headers)

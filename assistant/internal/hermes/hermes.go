@@ -30,8 +30,8 @@ const (
 type Manager struct {
 	ctx      context.Context
 	db       *sql.DB
-	run      func(context.Context, string, string) (string, error)
-	key      func() string
+	run      func(context.Context, jobRequest) (string, error)
+	config   RuntimeConfig
 	announce func(string)
 	logger   *slog.Logger
 	timeout  time.Duration
@@ -41,10 +41,16 @@ type Manager struct {
 	active int64
 	cancel context.CancelFunc
 	wait   sync.WaitGroup
+	// The job and dashboard use the same lock to snapshot the selection.
+	selection Selection
 }
 
 // New recovers abandoned jobs without replaying a request across a restart.
-func New(ctx context.Context, db *sql.DB, endpoint, token string, key func() string, announce func(string), logger *slog.Logger) (*Manager, error) {
+func New(ctx context.Context, db *sql.DB, endpoint, token string, config RuntimeConfig, announce func(string), logger *slog.Logger) (*Manager, error) {
+	selection, err := config.loadSelection(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("load Hermes runtime selection: %w", err)
+	}
 	if _, err := db.ExecContext(ctx, "UPDATE hermes_jobs SET state = 'interrupted' WHERE state = 'running'"); err != nil {
 		return nil, err
 	}
@@ -59,10 +65,10 @@ func New(ctx context.Context, db *sql.DB, endpoint, token string, key func() str
 		Transport:     &http.Transport{},
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
-	m := &Manager{ctx: ctx, db: db, key: key, announce: announce, logger: logger, timeout: timeout}
+	m := &Manager{ctx: ctx, db: db, config: config, selection: selection, announce: announce, logger: logger, timeout: timeout}
 	if len(token) >= 32 {
-		m.run = func(ctx context.Context, task, key string) (string, error) {
-			return call(ctx, client, endpoint, token, task, key)
+		m.run = func(ctx context.Context, job jobRequest) (string, error) {
+			return call(ctx, client, endpoint, token, job)
 		}
 	}
 	return m, nil
@@ -70,7 +76,13 @@ func New(ctx context.Context, db *sql.DB, endpoint, token string, key func() str
 
 // Configured reports whether the sidecar and its provider key are configured.
 func (m *Manager) Configured() bool {
-	return m.run != nil && strings.TrimSpace(m.key()) != ""
+	if m == nil || m.run == nil {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, problem := m.job("")
+	return problem == ""
 }
 
 // Close waits for a cancelled in-flight request to release the database.
@@ -112,9 +124,9 @@ func (m *Manager) Handle(ctx context.Context, request string) string {
 	if m.run == nil {
 		return "Hermes is disabled."
 	}
-	key := strings.TrimSpace(m.key())
-	if key == "" {
-		return "Hermes needs its OpenCode Go key."
+	job, problem := m.job(request)
+	if problem != "" {
+		return problem
 	}
 	if len(request) > maxTaskBytes {
 		return "That Hermes request is too long."
@@ -134,7 +146,7 @@ func (m *Manager) Handle(ctx context.Context, request string) string {
 	jobCtx, cancel := context.WithTimeout(m.ctx, m.timeout)
 	m.active, m.cancel = id, cancel
 	m.wait.Add(1)
-	go m.execute(jobCtx, id, request, key)
+	go m.execute(jobCtx, id, job)
 	return fmt.Sprintf("Hermes is working on job %d.", id)
 }
 
@@ -177,9 +189,9 @@ func (m *Manager) finish(ctx context.Context, id int64, state, result string) er
 	return err
 }
 
-func (m *Manager) execute(ctx context.Context, id int64, task, key string) {
+func (m *Manager) execute(ctx context.Context, id int64, job jobRequest) {
 	defer m.wait.Done()
-	text, err := m.run(ctx, task, key)
+	text, err := m.run(ctx, job)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	defer func() {
@@ -208,8 +220,8 @@ func (m *Manager) execute(ctx context.Context, id int64, task, key string) {
 	}
 }
 
-func call(ctx context.Context, client *http.Client, endpoint, token, task, key string) (string, error) {
-	body, err := json.Marshal(map[string]string{"task": task, "key": key})
+func call(ctx context.Context, client *http.Client, endpoint, token string, job jobRequest) (string, error) {
+	body, err := json.Marshal(job)
 	if err != nil {
 		return "", err
 	}

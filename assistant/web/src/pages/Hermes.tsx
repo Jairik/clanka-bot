@@ -5,6 +5,7 @@ import { ChevronDown } from "lucide-react";
 import { usePageData } from "../api";
 import { Field, TextField, useActions, type Actions } from "../forms";
 import { PageFrame } from "../shell";
+import { HermesRuntimeSection } from "./HermesRuntime";
 import { HermesToolsSection } from "./HermesTools";
 import type { HermesView, Integration, IntegrationSecret } from "../types";
 import { Badge, Dot, Empty, Fold, Lede, Notice, Section, cn, foldOpen, type Tone } from "../ui";
@@ -39,6 +40,8 @@ export function HermesPage() {
             </p>
           </div>
         </Section>
+
+        {data && <HermesRuntimeSection />}
 
         {data && !data.HasRegistry && (
           <Section title="The Tool registry is not configured" defaultOpen>

@@ -75,6 +75,7 @@ function stub(write: (path: string) => HermesView, get: () => HermesView = () =>
   };
   stubFetch({
     "/api/ui/hermes/tools": () => json({ available: [], recipes: [] }),
+    "/api/ui/hermes/runtime": () => json({}, 404),
     "/api/ui/hermes": () => json(get()),
     "/hermes/integrations/github": route("/hermes/integrations/github"),
     "/hermes/integrations/github/unlink": route("/hermes/integrations/github/unlink"),
@@ -102,6 +103,7 @@ it("shows the setup required and the enforced allowlist", async () => {
 it("names withheld allowlisted tools until the grant is on", async () => {
   stubFetch({
     "/api/ui/hermes/tools": () => json({ available: [], recipes: [] }),
+    "/api/ui/hermes/runtime": () => json({}, 404),
     "/api/ui/hermes": () =>
       json(
         view([], {
@@ -183,7 +185,8 @@ it("unlinks an account that has stored secrets", async () => {
 
 it("explains an unconfigured account registry", async () => {
   stubFetch({
-    "/api/ui/hermes/tools": () => json({ available: [], recipes: [] }), "/api/ui/hermes": () => json({ ...view([]), HasIntegrations: false }) });
+    "/api/ui/hermes/tools": () => json({ available: [], recipes: [] }),
+    "/api/ui/hermes/runtime": () => json({}, 404), "/api/ui/hermes": () => json({ ...view([]), HasIntegrations: false }) });
   render(<HermesPage />);
 
   expect(await screen.findByText(/built without the integrations or secrets service/)).toBeTruthy();
@@ -193,6 +196,7 @@ it("explains an unconfigured account registry", async () => {
 it("shows a refused link as an error", async () => {
   stubFetch({
     "/api/ui/hermes/tools": () => json({ available: [], recipes: [] }),
+    "/api/ui/hermes/runtime": () => json({}, 404),
     "/api/ui/hermes": () => json(view()),
     "/hermes/integrations/github": () =>
       json({ ...view(), Error: "Fill every required field before saving." }, 400),
@@ -217,6 +221,7 @@ it("keeps the link button enabled when a required secret is already stored but l
   };
   stubFetch({
     "/api/ui/hermes/tools": () => json({ available: [], recipes: [] }),
+    "/api/ui/hermes/runtime": () => json({}, 404),
     "/api/ui/hermes": () => json(view()),
     "/hermes/integrations/openrouter": route("/hermes/integrations/openrouter"),
   });
@@ -293,4 +298,30 @@ it("does not verify on load or on a timer", async () => {
   // Give any stray effect a chance to fire; it must not.
   await new Promise((r) => setTimeout(r, 50));
   expect(calls.filter((c) => c.path.endsWith("/verify"))).toHaveLength(0);
+});
+
+it("shows the job provider choice when the assistant serves it", async () => {
+  stubFetch({
+    "/api/ui/hermes/tools": () => json({ available: [], recipes: [] }),
+    "/api/ui/hermes/runtime": () =>
+      json({
+        provider: "local",
+        open_code_go_model: "deepseek-v4.1-flash",
+        open_code_go_models: ["deepseek-v4.1-flash"],
+        local_model: "Ornith",
+        local_ready: true,
+        open_code_go_ready: false,
+      }),
+    "/api/ui/hermes": () => json(view()),
+  });
+  render(<HermesPage />);
+  expect(await screen.findByRole("radiogroup", { name: "Provider for new Hermes jobs" })).toBeTruthy();
+  expect(screen.getByText("Local · Ornith")).toBeTruthy();
+});
+
+it("keeps the page usable when the assistant predates the job provider route", async () => {
+  stub(() => view());
+  render(<HermesPage />);
+  expect(await screen.findByText(/does not offer a job provider choice yet/)).toBeTruthy();
+  expect(screen.getByText("GitHub")).toBeTruthy();
 });

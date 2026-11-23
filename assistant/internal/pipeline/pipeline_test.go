@@ -61,18 +61,21 @@ func TestControlPhraseReachesTimeNow(t *testing.T) {
 	logger, _ := testLogger()
 	p := newPipeline(t, reg, map[string]string{"what time is it": clock.Name}, logger)
 
-	reply := p.Handle(context.Background(), request(), "What time is it?")
-	if want := "It's 3:04 PM."; reply.Text != want {
-		t.Fatalf("reply = %q, want %q", reply.Text, want)
-	}
-	if reply.Tool != clock.Name {
-		t.Errorf("tool = %q, want %q", reply.Tool, clock.Name)
-	}
-	if reply.Path != tool.PathControlPhrase {
-		t.Errorf("path = %q, want %q", reply.Path, tool.PathControlPhrase)
-	}
-	if reply.RequestID != "req-1" {
-		t.Errorf("request id = %q", reply.RequestID)
+	// Live Pi STT (#522) capitalizes the first word and adds a full stop.
+	for _, transcript := range []string{"what time is it", "What time is it?", "What time is it."} {
+		reply := p.Handle(context.Background(), request(), transcript)
+		if want := "It's 3:04 PM."; reply.Text != want {
+			t.Fatalf("%q: reply = %q, want %q", transcript, reply.Text, want)
+		}
+		if reply.Tool != clock.Name {
+			t.Errorf("%q: tool = %q, want %q", transcript, reply.Tool, clock.Name)
+		}
+		if reply.Path != tool.PathControlPhrase {
+			t.Errorf("%q: path = %q, want %q", transcript, reply.Path, tool.PathControlPhrase)
+		}
+		if reply.RequestID != "req-1" {
+			t.Errorf("%q: request id = %q", transcript, reply.RequestID)
+		}
 	}
 }
 

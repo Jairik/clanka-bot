@@ -121,8 +121,9 @@ docker compose -p clanka-routing-eval \
 The test prints one `ROUTING_EVAL_TOOL` line per Tool with TP, Control-phrase
 TP, semantic TP, FP, FN, precision and recall, then
 `ROUTING_EVAL_COMPOUNDS`, `ROUTING_EVAL_NEGATIVES`, `ROUTING_EVAL_FOCUS`,
-`ROUTING_EVAL_FOCUS_TOTAL`, `ROUTING_EVAL_TOTAL` and
-`ROUTING_EVAL_BASELINE`. It fails if any Tool is below the precision floor,
+`ROUTING_EVAL_FOCUS_TOTAL`, `ROUTING_EVAL_TOTAL`,
+`ROUTING_EVAL_FALLBACK`, `ROUTING_EVAL_REASONS`, `ROUTING_EVAL_LATENCY_MS`,
+`ROUTING_EVAL_SCORES` and `ROUTING_EVAL_BASELINE`. It fails if any Tool is below the precision floor,
 made no predictions, was only ever right through a Control phrase, or if the
 overall result is below the Map 1 baseline. The harness allows a 10s embed
 timeout on purpose: routing quality is under test here, and latency is tracked
@@ -342,6 +343,43 @@ Pick the pair with the most recall that still clears the per-Tool floor, then
 put it in `config.yaml` and record the new numbers in the PR. Do not lower the
 floor or delete a hard case to make a pair look better. If no acceptable pair
 exists, the fix is better Tool examples or routing logic, not a weaker corpus.
+
+## Pi MiniLM audit (issue #522)
+
+Live voice on the Pi (114 turns in Activity) is mostly not a MiniLM ranking
+error. STT always capitalizes the first word and adds a full stop; Control
+phrases such as "what time is it" still hit after `phrase.Normalize`. Ignored
+turns and short fragments are transcription/endpointing, not matching. The
+common Fast-path miss is a duration Timer paraphrase that MiniLM ranks first
+but loses the 0.23 margin to `spotify.sleep` ("set a sleep timer for N").
+
+The shipped model stays `sentence-transformers/all-MiniLM-L6-v2` at
+0.71 / 0.23. A larger embedding model was not compared: the labelled Tool was
+already top-1 on most corpus misses, so the gap is sibling margin and
+Examples, not model quality. `spotify.sleep`'s overlapping Example is now
+"set a music sleep timer for 20 minutes". Held-out STT surfaces
+("What time is it.", "Set a timer for five minutes.") live in
+`routing_eval.yaml`. Ambiguous fragments ("Set it.", "Um.") must fall through
+without acting.
+
+Pi embed eval after that change (SSH relay to the running `clanka-bot`
+service, 2026-11-23): overall precision 1.0000, recall 0.6580 (1189/1807),
+fallback rate 0.3420, 0/337 negative misroutes, 0/45 compound misroutes,
+`timer.set` 9/28, miss reasons below_margin 401 / below_threshold 213 /
+extract_failed 3, Handle p50 61 ms / p95 143 ms, winning TP min score 0.7125.
+
+To reuse the Pi's running `clanka-bot` embed service without publishing a
+port or starting a second stack, bind a local SSH relay to the container IP
+on the existing Compose network:
+
+```sh
+# Replace EMBED_IP with the running clanka-bot-embed-1 address on the
+# Compose network (docker inspect). Bind loopback only; do not publish 8085.
+ssh -N -L 127.0.0.1:18085:EMBED_IP:8085 rbpi@<pi-tailnet>
+ROUTING_EVAL_EMBED_URL=http://127.0.0.1:18085 make routing-eval
+```
+
+Do not add a duplicate embed container.
 
 ## Promoting a request-log misroute into the fixture
 

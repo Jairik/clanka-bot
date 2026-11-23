@@ -168,6 +168,8 @@ jobs:
         run: python -m unittest discover -s scripts/prototype-run/tests -p 'test_*.py' -v
       - name: wakeword/tests Python suites
         run: python -m unittest discover -s wakeword/tests -p 'test_*.py' -v
+      - name: Hermes sidecar tests
+        run: python -m unittest discover -s hermes/tests -p 'test_*.py' -v
       - name: TTS and STT server tests
         run: python -m pytest tts/tests stt/tests -q
       - name: deploy.sh black-box tests

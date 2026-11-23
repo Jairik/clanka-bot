@@ -125,7 +125,10 @@ and the stored value wins. A key stored from the Dashboard takes effect on the
 next turn without a restart. Without any key the Agent path answers with the
 configured Unavailable message and the Fast path keeps working. Every provider
 request forces OpenRouter's `provider.zdr` and
-`provider.data_collection: "deny"` in code.
+`provider.data_collection: "deny"` in code. The inventory of that path, the
+stored settings a later Hermes cutover must keep loading, and the acceptance
+gates are in [docs/specs/go-agent-cutover.md](../specs/go-agent-cutover.md)
+([#526](https://github.com/Jairik/clanka-bot/issues/526)).
 
 ### Web search
 

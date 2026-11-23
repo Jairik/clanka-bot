@@ -2,7 +2,9 @@
 
 Hermes can run explicit, model-only jobs on the Pi. The Dashboard shows whether
 the runtime is configured, the candidate Tool surface for the future MCP
-adapter, and the accounts you can link today.
+adapter, and the accounts you can link today. Unmatched voice and typed
+requests still use the Go Agent path until
+[the cutover](specs/go-agent-cutover.md) ([#526](https://github.com/Jairik/clanka-bot/issues/526)).
 
 ## Pi setup
 

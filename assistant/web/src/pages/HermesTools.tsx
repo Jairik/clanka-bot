@@ -20,24 +20,53 @@ export type HermesToolsView = { available: HermesAvailableTool[] | null; recipes
 
 export const TOOLS_PATH = "/api/ui/hermes/tools";
 const JSON_INIT: RequestInit = { headers: { "Content-Type": "application/json", Accept: "application/json" } };
-const NAME_RE = /^[a-z0-9][a-z0-9_.-]*$/;
-const NAME_MAX = 64;
-const DESCRIPTION_MAX = 500;
+// These mirror the assistant's recipe rules (hermesadapter/recipes.go): the
+// name becomes the Tool "recipe.<name>", so it follows the runtime's
+// snake_case name part (tool.WireName) with no "__", and is capped at 56 so
+// "recipe__<name>" fits a 64-character function name.
+const NAME_RE = /^[a-z][a-z0-9_]*$/;
+const NAME_MAX = 56;
+const DESCRIPTION_MAX = 500; // runes, after trimming
+const ARGUMENTS_MAX_BYTES = 8 << 10; // of the compact JSON object the server stores
+// Go's unicode.IsControl: the C0 and C1 control characters plus DEL.
+const CONTROL_RE = /[\u0000-\u001f\u007f-\u009f]/;
 
 const deleteAction = (name: string) => `${TOOLS_PATH}/${encodeURIComponent(name)}/delete`;
 
-/** Pull an error message out of a refused write, whatever shape it answered with. */
-function refusal(status: number, view: unknown, text: string): string {
-  if (view && typeof view === "object") {
-    const v = view as { error?: unknown; Error?: unknown };
-    const msg = typeof v.error === "string" ? v.error : typeof v.Error === "string" ? v.Error : "";
-    if (msg) return msg;
+/** The assistant answers every refusal as {"error": "..."}; anything else falls back to text. */
+export function apiError(body: unknown): string {
+  let v = body;
+  if (typeof v === "string") {
+    try {
+      v = JSON.parse(v);
+    } catch {
+      return "";
+    }
   }
-  return text || `Request failed (${status}).`;
+  if (!v || typeof v !== "object" || Array.isArray(v)) return "";
+  const msg = (v as { error?: unknown }).error;
+  return typeof msg === "string" ? msg.trim() : "";
 }
 
+/** Pull an error message out of a refused write, whatever shape it answered with. */
+function refusal(status: number, view: unknown, text: string): string {
+  return apiError(view) || apiError(text) || text || `Request failed (${status}).`;
+}
+
+/** A served view always carries both lists, even when they are empty. */
 const isView = (v: unknown): v is HermesToolsView =>
-  !!v && typeof v === "object" && ("available" in v || "recipes" in v);
+  !!v &&
+  typeof v === "object" &&
+  Array.isArray((v as HermesToolsView).available) &&
+  Array.isArray((v as HermesToolsView).recipes);
+
+/** Bytes of the arguments as Go re-encodes them: compact UTF-8, with <, >, & and U+2028/9 escaped. */
+export function argumentsBytes(value: Record<string, unknown>): number {
+  const text = JSON.stringify(value);
+  const escaped = text.match(/[<>&]/g)?.length ?? 0; // "<" is 6 bytes, not 1
+  const separators = text.match(/[\u2028\u2029]/g)?.length ?? 0; // "\u2028" is 6 bytes, not 3
+  return new TextEncoder().encode(text).length + 5 * escaped + 3 * separators;
+}
 
 /** Loads the recipe view and runs writes against it. Newest write wins. */
 function useTools() {
@@ -58,7 +87,10 @@ function useTools() {
       // An assistant without the recipe routes answers 404: say so plainly
       // instead of offering a retry that cannot succeed.
       if (e instanceof HttpError && e.status === 404) setMissing(true);
-      else setLoadError(e instanceof Error ? e.message : String(e));
+      else {
+        const text = e instanceof Error ? e.message : String(e);
+        setLoadError(apiError(text) || text);
+      }
     }
   }, []);
 
@@ -139,16 +171,21 @@ export function validateDraft(
   if (ctx.creating) {
     if (!name) errs.name = "Name is required.";
     else if (name.length > NAME_MAX) errs.name = `Name must be ${NAME_MAX} characters or fewer.`;
-    else if (!NAME_RE.test(name)) errs.name = "Use lowercase letters, digits, dots, dashes or underscores.";
+    else if (!NAME_RE.test(name)) errs.name = "Start with a lowercase letter, then use lowercase letters, digits or underscores.";
+    else if (name.includes("__")) errs.name = "Use single underscores only.";
     else if (ctx.recipes.some((r) => r.name === name)) errs.name = "A recipe with this name already exists.";
-    else if (ctx.available.some((t) => t.name === name)) errs.name = "This name is already a Tool.";
   }
-  if (!d.description.trim()) errs.description = "Description is required.";
-  else if (d.description.length > DESCRIPTION_MAX) errs.description = `Description must be ${DESCRIPTION_MAX} characters or fewer.`;
+  const description = d.description.trim();
+  if (!description) errs.description = "Description is required.";
+  else if (CONTROL_RE.test(description)) errs.description = "Keep the description on one line, without control characters.";
+  else if ([...description].length > DESCRIPTION_MAX) errs.description = `Description must be ${DESCRIPTION_MAX} characters or fewer.`;
   if (!d.base_tool) errs.base_tool = "Choose a vetted Tool.";
   else if (!ctx.available.some((t) => t.name === d.base_tool)) errs.base_tool = "This Tool is no longer available.";
   const args = parseArguments(d.arguments);
   if (args.error) errs.arguments = args.error;
+  else if (args.value && argumentsBytes(args.value) > ARGUMENTS_MAX_BYTES) {
+    errs.arguments = `Arguments must fit in ${ARGUMENTS_MAX_BYTES} bytes of JSON.`;
+  }
   return errs;
 }
 
@@ -345,8 +382,8 @@ function RecipeForm({
       }}
     >
       {creating ? (
-        <Field label="Name" hint={<FieldHint error={show("name")} hint="Lowercase, e.g. weather.home. It cannot be changed later." />}>
-          <TextField label="Name" mono value={draft.name} onChange={up("name")} placeholder="weather.home" />
+        <Field label="Name" hint={<FieldHint error={show("name")} hint="Lowercase letters, digits and single underscores, e.g. home_weather. It cannot be changed later." />}>
+          <TextField label="Name" mono value={draft.name} onChange={up("name")} placeholder="home_weather" />
         </Field>
       ) : (
         <div className="space-y-1">

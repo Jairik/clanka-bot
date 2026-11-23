@@ -16,6 +16,7 @@ export type HermesRuntimeView = {
   open_code_go_models: string[] | null;
   local_model: string;
   local_ready: boolean;
+  local_problem?: string;
   open_code_go_ready: boolean;
 };
 
@@ -177,7 +178,7 @@ function RuntimeForm({ view, localName, rt }: { view: HermesRuntimeView; localNa
                 Local <span className="font-mono text-xs text-muted">{localName}</span> {ready(view.local_ready)}
               </span>
               <span className="mt-0.5 block text-[11px] text-muted">
-                {view.local_ready ? "Runs on your own hardware." : "The local model is not reachable right now."}
+                {view.local_ready ? "Runs on your own hardware." : (view.local_problem ?? "The local model is not reachable right now.")}
               </span>
             </Radio.Content>
           </Radio>

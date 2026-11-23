@@ -338,7 +338,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/healthz":
-            self.send_json(200, {"status": "ok"})
+            # The Assistant compares this route with its own settings before it
+            # reports Local as ready or sends its local key, so a sidecar
+            # recreated with other local settings doesn't look usable. This is
+            # on the internal hermes-private network and carries no secret.
+            url = local_base_url()
+            self.send_json(200, {
+                "status": "ok",
+                "local_model": local_model() if url else "",
+                "local_base_url": url,
+            })
         else:
             self.send_error(404)
 

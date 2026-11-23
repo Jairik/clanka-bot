@@ -42,6 +42,14 @@ For desktop inference, use an authenticated endpoint reachable from the Pi's Her
 container over the tailnet. Token counts on that path are local latency cost,
 not a billed provider invoice.
 
+Give the endpoint a dedicated origin (scheme, host and port), and treat every
+path on it as receiving the local key. Besides the configured `/v1` path, the
+pinned hermes-agent probes the same origin for server type and context length
+and sends the key with those requests, for example `GET /api/v1/models`,
+`/api/tags`, `/props`, `/v1/props`, `/version` and `POST /api/show`. Don't put
+the inference server behind a reverse proxy that routes other paths on that
+origin to a different service.
+
 ## Provider and model selection
 
 In the owner Dashboard, open **Hermes** and save a runtime selection. With no
@@ -51,11 +59,28 @@ and preferred OpenCode Go model persist across restarts and apply to the next
 job. Each job keeps the provider, model and matching key it had at submission,
 even if the selection or key changes during the job.
 
-Local readiness requires the endpoint, model and dedicated local key. OpenCode
-Go readiness requires its dedicated key in **Secrets**. You can save the cloud
-model preference while Local is selected, including before linking the cloud
-key. New jobs fail if the selected provider is unavailable. Deploy matching assistant and Hermes images together to
-enable provider switching.
+Local readiness requires the endpoint, model and dedicated local key, and the
+running `hermes` container must report the same local model and base URL on
+`/healthz`. Otherwise Local is unready, the Dashboard says why, and new local
+jobs are refused before the key is sent:
+
+- **Unreachable:** the sidecar is down, starting, or slower than 2 seconds.
+- **Different local settings:** the sidecar was recreated with another model
+  or endpoint, or without the local settings. Recreate `assistant` and
+  `hermes` together.
+- **Out of date:** the `hermes` image predates this check. It would compare
+  only the model, not the endpoint that receives the key, so Local stays
+  unready until matching images are deployed.
+
+The check runs for a new job only while Local is selected (skipped while
+another job runs, since that request is refused anyway), and when the
+Dashboard loads Hermes readiness or loads or saves the runtime view. It never runs for
+status, result or cancel.
+
+OpenCode Go readiness requires its dedicated key in **Secrets**. You can save
+the cloud model preference while Local is selected, including before linking
+the cloud key. New jobs fail if the selected provider is unavailable. Deploy
+matching assistant and Hermes images together to enable provider switching.
 
 The OpenCode Go choices are DeepSeek V4.1 Flash, DeepSeek V4 Pro, GLM-5.3 Flash
 and Kimi K3. They support tool calls on Go's Chat Completions endpoint and are

@@ -189,8 +189,12 @@ export type HermesView = {
   HasRegistry: boolean;
   HasIntegrations: boolean;
   RuntimeReady: boolean;
+  AdapterReady: boolean;
+  SchemasDeferred: boolean;
   Surface: HermesTool[] | null;
   SurfaceCount: number;
+  Withheld: HermesTool[] | null;
+  WithheldCount: number;
   LocalOnlyCount: number;
   ConfirmCount: number;
   Granted: number;

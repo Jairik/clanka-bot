@@ -1016,10 +1016,10 @@ The **Routes** page at `/routes` is the deterministic-surface audit: every Tool,
 whether the Fast path may choose it, whether only the Agent may call it, whether
 it stays on the Pi, whether it asks for a Confirmation, and how many live
 Control phrases and Examples it has. The **Hermes** page at `/hermes` shows the
-surface an MCP adapter would publish (read/act, not Local-only, not confirm)
-and links the accounts Hermes may use. Hermes itself is not installed in this
-build, and the page says so; a grant is stored intent until the adapter exists.
-See [docs/hermes.md](../hermes.md).
+enforced allowlist (currently `weather.current` and `weather.forecast` once the
+WeatherAPI grant is on), names withheld allowlisted Tools, and links the
+accounts Hermes may use. Grants are enforced on every adapter call. See
+[docs/hermes.md](../hermes.md).
 
 Routing precision is measured against a labelled corpus with the real MiniLM
 model; the floor is 0.95 for every Tool, and ambiguous phrasing goes to the

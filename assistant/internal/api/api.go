@@ -89,6 +89,13 @@ func WithAPI(handler http.Handler) Option {
 	return func(s *server) { s.api = handler }
 }
 
+// WithHermesAdapter mounts the private Tool adapter on the health listener.
+// The handler does its own bearer check. A nil handler is ignored so a missing
+// runtime token fails closed instead of publishing an unauthenticated route.
+func WithHermesAdapter(handler http.Handler) Option {
+	return func(s *server) { s.hermesAdapter = handler }
+}
+
 // WithObserver feeds completed debug requests into the Dashboard Activity
 // store, so a localhost typed request appears in the same recent list as voice
 // and Dashboard requests. A nil observer leaves the debug entry unchanged.
@@ -119,19 +126,25 @@ func NewHandler(p *pipeline.Pipeline, logger *slog.Logger, debugEnabled bool, op
 		// source check as the debug entry wrap the whole /api/ subtree.
 		mux.Handle("/api/", s.guardedHandler(s.localOnly(http.StripPrefix("/api", s.api))))
 	}
+	// The adapter is reachable from the Hermes sidecar on the private
+	// Compose network. It is never mounted on the debug listener.
+	if !debugEnabled && s.hermesAdapter != nil {
+		mux.Handle("/hermes/adapter/", http.StripPrefix("/hermes/adapter", s.hermesAdapter))
+	}
 	return mux
 }
 
 type server struct {
-	pipeline     *pipeline.Pipeline
-	logger       *slog.Logger
-	debugEnabled bool
-	responder    Responder
-	api          http.Handler
-	announcer    Announcer
-	observer     latency.Observer
-	busy         BusyFunc
-	debugAllowed func(net.IP) bool
+	pipeline      *pipeline.Pipeline
+	logger        *slog.Logger
+	debugEnabled  bool
+	responder     Responder
+	api           http.Handler
+	announcer     Announcer
+	observer      latency.Observer
+	busy          BusyFunc
+	debugAllowed  func(net.IP) bool
+	hermesAdapter http.Handler
 	// hosts is the debug listener's Host allowlist. It is loopback-only: the
 	// listener is documented for curl on the Pi host, and Docker publishes it
 	// on 127.0.0.1.

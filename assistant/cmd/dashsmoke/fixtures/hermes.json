@@ -6,10 +6,14 @@
   "HasRegistry": true,
   "HasIntegrations": true,
   "RuntimeReady": false,
+  "AdapterReady": true,
+  "SchemasDeferred": true,
   "Surface": [
-    { "Name": "lights", "Description": "Control the home lights.", "Permission": "anyone" }
+    { "Name": "weather.current", "Description": "Current weather.", "Permission": "read" }
   ],
   "SurfaceCount": 1,
+  "Withheld": [],
+  "WithheldCount": 0,
   "LocalOnlyCount": 0,
   "ConfirmCount": 0,
   "Granted": 1,

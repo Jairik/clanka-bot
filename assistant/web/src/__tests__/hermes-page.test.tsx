@@ -40,7 +40,7 @@ const openrouter = (over: Partial<Integration> = {}): Integration => ({
   ...over,
 }) as Integration;
 
-const view = (rows: Integration[] = [github(), openrouter()]): HermesView => ({
+const view = (rows: Integration[] = [github(), openrouter()], over: Partial<HermesView> = {}): HermesView => ({
   Owner: "owner@example.com",
   Page: "hermes",
   Flash: "",
@@ -48,15 +48,20 @@ const view = (rows: Integration[] = [github(), openrouter()]): HermesView => ({
   HasRegistry: true,
   HasIntegrations: true,
   RuntimeReady: false,
+  AdapterReady: true,
+  SchemasDeferred: true,
   SurfaceCount: 2,
+  WithheldCount: 0,
   LocalOnlyCount: 5,
   ConfirmCount: 3,
   Granted: 0,
   Surface: [
-    { Name: "lights.power", Description: "Turn a light on or off.", Permission: "act" },
-    { Name: "spotify.play", Description: "Start playback.", Permission: "read" },
+    { Name: "weather.current", Description: "Current weather.", Permission: "read" },
+    { Name: "weather.forecast", Description: "Daily forecast.", Permission: "read" },
   ],
+  Withheld: [],
   Rows: rows,
+  ...over,
 });
 
 type Call = { path: string; body: URLSearchParams };
@@ -78,18 +83,39 @@ function stub(write: (path: string) => HermesView, get: () => HermesView = () =>
   return calls;
 }
 
-it("shows the setup required and the surface a future adapter would get", async () => {
+it("shows the setup required and the enforced allowlist", async () => {
   stub(() => view());
   render(<HermesPage />);
 
   expect(await screen.findByText("Hermes needs setup")).toBeTruthy();
   expect(screen.getByText(/Enable the private sidecar/)).toBeTruthy();
+  expect(screen.getByText(/enforces the allowlist and live account grants/)).toBeTruthy();
   expect(screen.getByText("2 tools")).toBeTruthy();
-  expect(screen.getByText("lights.power")).toBeTruthy();
+  expect(screen.getByText("weather.current")).toBeTruthy();
   expect(screen.getByText(/5 Tools run on the Pi/)).toBeTruthy();
   expect(screen.getByText(/3 Tools need a spoken confirmation/)).toBeTruthy();
   expect(screen.getByText("GitHub")).toBeTruthy();
   expect(screen.getByText("Agent model")).toBeTruthy();
+});
+
+it("names withheld allowlisted tools until the grant is on", async () => {
+  stubFetch({
+    "/api/ui/hermes": () =>
+      json(
+        view([], {
+          Surface: [],
+          SurfaceCount: 0,
+          WithheldCount: 2,
+          Withheld: [
+            { Name: "weather.current", Description: "Current weather.", Permission: "read" },
+            { Name: "weather.forecast", Description: "Daily forecast.", Permission: "read" },
+          ],
+        }),
+      ),
+  });
+  render(<HermesPage />);
+  expect(await screen.findByText(/2 allowlisted Tools are withheld/)).toBeTruthy();
+  expect(screen.getByText(/weather.current, weather.forecast/)).toBeTruthy();
 });
 
 it("links an account with one field per secret", async () => {

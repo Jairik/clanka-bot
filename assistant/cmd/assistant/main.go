@@ -32,6 +32,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/equalizer"
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/hermes"
+	"github.com/Jairik/clanka-bot/assistant/internal/hermesadapter"
 	"github.com/Jairik/clanka-bot/assistant/internal/integrations"
 	"github.com/Jairik/clanka-bot/assistant/internal/lastreply"
 	"github.com/Jairik/clanka-bot/assistant/internal/latency"
@@ -1252,10 +1253,23 @@ func run() error {
 		return reasons
 	}
 
+	// The private adapter lists and runs the allowlisted Go Tools. Hermes
+	// runtime wiring stays with the sidecar ticket; this only publishes the
+	// Go-side policy seam when the shared runtime token is long enough.
+	hermesAdapter := hermesadapter.New(hermesadapter.Options{
+		Registry: registry,
+		Grants:   integrationSvc,
+		Secrets:  secretsSvc,
+	})
+	healthOpts := []api.Option{api.WithBusy(busy)}
+	if adapterHTTP := hermesadapter.NewHandler(hermesAdapter, os.Getenv("HERMES_RUNTIME_TOKEN")); adapterHTTP != nil {
+		healthOpts = append(healthOpts, api.WithHermesAdapter(adapterHTTP))
+	}
+
 	// The health listener never serves the debug route; the debug listener does.
 	servers := []*http.Server{{
 		Addr:              cfg.HTTP.Addr,
-		Handler:           api.NewHandler(p, logger, false, api.WithBusy(busy)),
+		Handler:           api.NewHandler(p, logger, false, healthOpts...),
 		ReadHeaderTimeout: 5 * time.Second,
 	}}
 	if cfg.Debug.Enabled {
@@ -1359,11 +1373,12 @@ func run() error {
 			},
 			// The Routes page reads live Tool metadata; the Hermes page reads the
 			// same registry and the account registry.
-			Registry:     registry,
-			HermesReady:  hermesJobs.Configured,
-			Integrations: integrationSvc,
-			Verifier:     integrationVerifier,
-			Spotify:      spotifyModule.Auth(),
+			Registry:      registry,
+			HermesReady:   hermesJobs.Configured,
+			HermesAdapter: hermesAdapter,
+			Integrations:  integrationSvc,
+			Verifier:      integrationVerifier,
+			Spotify:       spotifyModule.Auth(),
 			SpotifyPairing: &spotify.PairingReader{
 				Path:       cfg.Spotify.PairingStatusFile,
 				StaleAfter: cfg.Spotify.StaleAfter.Duration(),

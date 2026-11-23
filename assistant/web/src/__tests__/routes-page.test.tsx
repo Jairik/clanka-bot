@@ -69,7 +69,7 @@ it("explains the paths, the order and the live wording", async () => {
   expect(await screen.findByText(/Deterministic: a matching control phrase/)).toBeTruthy();
   expect(screen.getByText(/only the Agent calls it/)).toBeTruthy();
   expect(screen.getByText(/never leave the house/)).toBeTruthy();
-  expect(screen.getByText(/part of the surface Hermes would get/)).toBeTruthy();
+  expect(screen.getByText(/eligible for Hermes/)).toBeTruthy();
 
   expect(screen.getByText("Routing order")).toBeTruthy();
   expect(screen.getByText("Pending Confirmation")).toBeTruthy();

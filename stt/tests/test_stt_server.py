@@ -6,6 +6,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import stt_server  # noqa: E402
+from correct import VocabularyCorrector  # noqa: E402
 from wyoming.asr import Transcribe, Transcript, TranscriptChunk, TranscriptStop  # noqa: E402
 from wyoming.audio import AudioChunk, AudioStart, AudioStop  # noqa: E402
 from wyoming.client import AsyncTcpClient  # noqa: E402
@@ -382,6 +383,45 @@ def test_audio_keeps_a_session_alive_past_the_idle_timeout():
             assert seen["transcript"].data["text"] == "what time is it"
 
     run(engine, body, session_wait=1, session_timeout=idle)
+
+
+def test_vocabulary_correction_preserves_raw_text_on_the_transcript():
+    stream = FakeStream(text="play music on spot ify", partial="play music")
+    engine = FakeEngine(stream=stream)
+
+    async def body(port):
+        async with await connect(port) as client:
+            await client.write_event(Transcribe().event())
+            await client.write_event(AudioStart(**FMT).event())
+            await client.write_event(AudioChunk(**FMT, audio=PCM).event())
+            await client.write_event(AudioStop().event())
+            seen = {}
+            while True:
+                event = await client.read_event()
+                assert event is not None
+                seen[event.type] = event
+                if TranscriptStop.is_type(event.type):
+                    break
+            assert seen["transcript"].data["text"] == "play music on Spotify"
+            assert seen["transcript"].data["raw_text"] == "play music on spot ify"
+
+    run(engine, body, corrector=VocabularyCorrector.from_path())
+
+
+def test_correction_off_leaves_the_model_text_alone():
+    stream = FakeStream(text="play music on spot ify", partial="play music")
+
+    async def body(port):
+        async with await connect(port) as client:
+            await client.write_event(Transcribe().event())
+            await client.write_event(AudioStart(**FMT).event())
+            await client.write_event(AudioStop().event())
+            event = await client.read_event()
+            assert event is not None and Transcript.is_type(event.type)
+            assert event.data["text"] == "play music on spot ify"
+            assert "raw_text" not in event.data
+
+    run(FakeEngine(stream=stream), body)
 
 
 def test_a_connection_that_never_starts_a_session_is_reaped():

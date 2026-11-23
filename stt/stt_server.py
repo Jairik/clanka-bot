@@ -18,14 +18,19 @@ import logging
 import os
 import sys
 import time
-from pathlib import Path
 from typing import Optional
 
-from wyoming.asr import Transcribe, Transcript, TranscriptChunk, TranscriptStop
+from wyoming.asr import Transcribe, TranscriptChunk, TranscriptStop
 from wyoming.audio import AudioChunk, AudioStart, AudioStop
 from wyoming.event import Event, async_read_event, async_write_event
 from wyoming.info import AsrModel, AsrProgram, Attribution, Describe, Info
 
+from correct import (
+    VocabularyCorrector,
+    correction_enabled,
+    keyterm_bias_enabled,
+    load_keyterms,
+)
 from moonshine_engine import MoonshineEngine
 from pcm16 import to_floats
 
@@ -55,7 +60,7 @@ def _deadline(seconds: float):
 class SttServer:
     """Serves transcription requests; one active stream at a time."""
 
-    def __init__(self, engine, session_wait=None, session_timeout=None) -> None:
+    def __init__(self, engine, session_wait=None, session_timeout=None, corrector=None) -> None:
         self.engine = engine
         # Moonshine streams share one transcriber; serialise them.
         self.lock = asyncio.Lock()
@@ -63,6 +68,8 @@ class SttServer:
         self.session_timeout = (
             SESSION_TIMEOUT_SECONDS if session_timeout is None else session_timeout
         )
+        # None means leave the model text alone (tests, or STT_CORRECT=0).
+        self.corrector = corrector
 
     async def handle_connection(self, reader, writer) -> None:
         session = _Session(self, writer)
@@ -113,6 +120,29 @@ class SttServer:
             requires_external_vad=True,
         )
         return Info(asr=[program]).event()
+
+    def corrected_transcript(self, raw: str, language: str | None) -> dict:
+        """Build the Wyoming transcript payload, keeping the raw model text.
+
+        Routing sees the corrected string. A rewrite stores raw_text on the
+        event so diagnosis can recover the model output without logging it.
+        STT_CORRECT=0, or a missing corrector, leaves the model text as-is.
+        """
+        text = raw
+        if self.corrector is not None:
+            result = self.corrector.apply(raw)
+            text = result.text
+            if result.replacements:
+                _LOGGER.info(
+                    "applied %d vocabulary corrections",
+                    len(result.replacements),
+                )
+        payload = {"text": text}
+        if language:
+            payload["language"] = language
+        if text != raw:
+            payload["raw_text"] = raw
+        return payload
 
 
 class _Session:
@@ -182,8 +212,9 @@ class _Session:
             if self.stream is None:
                 return True
             try:
-                text = await asyncio.to_thread(self.stream.finish)
-                await self.write(Transcript(text=text, language=self.language).event())
+                raw = await asyncio.to_thread(self.stream.finish)
+                payload = self.server.corrected_transcript(raw, self.language)
+                await self.write(Event(type="transcript", data=payload))
                 await self.write(TranscriptStop().event())
             except Exception as exc:
                 await self.error(str(exc))
@@ -259,8 +290,8 @@ class _Session:
         await self.release()
 
 
-async def serve(engine, host: str, port: int) -> None:
-    stt_server = SttServer(engine)
+async def serve(engine, host: str, port: int, corrector=None) -> None:
+    stt_server = SttServer(engine, corrector=corrector)
     listener = await asyncio.start_server(stt_server.handle_connection, host, port)
     addresses = ", ".join(str(sock.getsockname()) for sock in listener.sockets)
     _LOGGER.info("listening on %s", addresses)
@@ -277,8 +308,11 @@ def main() -> None:
     port = int(os.environ.get("STT_PORT", "10300"))
     model = os.environ.get("STT_MODEL", "small-streaming")
     language = os.environ.get("STT_LANGUAGE", "en")
+    # Both gates are off unless the env is an explicit on-value. Measured
+    # evidence from the replay corpus must land before either is enabled.
+    keyterms = load_keyterms() if keyterm_bias_enabled() else []
 
-    engine = MoonshineEngine(model=model, language=language)
+    engine = MoonshineEngine(model=model, language=language, keyterms=keyterms)
     started = time.monotonic()
     try:
         engine.load()
@@ -293,8 +327,16 @@ def main() -> None:
         getattr(engine, "sample_rate", 16000),
     )
 
+    corrector = VocabularyCorrector.from_path() if correction_enabled() else None
+    if corrector is not None:
+        _LOGGER.info("vocabulary correction on (%d terms)", len(corrector.terms))
+    else:
+        _LOGGER.info("vocabulary correction off")
+    if keyterms:
+        _LOGGER.info("keyterm bias: %s", ", ".join(keyterms))
+
     try:
-        asyncio.run(serve(engine, host, port))
+        asyncio.run(serve(engine, host, port, corrector=corrector))
     except KeyboardInterrupt:
         pass
 

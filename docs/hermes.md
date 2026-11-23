@@ -74,7 +74,7 @@ jobs are refused before the key is sent:
 
 The check runs for a new job only while Local is selected (skipped while
 another job runs, since that request is refused anyway), and when the
-Dashboard loads Hermes readiness or the runtime view. It never runs for
+Dashboard loads Hermes readiness or loads or saves the runtime view. It never runs for
 status, result or cancel.
 
 OpenCode Go readiness requires its dedicated key in **Secrets**. You can save

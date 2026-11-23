@@ -982,6 +982,122 @@ func (c evalCounts) recall() float64 {
 	return float64(c.tp) / float64(c.positives)
 }
 
+// evalRouteStats is the MiniLM audit (#522): miss reasons, Handle latency,
+// winning scores and runner-up gaps. Precision/recall stay on evalCounts.
+type evalRouteStats struct {
+	latencies []time.Duration
+	reasons   map[string]int
+	tpScores  []float64
+	fnScores  []float64
+	fnGaps    []float64
+}
+
+func newEvalRouteStats() *evalRouteStats {
+	return &evalRouteStats{reasons: map[string]int{}}
+}
+
+// observe records one classified utterance. A true positive stores the top
+// score; a miss stores the fall-through reason, the top score and the gap
+// to the runner-up when MiniLM ranked the labelled Tool first.
+func (s *evalRouteStats) observe(started time.Time, got evalVerdict, hit bool) {
+	s.latencies = append(s.latencies, time.Since(started))
+	if hit {
+		if score, ok := topScore(got.Top); ok {
+			s.tpScores = append(s.tpScores, score)
+		}
+		return
+	}
+	reason := got.Reason
+	if reason == "" {
+		reason = "unspecified"
+	}
+	s.reasons[reason]++
+	if score, ok := topScore(got.Top); ok {
+		s.fnScores = append(s.fnScores, score)
+	}
+	if gap, ok := runnerUpGap(got.Top); ok {
+		s.fnGaps = append(s.fnGaps, gap)
+	}
+}
+
+func topScore(top []pipeline.ToolScore) (float64, bool) {
+	if len(top) == 0 {
+		return 0, false
+	}
+	return top[0].Score, true
+}
+
+func runnerUpGap(top []pipeline.ToolScore) (float64, bool) {
+	if len(top) < 2 {
+		return 0, false
+	}
+	return top[0].Score - top[1].Score, true
+}
+
+// percentileSorted returns the p-th percentile of a pre-sorted copy of values.
+func percentileSorted(values []float64, p float64) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+	cp := append([]float64(nil), values...)
+	sort.Float64s(cp)
+	if p <= 0 {
+		return cp[0]
+	}
+	if p >= 100 {
+		return cp[len(cp)-1]
+	}
+	k := (float64(len(cp)-1) * p) / 100
+	lo := int(k)
+	hi := lo + 1
+	if hi >= len(cp) {
+		return cp[lo]
+	}
+	frac := k - float64(lo)
+	return cp[lo] + (cp[hi]-cp[lo])*frac
+}
+
+func minFloat(values []float64) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+	min := values[0]
+	for _, v := range values[1:] {
+		if v < min {
+			min = v
+		}
+	}
+	return min
+}
+
+func maxFloat(values []float64) float64 {
+	if len(values) == 0 {
+		return 0
+	}
+	max := values[0]
+	for _, v := range values[1:] {
+		if v > max {
+			max = v
+		}
+	}
+	return max
+}
+
+// reasonOther counts fall-through reasons that are not the three matching
+// buckets the MiniLM audit reports by name.
+func reasonOther(reasons map[string]int) int {
+	n := 0
+	for reason, count := range reasons {
+		switch reason {
+		case "below_margin", "below_threshold", "extract_failed":
+			continue
+		default:
+			n += count
+		}
+	}
+	return n
+}
+
 func envFloat(t *testing.T, key string, fallback float64) float64 {
 	t.Helper()
 	raw := strings.TrimSpace(os.Getenv(key))
@@ -1107,12 +1223,16 @@ func TestRoutingEvalAgainstMiniLM(t *testing.T) {
 	for _, name := range routingEvalTools {
 		counts[name] = &evalCounts{}
 	}
+	stats := newEvalRouteStats()
 
 	for _, name := range routingEvalTools {
 		for _, utterance := range fixture.Positives[name] {
 			counts[name].positives++
+			started := time.Now()
 			got := classify(utterance)
-			if got.Tool == name && (got.Path == tool.PathFast || got.Path == tool.PathControlPhrase) {
+			hit := got.Tool == name && (got.Path == tool.PathFast || got.Path == tool.PathControlPhrase)
+			stats.observe(started, got, hit)
+			if hit {
 				counts[name].tp++
 				if got.Path == tool.PathControlPhrase {
 					counts[name].controlTP++
@@ -1131,7 +1251,9 @@ func TestRoutingEvalAgainstMiniLM(t *testing.T) {
 
 	negativeMisrouted := 0
 	for _, utterance := range fixture.Negatives {
+		started := time.Now()
 		got := classify(utterance)
+		stats.latencies = append(stats.latencies, time.Since(started))
 		if got.Tool != "" && (got.Path == tool.PathFast || got.Path == tool.PathControlPhrase) {
 			negativeMisrouted++
 			if other, ok := counts[got.Tool]; ok {
@@ -1143,7 +1265,9 @@ func TestRoutingEvalAgainstMiniLM(t *testing.T) {
 
 	compoundMisrouted := 0
 	for _, utterance := range fixture.Compounds {
+		started := time.Now()
 		got := classify(utterance)
+		stats.latencies = append(stats.latencies, time.Since(started))
 		if got.Tool != "" && (got.Path == tool.PathFast || got.Path == tool.PathControlPhrase) {
 			compoundMisrouted++
 			if other, ok := counts[got.Tool]; ok {
@@ -1187,6 +1311,24 @@ func TestRoutingEvalAgainstMiniLM(t *testing.T) {
 	t.Logf("ROUTING_EVAL_COMPOUNDS total=%d misrouted=%d", len(fixture.Compounds), compoundMisrouted)
 	t.Logf("ROUTING_EVAL_TOTAL tp=%d control_tp=%d semantic_tp=%d fp=%d fn=%d precision=%.4f recall=%.4f",
 		total.tp, total.controlTP, total.semanticTP(), total.fp, total.fn, total.precision(), total.recall())
+	fallbackRate := 0.0
+	if total.positives > 0 {
+		fallbackRate = float64(total.fn) / float64(total.positives)
+	}
+	t.Logf("ROUTING_EVAL_FALLBACK positives_fn=%d rate=%.4f negatives_ok=%d compounds_ok=%d",
+		total.fn, fallbackRate, len(fixture.Negatives)-negativeMisrouted, len(fixture.Compounds)-compoundMisrouted)
+	t.Logf("ROUTING_EVAL_REASONS below_margin=%d below_threshold=%d extract_failed=%d other=%d",
+		stats.reasons["below_margin"], stats.reasons["below_threshold"], stats.reasons["extract_failed"],
+		reasonOther(stats.reasons))
+	latenciesMS := make([]float64, len(stats.latencies))
+	for i, d := range stats.latencies {
+		latenciesMS[i] = float64(d.Milliseconds())
+	}
+	t.Logf("ROUTING_EVAL_LATENCY_MS n=%d p50=%.1f p95=%.1f max=%.1f",
+		len(latenciesMS), percentileSorted(latenciesMS, 50), percentileSorted(latenciesMS, 95), maxFloat(latenciesMS))
+	t.Logf("ROUTING_EVAL_SCORES tp_n=%d tp_min=%.4f tp_p50=%.4f fn_top0_p50=%.4f fn_gap_min=%.4f fn_gap_p50=%.4f",
+		len(stats.tpScores), minFloat(stats.tpScores), percentileSorted(stats.tpScores, 50),
+		percentileSorted(stats.fnScores, 50), minFloat(stats.fnGaps), percentileSorted(stats.fnGaps, 50))
 	t.Logf("ROUTING_EVAL_BASELINE tp=%d fp=%d positives=%d negative_misroutes=%d compound_misroutes=%d precision=%.4f recall=%.4f",
 		baseline.TP, baseline.FP, baseline.Positives, baseline.NegativeMisroutes, baseline.CompoundMisroutes,
 		baseline.precision(), baseline.recall())
@@ -1224,4 +1366,28 @@ func contains(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// TestEvalRouteStatHelpers locks the MiniLM audit summaries: empty inputs
+// stay zero, and a known list yields the expected median and min.
+func TestEvalRouteStatHelpers(t *testing.T) {
+	if got := percentileSorted(nil, 50); got != 0 {
+		t.Errorf("empty percentile = %v, want 0", got)
+	}
+	if got := minFloat(nil); got != 0 {
+		t.Errorf("empty min = %v, want 0", got)
+	}
+	values := []float64{1, 3, 2}
+	if got := percentileSorted(values, 50); got != 2 {
+		t.Errorf("p50 = %v, want 2", got)
+	}
+	if got := minFloat(values); got != 1 {
+		t.Errorf("min = %v, want 1", got)
+	}
+	if got := maxFloat(values); got != 3 {
+		t.Errorf("max = %v, want 3", got)
+	}
+	if got := reasonOther(map[string]int{"below_margin": 4, "compound": 1, "unspecified": 2}); got != 3 {
+		t.Errorf("other = %v, want 3", got)
+	}
 }

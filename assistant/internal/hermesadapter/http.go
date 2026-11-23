@@ -111,8 +111,8 @@ func (h *httpAPI) invoke(w http.ResponseWriter, r *http.Request) {
 
 // bearerOK is a constant-time compare of the shared runtime token.
 func bearerOK(header, token string) bool {
-	got := strings.TrimPrefix(header, "Bearer ")
-	if len(got) != len(token) || len(token) < minTokenBytes {
+	got, ok := strings.CutPrefix(header, "Bearer ")
+	if !ok || len(got) != len(token) || len(token) < minTokenBytes {
 		return false
 	}
 	return subtle.ConstantTimeCompare([]byte(got), []byte(token)) == 1

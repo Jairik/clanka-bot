@@ -55,6 +55,7 @@ const (
 	causeAllowlist  = "allowlist"
 	causeGrant      = "grant"
 	causeLocalOnly  = "local_only"
+	causePermission = "permission"
 	causeConfirm    = "confirm"
 	causeDisabled   = "disabled"
 	causeUnknown    = "unknown"
@@ -196,6 +197,13 @@ func (a *Adapter) Invoke(ctx context.Context, name string, args json.RawMessage)
 	}
 	result, err := a.registry.Execute(tool.WithRequest(ctx, req), canonical, args)
 	if err != nil {
+		var toolErr *tool.ToolError
+		if errors.As(err, &toolErr) {
+			say, marshalErr := json.Marshal(toolErr.Say)
+			if marshalErr != nil || a.rejectSecrets(say) != nil {
+				return nil, deny(canonical, causeSecret)
+			}
+		}
 		return nil, a.mapExecuteError(canonical, err)
 	}
 	// The static Local-only flag already blocked discovery; this catches a
@@ -234,6 +242,9 @@ func (a *Adapter) inspect(name string) error {
 	}
 	if info.Permission == tool.PermissionConfirm {
 		return deny(name, causeConfirm)
+	}
+	if info.Permission != tool.PermissionRead {
+		return deny(name, causePermission)
 	}
 	if account, ok := accountForTool(name); ok && !a.granted(account) {
 		return deny(name, causeGrant)
@@ -328,8 +339,8 @@ func jsonContainsSecret(value any, secret string) bool {
 			}
 		}
 	case map[string]any:
-		for _, item := range v {
-			if jsonContainsSecret(item, secret) {
+		for key, item := range v {
+			if strings.Contains(key, secret) || jsonContainsSecret(item, secret) {
 				return true
 			}
 		}

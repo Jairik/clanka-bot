@@ -86,6 +86,7 @@ func newFixture(t *testing.T) *fixture {
 		calls["spotify.now_playing"]++
 		return echoOut{Playing: "private-track"}, nil
 	})
+	add("test.act", tool.PermissionAct, tool.LocalOnlyNo, count("test.act"))
 	add("secret.echo", tool.PermissionRead, tool.LocalOnlyNo, func(_ context.Context, in echoIn) (echoOut, error) {
 		calls["secret.echo"]++
 		return echoOut{City: in.Secret}, nil
@@ -224,6 +225,19 @@ func TestLocalOnlyOnAllowlistStillFailsClosed(t *testing.T) {
 	}
 }
 
+func TestActionOnAllowlistStillFailsClosed(t *testing.T) {
+	f := newFixture(t)
+	adapter := hermesadapter.New(hermesadapter.Options{
+		Registry: f.pending, Allowlist: []string{"test.act"},
+	})
+	if _, err := adapter.Invoke(context.Background(), "test.act", nil); !denied(err, "permission") {
+		t.Fatalf("allowlisted action = %v", err)
+	}
+	if len(adapter.List()) != 0 || f.calls["test.act"] != 0 {
+		t.Fatal("allowlisted action was exposed or executed")
+	}
+}
+
 func TestSecretsInPayloadsFailClosed(t *testing.T) {
 	f := newFixture(t)
 	f.grantWeather(t)
@@ -235,6 +249,9 @@ func TestSecretsInPayloadsFailClosed(t *testing.T) {
 	args := json.RawMessage(`{"city":"Berlin","token":"super-secret-weather-key"}`)
 	if _, err := f.adapter.Invoke(ctx, "weather.current", args); !errors.Is(err, hermesadapter.ErrSecret) {
 		t.Fatalf("secret in args = %v, want ErrSecret", err)
+	}
+	if _, err := f.adapter.Invoke(ctx, "weather.current", json.RawMessage(`{"super-secret-weather-key":"Berlin"}`)); !errors.Is(err, hermesadapter.ErrSecret) {
+		t.Fatalf("secret in object key = %v, want ErrSecret", err)
 	}
 	if f.calls["weather.current"] != 0 {
 		t.Fatal("handler ran with a secret in the arguments")

@@ -1,0 +1,23 @@
+{
+  "available": [
+    {
+      "name": "weather.current",
+      "description": "Look up current weather conditions"
+    },
+    {
+      "name": "web.search",
+      "description": "Search the web for current information"
+    }
+  ],
+  "recipes": [
+    {
+      "name": "weather_home",
+      "description": "Current weather at home",
+      "base_tool": "weather.current",
+      "arguments": {
+        "city": "Boston"
+      },
+      "enabled": true
+    }
+  ]
+}

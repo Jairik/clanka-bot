@@ -577,7 +577,7 @@ func New(opts Options) (*Handler, error) {
 	h.Handle("GET /api/ui/routes", h.page("routes", h.routesPage))
 	h.Handle("GET /api/ui/hermes", h.page("hermes", h.hermesPage))
 	// Recipe writes use the same owner and Origin checks as account grants.
-	h.Handle("GET /api/ui/hermes/tools", h.hermesTools)
+	h.Handle("GET /api/ui/hermes/tools", h.page("hermes/tools", h.hermesTools))
 	h.Mutating("POST /api/ui/hermes/tools", h.hermesToolSave)
 	h.Mutating("POST /api/ui/hermes/tools/{name}/delete", h.hermesToolDelete)
 	h.Mutating("POST /hermes/integrations/{id}", h.hermesLink)

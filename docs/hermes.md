@@ -72,9 +72,10 @@ jobs are refused before the key is sent:
   only the model, not the endpoint that receives the key, so Local stays
   unready until matching images are deployed.
 
-The check runs for new jobs only while Local is selected and no job is
-running, and when the Dashboard loads or saves the runtime view. It never runs
-for status, result or cancel.
+The check runs for a new job only while Local is selected (skipped while
+another job runs, since that request is refused anyway), and when the
+Dashboard loads Hermes readiness or the runtime view. It never runs for
+status, result or cancel.
 
 OpenCode Go readiness requires its dedicated key in **Secrets**. You can save
 the cloud model preference while Local is selected, including before linking

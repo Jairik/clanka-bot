@@ -116,8 +116,9 @@ func (m *Manager) localProblem(sidecar sidecarStatus) string {
 	case m.run == nil:
 		return ""
 	case !sidecar.probed:
-		// The selection switched to Local after this request skipped the probe.
-		return "Hermes just switched providers. Try again."
+		// This request skipped the probe: the selection switched to Local, or
+		// a running job finished, after it looked.
+		return "Hermes isn't ready for a new job yet. Try again."
 	case !sidecar.reachable:
 		return "The Hermes sidecar isn't reachable right now."
 	case !sidecar.reports:
@@ -138,10 +139,11 @@ func (m *Manager) sidecarStatus(ctx context.Context) sidecarStatus {
 }
 
 // sidecarForSelection probes only while Local is selected, so OpenCode Go
-// jobs never wait on the sidecar's health check.
-func (m *Manager) sidecarForSelection(ctx context.Context) sidecarStatus {
+// jobs never wait on the sidecar's health check. A new job also skips it while
+// another job runs, since that request is refused as already working.
+func (m *Manager) sidecarForSelection(ctx context.Context, newJob bool) sidecarStatus {
 	m.mu.Lock()
-	local := m.selection.Provider == localProvider && !m.closed && m.active == 0
+	local := m.selection.Provider == localProvider && !m.closed && !(newJob && m.active != 0)
 	m.mu.Unlock()
 	if !local {
 		return sidecarStatus{}

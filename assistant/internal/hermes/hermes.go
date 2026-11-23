@@ -117,7 +117,7 @@ func (m *Manager) Configured() bool {
 	if m == nil || m.run == nil {
 		return false
 	}
-	sidecar := m.sidecarForSelection(m.ctx)
+	sidecar := m.sidecarForSelection(m.ctx, false)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	_, problem := m.job("", sidecar)
@@ -145,7 +145,7 @@ func (m *Manager) Handle(ctx context.Context, request string) string {
 	default:
 		// A request that is refused anyway doesn't wait on the probe.
 		if len(request) <= maxTaskBytes {
-			sidecar = m.sidecarForSelection(ctx)
+			sidecar = m.sidecarForSelection(ctx, true)
 		}
 	}
 	m.mu.Lock()

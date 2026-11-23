@@ -177,8 +177,8 @@ func TestIncompleteLocalConfiguration(t *testing.T) {
 
 // TestLocalReadinessFollowsTheSidecar covers a sidecar whose own state differs
 // from the Assistant's: each failure gets its own message, Local isn't ready,
-// and no job is sent. An older sidecar without the fields keeps config-only
-// readiness. The cloud selection never waits on the probe.
+// and no job is sent. An older sidecar without the fields fails closed. The
+// cloud selection never waits on the probe.
 func TestLocalReadinessFollowsTheSidecar(t *testing.T) {
 	ctx := t.Context()
 	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "assistant.db"))
@@ -341,6 +341,48 @@ func TestUnreachableSidecarTimesOutWithoutHoldingTheLock(t *testing.T) {
 	cancelled, cancel := context.WithCancel(ctx)
 	cancel()
 	if got := manager.Handle(cancelled, "Explicit task"); !strings.Contains(got, "isn't reachable") && !strings.Contains(got, "isn't accepting") {
+		t.Fatal(got)
+	}
+}
+
+// TestConfiguredDuringALocalJob keeps the Dashboard's readiness steady while a
+// local job runs; only a new job skips the probe.
+func TestConfiguredDuringALocalJob(t *testing.T) {
+	ctx := t.Context()
+	st, err := store.Open(ctx, filepath.Join(t.TempDir(), "assistant.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	started, release := make(chan struct{}), make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/healthz" {
+			fmt.Fprint(w, `{"status":"ok","local_model":"ornith:9b","local_base_url":"http://ornith.test/v1"}`)
+			return
+		}
+		close(started)
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+		fmt.Fprint(w, `{"text":"Done."}`)
+	}))
+	defer server.Close()
+	config := hermes.RuntimeConfig{LocalBaseURL: "http://ornith.test/v1", LocalModel: "ornith:9b", LocalKey: "local-key"}
+	manager, err := hermes.New(ctx, st.DB(), server.URL+"/run", strings.Repeat("t", 32), config, func(string) {}, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer manager.Close()
+	defer close(release)
+	if got := manager.Handle(ctx, "Long task"); got != "Hermes is working on job 1." {
+		t.Fatal(got)
+	}
+	<-started
+	if !manager.Configured() || !manager.Runtime().LocalReady {
+		t.Fatal("Local should stay ready while a local job runs")
+	}
+	if got := manager.Handle(ctx, "Another task"); got != "Hermes is already working on job 1." {
 		t.Fatal(got)
 	}
 }

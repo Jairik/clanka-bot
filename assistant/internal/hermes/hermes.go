@@ -11,72 +11,115 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
 )
 
 const (
-	SecretName       = "HERMES_OPENCODE_GO_API_KEY"
-	maxTaskBytes     = 4096
-	maxResponseBytes = 8192
-	jobTimeout       = 50 * time.Second
-	keepJobs         = 50
+	SecretName        = "HERMES_OPENCODE_GO_API_KEY"
+	maxTaskBytes      = 4096
+	maxResponseBytes  = 8192
+	jobTimeout        = 50 * time.Second
+	healthTimeout     = 2 * time.Second
+	goToolsJobTimeout = 250 * time.Second
+	keepJobs          = 50
 )
 
 // Manager owns the job lifecycle; the sidecar operates on one request at a time.
 type Manager struct {
 	ctx      context.Context
 	db       *sql.DB
-	run      func(context.Context, string, string) (string, error)
-	key      func() string
+	run      func(context.Context, jobRequest) (string, error)
+	config   RuntimeConfig
 	announce func(string)
 	logger   *slog.Logger
-	// local means the sidecar holds its own key for a self-hosted endpoint, so
-	// no OpenCode Go key is needed or sent.
-	local bool
+	timeout  time.Duration
 
 	mu     sync.Mutex
 	closed bool
 	active int64
 	cancel context.CancelFunc
 	wait   sync.WaitGroup
-}
-
-// Option configures a Manager.
-type Option func(*Manager)
-
-// WithLocalInference marks the sidecar as configured for a self-hosted
-// endpoint. The sidecar keeps that endpoint's key, so the Manager sends none.
-func WithLocalInference() Option {
-	return func(m *Manager) { m.local = true }
+	// The job and dashboard use the same lock to snapshot the selection.
+	selection Selection
+	// probe reads the local route the sidecar reports; see sidecarStatus.
+	probe func(context.Context) sidecarStatus
 }
 
 // New recovers abandoned jobs without replaying a request across a restart.
-func New(ctx context.Context, db *sql.DB, endpoint, token string, key func() string, announce func(string), logger *slog.Logger, opts ...Option) (*Manager, error) {
+func New(ctx context.Context, db *sql.DB, endpoint, token string, config RuntimeConfig, announce func(string), logger *slog.Logger) (*Manager, error) {
+	selection, err := config.loadSelection(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("load Hermes runtime selection: %w", err)
+	}
 	if _, err := db.ExecContext(ctx, "UPDATE hermes_jobs SET state = 'interrupted' WHERE state = 'running'"); err != nil {
 		return nil, err
 	}
+	// Match the sidecar flag and leave time for its worker cleanup.
+	timeout := jobTimeout
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("HERMES_GO_TOOLS"))) {
+	case "1", "true", "yes", "on":
+		timeout = goToolsJobTimeout
+	}
 	client := &http.Client{
-		Timeout:       jobTimeout,
+		Timeout:       timeout,
 		Transport:     &http.Transport{},
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
-	m := &Manager{ctx: ctx, db: db, key: key, announce: announce, logger: logger}
-	for _, opt := range opts {
-		opt(m)
-	}
+	m := &Manager{ctx: ctx, db: db, config: config, selection: selection, announce: announce, logger: logger, timeout: timeout}
 	if len(token) >= 32 {
-		m.run = func(ctx context.Context, task, key string) (string, error) {
-			return call(ctx, client, endpoint, token, task, key)
+		m.run = func(ctx context.Context, job jobRequest) (string, error) {
+			return call(ctx, client, endpoint, token, job)
 		}
+		healthURL := strings.TrimSuffix(endpoint, "/run") + "/healthz"
+		healthClient := &http.Client{Timeout: healthTimeout, Transport: &http.Transport{}, CheckRedirect: client.CheckRedirect}
+		m.probe = func(ctx context.Context) sidecarStatus { return probeSidecar(ctx, healthClient, healthURL) }
 	}
 	return m, nil
 }
 
+// probeSidecar reads the route and credential readiness the sidecar reports on /healthz.
+func probeSidecar(ctx context.Context, client *http.Client, url string) sidecarStatus {
+	status := sidecarStatus{probed: true}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return status
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return status
+	}
+	defer resp.Body.Close()
+	var health struct {
+		LocalModel   *string `json:"local_model"`
+		LocalBaseURL *string `json:"local_base_url"`
+		LocalReady   *bool   `json:"local_ready"`
+	}
+	if resp.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(resp.Body, 1024)).Decode(&health) != nil {
+		return status
+	}
+	status.reachable = true
+	if health.LocalModel == nil || health.LocalBaseURL == nil || health.LocalReady == nil {
+		return status
+	}
+	status.reports = true
+	status.ready = *health.LocalReady
+	status.model, status.baseURL = strings.TrimSpace(*health.LocalModel), strings.TrimSpace(*health.LocalBaseURL)
+	return status
+}
+
 // Configured reports whether the sidecar and its provider key are configured.
 func (m *Manager) Configured() bool {
-	return m.run != nil && (m.local || strings.TrimSpace(m.key()) != "")
+	if m == nil || m.run == nil {
+		return false
+	}
+	sidecar := m.sidecarForSelection(m.ctx, false)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, problem := m.job("", sidecar)
+	return problem == ""
 }
 
 // Close waits for a cancelled in-flight request to release the database.
@@ -92,12 +135,22 @@ func (m *Manager) Close() {
 
 // Handle receives a fresh explicit Hermes request, without prior turns or Tool data.
 func (m *Manager) Handle(ctx context.Context, request string) string {
+	command := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(request), "?.!,"))
+	// Probe the sidecar before taking the lock, and only for a new local job.
+	var sidecar sidecarStatus
+	switch strings.ToLower(command) {
+	case "", "status", "result", "cancel":
+	default:
+		// A request that is refused anyway doesn't wait on the probe.
+		if len(request) <= maxTaskBytes {
+			sidecar = m.sidecarForSelection(ctx, true)
+		}
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.closed {
 		return "Hermes isn't accepting jobs right now."
 	}
-	command := strings.TrimSpace(strings.TrimRight(strings.TrimSpace(request), "?.!,"))
 	switch strings.ToLower(command) {
 	case "":
 		return "What should I ask Hermes?"
@@ -118,18 +171,17 @@ func (m *Manager) Handle(ctx context.Context, request string) string {
 	if m.run == nil {
 		return "Hermes is disabled."
 	}
-	key := ""
-	if !m.local {
-		key = strings.TrimSpace(m.key())
-		if key == "" {
-			return "Hermes needs its OpenCode Go key."
-		}
-	}
+	// The cheap refusals come first; a too-long request or one during a
+	// running job skipped the probe.
 	if len(request) > maxTaskBytes {
 		return "That Hermes request is too long."
 	}
 	if m.active != 0 {
 		return fmt.Sprintf("Hermes is already working on job %d.", m.active)
+	}
+	job, problem := m.job(request, sidecar)
+	if problem != "" {
+		return problem
 	}
 	if m.ctx.Err() != nil || ctx.Err() != nil {
 		return "Hermes isn't accepting jobs right now."
@@ -140,10 +192,10 @@ func (m *Manager) Handle(ctx context.Context, request string) string {
 		m.logger.Error("could not start Hermes job", "error", err)
 		return "I couldn't start a Hermes job."
 	}
-	jobCtx, cancel := context.WithTimeout(m.ctx, jobTimeout)
+	jobCtx, cancel := context.WithTimeout(m.ctx, m.timeout)
 	m.active, m.cancel = id, cancel
 	m.wait.Add(1)
-	go m.execute(jobCtx, id, request, key)
+	go m.execute(jobCtx, id, job)
 	return fmt.Sprintf("Hermes is working on job %d.", id)
 }
 
@@ -186,9 +238,9 @@ func (m *Manager) finish(ctx context.Context, id int64, state, result string) er
 	return err
 }
 
-func (m *Manager) execute(ctx context.Context, id int64, task, key string) {
+func (m *Manager) execute(ctx context.Context, id int64, job jobRequest) {
 	defer m.wait.Done()
-	text, err := m.run(ctx, task, key)
+	text, err := m.run(ctx, job)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	defer func() {
@@ -217,20 +269,35 @@ func (m *Manager) execute(ctx context.Context, id int64, task, key string) {
 	}
 }
 
-func call(ctx context.Context, client *http.Client, endpoint, token, task, key string) (string, error) {
-	body, err := json.Marshal(map[string]string{"task": task, "key": key})
+func call(ctx context.Context, client *http.Client, endpoint, token string, job jobRequest) (string, error) {
+	body, err := json.Marshal(job)
 	if err != nil {
 		return "", err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := client.Do(req)
-	if err != nil {
-		return "", err
+	var resp *http.Response
+	for attempt := 0; ; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+		if err != nil {
+			return "", err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		resp, err = client.Do(req)
+		if err != nil {
+			return "", err
+		}
+		if attempt != 0 || resp.StatusCode != http.StatusServiceUnavailable || resp.Header.Get("Retry-After") != "1" {
+			break
+		}
+		resp.Body.Close()
+		// The sidecar refused before starting work, so a brief retry is safe.
+		delay := time.NewTimer(time.Second)
+		select {
+		case <-ctx.Done():
+			delay.Stop()
+			return "", ctx.Err()
+		case <-delay.C:
+		}
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {

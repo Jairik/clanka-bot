@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -27,7 +28,8 @@ func TestJobsFinishCancelAndRecover(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var input map[string]string
 		if r.Header.Get("Authorization") != "Bearer "+token ||
-			json.NewDecoder(r.Body).Decode(&input) != nil || input["key"] != "test-key" || len(input) != 2 {
+			json.NewDecoder(r.Body).Decode(&input) != nil || input["key"] != "test-key" ||
+			input["provider"] != "opencode-go" || input["model"] != "deepseek-v4.1-flash" || len(input) != 4 {
 			t.Error("sidecar received an unexpected request")
 			w.WriteHeader(http.StatusBadRequest)
 			return
@@ -50,7 +52,8 @@ func TestJobsFinishCancelAndRecover(t *testing.T) {
 	defer server.Close()
 
 	announcement := make(chan string, 1)
-	m, err := hermes.New(t.Context(), st.DB(), server.URL, token, func() string { return "test-key" },
+	config := hermes.RuntimeConfig{OpenCodeKey: func() string { return "test-key" }}
+	m, err := hermes.New(t.Context(), st.DB(), server.URL, token, config,
 		func(text string) { announcement <- text }, slog.Default())
 	if err != nil {
 		t.Fatal(err)
@@ -92,7 +95,7 @@ func TestJobsFinishCancelAndRecover(t *testing.T) {
 	if _, err := st.DB().ExecContext(t.Context(), "INSERT INTO hermes_jobs (state) VALUES ('running')"); err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := hermes.New(t.Context(), st.DB(), server.URL, "", nil, nil, slog.Default())
+	reopened, err := hermes.New(t.Context(), st.DB(), server.URL, "", hermes.RuntimeConfig{}, nil, slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -105,62 +108,44 @@ func TestJobsFinishCancelAndRecover(t *testing.T) {
 	}
 }
 
-// TestLocalInferenceSendsNoKey covers the self-hosted mode: the sidecar keeps
-// the endpoint's key, so the Assistant needs no OpenCode Go key and sends none.
-func TestLocalInferenceSendsNoKey(t *testing.T) {
+func TestJobRetriesOnlyExplicitBusyAdmission(t *testing.T) {
 	st, err := store.Open(t.Context(), filepath.Join(t.TempDir(), "assistant.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	token := strings.Repeat("t", 32)
+	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var input map[string]string
-		if json.NewDecoder(r.Body).Decode(&input) != nil || input["key"] != "" {
-			t.Errorf("local mode sent a key to the sidecar: %q", input["key"])
+		if json.NewDecoder(r.Body).Decode(&input) != nil || input["task"] != "Replacement request" {
+			t.Error("sidecar did not receive the replacement task")
+			w.WriteHeader(http.StatusBadRequest)
+			return
 		}
-		fmt.Fprint(w, `{"text":"Local reply."}`)
+		if requests.Add(1) == 1 {
+			w.Header().Set("Retry-After", "1")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		fmt.Fprint(w, `{"text":"Replacement accepted."}`)
 	}))
 	defer server.Close()
 
 	announcement := make(chan string, 1)
-	// The stored OpenCode Go key must not be sent even when it exists.
-	m, err := hermes.New(t.Context(), st.DB(), server.URL, token, func() string { return "opencode-key" },
-		func(text string) { announcement <- text }, slog.Default(), hermes.WithLocalInference())
+	m, err := hermes.New(t.Context(), st.DB(), server.URL, strings.Repeat("t", 32),
+		hermes.RuntimeConfig{OpenCodeKey: func() string { return "test-key" }},
+		func(text string) { announcement <- text }, slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer m.Close()
-	if !m.Configured() {
-		t.Fatal("local mode should be configured without an OpenCode Go key")
-	}
-	if got := m.Handle(t.Context(), "Explain HTTP"); got != "Hermes is working on job 1." {
-		t.Fatal(got)
-	}
+	m.Handle(t.Context(), "Replacement request")
 	select {
-	case <-announcement:
+	case got := <-announcement:
+		if got != "Hermes finished." || requests.Load() != 2 {
+			t.Fatalf("got %q after %d requests", got, requests.Load())
+		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("job did not finish")
-	}
-
-	noKey, err := hermes.New(t.Context(), st.DB(), server.URL, token, func() string { return "" }, nil, slog.Default(), hermes.WithLocalInference())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer noKey.Close()
-	if !noKey.Configured() {
-		t.Fatal("local mode must not depend on the OpenCode Go secret")
-	}
-
-	cloud, err := hermes.New(t.Context(), st.DB(), server.URL, token, func() string { return "" }, nil, slog.Default())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer cloud.Close()
-	if cloud.Configured() {
-		t.Fatal("cloud mode without a key should not be configured")
-	}
-	if got := cloud.Handle(t.Context(), "Explain HTTP"); got != "Hermes needs its OpenCode Go key." {
-		t.Fatal(got)
+		t.Fatal("replacement request did not finish")
 	}
 }

@@ -20,6 +20,8 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/activity"
 	"github.com/Jairik/clanka-bot/assistant/internal/announce"
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
+	"github.com/Jairik/clanka-bot/assistant/internal/hermes"
+	"github.com/Jairik/clanka-bot/assistant/internal/hermesadapter"
 	"github.com/Jairik/clanka-bot/assistant/internal/httpguard"
 	"github.com/Jairik/clanka-bot/assistant/internal/integrations"
 	"github.com/Jairik/clanka-bot/assistant/internal/persona"
@@ -142,8 +144,11 @@ type Options struct {
 	// its metadata to show what is deterministic, what only the Agent may call,
 	// and what stays on the Pi. Nil makes those pages explanatory.
 	Registry *tool.Registry
-	// HermesReady reports whether the model-only sidecar has its credential.
-	HermesReady func() bool
+	// HermesRuntime provides the live selection and readiness for new jobs.
+	HermesRuntime *hermes.Manager
+	// HermesAdapter is the private allowlist adapter. The Hermes page shows
+	// its enforced surface. Nil leaves the surface empty.
+	HermesAdapter *hermesadapter.Adapter
 	// Focus reports what currently holds the user's attention (Ring, Reply,
 	// Music) so the Dashboard can show why speech is or is not playing. Nil
 	// hides the focus view.
@@ -255,7 +260,8 @@ type Handler struct {
 	phraseGenReady func() bool
 	registry       *tool.Registry
 	integrations   *integrations.Service
-	hermesReady    func() bool
+	hermesRuntime  *hermes.Manager
+	hermesAdapter  *hermesadapter.Adapter
 	verifier       *integrations.Verifier
 	// focusReg and announceQueue feed the focus view and its live delta. Either
 	// may be nil, which hides the view.
@@ -427,7 +433,8 @@ func New(opts Options) (*Handler, error) {
 		phraseGenReady: opts.PhraseGenReady,
 		registry:       opts.Registry,
 		integrations:   opts.Integrations,
-		hermesReady:    opts.HermesReady,
+		hermesRuntime:  opts.HermesRuntime,
+		hermesAdapter:  opts.HermesAdapter,
 		verifier:       opts.Verifier,
 		focusReg:       opts.Focus,
 		announceQueue:  opts.Announcements,
@@ -566,10 +573,16 @@ func New(opts Options) (*Handler, error) {
 	h.Mutating("POST /phrasebook/{persona}/clear", h.phrasebookClear)
 	h.Mutating("POST /phrasebook/{persona}/generate", h.phrasebookGenerate)
 	// The Routes page is a read-only explanation of what routing may choose.
-	// The Hermes page reads the MCP surface and links the accounts Hermes may
-	// use; linking writes the same write-only secrets the Tools read.
+	// The Hermes page reads the enforced allowlist and links the accounts
+	// Hermes may use; linking writes the same write-only secrets the Tools read.
 	h.Handle("GET /api/ui/routes", h.page("routes", h.routesPage))
 	h.Handle("GET /api/ui/hermes", h.page("hermes", h.hermesPage))
+	// Recipe writes use the same owner and Origin checks as account grants.
+	h.Handle("GET /api/ui/hermes/tools", h.page("hermes/tools", h.hermesTools))
+	h.Handle("GET /api/ui/hermes/runtime", h.page("hermes/runtime", h.hermesRuntimeGet))
+	h.Mutating("POST /api/ui/hermes/runtime", h.hermesRuntimeSave)
+	h.Mutating("POST /api/ui/hermes/tools", h.hermesToolSave)
+	h.Mutating("POST /api/ui/hermes/tools/{name}/delete", h.hermesToolDelete)
 	h.Mutating("POST /hermes/integrations/{id}", h.hermesLink)
 	h.Mutating("POST /hermes/integrations/{id}/unlink", h.hermesUnlink)
 	h.Mutating("POST /hermes/integrations/{id}/grant", h.hermesGrant)

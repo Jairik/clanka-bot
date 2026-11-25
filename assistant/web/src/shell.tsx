@@ -40,7 +40,7 @@ export const PAGES: { id: PageId; path: string; title: string; blurb: string; ic
   { id: "routes", path: "/routes", title: "Routes", blurb: "Which path answers each request, and which Tools stay on the Pi.", icon: Waypoints, group: "System" },
   { id: "voice-samples", path: "/voice-samples", title: "Voice samples", blurb: "Record takes for a wake phrase, then export the set for desktop training.", icon: Mic, group: "Setup" },
   { id: "secrets", path: "/secrets", title: "Secrets", blurb: "Write-only values the Agent and Tool modules read.", icon: KeyRound, group: "Setup" },
-  { id: "hermes", path: "/hermes", title: "Hermes", blurb: "The Tool surface and accounts Hermes would get once it is installed.", icon: Bot, group: "Setup" },
+  { id: "hermes", path: "/hermes", title: "Hermes", blurb: "The enforced Tool allowlist and accounts Hermes may use.", icon: Bot, group: "Setup" },
   { id: "settings", path: "/settings", title: "Settings", blurb: "Tools, wording, quiet hours and every other live setting.", icon: Settings, group: "Footer" },
 ];
 // Legacy bookmarks open the pages that replaced them: the phrasebook became

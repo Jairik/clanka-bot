@@ -58,7 +58,7 @@ type routeRowView struct {
 	Examples       int
 }
 
-// hermesView describes the model-only runtime and a future adapter's surface.
+// hermesView describes the model-only runtime and the enforced adapter surface.
 type hermesView struct {
 	Owner           string
 	Page            string
@@ -67,8 +67,12 @@ type hermesView struct {
 	HasRegistry     bool
 	HasIntegrations bool
 	RuntimeReady    bool
+	AdapterReady    bool
+	SchemasDeferred bool
 	Surface         []hermesToolView
 	SurfaceCount    int
+	Withheld        []hermesToolView
+	WithheldCount   int
 	LocalOnlyCount  int
 	ConfirmCount    int
 	Granted         int
@@ -181,7 +185,7 @@ func (h *Handler) hermesUnlink(w http.ResponseWriter, r *http.Request) {
 }
 
 // hermesGrant toggles one account's Hermes access. The grant is a live
-// setting; it stores intent until the Hermes adapter exists.
+// setting; the adapter enforces it on the next list, schema or invoke.
 func (h *Handler) hermesGrant(w http.ResponseWriter, r *http.Request) {
 	if h.integrations == nil {
 		http.NotFound(w, r)
@@ -312,7 +316,7 @@ func (h *Handler) buildRoutesView(flash, problem string) routesView {
 	return view
 }
 
-// buildHermesView lists the MCP surface Hermes would get and every account.
+// buildHermesView lists the enforced allowlist and every account.
 func (h *Handler) buildHermesView(flash, problem string) hermesView {
 	view := hermesView{
 		Owner:           h.owner,
@@ -321,8 +325,11 @@ func (h *Handler) buildHermesView(flash, problem string) hermesView {
 		Error:           problem,
 		HasRegistry:     h.registry != nil,
 		HasIntegrations: h.integrations != nil,
-		RuntimeReady:    h.hermesReady != nil && h.hermesReady(),
+		RuntimeReady:    h.hermesRuntime.Configured(),
+		AdapterReady:    h.hermesAdapter != nil,
+		SchemasDeferred: h.hermesAdapter != nil,
 		Surface:         []hermesToolView{},
+		Withheld:        []hermesToolView{},
 		Rows:            []integrationView{},
 	}
 	if h.registry != nil {
@@ -340,15 +347,27 @@ func (h *Handler) buildHermesView(flash, problem string) hermesView {
 			}
 			if info.Permission == tool.PermissionConfirm {
 				view.ConfirmCount++
-				continue
 			}
+		}
+	}
+	if h.hermesAdapter != nil {
+		surface := h.hermesAdapter.Surface()
+		for _, item := range surface.Allowed {
 			view.Surface = append(view.Surface, hermesToolView{
-				Name:        name,
-				Description: info.Description,
-				Permission:  string(info.Permission),
+				Name:        item.Name,
+				Description: item.Description,
+				Permission:  item.Permission,
+			})
+		}
+		for _, item := range surface.Withheld {
+			view.Withheld = append(view.Withheld, hermesToolView{
+				Name:        item.Name,
+				Description: item.Description,
+				Permission:  item.Permission,
 			})
 		}
 		view.SurfaceCount = len(view.Surface)
+		view.WithheldCount = len(view.Withheld)
 	}
 	if h.integrations == nil {
 		return view
@@ -431,7 +450,7 @@ func hermesFlashMessage(name string) string {
 	case flashHermesUnlinked:
 		return "Stored values cleared. Environment values, if any, remain in effect."
 	case flashHermesGranted:
-		return "Hermes access granted. It applies when the MCP adapter is available."
+		return "Hermes access granted. The adapter enforces it on the next call."
 	case flashHermesRevoked:
 		return "Hermes access revoked."
 	default:

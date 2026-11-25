@@ -4,7 +4,7 @@ SHELL := /bin/bash
 GIT_SHA ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo dev)
 export GIT_SHA
 
-.PHONY: web web-dev web-image build up down logs doctor deploy rollback prune-images build-arm64 test tts-test stt-test check routing-eval latency-report new-tool wakeword-test soloist soloist-update spotify-up deploy-watch-install backup smoke
+.PHONY: web web-dev web-image build up down logs doctor deploy rollback prune-images build-arm64 test tts-test stt-test stt-benchmark check routing-eval latency-report new-tool wakeword-test soloist soloist-update spotify-up deploy-watch-install backup smoke
 
 build: ## Build every service image for this host.
 	docker compose build
@@ -108,6 +108,9 @@ tts-test: ## Run the Wyoming/pcm and STT Python tests (needs wyoming and numpy i
 
 stt-test: ## Run the STT Wyoming server tests (needs wyoming and pytest installed).
 	python3 -m pytest stt/tests -q
+
+stt-benchmark: ## Replay STT fixtures. Pass STT_URI=tcp://host:port to use a running service; does not start containers.
+	python3 stt/benchmark.py $(if $(STT_URI),--stt-uri "$(STT_URI)") $(if $(STT_MODEL),--model "$(STT_MODEL)") $(if $(AUDIO_DIR),--audio-dir "$(AUDIO_DIR)")
 
 check: ## Check compose and Dockerfile deployment conventions.
 	bash scripts/check-compose.sh

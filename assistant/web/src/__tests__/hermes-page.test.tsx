@@ -40,7 +40,7 @@ const openrouter = (over: Partial<Integration> = {}): Integration => ({
   ...over,
 }) as Integration;
 
-const view = (rows: Integration[] = [github(), openrouter()]): HermesView => ({
+const view = (rows: Integration[] = [github(), openrouter()], over: Partial<HermesView> = {}): HermesView => ({
   Owner: "owner@example.com",
   Page: "hermes",
   Flash: "",
@@ -48,15 +48,20 @@ const view = (rows: Integration[] = [github(), openrouter()]): HermesView => ({
   HasRegistry: true,
   HasIntegrations: true,
   RuntimeReady: false,
+  AdapterReady: true,
+  SchemasDeferred: true,
   SurfaceCount: 2,
+  WithheldCount: 0,
   LocalOnlyCount: 5,
   ConfirmCount: 3,
   Granted: 0,
   Surface: [
-    { Name: "lights.power", Description: "Turn a light on or off.", Permission: "act" },
-    { Name: "spotify.play", Description: "Start playback.", Permission: "read" },
+    { Name: "weather.current", Description: "Current weather.", Permission: "read" },
+    { Name: "weather.forecast", Description: "Daily forecast.", Permission: "read" },
   ],
+  Withheld: [],
   Rows: rows,
+  ...over,
 });
 
 type Call = { path: string; body: URLSearchParams };
@@ -69,6 +74,8 @@ function stub(write: (path: string) => HermesView, get: () => HermesView = () =>
     return json(write(path));
   };
   stubFetch({
+    "/api/ui/hermes/tools": () => json({ available: [], recipes: [] }),
+    "/api/ui/hermes/runtime": () => json({}, 404),
     "/api/ui/hermes": () => json(get()),
     "/hermes/integrations/github": route("/hermes/integrations/github"),
     "/hermes/integrations/github/unlink": route("/hermes/integrations/github/unlink"),
@@ -78,18 +85,41 @@ function stub(write: (path: string) => HermesView, get: () => HermesView = () =>
   return calls;
 }
 
-it("shows the setup required and the surface a future adapter would get", async () => {
+it("shows the setup required and the enforced allowlist", async () => {
   stub(() => view());
   render(<HermesPage />);
 
   expect(await screen.findByText("Hermes needs setup")).toBeTruthy();
   expect(screen.getByText(/Enable the private sidecar/)).toBeTruthy();
+  expect(screen.getByText(/enforces the allowlist and live account grants/)).toBeTruthy();
   expect(screen.getByText("2 tools")).toBeTruthy();
-  expect(screen.getByText("lights.power")).toBeTruthy();
+  expect(screen.getByText("weather.current")).toBeTruthy();
   expect(screen.getByText(/5 Tools run on the Pi/)).toBeTruthy();
   expect(screen.getByText(/3 Tools need a spoken confirmation/)).toBeTruthy();
   expect(screen.getByText("GitHub")).toBeTruthy();
   expect(screen.getByText("Agent model")).toBeTruthy();
+});
+
+it("names withheld allowlisted tools until the grant is on", async () => {
+  stubFetch({
+    "/api/ui/hermes/tools": () => json({ available: [], recipes: [] }),
+    "/api/ui/hermes/runtime": () => json({}, 404),
+    "/api/ui/hermes": () =>
+      json(
+        view([], {
+          Surface: [],
+          SurfaceCount: 0,
+          WithheldCount: 2,
+          Withheld: [
+            { Name: "weather.current", Description: "Current weather.", Permission: "read" },
+            { Name: "weather.forecast", Description: "Daily forecast.", Permission: "read" },
+          ],
+        }),
+      ),
+  });
+  render(<HermesPage />);
+  expect(await screen.findByText(/2 allowlisted Tools are withheld/)).toBeTruthy();
+  expect(screen.getByText(/weather.current, weather.forecast/)).toBeTruthy();
 });
 
 it("links an account with one field per secret", async () => {
@@ -154,7 +184,9 @@ it("unlinks an account that has stored secrets", async () => {
 });
 
 it("explains an unconfigured account registry", async () => {
-  stubFetch({ "/api/ui/hermes": () => json({ ...view([]), HasIntegrations: false }) });
+  stubFetch({
+    "/api/ui/hermes/tools": () => json({ available: [], recipes: [] }),
+    "/api/ui/hermes/runtime": () => json({}, 404), "/api/ui/hermes": () => json({ ...view([]), HasIntegrations: false }) });
   render(<HermesPage />);
 
   expect(await screen.findByText(/built without the integrations or secrets service/)).toBeTruthy();
@@ -163,6 +195,8 @@ it("explains an unconfigured account registry", async () => {
 
 it("shows a refused link as an error", async () => {
   stubFetch({
+    "/api/ui/hermes/tools": () => json({ available: [], recipes: [] }),
+    "/api/ui/hermes/runtime": () => json({}, 404),
     "/api/ui/hermes": () => json(view()),
     "/hermes/integrations/github": () =>
       json({ ...view(), Error: "Fill every required field before saving." }, 400),
@@ -186,6 +220,8 @@ it("keeps the link button enabled when a required secret is already stored but l
     return json(view());
   };
   stubFetch({
+    "/api/ui/hermes/tools": () => json({ available: [], recipes: [] }),
+    "/api/ui/hermes/runtime": () => json({}, 404),
     "/api/ui/hermes": () => json(view()),
     "/hermes/integrations/openrouter": route("/hermes/integrations/openrouter"),
   });
@@ -262,4 +298,30 @@ it("does not verify on load or on a timer", async () => {
   // Give any stray effect a chance to fire; it must not.
   await new Promise((r) => setTimeout(r, 50));
   expect(calls.filter((c) => c.path.endsWith("/verify"))).toHaveLength(0);
+});
+
+it("shows the job provider choice when the assistant serves it", async () => {
+  stubFetch({
+    "/api/ui/hermes/tools": () => json({ available: [], recipes: [] }),
+    "/api/ui/hermes/runtime": () =>
+      json({
+        provider: "local",
+        open_code_go_model: "deepseek-v4.1-flash",
+        open_code_go_models: ["deepseek-v4.1-flash"],
+        local_model: "Ornith",
+        local_ready: true,
+        open_code_go_ready: false,
+      }),
+    "/api/ui/hermes": () => json(view()),
+  });
+  render(<HermesPage />);
+  expect(await screen.findByRole("radiogroup", { name: "Provider for new Hermes jobs" })).toBeTruthy();
+  expect(screen.getByText("Local · Ornith")).toBeTruthy();
+});
+
+it("keeps the page usable when the assistant predates the job provider route", async () => {
+  stub(() => view());
+  render(<HermesPage />);
+  expect(await screen.findByText(/does not offer a job provider choice yet/)).toBeTruthy();
+  expect(screen.getByText("GitHub")).toBeTruthy();
 });

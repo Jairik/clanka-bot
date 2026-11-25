@@ -376,15 +376,15 @@ func NewSleep(svc *Service) tool.Tool[SleepIn, SleepOut] {
 		},
 		// Each Example must clear the 0.23 margin against every other Tool's
 		// best Example. Avoid "pause the music …" (too close to spotify.pause)
-		// and bare "timer for an hour" (too close to timer.set); a delay plus
-		// music/playback wording is what makes this Tool distinct.
+		// and "set a sleep timer for N" (too close to timer.set). A delay plus
+		// music/playback wording is what makes this Tool distinct (#522).
 		Examples: []string{
 			"stop the music in 20 minutes",
 			"turn the music off after 20 minutes",
 			"stop the music after 30 minutes",
 			"stop playing in an hour",
 			"stop playback in 45 minutes",
-			"set a sleep timer for 20 minutes",
+			"set a music sleep timer for 20 minutes",
 			"cancel the music sleep timer",
 		},
 		Extract: extractSleep,

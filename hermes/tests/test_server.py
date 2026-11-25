@@ -1,131 +1,348 @@
-"""Key routing and local-config checks for the Hermes sidecar."""
+"""Unit tests for the Hermes sidecar's env-driven slim-down settings."""
 
+from __future__ import annotations
+
+from http.client import HTTPConnection
 import importlib.util
 import json
-import pathlib
+import os
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
 import threading
 import unittest
-import urllib.error
-import urllib.request
-from http.server import HTTPServer
 from unittest import mock
 
-SERVER = pathlib.Path(__file__).resolve().parents[1] / "server.py"
-TOKEN = "t" * 32
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
-def load(env):
-    """Import server.py fresh with the given environment."""
-    with mock.patch.dict("os.environ", env, clear=True):
-        spec = importlib.util.spec_from_file_location("hermes_server", SERVER)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
+def load_server():
+    """Import hermes/server.py as hermes_server without starting the HTTP server."""
+    spec = importlib.util.spec_from_file_location("hermes_server", ROOT / "server.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
     return module
 
 
-class LocalConfigTest(unittest.TestCase):
-    def test_all_or_none(self):
-        server = load({})
-        self.assertIsNone(server.local_config_error("", "", ""))
-        self.assertIsNone(server.local_config_error("http://x/v1", "m", "k"))
-        for partial in [("http://x/v1", "m", ""), ("http://x/v1", "", "k"), ("", "m", "k"), ("", "", "k"), ("http://x/v1", "m", "  ")]:
-            self.assertIsNotNone(server.local_config_error(*partial), partial)
+class HermesServerConfigTest(unittest.TestCase):
+    # Each test gets a clean environment so flags cannot leak between cases.
+    def setUp(self):
+        self.server = load_server()
+        self.home = tempfile.TemporaryDirectory()
+        self.addCleanup(self.home.cleanup)
+        self.env = {
+            "HERMES_HOME": self.home.name,
+            "HERMES_RUNTIME_TOKEN": "t" * 32,
+        }
+        patcher = mock.patch.dict(os.environ, self.env, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
-    def test_whitespace_only_settings_count_as_unset(self):
-        server = load({"HERMES_LOCAL_BASE_URL": "   ", "HERMES_LOCAL_MODEL": "m", "HERMES_LOCAL_API_KEY": "k"})
-        self.assertEqual(server.LOCAL_BASE_URL, "")
-        self.assertIsNotNone(server.local_config_error(server.LOCAL_BASE_URL, server.LOCAL_MODEL, server.LOCAL_API_KEY))
-        server = load({"HERMES_LOCAL_BASE_URL": " ", "HERMES_LOCAL_MODEL": " ", "HERMES_LOCAL_API_KEY": " "})
-        self.assertIsNone(server.local_config_error(server.LOCAL_BASE_URL, server.LOCAL_MODEL, server.LOCAL_API_KEY))
-        self.assertEqual(server.LOCAL_BASE_URL, "")
-
-
-class JobKeyTest(unittest.TestCase):
-    def test_local_mode_ignores_the_sent_key(self):
-        server = load({})
-        self.assertEqual(server.job_key("opencode-key", "http://x/v1", "local-key"), "local-key")
-        self.assertEqual(server.job_key("", "http://x/v1", "local-key"), "local-key")
-        self.assertEqual(server.job_key("", "http://x/v1", " local-key\n"), "local-key")
-
-    def test_cloud_mode_needs_the_sent_key(self):
-        server = load({})
-        self.assertEqual(server.job_key("opencode-key", "", "local-key"), "opencode-key")
-        self.assertIsNone(server.job_key("", "", "local-key"))
-        self.assertIsNone(server.job_key("  ", "", ""))
-
-
-class HandlerTest(unittest.TestCase):
-    """End to end through /run with the worker replaced by a stub."""
-
-    def run_job(self, env, sent_key):
-        server = load(env)
-        sent = {}
-
-        class Worker:
-            returncode = 0
-
-            def __init__(self, *_args, **kwargs):
-                sent["env"] = kwargs["env"]
-
-            def communicate(self, input=None, timeout=None):
-                sent["payload"] = json.loads(input)
-                return b'{"text": "ok"}', b""
-
-            def poll(self):
-                return 0
-
-            def kill(self):
-                pass
-
-            def wait(self):
-                pass
-
-        httpd = HTTPServer(("127.0.0.1", 0), server.Handler)
-        httpd.authorization = ("Bearer " + TOKEN).encode()
-        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
-        thread.start()
-        self.addCleanup(httpd.server_close)
-        self.addCleanup(httpd.shutdown)
-        request = urllib.request.Request(
-            f"http://127.0.0.1:{httpd.server_address[1]}/run",
-            data=json.dumps({"task": "Explain HTTP", "key": sent_key}).encode(),
-            headers={"Authorization": "Bearer " + TOKEN, "Content-Type": "application/json"},
-        )
-        # Keep the environment in place for the request: the handler builds the
-        # worker's environment from os.environ when /run arrives.
-        with mock.patch.dict("os.environ", env, clear=True), \
-                mock.patch.object(server.subprocess, "Popen", Worker):
+    def healthz(self):
+        token = self.env["HERMES_RUNTIME_TOKEN"]
+        with self.server.RuntimeServer(("127.0.0.1", 0), token) as server:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            probe = HTTPConnection(*server.server_address, timeout=2)
             try:
-                with urllib.request.urlopen(request, timeout=5) as response:
-                    return response.status, sent
-            except urllib.error.HTTPError as err:
-                err.close()
-                return err.code, sent
+                probe.request("GET", "/healthz")
+                response = probe.getresponse()
+                self.assertEqual(response.status, 200)
+                return json.loads(response.read())
+            finally:
+                probe.close()
+                server.shutdown()
+                thread.join(timeout=2)
 
-    def test_local_mode_sends_only_the_local_key_to_the_worker(self):
-        env = {"HERMES_LOCAL_BASE_URL": "http://desk:8000/v1", "HERMES_LOCAL_MODEL": "m",
-               "HERMES_LOCAL_API_KEY": "local-key"}
-        status, sent = self.run_job(env, "opencode-key")
-        self.assertEqual(status, 200)
-        self.assertEqual(sent["payload"]["key"], "local-key")
-        # The key travels on stdin, never in the worker's environment.
-        self.assertNotIn("HERMES_LOCAL_API_KEY", sent["env"])
-        self.assertNotIn("local-key", sent["env"].values())
-        # The worker must see the local URL and model, or it would pair the
-        # local key with its default OpenCode Go URL.
-        self.assertEqual(sent["env"].get("HERMES_LOCAL_BASE_URL"), "http://desk:8000/v1")
-        self.assertEqual(sent["env"].get("HERMES_LOCAL_MODEL"), "m")
+    def test_healthz_reports_the_local_model_it_routes(self):
+        # The Assistant compares this with its own local model before it
+        # reports Local as ready.
+        self.assertEqual(self.healthz(), {
+            "status": "ok", "local_model": "", "local_base_url": "", "local_ready": False,
+        })
+        os.environ["HERMES_LOCAL_MODEL"] = "ornith:9b"
+        self.assertEqual(self.healthz()["local_model"], "", "a model without a URL is not routable")
+        os.environ["HERMES_LOCAL_BASE_URL"] = " http://desk:8000/v1 "
+        os.environ["HERMES_LOCAL_MODEL"] = " ornith:9b "
+        os.environ["HERMES_LOCAL_API_KEY"] = "sentinel-local-key"
+        os.environ["HERMES_RUNTIME_TOKEN"] = self.env["HERMES_RUNTIME_TOKEN"]
+        health = self.healthz()
+        # The route and readiness are public to the private network.
+        self.assertEqual(health, {
+            "status": "ok", "local_model": "ornith:9b", "local_base_url": "http://desk:8000/v1", "local_ready": True,
+        })
+        self.assertNotIn("sentinel-local-key", json.dumps(health))
+        self.assertNotIn(self.env["HERMES_RUNTIME_TOKEN"], json.dumps(health))
 
-    def test_cloud_mode_rejects_an_empty_key(self):
-        status, sent = self.run_job({}, "")
-        self.assertEqual(status, 400)
-        self.assertNotIn("payload", sent)
+    def test_empty_allowlist_is_tool_free_with_search_off(self):
+        self.assertEqual(self.server.parse_toolsets(), [])
+        self.assertFalse(self.server.tool_search_enabled())
+        self.assertNotIn("mcp_servers", self.server.runtime_config_text())
+        self.assertIn("enabled: off", self.server.runtime_config_text())
 
-    def test_cloud_mode_forwards_the_sent_key(self):
-        status, sent = self.run_job({}, "opencode-key")
-        self.assertEqual(status, 200)
-        self.assertEqual(sent["payload"]["key"], "opencode-key")
-        self.assertNotIn("HERMES_LOCAL_BASE_URL", sent["env"])
+    def test_sample_mcp_adds_the_tiny_allowlist_and_lazy_server(self):
+        os.environ["HERMES_SAMPLE_MCP"] = "1"
+        os.environ["HERMES_SAMPLE_MCP_PATH"] = "/tmp/sample_mcp.py"
+        self.assertEqual(self.server.parse_toolsets(), ["clanka_sample"])
+        self.assertTrue(self.server.tool_search_enabled())
+        text = self.server.runtime_config_text()
+        self.assertIn("enabled: on", text)
+        self.assertIn("clanka_sample:", text)
+        self.assertIn("lazy: true", text)
+        self.assertIn("/tmp/sample_mcp.py", text)
+
+    def test_explicit_tool_search_off_keeps_sample_tools_eager(self):
+        os.environ["HERMES_SAMPLE_MCP"] = "1"
+        os.environ["HERMES_TOOL_SEARCH"] = "off"
+        os.environ["HERMES_SAMPLE_MCP_LAZY"] = "0"
+        self.assertFalse(self.server.tool_search_enabled())
+        text = self.server.runtime_config_text()
+        self.assertIn("enabled: off", text)
+        self.assertIn("lazy: false", text)
+
+    def test_arbitrary_toolsets_do_not_enable_built_ins(self):
+        os.environ["HERMES_TOOLSETS"] = "todo, terminal"
+        self.assertEqual(self.server.agent_kwargs("key")["enabled_toolsets"], [])
+
+    def test_local_endpoint_uses_custom_provider(self):
+        os.environ["HERMES_LOCAL_BASE_URL"] = "http://ornith.example/v1"
+        os.environ["HERMES_LOCAL_MODEL"] = "ornith:9b"
+        kwargs = self.server.agent_kwargs("local-key")
+        self.assertEqual(kwargs["provider"], "custom")
+        self.assertEqual(kwargs["base_url"], "http://ornith.example/v1")
+        self.assertEqual(kwargs["model"], "ornith:9b")
+        self.assertEqual(kwargs["api_key"], "local-key")
+        self.assertTrue(kwargs["skip_context_files"])
+        self.assertTrue(kwargs["skip_memory"])
+        self.assertFalse(kwargs["load_soul_identity"])
+        self.assertEqual(kwargs["max_iterations"], 1)
+
+    def test_cloud_endpoint_when_local_is_unset(self):
+        kwargs = self.server.agent_kwargs("cloud-key")
+        self.assertEqual(kwargs["provider"], "opencode-go")
+        self.assertEqual(kwargs["base_url"], self.server.CLOUD_BASE_URL)
+        self.assertEqual(kwargs["model"], self.server.CLOUD_MODEL)
+
+    def test_incomplete_local_route_never_falls_back(self):
+        os.environ["HERMES_LOCAL_BASE_URL"] = "http://ornith.example/v1"
+        with self.assertRaisesRegex(SystemExit, "Set all three Hermes local settings"):
+            self.server.validate_startup()
+        with self.assertRaises(ValueError):
+            self.server.agent_kwargs("local-key")
+        self.assertEqual(
+            self.server.agent_kwargs("cloud-key", provider="opencode-go", model="glm-5.3-flash")["base_url"],
+            self.server.CLOUD_BASE_URL,
+        )
+
+    def test_explicit_cloud_models_ignore_the_local_configuration(self):
+        os.environ.update(HERMES_LOCAL_BASE_URL="http://ornith.example/v1", HERMES_LOCAL_MODEL="ornith:9b")
+        for model in ("deepseek-v4.1-flash", "deepseek-v4-pro", "glm-5.3-flash", "kimi-k3"):
+            with self.subTest(model=model):
+                kwargs = self.server.agent_kwargs("cloud-key", provider="opencode-go", model=model)
+                self.assertEqual(kwargs["base_url"], self.server.CLOUD_BASE_URL)
+                self.assertEqual(kwargs["model"], model)
+                self.assertEqual(kwargs["provider"], "opencode-go")
+                self.assertEqual(kwargs["api_mode"], "chat_completions")
+                self.assertEqual(kwargs["api_key"], "cloud-key")
+                self.assertEqual(kwargs["fallback_model"], {})
+
+    def test_run_validates_route_before_starting_any_worker(self):
+        os.environ.update(
+            HERMES_LOCAL_BASE_URL="http://ornith.example/v1",
+            HERMES_LOCAL_MODEL="ornith:9b",
+            HERMES_LOCAL_API_KEY=" local-key ",
+        )
+        token = self.env["HERMES_RUNTIME_TOKEN"]
+        cloud = {"task": "test", "key": "cloud-key", "provider": "opencode-go", "model": "kimi-k3"}
+        local = {"task": "test", "key": "", "provider": "local", "model": "ornith:9b"}
+        legacy = {"task": "test", "key": "unclassified-key"}
+
+        def run_worker(handler, _request):
+            handler.send_json(200, {"text": "accepted"})
+
+        with self.server.RuntimeServer(("127.0.0.1", 0), token) as server:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            connection = HTTPConnection(*server.server_address, timeout=2)
+            try:
+                with mock.patch.object(self.server.Handler, "run_worker", autospec=True, side_effect=run_worker) as worker:
+                    for payload, bearer, expected in (
+                        (cloud, "", 401),
+                        (dict(cloud, base_url="https://other.example"), token, 400),
+                        (dict(cloud, provider="auto"), token, 400),
+                        (dict(cloud, model="any"), token, 400),
+                        (dict(cloud, model=None), token, 400),
+                        (dict(cloud, key=" "), token, 400),
+                        (dict(local, model="any"), token, 400),
+                        (dict(local, key=None), token, 400),
+                        (cloud, token, 200),
+                        (local, token, 200),
+                        (dict(local, key="cloud-key"), token, 200),
+                        (legacy, token, 200),
+                    ):
+                        connection.request("POST", "/run", json.dumps(payload), {"Authorization": "Bearer " + bearer})
+                        response = connection.getresponse()
+                        self.assertEqual(response.status, expected)
+                        response.read()
+                    # The local worker always gets the sidecar's key over stdin.
+                    local_job = dict(local, key="local-key")
+                    self.assertEqual([call.args[1] for call in worker.call_args_list], [cloud, local_job, local_job, local_job])
+                    os.environ["HERMES_LOCAL_API_KEY"] = " "
+                    for payload in (local, legacy):
+                        connection.request("POST", "/run", json.dumps(payload), {"Authorization": "Bearer " + token})
+                        response = connection.getresponse()
+                        self.assertEqual(response.status, 400)
+                        response.read()
+                    self.assertEqual(worker.call_count, 4)
+            finally:
+                connection.close()
+                server.shutdown()
+                thread.join(timeout=2)
+
+    def test_startup_writes_config_and_returns_the_token(self):
+        token = self.server.validate_startup()
+        self.assertEqual(token, "t" * 32)
+        written = Path(self.home.name) / "config.yaml"
+        self.assertTrue(written.is_file())
+        self.assertIn("tool_search:", written.read_text())
+
+    def test_startup_requires_all_local_settings_or_none(self):
+        # Whitespace-only settings count as unset at startup.
+        os.environ.update(HERMES_LOCAL_BASE_URL=" ", HERMES_LOCAL_MODEL=" ", HERMES_LOCAL_API_KEY=" ")
+        self.assertEqual(self.server.validate_startup(), self.env["HERMES_RUNTIME_TOKEN"])
+        os.environ.update(HERMES_LOCAL_BASE_URL="http://ornith.example/v1", HERMES_LOCAL_MODEL="ornith:9b")
+        with self.assertRaisesRegex(SystemExit, "HERMES_LOCAL_API_KEY"):
+            self.server.validate_startup()
+        os.environ["HERMES_LOCAL_API_KEY"] = "local-key"
+        self.assertEqual(self.server.validate_startup(), self.env["HERMES_RUNTIME_TOKEN"])
+
+    def test_worker_env_keeps_only_the_allowlisted_names(self):
+        os.environ["HERMES_LOCAL_BASE_URL"] = "http://ornith.example/v1"
+        os.environ["HERMES_LOCAL_MODEL"] = "ornith:9b"
+        os.environ["HERMES_LOCAL_API_KEY"] = "should-not-leak"
+        os.environ["OPENAI_API_KEY"] = "should-not-leak"
+        forwarded = self.server.worker_env()
+        self.assertIn("HERMES_LOCAL_BASE_URL", forwarded)
+        self.assertIn("HERMES_LOCAL_MODEL", forwarded)
+        self.assertNotIn("HERMES_LOCAL_API_KEY", forwarded)
+        self.assertNotIn("OPENAI_API_KEY", forwarded)
+        self.assertNotIn("HERMES_RUNTIME_TOKEN", forwarded)
+        self.assertNotIn("CLANKA_ADAPTER_TOKEN", forwarded)
+
+    def test_only_go_workers_receive_the_bridge_token(self):
+        # The HTTP runtime credential gets a single explicit route to the bridge.
+        os.environ["HERMES_GO_TOOLS"] = "1"
+        forwarded = self.server.worker_env()
+        self.assertEqual(forwarded["CLANKA_ADAPTER_TOKEN"], self.env["HERMES_RUNTIME_TOKEN"])
+        self.assertNotIn("HERMES_RUNTIME_TOKEN", forwarded)
+        self.assertNotIn(self.env["HERMES_RUNTIME_TOKEN"], self.server.runtime_config_text({"weather.current"}))
+
+    def test_go_catalogue_controls_search_and_the_iteration_budget(self):
+        # An empty grant set leaves the one-turn text-only path intact.
+        empty = self.server.agent_kwargs("key", set())
+        self.assertEqual(empty["enabled_toolsets"], [])
+        self.assertEqual(empty["max_iterations"], 1)
+        self.assertEqual(self.server.run_timeout(), 45)
+        self.assertEqual(empty["run_budget_seconds"], 40)
+        self.assertIn("enabled: off", self.server.runtime_config_text(set()))
+
+        names = {"mcp__clanka_go__weather_current"}
+        os.environ.update(HERMES_TOOL_SEARCH="off", HERMES_GO_TOOLS="1")
+        self.assertIn("enabled: on", self.server.runtime_config_text(names))
+        ready = self.server.agent_kwargs("key", names)
+        self.assertEqual(ready["enabled_toolsets"], ["clanka_go"])
+        self.assertGreaterEqual(ready["max_iterations"], 4)
+        self.assertEqual(self.server.run_timeout(), 240)
+        self.assertEqual(ready["run_budget_seconds"], 235)
+        self.assertEqual(ready["fallback_model"], {})
+
+    def test_health_and_busy_responses_while_worker_runs(self):
+        started = threading.Event()
+        popen = subprocess.Popen
+        workers = []
+
+        def start_worker(_command, **kwargs):
+            # A real child exercises the disconnect cleanup without an upstream model.
+            worker = popen([sys.executable, "-c", "import time; time.sleep(10)"], **kwargs)
+            workers.append(worker)
+            started.set()
+            return worker
+
+        token = self.env["HERMES_RUNTIME_TOKEN"]
+        with self.server.RuntimeServer(("127.0.0.1", 0), token) as server:
+            thread = threading.Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            address = server.server_address
+            running = HTTPConnection(*address, timeout=2)
+            probe = HTTPConnection(*address, timeout=2)
+            headers = {"Authorization": "Bearer " + token}
+            payload = '{"task":"test","key":"key","provider":"opencode-go","model":"deepseek-v4.1-flash"}'
+            try:
+                with mock.patch.object(self.server.subprocess, "Popen", side_effect=start_worker):
+                    running.request("POST", "/run", payload, headers)
+                    self.assertTrue(started.wait(2))
+                    probe.request("GET", "/healthz")
+                    response = probe.getresponse()
+                    self.assertEqual(response.status, 200)
+                    response.read()
+                    probe.request("POST", "/run", payload, headers)
+                    response = probe.getresponse()
+                    self.assertEqual(response.status, 503)
+                    self.assertEqual(response.getheader("Retry-After"), "1")
+                    response.read()
+                    self.assertEqual(len(workers), 1)
+                    running.close()
+                    self.assertLess(workers[0].wait(timeout=2), 0)
+            finally:
+                running.close()
+                probe.close()
+                server.shutdown()
+                thread.join(timeout=2)
+
+    def test_go_and_sample_modes_are_mutually_exclusive(self):
+        # The sample server never contributes tools to the production catalogue.
+        os.environ.update(HERMES_GO_TOOLS="1", HERMES_SAMPLE_MCP="1")
+        with self.assertRaisesRegex(SystemExit, "Choose Go Tools or sample MCP"):
+            self.server.validate_startup()
+
+    def test_mcp_discovery_is_skipped_without_the_sample_server(self):
+        self.assertEqual(self.server.discover_configured_mcp(), [])
+
+    def test_empty_allowlist_rejects_tools(self):
+        class Fake:
+            tools = [{"name": "terminal"}]
+
+        with self.assertRaisesRegex(RuntimeError, "initialized with tools"):
+            self.server.assert_tool_allowlist(Fake())
+
+    def test_sample_allowlist_requires_registered_tools(self):
+        os.environ["HERMES_SAMPLE_MCP"] = "1"
+
+        class Empty:
+            tools = []
+
+        with self.assertRaisesRegex(RuntimeError, "did not register"):
+            self.server.assert_tool_allowlist(Empty())
+
+        for names in (
+            ("mcp__clanka_sample__sample_ping", "mcp__clanka_sample__sample_time"),
+            ("tool_search", "tool_describe", "tool_call"),
+        ):
+            ready = mock.Mock(tools=[{"function": {"name": name}} for name in names])
+            self.server.assert_tool_allowlist(ready)
+            ready.tools.append({"function": {"name": "terminal"}})
+            with self.assertRaisesRegex(RuntimeError, "did not register exactly"):
+                self.server.assert_tool_allowlist(ready)
+
+    def test_dockerfile_pins_current_stable_digest(self):
+        text = (ROOT / "Dockerfile").read_text()
+        self.assertIn("nousresearch/hermes-agent:v0.23.3@", text)
+        self.assertIn(
+            "sha256:3e9fe4c6ef36490f43aa0d0d80f9df64e9c92a576eee3042f1a97c8813c05355",
+            text,
+        )
 
 
 if __name__ == "__main__":

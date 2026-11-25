@@ -100,3 +100,19 @@ func NewWyomingSTT(client *wyoming.Client, opts wyoming.TranscribeOptions, forma
 func (s *WyomingSTT) Open(ctx context.Context) (STTStream, error) {
 	return s.client.Transcribe(ctx, s.opts, s.format)
 }
+
+// WyomingVAD adapts the Wyoming Silero VAD client to VADService.
+type WyomingVAD struct {
+	client *wyoming.Client
+	format wyoming.Format
+}
+
+// NewWyomingVAD builds a Silero VAD stream adapter.
+func NewWyomingVAD(client *wyoming.Client, format wyoming.Format) *WyomingVAD {
+	return &WyomingVAD{client: client, format: format}
+}
+
+// Open starts one Silero VAD session.
+func (v *WyomingVAD) Open(ctx context.Context) (VADSession, error) {
+	return v.client.OpenVAD(ctx, v.format)
+}

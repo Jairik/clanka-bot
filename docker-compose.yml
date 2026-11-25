@@ -81,8 +81,10 @@ services:
       ASSISTANT_EMBED_URL: "http://embed:8085"
       # Shared only with the optional Hermes sidecar.
       HERMES_RUNTIME_TOKEN: ${HERMES_RUNTIME_TOKEN:-}
-      # Only switches the Assistant to local mode; the key stays in Hermes.
       HERMES_LOCAL_BASE_URL: ${HERMES_LOCAL_BASE_URL:-}
+      HERMES_LOCAL_MODEL: ${HERMES_LOCAL_MODEL:-}
+      # Match the Hermes sidecar's job deadline.
+      HERMES_GO_TOOLS: ${HERMES_GO_TOOLS:-}
       ASSISTANT_TTS_ADDR: "tts:10200"
       # ADR-0003: the one SQLite database lives on the assistant-data volume.
       ASSISTANT_DATA_DIR: "/app/data"
@@ -113,8 +115,10 @@ services:
       # plays, never while idle. Empty leaves it off.
       ASSISTANT_WAKEWORD_STOP: ${WAKEWORD_STOP:-}
       ASSISTANT_STT_ADDR: "stt:10300"
-      ASSISTANT_STT_MODEL: ${STT_MODEL:-small-streaming}
+      ASSISTANT_STT_MODEL: ${STT_MODEL:-parakeet-tdt-0.6b-v2}
       ASSISTANT_STT_LANGUAGE: ${STT_LANGUAGE:-en}
+      ASSISTANT_STT_VAD: ${STT_VAD:-true}
+      ASSISTANT_STT_VAD_THRESHOLD: ${STT_VAD_THRESHOLD:-0.45}
       # Spotify Web API app pair. The client ID is public; PKCE means there is
       # no client secret. The refresh token is a write-only secret. Pairing is
       # separate: Soloist advertises the device and keeps its own credentials
@@ -234,6 +238,12 @@ services:
       HERMES_LOCAL_BASE_URL: ${HERMES_LOCAL_BASE_URL:-}
       HERMES_LOCAL_MODEL: ${HERMES_LOCAL_MODEL:-}
       HERMES_LOCAL_API_KEY: ${HERMES_LOCAL_API_KEY:-}
+      # Opt in to the Go read catalogue after the private adapter is deployed.
+      HERMES_GO_TOOLS: ${HERMES_GO_TOOLS:-}
+      # Sample MCP is for discovery benches and runs separately from Go Tools.
+      HERMES_TOOL_SEARCH: ${HERMES_TOOL_SEARCH:-}
+      HERMES_SAMPLE_MCP: ${HERMES_SAMPLE_MCP:-}
+      HERMES_SAMPLE_MCP_LAZY: ${HERMES_SAMPLE_MCP_LAZY:-}
     healthcheck:
       test: ["CMD", "/opt/hermes/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8642/healthz', timeout=2)"]
       interval: 10s
@@ -312,13 +322,14 @@ services:
       retries: 12
       start_period: 30s
 
-  # Moonshine Voice behind our Wyoming wrapper. Weights are baked at build time;
-  # the service does computation only and never mounts the mic.
+  # NVIDIA Parakeet TDT ONNX + Silero VAD behind our Wyoming wrapper. Weights
+  # are baked at build time; the service does computation only and never mounts
+  # the mic.
   stt:
     build:
       context: ./stt
       args:
-        STT_MODELS: ${STT_MODELS:-small-streaming,tiny-streaming}
+        STT_MODELS: ${STT_MODELS:-parakeet-tdt-0.6b-v2}
     image: clanka/stt:${CLANKA_TAG_STT:-${GIT_SHA:-dev}}
     restart: unless-stopped
     security_opt:
@@ -330,8 +341,12 @@ services:
       STT_HOST: "0.0.0.0"
       STT_PORT: "10300"
       STT_ADDR: "tcp://127.0.0.1:10300"
-      STT_MODEL: ${STT_MODEL:-small-streaming}
+      STT_MODEL: ${STT_MODEL:-parakeet-tdt-0.6b-v2}
       STT_LANGUAGE: ${STT_LANGUAGE:-en}
+      # Pi 5 benchmarks favor 3 threads: leaves 1 core for wakeword/assistant.
+      STT_THREADS: ${STT_THREADS:-3}
+      # Post-decode vocabulary rewrites stay off until owner-voice replay shows a win.
+      STT_CORRECT: ${STT_CORRECT:-0}
       TZ: ${TZ:-UTC}
     expose:
       - "10300"

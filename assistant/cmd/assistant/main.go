@@ -32,6 +32,7 @@ import (
 	"github.com/Jairik/clanka-bot/assistant/internal/equalizer"
 	"github.com/Jairik/clanka-bot/assistant/internal/focus"
 	"github.com/Jairik/clanka-bot/assistant/internal/hermes"
+	"github.com/Jairik/clanka-bot/assistant/internal/hermesadapter"
 	"github.com/Jairik/clanka-bot/assistant/internal/integrations"
 	"github.com/Jairik/clanka-bot/assistant/internal/lastreply"
 	"github.com/Jairik/clanka-bot/assistant/internal/latency"
@@ -990,21 +991,20 @@ func run() error {
 		return err
 	}
 
-	// The sidecar receives only the explicit request and its dedicated provider key.
-	// With local inference the sidecar holds the endpoint's key itself; the
-	// Assistant only needs to know not to require or send the OpenCode Go key.
-	var hermesOpts []hermes.Option
-	if strings.TrimSpace(os.Getenv("HERMES_LOCAL_BASE_URL")) != "" {
-		hermesOpts = append(hermesOpts, hermes.WithLocalInference())
-	}
-	hermesJobs, err := hermes.New(ctx, st.DB(), "http://hermes:8642/run", os.Getenv("HERMES_RUNTIME_TOKEN"), func() string {
-		key, _ := secretsSvc.Get(hermes.SecretName)
-		return key
+	// Resolve the dedicated Go key live, so adding or removing it affects the next job.
+	hermesJobs, err := hermes.New(ctx, st.DB(), "http://hermes:8642/run", os.Getenv("HERMES_RUNTIME_TOKEN"), hermes.RuntimeConfig{
+		Settings:     settingsSvc,
+		LocalBaseURL: os.Getenv("HERMES_LOCAL_BASE_URL"),
+		LocalModel:   os.Getenv("HERMES_LOCAL_MODEL"),
+		OpenCodeKey: func() string {
+			key, _ := secretsSvc.Get(hermes.SecretName)
+			return key
+		},
 	}, func(text string) {
 		if announcements != nil {
 			announcements.Enqueue(text)
 		}
-	}, logger, hermesOpts...)
+	}, logger)
 	if err != nil {
 		return fmt.Errorf("restore Hermes jobs: %w", err)
 	}
@@ -1258,10 +1258,22 @@ func run() error {
 		return reasons
 	}
 
+	// The adapter publishes vetted Go tools and saved recipes to the authenticated Hermes runtime.
+	hermesAdapter := hermesadapter.New(hermesadapter.Options{
+		Registry: registry,
+		Grants:   integrationSvc,
+		Secrets:  secretsSvc,
+		Settings: settingsSvc,
+	})
+	healthOpts := []api.Option{api.WithBusy(busy)}
+	if adapterHTTP := hermesadapter.NewHandler(hermesAdapter, os.Getenv("HERMES_RUNTIME_TOKEN")); adapterHTTP != nil {
+		healthOpts = append(healthOpts, api.WithHermesAdapter(adapterHTTP))
+	}
+
 	// The health listener never serves the debug route; the debug listener does.
 	servers := []*http.Server{{
 		Addr:              cfg.HTTP.Addr,
-		Handler:           api.NewHandler(p, logger, false, api.WithBusy(busy)),
+		Handler:           api.NewHandler(p, logger, false, healthOpts...),
 		ReadHeaderTimeout: 5 * time.Second,
 	}}
 	if cfg.Debug.Enabled {
@@ -1365,11 +1377,12 @@ func run() error {
 			},
 			// The Routes page reads live Tool metadata; the Hermes page reads the
 			// same registry and the account registry.
-			Registry:     registry,
-			HermesReady:  hermesJobs.Configured,
-			Integrations: integrationSvc,
-			Verifier:     integrationVerifier,
-			Spotify:      spotifyModule.Auth(),
+			Registry:      registry,
+			HermesRuntime: hermesJobs,
+			HermesAdapter: hermesAdapter,
+			Integrations:  integrationSvc,
+			Verifier:      integrationVerifier,
+			Spotify:       spotifyModule.Auth(),
 			SpotifyPairing: &spotify.PairingReader{
 				Path:       cfg.Spotify.PairingStatusFile,
 				StaleAfter: cfg.Spotify.StaleAfter.Duration(),
@@ -1502,11 +1515,14 @@ func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingD
 	// keeps the success path quick; a refusal that arrives later is still
 	// caught at Finish.
 	sttClient := wyoming.NewClient(cfg.STT.Addr, wyoming.WithTimeout(cfg.STT.Timeout.Duration()), wyoming.WithRefusalDeadline(250*time.Millisecond))
+	vadEnabled := cfg.STTEndpointVAD()
 
 	voiceCfg := voice.Config{
 		FrameBytes: frameBytes,
 		Endpoint: voice.EndpointConfig{
 			Rate:          captureFormat.Rate,
+			VAD:           vadEnabled,
+			VADThreshold:  cfg.STT.Endpoint.VADThreshold,
 			Silence:       cfg.STT.Endpoint.Silence.Duration(),
 			ThresholdDBFS: cfg.STT.Endpoint.ThresholdDBFS,
 			MinSpeech:     cfg.STT.Endpoint.MinSpeech.Duration(),
@@ -1522,6 +1538,8 @@ func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingD
 		"wakeword_thresholds", cfg.Wakeword.ModelThresholds(),
 		"stt_addr", cfg.STT.Addr,
 		"stt_model", cfg.STT.Model,
+		"endpoint_vad", vadEnabled,
+		"endpoint_vad_threshold", cfg.STT.Endpoint.VADThreshold,
 		"endpoint_silence", cfg.STT.Endpoint.Silence.Duration().String(),
 	)
 
@@ -1543,6 +1561,13 @@ func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingD
 		Ducker:     ducker,
 		RingActive: ringActive,
 		Logger:     logger,
+	}
+	// Silero VAD lives alongside Parakeet in the stt service; a short per-frame
+	// timeout guarantees a wedged service falls back to RMS instead of stalling
+	// microphone capture.
+	if vadEnabled {
+		vadClient := wyoming.NewClient(cfg.STT.Addr, wyoming.WithTimeout(2*time.Second))
+		deps.VAD = voice.NewWyomingVAD(vadClient, wireFormat)
 	}
 	// Only a configured stop model gets its own reply-time stream; otherwise
 	// the loop reuses Wake.

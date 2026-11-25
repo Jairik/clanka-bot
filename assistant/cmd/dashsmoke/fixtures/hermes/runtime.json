@@ -1,0 +1,8 @@
+{
+  "provider": "local",
+  "open_code_go_model": "deepseek-v4.1-flash",
+  "local_model": "ornith:9b",
+  "local_ready": true,
+  "open_code_go_ready": true,
+  "open_code_go_models": ["deepseek-v4.1-flash", "deepseek-v4-pro", "glm-5.3-flash", "kimi-k3"]
+}

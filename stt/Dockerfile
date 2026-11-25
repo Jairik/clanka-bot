@@ -1,14 +1,10 @@
-# Moonshine Voice STT behind our Wyoming server. Build natively for the target
-# architecture: amd64 on the laptop, arm64 on the Pi 5.
+# Parakeet ONNX STT + Silero VAD behind our Wyoming server. Build natively for
+# the target architecture: amd64 on the desktop, arm64 on the Pi 5.
 FROM python:3.12-slim
 
-# No runtime download path: the weights are baked below and these make any
-# accidental hub lookup fail instead of reaching the network.
 ENV PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1 \
-    HF_HUB_OFFLINE=1 \
-    TRANSFORMERS_OFFLINE=1 \
-    MOONSHINE_MODEL_ROOT=/opt/moonshine
+    STT_MODEL_ROOT=/opt/stt
 
 WORKDIR /app
 
@@ -20,16 +16,23 @@ RUN apt-get update \
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-# Weights come from the public download.moonshine.ai CDN with an anonymous
-# request and land in one early layer, before any application code is copied.
-ARG STT_MODELS=small-streaming,tiny-streaming
+# Weights come from public Hugging Face ONNX repos anonymously and land in one
+# early layer, before application code is copied. Note: parakeet_engine.py and
+# vad.py are NOT copied yet so code edits do not bust the 660 MB weights layer;
+# prefetch.py is self-contained for downloading and checking files.
+ARG STT_MODELS=parakeet-tdt-0.6b-v2
 ENV STT_MODELS=$STT_MODELS
 COPY prefetch.py .
 RUN python prefetch.py \
-    && python prefetch.py --check \
-    && rm -f prefetch.py
+    && HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 python prefetch.py --check \
+    && rm -rf prefetch.py /root/.cache/huggingface
 
-COPY pcm16.py moonshine_engine.py stt_server.py healthcheck.py ./
+# No runtime download path: the weights are baked above and these make any
+# accidental hub lookup fail instead of reaching the network.
+ENV HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1
+
+COPY pcm16.py parakeet_engine.py vad.py stt_server.py healthcheck.py correct.py vocab.json ./
 
 EXPOSE 10300
 

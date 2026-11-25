@@ -226,6 +226,7 @@ func TestSleepRejectsUnknownAndNonPositiveDurations(t *testing.T) {
 		minutes int
 	}{
 		{"set a sleep timer for 30 minutes", 30},
+		{"set a music sleep timer for 20 minutes", 20},
 		{"sleep timer for 20 minutes", 20},
 		{"stop the music in 20 minutes", 20},
 		{"stop the music after 30 minutes", 30},

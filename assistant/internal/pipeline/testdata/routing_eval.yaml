@@ -296,6 +296,11 @@ positives:
     - what time is it now
     - tell me what time it is
     - do you have the time
+    # Held-out STT surface from live Pi voice (#522): every voice transcript
+    # was capitalized with a terminal full stop. These must still hit the
+    # Control phrase table, not fall through as a matching miss.
+    - "What time is it."
+    - "What’s the time."
   date.today:
     - what's the date
     - what is today's date
@@ -338,6 +343,8 @@ positives:
     - what are the conditions outside
     - what's the temperature right now
     - is it humid outside
+    # Held-out STT surface (#522): the Control phrase with a terminal full stop.
+    - "What's the weather like."
   # weather.forecast (issue #240): today/tomorrow/weekday highs, lows, rain
   # chance, sunrise and sunset. Multi-day ranges stay on the Agent path.
   weather.forecast:
@@ -448,6 +455,12 @@ positives:
     - start a tea timer for five minutes
     - set a timer for 10 minutes called pasta
     - set a timer called tea for five minutes
+    # Held-out STT surface of an Example (#522). Live voice always capitalizes
+    # and adds a full stop; TrimSentence must keep this on timer.set.
+    - Set a timer for five minutes.
+    # Was parked under alarm-shaped negatives, but the user meant a Timer.
+    # Keeping it as a negative would block any duration-paraphrase recall gain.
+    - set a timer for 7 minutes
   timer.cancel:
     - cancel the timer
     - cancel my timer
@@ -1574,7 +1587,7 @@ positives:
     - stop the music after 30 minutes
     - stop playing in an hour
     - stop playback in 45 minutes
-    - set a sleep timer for 20 minutes
+    - set a music sleep timer for 20 minutes
     - cancel the music sleep timer
     - stop the music after 20 minutes
     - stop playback after 30 minutes
@@ -1988,6 +2001,10 @@ positives:
     - "what's the upcoming event on my calendar"
     - "tell me the upcoming event on my calendar"
 negatives:
+  # Observed live Pi STT fragments (#522). Ambiguous or filler transcripts
+  # must reach the model fallback without acting.
+  - "Set it."
+  - "Um."
   - how do I share my Google Calendar
   - sync my Outlook calendar with my phone
   - export my calendar to a CSV file
@@ -2083,7 +2100,6 @@ negatives:
   - play the alarm sound
   - turn up the alarm volume
   - what's the alarm on my phone
-  - set a timer for 7 minutes
   - wake up the house
   # Override-shaped but not a supported change: a sound preview, a time-only
   # change, a label change, a phone alarm, or a non-alarm playlist.

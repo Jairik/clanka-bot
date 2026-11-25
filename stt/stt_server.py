@@ -1,14 +1,18 @@
-"""Wyoming STT server around Moonshine Voice.
+"""Wyoming STT and Silero VAD server around NVIDIA Parakeet ONNX (onnx-asr).
 
-Protocol only: the model lives in engine.py so the wire behaviour can be tested
-with a fake engine. Audio arrives as Wyoming audio-chunk events and the Go
-middleware does the endpointing, so the server transcribes until audio-stop.
+Protocol only: the models live in parakeet_engine.py and vad.py so the wire
+behaviour can be tested with fake engines. Audio arrives as Wyoming audio-chunk
+events and the Go middleware owns endpointing, so transcription buffers audio
+until audio-stop and runs one Parakeet decode.
 
-One transcription runs at a time, because Moonshine streams share a
-transcriber. A second request waits SESSION_WAIT_SECONDS for the model and is
-then refused with a `busy` error rather than a client-side timeout, and a
-session that falls silent for SESSION_TIMEOUT_SECONDS gives the model back
-(#196).
+One transcription runs at a time to bound CPU and RAM on the Pi 5. A second
+transcription waits SESSION_WAIT_SECONDS for the model and is then refused with
+a `busy` error rather than a client-side timeout, and a session that falls
+silent for SESSION_TIMEOUT_SECONDS gives the model back (#196).
+
+Silero VAD sessions (`vad-start` -> `vad-ready`, then `audio-chunk` ->
+`vad-score`) run on a tiny independent ONNX session and never contend for the
+ASR lock.
 """
 
 from __future__ import annotations
@@ -18,21 +22,23 @@ import logging
 import os
 import sys
 import time
-from pathlib import Path
 from typing import Optional
 
-from wyoming.asr import Transcribe, Transcript, TranscriptChunk, TranscriptStop
+from wyoming.asr import Transcribe, TranscriptChunk, TranscriptStop
 from wyoming.audio import AudioChunk, AudioStart, AudioStop
 from wyoming.event import Event, async_read_event, async_write_event
 from wyoming.info import AsrModel, AsrProgram, Attribution, Describe, Info
 
-from moonshine_engine import MoonshineEngine
+from correct import VocabularyCorrector, correction_enabled
+from parakeet_engine import DEFAULT_MODEL, DEFAULT_THREADS, ParakeetEngine
 from pcm16 import to_floats
+from vad import SileroVadEngine
 
 _LOGGER = logging.getLogger("stt")
 
 _ATTRIBUTION = Attribution(
-    name="Moonshine AI", url="https://github.com/moonshine-ai/moonshine"
+    name="NVIDIA NeMo (Parakeet via onnx-asr)",
+    url="https://github.com/istupakov/onnx-asr",
 )
 
 # How long a transcription waits for the model another session holds before it
@@ -45,6 +51,7 @@ SESSION_TIMEOUT_SECONDS = float(os.environ.get("STT_SESSION_TIMEOUT", "30"))
 
 BUSY_TEXT = "speech recognition is busy"
 IDLE_TEXT = "speech recognition timed out waiting for audio"
+VAD_UNAVAILABLE_TEXT = "voice activity detection is unavailable"
 
 
 def _deadline(seconds: float):
@@ -53,16 +60,26 @@ def _deadline(seconds: float):
 
 
 class SttServer:
-    """Serves transcription requests; one active stream at a time."""
+    """Serves transcription requests (one at a time) and lightweight Silero VAD streams."""
 
-    def __init__(self, engine, session_wait=None, session_timeout=None) -> None:
+    def __init__(
+        self,
+        engine,
+        session_wait=None,
+        session_timeout=None,
+        corrector=None,
+        vad_engine=None,
+    ) -> None:
         self.engine = engine
-        # Moonshine streams share one transcriber; serialise them.
+        self.vad_engine = vad_engine
+        # Serialise ASR decode so concurrent turns do not thrash Pi CPU/RAM.
         self.lock = asyncio.Lock()
         self.session_wait = SESSION_WAIT_SECONDS if session_wait is None else session_wait
         self.session_timeout = (
             SESSION_TIMEOUT_SECONDS if session_timeout is None else session_timeout
         )
+        # None means leave the model text alone (tests, or STT_CORRECT=0).
+        self.corrector = corrector
 
     async def handle_connection(self, reader, writer) -> None:
         session = _Session(self, writer)
@@ -93,35 +110,60 @@ class SttServer:
 
     def info_event(self) -> Event:
         languages = [getattr(self.engine, "language", "en")]
+        supports_streaming = bool(getattr(self.engine, "supports_streaming", False))
         model = AsrModel(
             name=self.engine.model,
             attribution=_ATTRIBUTION,
             installed=True,
-            description="Moonshine Voice streaming speech-to-text",
+            description="Parakeet ONNX speech-to-text",
             version=getattr(self.engine, "version", None),
             languages=languages,
         )
         program = AsrProgram(
-            name="moonshine",
+            name="parakeet",
             attribution=_ATTRIBUTION,
             installed=True,
-            description="Moonshine Voice on CPU",
+            description="Parakeet ONNX on CPU",
             version=getattr(self.engine, "version", None),
             models=[model],
-            supports_transcript_streaming=True,
-            # The Go middleware owns endpointing; this service has no VAD gate.
+            supports_transcript_streaming=supports_streaming,
+            # The Go middleware owns endpointing (optionally backed by our Silero VAD).
             requires_external_vad=True,
         )
         return Info(asr=[program]).event()
 
+    def corrected_transcript(self, raw: str, language: str | None) -> dict:
+        """Build the Wyoming transcript payload, keeping the raw model text.
+
+        Routing sees the corrected string. A rewrite stores raw_text on the
+        event so diagnosis can recover the model output without logging it.
+        STT_CORRECT=0, or a missing corrector, leaves the model text as-is.
+        """
+        text = raw
+        if self.corrector is not None:
+            result = self.corrector.apply(raw)
+            text = result.text
+            if result.replacements:
+                _LOGGER.info(
+                    "applied %d vocabulary corrections",
+                    len(result.replacements),
+                )
+        payload = {"text": text}
+        if language:
+            payload["language"] = language
+        if text != raw:
+            payload["raw_text"] = raw
+        return payload
+
 
 class _Session:
-    """Per-connection state. Holds the server lock for one transcription."""
+    """Per-connection state. Holds the server lock only for ASR transcriptions."""
 
     def __init__(self, server: SttServer, writer) -> None:
         self.server = server
         self.writer = writer
         self.stream = None
+        self.vad_session = None
         self.rate = 16000
         self.language: Optional[str] = None
         self.sent_partial = ""
@@ -133,6 +175,25 @@ class _Session:
     async def handle(self, event: Event) -> bool:
         if Describe.is_type(event.type):
             await self.write(self.server.info_event())
+            return True
+
+        if event.type == "vad-start":
+            await self.close()
+            self.last_audio = time.monotonic()
+            if self.server.vad_engine is None:
+                await self.error(VAD_UNAVAILABLE_TEXT, code="vad-unavailable")
+                return True
+            data = event.data or {}
+            rate = int(data.get("rate") or 16000)
+            try:
+                self.vad_session = await asyncio.to_thread(
+                    self.server.vad_engine.create_session, rate
+                )
+                self.rate = rate
+                await self.write(Event(type="vad-ready", data={"rate": rate}))
+            except Exception as exc:
+                await self.error(str(exc), code="vad-failed")
+                self.vad_session = None
             return True
 
         if Transcribe.is_type(event.type):
@@ -161,6 +222,17 @@ class _Session:
 
         if AudioChunk.is_type(event.type):
             self.last_audio = time.monotonic()
+            if self.vad_session is not None:
+                chunk = AudioChunk.from_event(event)
+                try:
+                    prob = await asyncio.to_thread(
+                        self.vad_session.score, to_floats(chunk.audio), chunk.rate
+                    )
+                    await self.write(Event(type="vad-score", data={"probability": prob}))
+                except Exception as exc:
+                    await self.error(str(exc), code="vad-failed")
+                    self.vad_session = None
+                return True
             if self.stream is None:
                 return True
             chunk = AudioChunk.from_event(event)
@@ -179,11 +251,15 @@ class _Session:
             return True
 
         if AudioStop.is_type(event.type):
+            if self.vad_session is not None:
+                self.vad_session = None
+                return True
             if self.stream is None:
                 return True
             try:
-                text = await asyncio.to_thread(self.stream.finish)
-                await self.write(Transcript(text=text, language=self.language).event())
+                raw = await asyncio.to_thread(self.stream.finish)
+                payload = self.server.corrected_transcript(raw, self.language)
+                await self.write(Event(type="transcript", data=payload))
                 await self.write(TranscriptStop().event())
             except Exception as exc:
                 await self.error(str(exc))
@@ -249,6 +325,7 @@ class _Session:
             self.server.lock.release()
 
     async def close(self) -> None:
+        self.vad_session = None
         if self.stream is not None:
             stream = self.stream
             self.stream = None
@@ -259,8 +336,8 @@ class _Session:
         await self.release()
 
 
-async def serve(engine, host: str, port: int) -> None:
-    stt_server = SttServer(engine)
+async def serve(engine, host: str, port: int, corrector=None, vad_engine=None) -> None:
+    stt_server = SttServer(engine, corrector=corrector, vad_engine=vad_engine)
     listener = await asyncio.start_server(stt_server.handle_connection, host, port)
     addresses = ", ".join(str(sock.getsockname()) for sock in listener.sockets)
     _LOGGER.info("listening on %s", addresses)
@@ -275,26 +352,36 @@ def main() -> None:
     )
     host = os.environ.get("STT_HOST", "0.0.0.0")
     port = int(os.environ.get("STT_PORT", "10300"))
-    model = os.environ.get("STT_MODEL", "small-streaming")
+    model = os.environ.get("STT_MODEL", DEFAULT_MODEL)
     language = os.environ.get("STT_LANGUAGE", "en")
+    threads = int(os.environ.get("STT_THREADS", str(DEFAULT_THREADS)))
 
-    engine = MoonshineEngine(model=model, language=language)
+    engine = ParakeetEngine(model=model, language=language, threads=threads)
+    vad_engine = SileroVadEngine()
     started = time.monotonic()
     try:
         engine.load()
+        vad_engine.load()
     except Exception as exc:
         print(f"stt: cannot load model {model!r}: {exc}", file=sys.stderr)
         raise
     _LOGGER.info(
-        "model %s warm in %.1fs (%s, %d Hz)",
-        model,
+        "model %s + silero-vad warm in %.1fs (%s, %d Hz, threads=%d)",
+        engine.model,
         time.monotonic() - started,
         language,
         getattr(engine, "sample_rate", 16000),
+        engine.threads,
     )
 
+    corrector = VocabularyCorrector.from_path() if correction_enabled() else None
+    if corrector is not None:
+        _LOGGER.info("vocabulary correction on (%d terms)", len(corrector.terms))
+    else:
+        _LOGGER.info("vocabulary correction off")
+
     try:
-        asyncio.run(serve(engine, host, port))
+        asyncio.run(serve(engine, host, port, corrector=corrector, vad_engine=vad_engine))
     except KeyboardInterrupt:
         pass
 

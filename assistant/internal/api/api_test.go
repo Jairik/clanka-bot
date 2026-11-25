@@ -308,6 +308,32 @@ func TestBusyReportsIdleWithoutAProbe(t *testing.T) {
 	}
 }
 
+func TestHermesAdapterIsOnlyOnTheHealthListener(t *testing.T) {
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})
+	reg := tool.NewRegistry(time.Second)
+	logger := slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))
+	p, err := pipeline.New(reg, nil, logger)
+	if err != nil {
+		t.Fatalf("pipeline.New: %v", err)
+	}
+	health := api.NewHandler(p, logger, false, api.WithHermesAdapter(inner))
+	debug := api.NewHandler(p, logger, true, api.WithHermesAdapter(inner))
+
+	rec := httptest.NewRecorder()
+	health.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/hermes/adapter/tools", nil))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("health adapter status = %d", rec.Code)
+	}
+
+	rec = httptest.NewRecorder()
+	debug.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/hermes/adapter/tools", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("debug adapter status = %d, want 404", rec.Code)
+	}
+}
+
 func TestBusyReportsTheProbeReasons(t *testing.T) {
 	handler, _ := newTestServerWith(t, api.WithBusy(func(context.Context) []string {
 		return []string{"music"}

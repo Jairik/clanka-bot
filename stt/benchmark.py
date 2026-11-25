@@ -75,12 +75,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default="",
         help="Wyoming URI of an already-running TTS. Synthesizes missing WAVs into --audio-dir.",
     )
-    parser.add_argument("--model", default="small-streaming", help="Wyoming transcribe name")
+    parser.add_argument("--model", default="parakeet-tdt-0.6b-v2", help="Wyoming transcribe name")
     parser.add_argument(
         "--native-manifest",
         type=Path,
         default=None,
-        help="models.json for an in-process Moonshine decode; does not change the live server",
+        help="models.json for an in-process Parakeet decode; does not change the live server",
     )
     parser.add_argument("--language", default="en")
     parser.add_argument(
@@ -240,11 +240,11 @@ def run_native(
     manifest: Path,
     corrector: VocabularyCorrector | None,
 ) -> list[ClipScore]:
-    """Decode inside this process. Used for Medium in the existing STT container."""
-    from moonshine_engine import MoonshineEngine
+    """Decode inside this process using the baked Parakeet ONNX manifest."""
+    from parakeet_engine import ParakeetEngine
     from pcm16 import to_floats
 
-    engine = MoonshineEngine(model=model, manifest=manifest)
+    engine = ParakeetEngine(model=model, manifest=manifest)
     engine.load()
     scores = []
     for clip in clips:

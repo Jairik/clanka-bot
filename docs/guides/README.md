@@ -5,7 +5,7 @@ My lovely always-on voice assistant for stuff written in go. Kind of like a lobo
 ## Run the prototype
 
 The prototype is the `assistant` Go service in Docker, with a `wakeword`
-(openWakeWord), an `stt` (Moonshine Voice), a `tts` (Pocket TTS) service, an
+(openWakeWord), an `stt` (NVIDIA Parakeet TDT ONNX + Silero VAD), a `tts` (Pocket TTS) service, an
 internal `web-search` (SearXNG) service for Agent-path lookups, and a
 `soloist` Spotify Connect receiver.
 `assistant` owns the microphone and speaker, and also exposes a health endpoint
@@ -440,11 +440,13 @@ Say the wake word (**"clanker"**, the default), ask a question, and hear the ans
    uses the host default) with `parec` and streams 16 kHz mono PCM to
    `wakeword`.
 2. A detection plays a short generated chime and opens a transcription with
-   `stt` (Moonshine Voice `small-streaming`, or `tiny-streaming` via
+   `stt` (NVIDIA Parakeet TDT 0.6B v2 INT8 via `onnx-asr`, selectable via
    `STT_MODEL`). The chime does not play again when the request is accepted.
-3. End of speech is a fixed **500 ms** silence window (`stt.endpoint.silence`
-   in `assistant/config.yaml`), not adaptive. A `max_utterance` cap stops a
-   false wake from listening forever.
+3. End of speech uses **Silero VAD** (hosted by `stt`, falling back to RMS if
+   disabled or unreachable) with a **750 ms** silence window
+   (`stt.endpoint.silence` in `assistant/config.yaml`) so dictation pauses are
+   not clipped. A `max_utterance` cap (20 s) stops a false wake from listening
+   forever.
 4. The transcript goes through the normal pipeline; the reply is spoken.
    Wake word detection stays live while the Assistant speaks: say the wake
    word again to stop the answer, drop a waiting confirmation question, and
@@ -511,9 +513,9 @@ commit or a new image. See `wakeword/training/README.md`
 for how a phrase is trained and how to add the owner's own voice. The Dashboard's
 Settings page lists the configured models and lets you edit each live threshold,
 and its Health page
-checks that the service advertises each one. Moonshine weights are downloaded anonymously from
-`download.moonshine.ai` at build time and baked in; the container starts
-offline. Rebuild `stt` after changing `STT_MODELS` or `STT_MODEL`. Set
+checks that the service advertises each one. Parakeet ONNX and Silero VAD weights are downloaded anonymously from
+Hugging Face Hub at build time and baked in; the container starts
+offline. Rebuild `stt` after changing `STT_MODELS`. Set
 `ASSISTANT_PULSE_SOURCE` from `pactl list short sources` (the dev box uses the
 USB webcam's mono source). The `stt` service transcribes one stream at a time:
 a second request (the Dashboard mic during a voice turn) waits

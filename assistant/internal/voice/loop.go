@@ -60,6 +60,11 @@ type STTService interface {
 	Open(ctx context.Context) (STTStream, error)
 }
 
+// VADService opens a per-utterance Silero VAD stream.
+type VADService interface {
+	Open(ctx context.Context) (VADSession, error)
+}
+
 // STTStream accepts mic audio and returns the final transcript on Finish.
 type STTStream interface {
 	Write(pcm []byte) error
@@ -127,7 +132,10 @@ type Deps struct {
 	// listened for while idle. Nil falls back to Wake.
 	ReplyWake WakeService
 	STT       STTService
-	Player    Player
+	// VAD is optional: when set and Endpoint.VAD is true, each utterance opens
+	// a Silero VAD session for endpointing and falls back to RMS on failure.
+	VAD    VADService
+	Player Player
 	// Responder answers one utterance that followed a wake word.
 	Responder Responder
 	// WakeWords is the allowlist of detection names that may start a turn.
@@ -553,7 +561,19 @@ func (l *Loop) session(ctx context.Context, wakeWord string) (bool, string, erro
 	}
 	defer stt.Close()
 
-	endpointer, err := NewEndpointer(l.cfg.Endpoint)
+	var detector FrameDetector
+	if l.cfg.Endpoint.VAD && l.deps.VAD != nil {
+		vadSess, vadErr := l.deps.VAD.Open(sessCtx)
+		if vadErr != nil {
+			l.deps.Logger.Warn("voice: vad unavailable, falling back to rms", "error", vadErr.Error())
+		} else {
+			defer vadSess.Close()
+			detector = NewVADDetector(vadSess, l.cfg.Endpoint.VADThreshold)
+		}
+	}
+	endpointer, err := NewEndpointerWithDetector(l.cfg.Endpoint, detector, func(vadErr error) {
+		l.deps.Logger.Warn("voice: vad error mid-utterance, falling back to rms", "error", vadErr.Error())
+	})
 	if err != nil {
 		return false, "", err
 	}
@@ -653,6 +673,7 @@ func (l *Loop) session(ctx context.Context, wakeWord string) (bool, string, erro
 	endpointAttrs := []any{
 		"request_id", timeline.ID(),
 		"speech", heard,
+		"vad", endpointer.UsingVAD(),
 		"silence_ms", endpointer.Silence().Milliseconds(),
 	}
 	if wakeWord != "" {

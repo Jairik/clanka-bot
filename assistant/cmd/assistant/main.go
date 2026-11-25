@@ -1516,11 +1516,14 @@ func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingD
 	// keeps the success path quick; a refusal that arrives later is still
 	// caught at Finish.
 	sttClient := wyoming.NewClient(cfg.STT.Addr, wyoming.WithTimeout(cfg.STT.Timeout.Duration()), wyoming.WithRefusalDeadline(250*time.Millisecond))
+	vadEnabled := cfg.STTEndpointVAD()
 
 	voiceCfg := voice.Config{
 		FrameBytes: frameBytes,
 		Endpoint: voice.EndpointConfig{
 			Rate:          captureFormat.Rate,
+			VAD:           vadEnabled,
+			VADThreshold:  cfg.STT.Endpoint.VADThreshold,
 			Silence:       cfg.STT.Endpoint.Silence.Duration(),
 			ThresholdDBFS: cfg.STT.Endpoint.ThresholdDBFS,
 			MinSpeech:     cfg.STT.Endpoint.MinSpeech.Duration(),
@@ -1536,6 +1539,8 @@ func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingD
 		"wakeword_thresholds", cfg.Wakeword.ModelThresholds(),
 		"stt_addr", cfg.STT.Addr,
 		"stt_model", cfg.STT.Model,
+		"endpoint_vad", vadEnabled,
+		"endpoint_vad_threshold", cfg.STT.Endpoint.VADThreshold,
 		"endpoint_silence", cfg.STT.Endpoint.Silence.Duration().String(),
 	)
 
@@ -1557,6 +1562,13 @@ func newVoiceLoop(cfg config.Config, session voice.Asker, pending voice.PendingD
 		Ducker:     ducker,
 		RingActive: ringActive,
 		Logger:     logger,
+	}
+	// Silero VAD lives alongside Parakeet in the stt service; a short per-frame
+	// timeout guarantees a wedged service falls back to RMS instead of stalling
+	// microphone capture.
+	if vadEnabled {
+		vadClient := wyoming.NewClient(cfg.STT.Addr, wyoming.WithTimeout(2*time.Second))
+		deps.VAD = voice.NewWyomingVAD(vadClient, wireFormat)
 	}
 	// Only a configured stop model gets its own reply-time stream; otherwise
 	// the loop reuses Wake.

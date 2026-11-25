@@ -116,8 +116,10 @@ services:
       # plays, never while idle. Empty leaves it off.
       ASSISTANT_WAKEWORD_STOP: ${WAKEWORD_STOP:-}
       ASSISTANT_STT_ADDR: "stt:10300"
-      ASSISTANT_STT_MODEL: ${STT_MODEL:-small-streaming}
+      ASSISTANT_STT_MODEL: ${STT_MODEL:-parakeet-tdt-0.6b-v2}
       ASSISTANT_STT_LANGUAGE: ${STT_LANGUAGE:-en}
+      ASSISTANT_STT_VAD: ${STT_VAD:-true}
+      ASSISTANT_STT_VAD_THRESHOLD: ${STT_VAD_THRESHOLD:-0.45}
       # Spotify Web API app pair. The client ID is public; PKCE means there is
       # no client secret. The refresh token is a write-only secret. Pairing is
       # separate: Soloist advertises the device and keeps its own credentials
@@ -320,13 +322,14 @@ services:
       retries: 12
       start_period: 30s
 
-  # Moonshine Voice behind our Wyoming wrapper. Weights are baked at build time;
-  # the service does computation only and never mounts the mic.
+  # NVIDIA Parakeet TDT ONNX + Silero VAD behind our Wyoming wrapper. Weights
+  # are baked at build time; the service does computation only and never mounts
+  # the mic.
   stt:
     build:
       context: ./stt
       args:
-        STT_MODELS: ${STT_MODELS:-small-streaming,tiny-streaming}
+        STT_MODELS: ${STT_MODELS:-parakeet-tdt-0.6b-v2}
     image: clanka/stt:${CLANKA_TAG_STT:-${GIT_SHA:-dev}}
     restart: unless-stopped
     security_opt:
@@ -338,11 +341,12 @@ services:
       STT_HOST: "0.0.0.0"
       STT_PORT: "10300"
       STT_ADDR: "tcp://127.0.0.1:10300"
-      STT_MODEL: ${STT_MODEL:-small-streaming}
+      STT_MODEL: ${STT_MODEL:-parakeet-tdt-0.6b-v2}
       STT_LANGUAGE: ${STT_LANGUAGE:-en}
-      # Both stay off until the replay corpus shows a measured win. 1 enables.
+      # Pi 5 benchmarks favor 3 threads: leaves 1 core for wakeword/assistant.
+      STT_THREADS: ${STT_THREADS:-3}
+      # Post-decode vocabulary rewrites stay off until owner-voice replay shows a win.
       STT_CORRECT: ${STT_CORRECT:-0}
-      STT_KEYTERMS: ${STT_KEYTERMS:-0}
       TZ: ${TZ:-UTC}
     expose:
       - "10300"

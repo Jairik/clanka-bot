@@ -1,5 +1,6 @@
-# Moonshine Voice speech-to-text (small-streaming default, tiny-streaming
-# fallback) behind our own Wyoming server. The wheel bundles the ONNX runtime.
-moonshine-voice==0.1.6
+# Parakeet TDT speech-to-text and Silero VAD via ONNX Runtime behind our
+# Wyoming server. The cpu extra installs onnxruntime and numpy; hub installs
+# huggingface-hub for build-time weight prefetching.
+onnx-asr[cpu,hub]==0.12.0
 # Wyoming protocol implementation (events, client, info dataclasses).
 wyoming>=1.11,<2

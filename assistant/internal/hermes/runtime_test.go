@@ -34,7 +34,7 @@ func TestRuntimeSelection(t *testing.T) {
 	}
 	var cloudKey string
 	config := hermes.RuntimeConfig{
-		Settings: svc, LocalBaseURL: "http://ornith.test/v1", LocalModel: "ornith:9b", LocalKey: "local-key",
+		Settings: svc, LocalBaseURL: "http://ornith.test/v1", LocalModel: "ornith:9b",
 		OpenCodeKey: func() string { return cloudKey },
 	}
 	requests := make(chan map[string]string, 4)
@@ -43,7 +43,7 @@ func TestRuntimeSelection(t *testing.T) {
 	announcements := make(chan string, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/healthz" {
-			fmt.Fprint(w, `{"status":"ok","local_model":"ornith:9b","local_base_url":"http://ornith.test/v1"}`)
+			fmt.Fprint(w, `{"status":"ok","local_model":"ornith:9b","local_base_url":"http://ornith.test/v1","local_ready":true}`)
 			return
 		}
 		var input map[string]string
@@ -100,14 +100,14 @@ func TestRuntimeSelection(t *testing.T) {
 			t.Fatal("sidecar request did not arrive")
 		}
 	}
-	firstRequest := map[string]string{"task": "First", "provider": "local", "model": "ornith:9b", "key": "local-key"}
+	firstRequest := map[string]string{"task": "First", "provider": "local", "model": "ornith:9b", "key": ""}
 	wantRequest(firstRequest)
 	cloudKey = "cloud-key"
 	if _, err := manager.SetRuntime(ctx, cloud); err != nil {
 		t.Fatal(err)
 	}
 	close(release)
-	// Even a busy-admission retry must use the original selection and key.
+	// A busy-admission retry keeps the original selection and sends no local credential.
 	wantRequest(firstRequest)
 	select {
 	case state := <-announcements:
@@ -157,8 +157,8 @@ func TestIncompleteLocalConfiguration(t *testing.T) {
 	}
 	defer st.Close()
 	for _, config := range []hermes.RuntimeConfig{
-		{LocalBaseURL: "http://ornith.test/v1", LocalModel: "ornith:9b"},
-		{LocalBaseURL: "http://ornith.test/v1", LocalKey: "local-key"},
+		{LocalBaseURL: "http://ornith.test/v1"},
+		{LocalBaseURL: "http://ornith.test/v1", LocalModel: "  "},
 	} {
 		config.OpenCodeKey = func() string { return "cloud-key" }
 		manager, err := hermes.New(t.Context(), st.DB(), "", strings.Repeat("t", 32), config, nil, slog.Default())
@@ -169,7 +169,7 @@ func TestIncompleteLocalConfiguration(t *testing.T) {
 		if view := manager.Runtime(); view.Provider != "local" || view.LocalReady || !view.OpenCodeReady {
 			t.Fatalf("runtime view = %+v", view)
 		}
-		if got := manager.Handle(t.Context(), "Explicit task"); got != "Hermes needs its local endpoint, model, and key." {
+		if got := manager.Handle(t.Context(), "Explicit task"); got != "Hermes needs its local endpoint and model." {
 			t.Fatal(got)
 		}
 	}
@@ -190,7 +190,7 @@ func TestLocalReadinessFollowsTheSidecar(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const match = `{"status":"ok","local_model":"ornith:9b","local_base_url":"http://ornith.test/v1"}`
+	const match = `{"status":"ok","local_model":"ornith:9b","local_base_url":"http://ornith.test/v1","local_ready":true}`
 	var health atomic.Value // func(http.ResponseWriter)
 	var probes, runs atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -207,7 +207,7 @@ func TestLocalReadinessFollowsTheSidecar(t *testing.T) {
 		return func(w http.ResponseWriter) { fmt.Fprint(w, text) }
 	}
 	config := hermes.RuntimeConfig{
-		Settings: svc, LocalBaseURL: "http://ornith.test/v1", LocalModel: "ornith:9b", LocalKey: "local-key",
+		Settings: svc, LocalBaseURL: "http://ornith.test/v1", LocalModel: "ornith:9b",
 		OpenCodeKey: func() string { return "cloud-key" },
 	}
 	manager, err := hermes.New(ctx, st.DB(), server.URL+"/run", strings.Repeat("t", 32), config, nil, slog.Default())
@@ -223,9 +223,10 @@ func TestLocalReadinessFollowsTheSidecar(t *testing.T) {
 		health func(http.ResponseWriter)
 		want   string // substring of the refusal
 	}{
-		{"cloud-mode sidecar", body(`{"status":"ok","local_model":"","local_base_url":""}`), different},
-		{"other model", body(`{"status":"ok","local_model":"other:7b","local_base_url":"http://ornith.test/v1"}`), different},
-		{"old endpoint", body(`{"status":"ok","local_model":"ornith:9b","local_base_url":"http://old-host/v1"}`), different},
+		{"cloud-mode sidecar", body(`{"status":"ok","local_model":"","local_base_url":"","local_ready":false}`), different},
+		{"other model", body(strings.Replace(match, "ornith:9b", "other:7b", 1)), different},
+		{"old endpoint", body(strings.Replace(match, "ornith.test", "old-host", 1)), different},
+		{"missing local key", body(strings.Replace(match, "true", "false", 1)), "needs its local endpoint key"},
 		{"server error", func(w http.ResponseWriter) { w.WriteHeader(http.StatusServiceUnavailable) }, unreachable},
 		{"redirect", func(w http.ResponseWriter) {
 			w.Header().Set("Location", "/elsewhere")
@@ -249,9 +250,8 @@ func TestLocalReadinessFollowsTheSidecar(t *testing.T) {
 		t.Fatalf("sent %d jobs to a sidecar that can't take them", runs.Load())
 	}
 
-	// An older sidecar image answers without the fields. It would check only
-	// the model, not the endpoint, so Local fails closed.
-	for _, old := range []string{`{"status":"ok"}`, `{"status":"ok","local_model":"ornith:9b"}`} {
+	// Older sidecars do not report that they supply their own local credential.
+	for _, old := range []string{`{"status":"ok"}`, strings.Replace(match, `,"local_ready":true`, "", 1)} {
 		health.Store(body(old))
 		if view := manager.Runtime(); view.LocalReady || !strings.Contains(view.LocalProblem, "out of date") {
 			t.Fatalf("older sidecar %s: view = %+v", old, view)
@@ -310,7 +310,7 @@ func TestUnreachableSidecarTimesOutWithoutHoldingTheLock(t *testing.T) {
 	}))
 	defer server.Close()
 	defer close(release)
-	config := hermes.RuntimeConfig{LocalBaseURL: "http://ornith.test/v1", LocalModel: "ornith:9b", LocalKey: "local-key"}
+	config := hermes.RuntimeConfig{LocalBaseURL: "http://ornith.test/v1", LocalModel: "ornith:9b"}
 	manager, err := hermes.New(ctx, st.DB(), server.URL+"/run", strings.Repeat("t", 32), config, nil, slog.Default())
 	if err != nil {
 		t.Fatal(err)
@@ -357,7 +357,7 @@ func TestConfiguredDuringALocalJob(t *testing.T) {
 	started, release := make(chan struct{}), make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/healthz" {
-			fmt.Fprint(w, `{"status":"ok","local_model":"ornith:9b","local_base_url":"http://ornith.test/v1"}`)
+			fmt.Fprint(w, `{"status":"ok","local_model":"ornith:9b","local_base_url":"http://ornith.test/v1","local_ready":true}`)
 			return
 		}
 		close(started)
@@ -368,7 +368,7 @@ func TestConfiguredDuringALocalJob(t *testing.T) {
 		fmt.Fprint(w, `{"text":"Done."}`)
 	}))
 	defer server.Close()
-	config := hermes.RuntimeConfig{LocalBaseURL: "http://ornith.test/v1", LocalModel: "ornith:9b", LocalKey: "local-key"}
+	config := hermes.RuntimeConfig{LocalBaseURL: "http://ornith.test/v1", LocalModel: "ornith:9b"}
 	manager, err := hermes.New(ctx, st.DB(), server.URL+"/run", strings.Repeat("t", 32), config, func(string) {}, slog.Default())
 	if err != nil {
 		t.Fatal(err)

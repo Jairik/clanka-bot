@@ -33,8 +33,9 @@ without a fresh request.
 
 To use a self-hosted OpenAI-compatible endpoint, set `HERMES_LOCAL_BASE_URL`
 (including `/v1`), `HERMES_LOCAL_MODEL`, and the endpoint's dedicated
-`HERMES_LOCAL_API_KEY` in the private Compose `.env`. Recreate both
-`assistant` and `hermes`. Explicit **Ask Hermes** jobs use that model when Local is selected. The
+`HERMES_LOCAL_API_KEY` in the private Compose `.env`. Set all three or leave
+all three blank. Only the `hermes` container receives the local key. Recreate
+both `assistant` and `hermes`. Explicit **Ask Hermes** jobs use that model when Local is selected. The
 tool-free job has a 45-second budget. Jobs may take up to four minutes when
 Go tools are enabled. Hermes
 requires the endpoint to serve a context window of at least 64,000 tokens.
@@ -56,21 +57,22 @@ In the owner Dashboard, open **Hermes** and save a runtime selection. With no
 saved selection, Hermes uses the configured local endpoint or, when the local
 endpoint is unset, OpenCode Go with DeepSeek V4.1 Flash. The selected provider
 and preferred OpenCode Go model persist across restarts and apply to the next
-job. Each job keeps the provider, model and matching key it had at submission,
-even if the selection or key changes during the job.
+job. Each job keeps the provider and model it had at submission. Hermes
+supplies the local key for Local jobs. The Assistant sends the dedicated
+OpenCode Go key only for OpenCode Go jobs.
 
-Local readiness requires the endpoint, model and dedicated local key, and the
-running `hermes` container must report the same local model and base URL on
-`/healthz`. Otherwise Local is unready, the Dashboard says why, and new local
-jobs are refused before the key is sent:
+The running `hermes` container reports its local model, base URL and whether
+its local key is configured. The Assistant compares the reported route with
+its own settings and refuses new local jobs if the Dashboard shows a
+readiness problem:
 
 - **Unreachable:** the sidecar is down, starting, or slower than 2 seconds.
+  Check its logs for incomplete local settings if it fails to start.
 - **Different local settings:** the sidecar was recreated with another model
   or endpoint, or without the local settings. Recreate `assistant` and
   `hermes` together.
-- **Out of date:** the `hermes` image predates this check. It would compare
-  only the model, not the endpoint that receives the key, so Local stays
-  unready until matching images are deployed.
+- **Out of date:** the `hermes` image predates sidecar-owned credentials.
+  Deploy matching images together.
 
 The check runs for a new job only while Local is selected (skipped while
 another job runs, since that request is refused anyway), and when the

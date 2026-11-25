@@ -80,11 +80,7 @@ func New(ctx context.Context, db *sql.DB, endpoint, token string, config Runtime
 	return m, nil
 }
 
-// probeSidecar reads the local route the sidecar reports on /healthz. Any
-// transport error, timeout, redirect, non-200 or unreadable body counts as
-// unreachable. A sidecar image older than the local_model field answers
-// without it, which is reported separately so it is not mistaken for a
-// mismatch.
+// probeSidecar reads the route and credential readiness the sidecar reports on /healthz.
 func probeSidecar(ctx context.Context, client *http.Client, url string) sidecarStatus {
 	status := sidecarStatus{probed: true}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -99,15 +95,17 @@ func probeSidecar(ctx context.Context, client *http.Client, url string) sidecarS
 	var health struct {
 		LocalModel   *string `json:"local_model"`
 		LocalBaseURL *string `json:"local_base_url"`
+		LocalReady   *bool   `json:"local_ready"`
 	}
 	if resp.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(resp.Body, 1024)).Decode(&health) != nil {
 		return status
 	}
 	status.reachable = true
-	if health.LocalModel == nil || health.LocalBaseURL == nil {
+	if health.LocalModel == nil || health.LocalBaseURL == nil || health.LocalReady == nil {
 		return status
 	}
 	status.reports = true
+	status.ready = *health.LocalReady
 	status.model, status.baseURL = strings.TrimSpace(*health.LocalModel), strings.TrimSpace(*health.LocalBaseURL)
 	return status
 }

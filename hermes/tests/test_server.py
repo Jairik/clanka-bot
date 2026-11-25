@@ -59,7 +59,9 @@ class HermesServerConfigTest(unittest.TestCase):
     def test_healthz_reports_the_local_model_it_routes(self):
         # The Assistant compares this with its own local model before it
         # reports Local as ready.
-        self.assertEqual(self.healthz(), {"status": "ok", "local_model": "", "local_base_url": ""})
+        self.assertEqual(self.healthz(), {
+            "status": "ok", "local_model": "", "local_base_url": "", "local_ready": False,
+        })
         os.environ["HERMES_LOCAL_MODEL"] = "ornith:9b"
         self.assertEqual(self.healthz()["local_model"], "", "a model without a URL is not routable")
         os.environ["HERMES_LOCAL_BASE_URL"] = " http://desk:8000/v1 "
@@ -67,8 +69,10 @@ class HermesServerConfigTest(unittest.TestCase):
         os.environ["HERMES_LOCAL_API_KEY"] = "sentinel-local-key"
         os.environ["HERMES_RUNTIME_TOKEN"] = self.env["HERMES_RUNTIME_TOKEN"]
         health = self.healthz()
-        # Exactly the route and nothing else: no key, token or other settings.
-        self.assertEqual(health, {"status": "ok", "local_model": "ornith:9b", "local_base_url": "http://desk:8000/v1"})
+        # The route and readiness are public to the private network.
+        self.assertEqual(health, {
+            "status": "ok", "local_model": "ornith:9b", "local_base_url": "http://desk:8000/v1", "local_ready": True,
+        })
         self.assertNotIn("sentinel-local-key", json.dumps(health))
         self.assertNotIn(self.env["HERMES_RUNTIME_TOKEN"], json.dumps(health))
 
@@ -123,7 +127,8 @@ class HermesServerConfigTest(unittest.TestCase):
 
     def test_incomplete_local_route_never_falls_back(self):
         os.environ["HERMES_LOCAL_BASE_URL"] = "http://ornith.example/v1"
-        self.assertEqual(self.server.validate_startup(), self.env["HERMES_RUNTIME_TOKEN"])
+        with self.assertRaisesRegex(SystemExit, "Set all three Hermes local settings"):
+            self.server.validate_startup()
         with self.assertRaises(ValueError):
             self.server.agent_kwargs("local-key")
         self.assertEqual(
@@ -144,11 +149,15 @@ class HermesServerConfigTest(unittest.TestCase):
                 self.assertEqual(kwargs["fallback_model"], {})
 
     def test_run_validates_route_before_starting_any_worker(self):
-        os.environ.update(HERMES_LOCAL_BASE_URL="http://ornith.example/v1", HERMES_LOCAL_MODEL="ornith:9b")
+        os.environ.update(
+            HERMES_LOCAL_BASE_URL="http://ornith.example/v1",
+            HERMES_LOCAL_MODEL="ornith:9b",
+            HERMES_LOCAL_API_KEY=" local-key ",
+        )
         token = self.env["HERMES_RUNTIME_TOKEN"]
         cloud = {"task": "test", "key": "cloud-key", "provider": "opencode-go", "model": "kimi-k3"}
-        local = {"task": "test", "key": "local-key", "provider": "local", "model": "ornith:9b"}
-        legacy = {"task": "test", "key": "local-key"}
+        local = {"task": "test", "key": "", "provider": "local", "model": "ornith:9b"}
+        legacy = {"task": "test", "key": "unclassified-key"}
 
         def run_worker(handler, _request):
             handler.send_json(200, {"text": "accepted"})
@@ -167,21 +176,26 @@ class HermesServerConfigTest(unittest.TestCase):
                         (dict(cloud, model=None), token, 400),
                         (dict(cloud, key=" "), token, 400),
                         (dict(local, model="any"), token, 400),
+                        (dict(local, key=None), token, 400),
                         (cloud, token, 200),
                         (local, token, 200),
+                        (dict(local, key="cloud-key"), token, 200),
                         (legacy, token, 200),
                     ):
                         connection.request("POST", "/run", json.dumps(payload), {"Authorization": "Bearer " + bearer})
                         response = connection.getresponse()
                         self.assertEqual(response.status, expected)
                         response.read()
-                    self.assertEqual([call.args[1] for call in worker.call_args_list], [cloud, local, local])
-                    os.environ.pop("HERMES_LOCAL_BASE_URL")
-                    connection.request("POST", "/run", json.dumps(legacy), {"Authorization": "Bearer " + token})
-                    response = connection.getresponse()
-                    self.assertEqual(response.status, 400)
-                    response.read()
-                    self.assertEqual(worker.call_count, 3)
+                    # The local worker always gets the sidecar's key over stdin.
+                    local_job = dict(local, key="local-key")
+                    self.assertEqual([call.args[1] for call in worker.call_args_list], [cloud, local_job, local_job, local_job])
+                    os.environ["HERMES_LOCAL_API_KEY"] = " "
+                    for payload in (local, legacy):
+                        connection.request("POST", "/run", json.dumps(payload), {"Authorization": "Bearer " + token})
+                        response = connection.getresponse()
+                        self.assertEqual(response.status, 400)
+                        response.read()
+                    self.assertEqual(worker.call_count, 4)
             finally:
                 connection.close()
                 server.shutdown()
@@ -194,12 +208,24 @@ class HermesServerConfigTest(unittest.TestCase):
         self.assertTrue(written.is_file())
         self.assertIn("tool_search:", written.read_text())
 
+    def test_startup_requires_all_local_settings_or_none(self):
+        # Whitespace-only settings count as unset at startup.
+        os.environ.update(HERMES_LOCAL_BASE_URL=" ", HERMES_LOCAL_MODEL=" ", HERMES_LOCAL_API_KEY=" ")
+        self.assertEqual(self.server.validate_startup(), self.env["HERMES_RUNTIME_TOKEN"])
+        os.environ.update(HERMES_LOCAL_BASE_URL="http://ornith.example/v1", HERMES_LOCAL_MODEL="ornith:9b")
+        with self.assertRaisesRegex(SystemExit, "HERMES_LOCAL_API_KEY"):
+            self.server.validate_startup()
+        os.environ["HERMES_LOCAL_API_KEY"] = "local-key"
+        self.assertEqual(self.server.validate_startup(), self.env["HERMES_RUNTIME_TOKEN"])
+
     def test_worker_env_keeps_only_the_allowlisted_names(self):
         os.environ["HERMES_LOCAL_BASE_URL"] = "http://ornith.example/v1"
+        os.environ["HERMES_LOCAL_MODEL"] = "ornith:9b"
         os.environ["HERMES_LOCAL_API_KEY"] = "should-not-leak"
         os.environ["OPENAI_API_KEY"] = "should-not-leak"
         forwarded = self.server.worker_env()
         self.assertIn("HERMES_LOCAL_BASE_URL", forwarded)
+        self.assertIn("HERMES_LOCAL_MODEL", forwarded)
         self.assertNotIn("HERMES_LOCAL_API_KEY", forwarded)
         self.assertNotIn("OPENAI_API_KEY", forwarded)
         self.assertNotIn("HERMES_RUNTIME_TOKEN", forwarded)

@@ -83,7 +83,6 @@ services:
       HERMES_RUNTIME_TOKEN: ${HERMES_RUNTIME_TOKEN:-}
       HERMES_LOCAL_BASE_URL: ${HERMES_LOCAL_BASE_URL:-}
       HERMES_LOCAL_MODEL: ${HERMES_LOCAL_MODEL:-}
-      HERMES_LOCAL_API_KEY: ${HERMES_LOCAL_API_KEY:-}
       # Match the Hermes sidecar's job deadline.
       HERMES_GO_TOOLS: ${HERMES_GO_TOOLS:-}
       ASSISTANT_TTS_ADDR: "tts:10200"
@@ -238,6 +237,7 @@ services:
       HERMES_RUNTIME_TOKEN: ${HERMES_RUNTIME_TOKEN:-}
       HERMES_LOCAL_BASE_URL: ${HERMES_LOCAL_BASE_URL:-}
       HERMES_LOCAL_MODEL: ${HERMES_LOCAL_MODEL:-}
+      HERMES_LOCAL_API_KEY: ${HERMES_LOCAL_API_KEY:-}
       # Opt in to the Go read catalogue after the private adapter is deployed.
       HERMES_GO_TOOLS: ${HERMES_GO_TOOLS:-}
       # Sample MCP is for discovery benches and runs separately from Go Tools.

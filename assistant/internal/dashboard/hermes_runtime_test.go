@@ -4,6 +4,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -27,8 +28,17 @@ func TestHermesRuntimeAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	var cloudKey string
-	runtime, err := hermes.New(ctx, st.DB(), "", "", hermes.RuntimeConfig{
-		Settings: svc, LocalBaseURL: "http://private-endpoint/v1", LocalModel: "ornith:9b", LocalKey: "private-key",
+	// Exercise local readiness without giving the Assistant the local key.
+	sidecar := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/healthz" {
+			http.NotFound(w, r)
+			return
+		}
+		io.WriteString(w, `{"status":"ok","local_ready":true,"local_base_url":"http://private-endpoint/v1","local_model":"ornith:9b"}`)
+	}))
+	t.Cleanup(sidecar.Close)
+	runtime, err := hermes.New(ctx, st.DB(), sidecar.URL+"/run", strings.Repeat("t", 32), hermes.RuntimeConfig{
+		Settings: svc, LocalBaseURL: "http://private-endpoint/v1", LocalModel: "ornith:9b",
 		OpenCodeKey: func() string { return cloudKey },
 	}, nil, slog.Default())
 	if err != nil {

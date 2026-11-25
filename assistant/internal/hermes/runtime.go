@@ -32,7 +32,6 @@ type RuntimeConfig struct {
 	Settings     *settings.Service
 	LocalBaseURL string
 	LocalModel   string
-	LocalKey     string
 	OpenCodeKey  func() string
 }
 
@@ -88,33 +87,27 @@ func (c RuntimeConfig) cloudKey() string {
 	return strings.TrimSpace(c.OpenCodeKey())
 }
 
-func (c RuntimeConfig) localReady() bool {
-	return strings.TrimSpace(c.LocalBaseURL) != "" && strings.TrimSpace(c.LocalModel) != "" && strings.TrimSpace(c.LocalKey) != ""
+func (c RuntimeConfig) hasLocalRoute() bool {
+	return strings.TrimSpace(c.LocalBaseURL) != "" && strings.TrimSpace(c.LocalModel) != ""
 }
 
-// sidecarStatus is what the running sidecar says about its local route. The
-// sidecar reads its own copy of the settings, so after a partial recreate or a
-// typo it can reject every local job, or route this side's key to a different
-// endpoint, while this side looks configured.
+// sidecarStatus reflects the running sidecar's own configuration after a partial recreate.
 type sidecarStatus struct {
 	probed    bool   // a probe ran for this decision
 	reachable bool   // /healthz answered 200 with JSON
-	reports   bool   // the answer carries local_model and local_base_url
+	reports   bool   // the sidecar supports the local_ready protocol field
+	ready     bool   // the sidecar has all three local settings
 	model     string // the local model the sidecar routes, or ""
-	baseURL   string // the local endpoint it sends this side's key to, or ""
+	baseURL   string // the sidecar's configured local endpoint, or ""
 }
 
-// localProblem explains why Local can't run given the sidecar's status, or
-// returns "" when it can. Without a sidecar (no runtime token) only this
-// side's settings count, since no job can run anyway. An older sidecar image
-// without the fields fails closed: it would check only the model, not which
-// endpoint receives this side's key.
+// localProblem requires a matching sidecar that supplies its own local key.
 func (m *Manager) localProblem(sidecar sidecarStatus) string {
 	switch {
-	case !m.config.localReady():
-		return "Hermes needs its local endpoint, model, and key."
+	case !m.config.hasLocalRoute():
+		return "Hermes needs its local endpoint and model."
 	case m.run == nil:
-		return ""
+		return "Hermes is disabled."
 	case !sidecar.probed:
 		// This request skipped the probe: the selection switched to Local, or
 		// a running job finished, after it looked.
@@ -125,6 +118,8 @@ func (m *Manager) localProblem(sidecar sidecarStatus) string {
 		return "The Hermes sidecar image is out of date. Deploy matching assistant and hermes images."
 	case sidecar.model != strings.TrimSpace(m.config.LocalModel) || sidecar.baseURL != strings.TrimSpace(m.config.LocalBaseURL):
 		return "The Hermes sidecar has different local settings. Recreate assistant and hermes with the same settings."
+	case !sidecar.ready:
+		return "The Hermes sidecar needs its local endpoint key."
 	}
 	return ""
 }
@@ -132,7 +127,7 @@ func (m *Manager) localProblem(sidecar sidecarStatus) string {
 // sidecarStatus probes the sidecar without holding m.mu. It skips the probe
 // when local inference isn't configured on this side.
 func (m *Manager) sidecarStatus(ctx context.Context) sidecarStatus {
-	if m.probe == nil || !m.config.localReady() {
+	if m.probe == nil || !m.config.hasLocalRoute() {
 		return sidecarStatus{}
 	}
 	return m.probe(ctx)
@@ -212,7 +207,8 @@ func (m *Manager) job(task string, sidecar sidecarStatus) (jobRequest, string) {
 		if problem := m.localProblem(sidecar); problem != "" {
 			return jobRequest{}, problem
 		}
-		job.Model, job.Key = strings.TrimSpace(m.config.LocalModel), strings.TrimSpace(m.config.LocalKey)
+		// The sidecar supplies the local credential for the selected route.
+		job.Model = strings.TrimSpace(m.config.LocalModel)
 	} else {
 		job.Model, job.Key = m.selection.OpenCodeModel, m.config.cloudKey()
 		if job.Key == "" {

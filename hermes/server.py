@@ -265,6 +265,10 @@ def validate_startup():
     token = env("HERMES_RUNTIME_TOKEN")
     if len(token) < 32:
         raise SystemExit("Hermes requires a private runtime token of at least 32 characters")
+    # Partial local configuration must never fall back to OpenCode Go.
+    local_settings = (local_base_url(), local_model(), env("HERMES_LOCAL_API_KEY"))
+    if any(local_settings) and not all(local_settings):
+        raise SystemExit("Set all three Hermes local settings: HERMES_LOCAL_BASE_URL, HERMES_LOCAL_MODEL and HERMES_LOCAL_API_KEY")
     write_runtime_config()
     return token
 
@@ -338,15 +342,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         if self.path == "/healthz":
-            # The Assistant compares this route with its own settings before it
-            # reports Local as ready or sends its local key, so a sidecar
-            # recreated with other local settings doesn't look usable. This is
-            # on the internal hermes-private network and carries no secret.
+            # Report readiness over the private network without disclosing the key.
             url = local_base_url()
+            model = local_model() if url else ""
             self.send_json(200, {
                 "status": "ok",
-                "local_model": local_model() if url else "",
+                "local_model": model,
                 "local_base_url": url,
+                "local_ready": bool(url and model and env("HERMES_LOCAL_API_KEY")),
             })
         else:
             self.send_error(404)
@@ -366,12 +369,17 @@ class Handler(BaseHTTPRequestHandler):
             request = json.loads(self.rfile.read(size))
             if not isinstance(request, dict) or set(request) not in (
                 {"task", "key"}, {"task", "key", "provider", "model"},
-            ) or any(not isinstance(value, str) or not value.strip() for value in request.values()):
+            ) or any(not isinstance(value, str) for value in request.values()) or not request["task"].strip():
                 raise ValueError
             if "provider" not in request:
                 # Legacy local probes must never send an unclassified key to the cloud.
                 request.update(provider="local", model=local_model())
-            model_route(request.get("provider"), request.get("model"))
+            provider, _, _ = model_route(request["provider"], request["model"])
+            if provider == "custom":
+                # Only the sidecar chooses the credential for the local route.
+                request["key"] = env("HERMES_LOCAL_API_KEY")
+            if not request["key"].strip():
+                raise ValueError
         except (ValueError, TypeError, OSError):
             self.send_error(400)
             return

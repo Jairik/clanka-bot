@@ -996,7 +996,6 @@ func run() error {
 		Settings:     settingsSvc,
 		LocalBaseURL: os.Getenv("HERMES_LOCAL_BASE_URL"),
 		LocalModel:   os.Getenv("HERMES_LOCAL_MODEL"),
-		LocalKey:     os.Getenv("HERMES_LOCAL_API_KEY"),
 		OpenCodeKey: func() string {
 			key, _ := secretsSvc.Get(hermes.SecretName)
 			return key

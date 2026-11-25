@@ -356,27 +356,27 @@ wakeword:
     enabled: true
 
 stt:
-  # Our Wyoming wrapper around Moonshine Voice.
+  # Our Wyoming wrapper around NVIDIA Parakeet ONNX (onnx-asr) + Silero VAD.
   addr: "stt:10300"
-  # small-streaming is the default; tiny-streaming is the low-CPU fallback.
-  # Both are baked into the image at build time.
-  model: "small-streaming"
+  # parakeet-tdt-0.6b-v2 (INT8) is the default baked model (0.45% WER, 0.133x RTF on Pi 5).
+  model: "parakeet-tdt-0.6b-v2"
   language: "en"
   # Covers connect, finalisation and the response.
   timeout: 20s
   endpoint:
-    # Fixed end-of-speech window from the latency budget (#12), not adaptive.
-    silence: 500ms
-    # RMS level below which a frame counts as silence. This is not a claim
-    # about every mic: the dev box's Webcam C270 measured -37.9 to -29.7 dBFS
-    # idle at 100% source volume, above this default. Measure with
-    # scripts/mic-noise-check.sh and set the gain before a human-mic run (#36).
+    # Silero VAD hosted by the stt service (falls back to RMS if disabled or unreachable).
+    vad: true
+    # Speech probability onset threshold (0..1); hysteresis release sits 0.15 lower.
+    vad_threshold: 0.45
+    # End-of-speech silence window. 750 ms avoids clipping pauses during dictation.
+    silence: 750ms
+    # Fallback RMS level below which a frame counts as silence when VAD is off/unavailable.
     threshold_dbfs: -38
-    # Above-threshold audio needed before it counts as the question, so a chime
+    # Above-threshold speech needed before it counts as the question, so a chime
     # tail or click cannot open an utterance and then end it on silence.
     min_speech: 200ms
-    # Safety cap so a false wake cannot listen forever.
-    max_utterance: 15s
+    # Safety cap so a false wake cannot listen forever while leaving room for dictation.
+    max_utterance: 20s
 
 playback:
   # pacat from pulseaudio-utils. Only this container mounts the Pulse socket.

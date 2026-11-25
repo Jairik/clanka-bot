@@ -67,7 +67,7 @@ def test_offline_benchmark_does_not_rewrite_negation_or_herman():
 def test_report_defaults_to_aggregates_on_the_osm09_path():
     clips = load_manifest()[:1]
     scores = run_offline(clips, EndpointConfig(), None, {}, None)
-    report = report_dict(scores, "small-streaming", "", None)
+    report = report_dict(scores, "parakeet-tdt-0.6b-v2", "", None)
     assert report["schema"] == "stt-replay-benchmark/v1"
     assert report["capture_path"] == "alsa_input.usb-Generalplus_OSM09-00.mono-fallback"
     assert "521" in report["blocked_by"]
@@ -85,7 +85,7 @@ def test_include_transcripts_adds_text_except_for_private_dirs(tmp_path):
     scores = run_offline(clips, EndpointConfig(), None, {}, None)
     tts_dir = tmp_path / "tts"
     shown = report_dict(
-        scores, "small-streaming", "", tts_dir, include_transcripts=True
+        scores, "parakeet-tdt-0.6b-v2", "", tts_dir, include_transcripts=True
     )
     assert shown["transcripts"] == "included"
     assert "expected" in shown["clips"][0]
@@ -93,7 +93,7 @@ def test_include_transcripts_adds_text_except_for_private_dirs(tmp_path):
     private.mkdir()
     hidden = report_dict(
         scores,
-        "small-streaming",
+        "parakeet-tdt-0.6b-v2",
         "",
         private,
         include_transcripts=True,

@@ -78,10 +78,12 @@ type Config struct {
 	Wakeword Wakeword `yaml:"wakeword"`
 	STT      struct {
 		Addr     string   `yaml:"addr"`
-		Model    string   `yaml:"model"` // small-streaming or tiny-streaming
+		Model    string   `yaml:"model"` // parakeet-tdt-0.6b-v2, parakeet-tdt-0.6b-v3, parakeet-ctc-0.6b
 		Language string   `yaml:"language"`
 		Timeout  Duration `yaml:"timeout"`
 		Endpoint struct {
+			VAD           *bool    `yaml:"vad"`
+			VADThreshold  float64  `yaml:"vad_threshold"`
 			Silence       Duration `yaml:"silence"`
 			ThresholdDBFS float64  `yaml:"threshold_dbfs"`
 			MinSpeech     Duration `yaml:"min_speech"`
@@ -475,13 +477,16 @@ func Default() Config {
 	cfg.Wakeword.Threshold = DefaultWakeThreshold
 	cfg.Wakeword.Timeout = Duration(10 * time.Second)
 	cfg.Wakeword.Chime.Enabled = true
-	cfg.STT.Model = "small-streaming"
+	cfg.STT.Model = "parakeet-tdt-0.6b-v2"
 	cfg.STT.Language = "en"
 	cfg.STT.Timeout = Duration(20 * time.Second)
-	cfg.STT.Endpoint.Silence = Duration(500 * time.Millisecond)
+	vadDefault := true
+	cfg.STT.Endpoint.VAD = &vadDefault
+	cfg.STT.Endpoint.VADThreshold = 0.45
+	cfg.STT.Endpoint.Silence = Duration(750 * time.Millisecond)
 	cfg.STT.Endpoint.ThresholdDBFS = -38
 	cfg.STT.Endpoint.MinSpeech = Duration(200 * time.Millisecond)
-	cfg.STT.Endpoint.MaxUtterance = Duration(15 * time.Second)
+	cfg.STT.Endpoint.MaxUtterance = Duration(20 * time.Second)
 	cfg.Location.ProviderURL = "https://ipwho.is/?fields=success,city,region,timezone"
 	cfg.Location.RefreshInterval = Duration(24 * time.Hour)
 	cfg.Location.Timeout = Duration(5 * time.Second)
@@ -700,6 +705,20 @@ func applyEnv(cfg *Config) error {
 	}
 	if v := os.Getenv("ASSISTANT_STT_LANGUAGE"); v != "" {
 		cfg.STT.Language = v
+	}
+	if v := os.Getenv("ASSISTANT_STT_VAD"); v != "" {
+		enabled, err := strconv.ParseBool(strings.TrimSpace(v))
+		if err != nil {
+			return fmt.Errorf("config: ASSISTANT_STT_VAD=%q: %w", v, err)
+		}
+		cfg.STT.Endpoint.VAD = &enabled
+	}
+	if v := os.Getenv("ASSISTANT_STT_VAD_THRESHOLD"); v != "" {
+		threshold, err := strconv.ParseFloat(strings.TrimSpace(v), 64)
+		if err != nil {
+			return fmt.Errorf("config: ASSISTANT_STT_VAD_THRESHOLD=%q: %w", v, err)
+		}
+		cfg.STT.Endpoint.VADThreshold = threshold
 	}
 	return nil
 }
@@ -921,14 +940,17 @@ func (c Config) validateVoice() error {
 	if c.Wakeword.Timeout.Duration() <= 0 {
 		return fmt.Errorf("config: wakeword.timeout must be positive")
 	}
-	if c.STT.Model != "small-streaming" && c.STT.Model != "tiny-streaming" {
-		return fmt.Errorf("config: stt.model must be small-streaming or tiny-streaming, got %q", c.STT.Model)
+	if !isSupportedSTTModel(c.STT.Model) {
+		return fmt.Errorf("config: stt.model must be a supported Parakeet model (parakeet-tdt-0.6b-v2, parakeet-tdt-0.6b-v3, or parakeet-ctc-0.6b), got %q", c.STT.Model)
 	}
 	if c.STT.Language == "" {
 		return fmt.Errorf("config: stt.language is required")
 	}
 	if c.STT.Timeout.Duration() <= 0 {
 		return fmt.Errorf("config: stt.timeout must be positive")
+	}
+	if c.STTEndpointVAD() && (c.STT.Endpoint.VADThreshold <= 0 || c.STT.Endpoint.VADThreshold >= 1) {
+		return fmt.Errorf("config: stt.endpoint.vad_threshold must be between 0 and 1, got %v", c.STT.Endpoint.VADThreshold)
 	}
 	if c.STT.Endpoint.Silence.Duration() <= 0 {
 		return fmt.Errorf("config: stt.endpoint.silence must be positive")
@@ -943,6 +965,25 @@ func (c Config) validateVoice() error {
 		return fmt.Errorf("config: stt.endpoint.max_utterance must be at least the silence window")
 	}
 	return nil
+}
+
+// STTEndpointVAD reports whether Silero VAD endpointing is enabled.
+func (c Config) STTEndpointVAD() bool {
+	return c.STT.Endpoint.VAD == nil || *c.STT.Endpoint.VAD
+}
+
+func isSupportedSTTModel(model string) bool {
+	switch model {
+	case "parakeet-tdt-0.6b-v2",
+		"nemo-parakeet-tdt-0.6b-v2",
+		"parakeet-tdt-0.6b-v3",
+		"nemo-parakeet-tdt-0.6b-v3",
+		"parakeet-ctc-0.6b",
+		"nemo-parakeet-ctc-0.6b":
+		return true
+	default:
+		return false
+	}
 }
 
 // validateWakeword holds the allowlist and thresholds to the contract the

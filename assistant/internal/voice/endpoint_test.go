@@ -226,3 +226,132 @@ func TestLastSpeechIsTheLastVoicedFrame(t *testing.T) {
 		t.Fatalf("silence since last speech = %s, want at least the window", silence)
 	}
 }
+
+type fakeVADSession struct {
+	scores []float64
+	errAt  int
+	calls  int
+}
+
+func (f *fakeVADSession) Score([]byte) (float64, error) {
+	idx := f.calls
+	f.calls++
+	if f.errAt > 0 && f.calls >= f.errAt {
+		return 0, errFakeVAD
+	}
+	if idx < len(f.scores) {
+		return f.scores[idx], nil
+	}
+	return 0, nil
+}
+
+func (f *fakeVADSession) Close() error { return nil }
+
+var errFakeVAD = &fakeVADError{}
+
+type fakeVADError struct{}
+
+func (*fakeVADError) Error() string { return "vad disconnected" }
+
+func TestVADRejectsLoudRoomNoiseAndAppliesHysteresis(t *testing.T) {
+	// Loud frames (well above -38 dBFS RMS) that Silero classifies as non-speech
+	// must NOT open an utterance, while speech above 0.45 opens it and stays
+	// active while probability hovers in the hysteresis band [0.30, 0.45).
+	vad := &fakeVADSession{
+		scores: []float64{
+			0.05, 0.10, 0.08, // loud room noise -> rejected
+			0.85, 0.70, // speech onset (>= 0.45)
+			0.35, 0.32, // trailing consonant in hysteresis band (>= 0.30) -> still speech
+			0.10, 0.05, 0.02, 0.01, 0.01, // 5 quiet frames (160 ms) -> ends
+		},
+	}
+	ep, err := NewEndpointerWithDetector(EndpointConfig{
+		Rate:          testRate,
+		VAD:           true,
+		VADThreshold:  0.45,
+		Silence:       160 * time.Millisecond,
+		ThresholdDBFS: -38,
+		MinSpeech:     64 * time.Millisecond,
+	}, NewVADDetector(vad, 0.45), nil)
+	if err != nil {
+		t.Fatalf("NewEndpointerWithDetector: %v", err)
+	}
+	if !ep.UsingVAD() {
+		t.Fatal("UsingVAD = false, want true")
+	}
+
+	// 3 loud room-noise frames: RMS would trigger, VAD rejects them.
+	for i := 0; i < 3; i++ {
+		if ep.Add(frame(8000)) {
+			t.Fatalf("ended during room noise frame %d", i)
+		}
+	}
+	if ep.SpeechHeard() {
+		t.Fatal("loud room noise triggered SpeechHeard despite low VAD scores")
+	}
+
+	// 2 speech onset frames + 2 hysteresis frames.
+	for i := 0; i < 4; i++ {
+		if ep.Add(frame(8000)) {
+			t.Fatalf("ended during active speech frame %d", i)
+		}
+	}
+	if !ep.SpeechHeard() {
+		t.Fatal("SpeechHeard = false after voiced frames")
+	}
+	if ep.Silence() != 0 {
+		t.Fatalf("silence = %v during hysteresis band, want 0", ep.Silence())
+	}
+
+	// 5 non-speech frames (still loud room noise!) end the utterance after 160 ms.
+	ended := false
+	for i := 0; i < 5; i++ {
+		ended = ep.Add(frame(8000))
+	}
+	if !ended {
+		t.Fatal("utterance did not end after 160 ms of VAD non-speech")
+	}
+}
+
+func TestEndpointerFallsBackToRMSWhenVADErrorsMidUtterance(t *testing.T) {
+	vad := &fakeVADSession{
+		scores: []float64{0.90, 0.85},
+		errAt:  3,
+	}
+	var fallbackErr error
+	ep, err := NewEndpointerWithDetector(EndpointConfig{
+		Rate:          testRate,
+		VAD:           true,
+		VADThreshold:  0.45,
+		Silence:       128 * time.Millisecond,
+		ThresholdDBFS: -38,
+		MinSpeech:     32 * time.Millisecond,
+	}, NewVADDetector(vad, 0.45), func(e error) { fallbackErr = e })
+	if err != nil {
+		t.Fatalf("NewEndpointerWithDetector: %v", err)
+	}
+
+	ep.Add(frame(8000))
+	ep.Add(frame(8000))
+	if !ep.UsingVAD() {
+		t.Fatal("UsingVAD = false before error")
+	}
+	// Third frame triggers VAD error -> falls back to RMS for the rest of the turn.
+	ended := false
+	for i := 0; i < 4 && !ended; i++ {
+		ended = ep.Add(frame(0))
+	}
+	if fallbackErr == nil {
+		t.Fatal("onFallback was not invoked")
+	}
+	if ep.UsingVAD() {
+		t.Fatal("UsingVAD = true after fallback")
+	}
+	if !ended {
+		t.Fatal("RMS fallback did not end the utterance on silence")
+	}
+	// Once failed, VAD is not called again for subsequent frames.
+	if vad.calls != 3 {
+		t.Fatalf("vad.calls = %d, want 3 (no retry after failure)", vad.calls)
+	}
+}

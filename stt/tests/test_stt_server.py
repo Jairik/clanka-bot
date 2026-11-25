@@ -1,22 +1,28 @@
 import asyncio
 import sys
+import threading
 import time
 from pathlib import Path
+
+import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import stt_server  # noqa: E402
 from correct import VocabularyCorrector  # noqa: E402
+from parakeet_engine import ParakeetStream, _extract_text, resolve_model_name  # noqa: E402
+from vad import SileroVadSession  # noqa: E402
 from wyoming.asr import Transcribe, Transcript, TranscriptChunk, TranscriptStop  # noqa: E402
 from wyoming.audio import AudioChunk, AudioStart, AudioStop  # noqa: E402
 from wyoming.client import AsyncTcpClient  # noqa: E402
+from wyoming.event import Event  # noqa: E402
 from wyoming.info import AsrProgram, Describe, Info  # noqa: E402
 
 
 class FakeStream:
-    """Stands in for a Moonshine stream: records audio, returns canned text."""
+    """Stands in for a Parakeet stream: records audio, returns canned text."""
 
-    def __init__(self, text="what time is it", partial="what time", fail=None):
+    def __init__(self, text="what time is it", partial="", fail=None):
         self.text = text
         self.partial_text = partial
         self.fail = fail
@@ -47,8 +53,9 @@ class FakeEngine:
     language = "en"
     version = "test"
     sample_rate = 16000
+    supports_streaming = False
 
-    def __init__(self, model="small-streaming", stream=None, fail=None, factory=None):
+    def __init__(self, model="parakeet-tdt-0.6b-v2", stream=None, fail=None, factory=None):
         self.model = model
         self.stream = stream or FakeStream()
         self.fail = fail
@@ -65,6 +72,33 @@ class FakeEngine:
         stream = self.factory() if self.factory is not None else self.stream
         self.streams.append(stream)
         return stream
+
+
+class FakeVadSession:
+    def __init__(self, scores, fail=False):
+        self._scores = list(scores)
+        self._fail = fail
+        self.calls = []
+
+    def score(self, samples, sample_rate=16000):
+        if self._fail:
+            raise RuntimeError("vad exploded")
+        self.calls.append((list(samples), sample_rate))
+        if self._scores:
+            return self._scores.pop(0)
+        return 0.0
+
+
+class FakeVadEngine:
+    def __init__(self, scores=(0.92, 0.05), fail=False):
+        self.scores = list(scores)
+        self.fail = fail
+        self.sessions = []
+
+    def create_session(self, sample_rate=16000):
+        session = FakeVadSession(self.scores, fail=self.fail)
+        self.sessions.append((sample_rate, session))
+        return session
 
 
 async def with_server(engine, body, **server_options):
@@ -86,7 +120,7 @@ async def connect(port):
     return AsyncTcpClient("127.0.0.1", port, connect_timeout=2, read_timeout=2)
 
 
-def test_describe_advertises_moonshine():
+def test_describe_advertises_parakeet():
     async def body(port):
         async with await connect(port) as client:
             await client.write_event(Describe().event())
@@ -97,24 +131,24 @@ def test_describe_advertises_moonshine():
             assert len(info.asr) == 1
             program = info.asr[0]
             assert isinstance(program, AsrProgram)
-            assert program.name == "moonshine"
+            assert program.name == "parakeet"
             assert program.installed is True
-            assert program.supports_transcript_streaming is True
-            assert [model.name for model in program.models] == ["small-streaming"]
+            assert program.supports_transcript_streaming is False
+            assert [model.name for model in program.models] == ["parakeet-tdt-0.6b-v2"]
             assert program.models[0].languages == ["en"]
             assert program.attribution.url.startswith("https://")
 
     run(FakeEngine(), body)
 
 
-def test_transcribe_streams_partials_and_returns_the_final_text():
+def test_transcribe_returns_final_text_and_optional_partials():
     stream = FakeStream(text="what time is it", partial="what time")
     engine = FakeEngine(stream=stream)
 
     async def body(port):
         async with await connect(port) as client:
             await client.write_event(
-                Transcribe(name="tiny-streaming", language="en").event()
+                Transcribe(name="parakeet-tdt-0.6b-v2", language="en").event()
             )
             await client.write_event(
                 AudioStart(rate=16000, width=2, channels=1).event()
@@ -134,7 +168,7 @@ def test_transcribe_streams_partials_and_returns_the_final_text():
                 if TranscriptStop.is_type(event.type):
                     break
 
-            assert engine.requested == ["tiny-streaming"]
+            assert engine.requested == ["parakeet-tdt-0.6b-v2"]
             assert events["transcript-chunk"].data["text"] == "what time"
             assert events["transcript"].data["text"] == "what time is it"
             assert stream.rates == [16000]
@@ -164,7 +198,7 @@ def test_missing_model_becomes_an_error_event():
 
     async def body(port):
         async with await connect(port) as client:
-            await client.write_event(Transcribe(name="medium-streaming").event())
+            await client.write_event(Transcribe(name="parakeet-tdt-0.6b-v3").event())
             event = await client.read_event()
             assert event is not None and event.type == "error"
             assert "not baked" in event.data["text"]
@@ -208,18 +242,115 @@ def test_pcm_conversion_scales_signed_16_bit():
     assert to_floats(b"") == []
 
 
-def test_transcript_text_joins_completed_lines():
-    from moonshine_engine import transcript_text
+def test_parakeet_stream_buffers_and_decodes_once():
+    seen = []
 
-    class Line:
-        def __init__(self, text):
-            self.text = text
+    class FakeRecognizer:
+        def recognize(self, audio, sample_rate=16000):
+            seen.append((audio.copy(), sample_rate))
+            return "  hello world.  "
 
-    class TranscriptObject:
-        lines = [Line("what time"), Line("is it ")]
+    stream = ParakeetStream(FakeRecognizer(), threading.Lock())
+    stream.add_audio([0.5, -0.5], 16000)
+    stream.add_audio([0.25], 16000)
+    assert stream.partial == ""
+    assert seen == []
+    assert stream.finish() == "hello world."
+    assert len(seen) == 1
+    assert seen[0][1] == 16000
+    assert np.allclose(seen[0][0], np.array([0.5, -0.5, 0.25], dtype=np.float32))
+    # Empty stream returns "" without invoking recognizer.
+    assert stream.finish() == ""
+    assert len(seen) == 1
 
-    assert transcript_text(TranscriptObject()) == "what time is it"
-    assert transcript_text(None) == ""
+
+def test_parakeet_model_aliases_and_text_extraction():
+    assert resolve_model_name("nemo-parakeet-tdt-0.6b-v2") == "parakeet-tdt-0.6b-v2"
+    assert resolve_model_name("parakeet-tdt-0.6b-v2") == "parakeet-tdt-0.6b-v2"
+    assert _extract_text(" hello ") == "hello"
+    assert _extract_text([" hello ", "world"]) == "hello world"
+    assert _extract_text(None) == ""
+
+
+def test_silero_vad_session_maintains_context_and_state():
+    seen = []
+
+    class FakeOrtSession:
+        def run(self, outputs, feeds):
+            assert outputs == ["output", "stateN"]
+            assert feeds["input"].shape == (1, 576)
+            assert feeds["state"].shape == (2, 1, 128)
+            assert list(feeds["sr"]) == [16000]
+            seen.append((feeds["input"].copy(), feeds["state"].copy()))
+            next_state = feeds["state"] + 1.0
+            prob = np.array([[0.8 if len(seen) == 1 else 0.1]], dtype=np.float32)
+            return prob, next_state
+
+    vad = SileroVadSession(FakeOrtSession(), threading.Lock(), sample_rate=16000)
+    first = np.linspace(-0.5, 0.5, 512, dtype=np.float32)
+    second = np.zeros(512, dtype=np.float32)
+
+    assert abs(vad.score(first, 16000) - 0.8) < 1e-5
+    assert abs(vad.score(second, 16000) - 0.1) < 1e-5
+    # First frame has zero-padded context; second frame carries tail of first.
+    assert np.allclose(seen[0][0][0, :64], 0.0)
+    assert np.allclose(seen[1][0][0, :64], first[-64:])
+    # RNN state propagated across frames.
+    assert np.allclose(seen[1][1], 1.0)
+
+
+# --- Silero VAD wire protocol ----------------------------------------------
+
+FMT = {"rate": 16000, "width": 2, "channels": 1}
+PCM = b"\x00\x40\x00\xc0"
+
+
+def test_vad_scores_chunks_without_contending_with_asr_lock():
+    vad_engine = FakeVadEngine(scores=(0.88, 0.12))
+    engine = FakeEngine(stream=FakeStream(text="turn on the lights"))
+
+    async def body(port):
+        # Hold the ASR lock with an open transcription session.
+        async with await connect(port) as asr_client:
+            await asr_client.write_event(Transcribe().event())
+            await asr_client.write_event(AudioStart(**FMT).event())
+
+            # A VAD session on a second connection still succeeds immediately.
+            async with await connect(port) as vad_client:
+                await vad_client.write_event(Event(type="vad-start", data=FMT))
+                ready = await vad_client.read_event()
+                assert ready is not None and ready.type == "vad-ready"
+
+                await vad_client.write_event(AudioChunk(**FMT, audio=PCM).event())
+                first = await vad_client.read_event()
+                assert first is not None and first.type == "vad-score"
+                assert first.data["probability"] == 0.88
+
+                await vad_client.write_event(AudioChunk(**FMT, audio=PCM).event())
+                second = await vad_client.read_event()
+                assert second is not None and second.type == "vad-score"
+                assert second.data["probability"] == 0.12
+
+                await vad_client.write_event(AudioStop().event())
+
+            await asr_client.write_event(AudioChunk(**FMT, audio=PCM).event())
+            await asr_client.write_event(AudioStop().event())
+            ev = await asr_client.read_event()
+            assert ev is not None and ev.type == "transcript"
+            assert ev.data["text"] == "turn on the lights"
+
+    run(engine, body, vad_engine=vad_engine)
+
+
+def test_vad_unavailable_returns_structured_error():
+    async def body(port):
+        async with await connect(port) as client:
+            await client.write_event(Event(type="vad-start", data=FMT))
+            event = await client.read_event()
+            assert event is not None and event.type == "error"
+            assert event.data["code"] == "vad-unavailable"
+
+    run(FakeEngine(), body, vad_engine=None)
 
 
 # --- One model, one session (#196) -----------------------------------------
@@ -228,9 +359,6 @@ def test_transcript_text_joins_completed_lines():
 # connections, so a second transcription while one is in flight is normal. It
 # must be refused as busy inside the wait budget, and a session that stops
 # sending audio must give the model back instead of holding it until restart.
-
-FMT = {"rate": 16000, "width": 2, "channels": 1}
-PCM = b"\x00\x40\x00\xc0"
 
 
 async def full_session(port):
